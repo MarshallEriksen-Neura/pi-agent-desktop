@@ -29,7 +29,9 @@ export const zh: Record<keyof typeof en, string> = {
 
   // top bar
   "topbar.toggleSidebar": "切换侧边栏",
-  "topbar.manageModels": "管理模型",
+  "topbar.updateAvailable": "有新版本可用",
+  "topbar.updateAvailableVersion": "新版本 {version} 可用",
+  "topbar.dismissUpdate": "暂不更新",
   "topbar.askAnything": "问 Pi 任何问题…",
   "topbar.toggleTerminal": "切换终端",
   "topbar.toggleTheme": "切换主题",
@@ -80,6 +82,19 @@ export const zh: Record<keyof typeof en, string> = {
   "agent.thought": "已思考",
   "agent.thinking": "思考中…",
 
+  // retry transparency
+  "retry.inProgress": "重试中…（第 {attempt}/{max} 次）",
+  "retry.success": "重试成功（共 {attempt} 次）",
+  "retry.failed": "重试失败：{reason}",
+
+  // queue
+  "queue.badge": "{count} 个排队中",
+  "queue.cancel": "取消队列",
+
+  // message operations
+  "message.copy": "复制",
+  "message.fork": "分支",
+
   // composer slash commands
   "slash.builtin": "内置",
   "cmd.new": "新建会话",
@@ -119,6 +134,9 @@ export const zh: Record<keyof typeof en, string> = {
 
   // editor canvas
   "editor.piEditing": "Pi 正在编辑…",
+  "editor.imageLoading": "图片加载中…",
+  "editor.imageError": "无法显示该图片",
+  "editor.imageMockHint": "图片预览需在桌面应用中使用",
 
   // terminal drawer
   "terminal.title": "终端",
@@ -261,8 +279,21 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.fontSizeDetail": "缩放界面中的所有文字",
   "settings.defaultOption": "默认",
   "settings.customColor": "自定义颜色",
+  "settings.bgImage": "背景图片",
+  "settings.bgImageDetail": "用一张图片作为应用背景（过大的图片会自动压缩）",
+  "settings.chooseImage": "选择图片…",
+  "settings.replaceImage": "更换图片…",
+  "settings.removeImage": "移除",
+  "settings.surfaceOpacity": "界面不透明度",
+  "settings.imageBlur": "图片模糊",
+  "settings.customCss": "自定义 CSS",
+  "settings.customCssFooter":
+    "粘贴任意 CSS 即刻生效 — 仅保存在本地，重启后依然有效。覆盖内联样式需加 !important；清空输入框即可移除。",
+  "settings.customCssPlaceholder": "/* 在此粘贴 CSS — 实时生效 */",
   "settings.resetAppearance": "恢复默认外观",
-  "settings.resetAppearanceDetail": "清除自定义颜色与文字大小",
+  "settings.resetAppearanceDetail": "清除自定义颜色、背景图片、CSS 与文字大小",
+  "settings.notifications": "桌面通知",
+  "settings.notificationsDetail": "窗口隐藏时消息完成后显示系统通知",
 
   // models page
   "models.title": "模型",
@@ -280,6 +311,24 @@ export const zh: Record<keyof typeof en, string> = {
   "models.cyclingFooter":
     "Ctrl+P 循环切换的 enabledModels 模式 — 写入全局 settings.json。格式与 --models CLI 参数相同。",
   "models.cyclingPlaceholder": "如 claude-* 或 gpt-4o",
+  "models.custom": "自定义模型",
+  "models.customFooter":
+    "定义在 ~/.pi/agent/models.json，用于 OpenAI 兼容或自定义端点。修改后需重启 pi 才会出现在模型列表中。",
+  "models.customParseError": "models.json 包含无效 JSON，请先手动修复：{error}",
+  "models.customEmpty": "还没有自定义模型",
+  "models.addModel": "添加模型",
+  "models.removeModel": "移除模型",
+  "models.providerId": "提供商 ID",
+  "models.apiType": "API 类型",
+  "models.baseUrl": "Base URL",
+  "models.apiKey": "API 密钥",
+  "models.modelId": "模型 ID",
+  "models.modelName": "显示名称",
+  "models.contextWindow": "上下文窗口",
+  "models.maxTokens": "最大输出 Token",
+  "models.reasoningToggle": "推理模型",
+  "models.addConfirm": "添加",
+  "models.cancel": "取消",
 
   // plugins page
   "plugins.title": "插件",
@@ -411,6 +460,23 @@ export const zh: Record<keyof typeof en, string> = {
   "update.checkFailed": "无法连接发布仓库",
   "update.problem": "问题",
   "update.lastChecked": "上次检查：{time}",
+  "cliUpdate.title": "pi CLI 有新版本。",
+  "cliUpdate.message": "{latest} 已发布 — 当前 {installed}。",
+  "cliUpdate.updateNow": "更新",
+  "cliUpdate.later": "稍后",
+  "cliUpdate.skip": "跳过此版本",
+  "cliUpdate.retry": "重试",
+  "cliUpdate.updating": "正在更新 pi…",
+  "cliUpdate.updated": "pi 已更新 — 重启 pi 后生效。",
+  "cliUpdate.restartPi": "重启 pi",
+  "cliUpdate.updateFailed": "pi 更新失败：{reason}",
+  "cliUpdate.sectionTitle": "pi CLI",
+  "cliUpdate.sectionFooter":
+    "桌面端运行在 pi CLI 之上。更新执行 `pi update`，版本来自 badlogic/pi-mono 的发布标签。",
+  "cliUpdate.installed": "已安装",
+  "cliUpdate.latest": "最新版本",
+  "cliUpdate.notFound": "未在 PATH 中找到 pi",
+  "cliUpdate.upToDate": "pi 已是最新版本",
   "settings.softwareUpdate": "软件更新",
   "settings.softwareUpdateDetail": "版本 {version}",
 };

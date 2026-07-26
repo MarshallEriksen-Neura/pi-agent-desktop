@@ -64,6 +64,86 @@ export const piTheme = EditorView.theme({
     borderRadius: "4px",
     transition: "background-color 0.6s var(--spring-smooth)",
   },
+
+  /* ── search panel (translucent iOS bar) ── */
+  ".cm-panels": {
+    backgroundColor: "var(--bg-overlay)",
+    backdropFilter: "blur(20px)",
+    color: "var(--text-primary)",
+  },
+  ".cm-panels.cm-panels-top": {
+    borderBottom: "1px solid var(--separator)",
+  },
+  ".cm-panel.cm-search": {
+    padding: "8px 12px",
+    fontSize: "12px",
+  },
+  ".cm-panel.cm-search input": {
+    backgroundColor: "var(--bg-sunken)",
+    border: "1px solid var(--separator)",
+    borderRadius: "8px",
+    color: "var(--text-primary)",
+    outline: "none",
+    padding: "3px 8px",
+  },
+  ".cm-panel.cm-search input:focus": {
+    borderColor: "var(--accent)",
+  },
+  ".cm-panel.cm-search button": {
+    backgroundColor: "transparent",
+    backgroundImage: "none",
+    border: "1px solid var(--separator)",
+    borderRadius: "8px",
+    color: "var(--text-secondary)",
+    cursor: "pointer",
+    padding: "3px 10px",
+  },
+  ".cm-panel.cm-search button:hover": {
+    backgroundColor: "var(--accent-muted)",
+    color: "var(--text-primary)",
+  },
+  ".cm-panel.cm-search label": {
+    color: "var(--text-secondary)",
+    fontSize: "11px",
+  },
+  ".cm-panel.cm-search [name=close]": {
+    color: "var(--text-secondary)",
+    fontSize: "16px",
+  },
+
+  /* ── match + bracket highlights ── */
+  ".cm-searchMatch": {
+    backgroundColor: "var(--accent-muted)",
+    borderRadius: "3px",
+  },
+  ".cm-searchMatch.cm-searchMatch-selected": {
+    backgroundColor: "color-mix(in srgb, var(--accent) 35%, transparent)",
+  },
+  ".cm-selectionMatch": {
+    backgroundColor: "var(--accent-muted)",
+    borderRadius: "3px",
+  },
+  "&.cm-focused .cm-matchingBracket": {
+    backgroundColor: "var(--accent-muted)",
+    borderRadius: "2px",
+  },
+  "&.cm-focused .cm-nonmatchingBracket": {
+    color: "var(--ios-red, #ff453a)",
+  },
+
+  /* ── code folding ── */
+  ".cm-foldGutter .cm-gutterElement": {
+    cursor: "pointer",
+    color: "var(--text-tertiary)",
+  },
+  ".cm-foldPlaceholder": {
+    backgroundColor: "var(--bg-elevated)",
+    border: "1px solid var(--separator)",
+    borderRadius: "6px",
+    color: "var(--text-tertiary)",
+    margin: "0 4px",
+    padding: "0 6px",
+  },
 });
 
 /** Syntax palette — restrained, from the same iOS primitives. */

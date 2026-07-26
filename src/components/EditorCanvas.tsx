@@ -6,7 +6,9 @@ import { useUI } from "@/lib/store";
 import { useChat } from "@/lib/pi/chat";
 import { useWorkspace } from "@/lib/workspace";
 import { useT } from "@/lib/i18n";
+import { isImageFile } from "@/lib/image-files";
 import { Editor } from "./Editor";
+import { ImageViewer } from "./ImageViewer";
 
 /**
  * Base-layer canvas hosting the CodeMirror surface.
@@ -85,7 +87,11 @@ export function EditorCanvas() {
         </div>
 
         <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-          <Editor />
+          {isImageFile(activeFile) ? (
+            <ImageViewer path={activeFile} />
+          ) : (
+            <Editor />
+          )}
           {/* breathing edge — pi is alive in your editor (Siri-glow mental model) */}
           <AnimatePresence>
             {piBusy && (

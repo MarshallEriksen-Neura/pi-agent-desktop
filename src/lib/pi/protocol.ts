@@ -97,6 +97,18 @@ export interface PiModel {
   output?: number;
 }
 
+/** `data` of a successful `bash` response — output arrives here, not as events. */
+export interface BashResult {
+  /** combined stdout + stderr (sanitized, possibly truncated) */
+  output: string;
+  /** undefined if killed/cancelled */
+  exitCode?: number;
+  cancelled: boolean;
+  truncated: boolean;
+  /** present when truncated — full log on disk */
+  fullOutputPath?: string;
+}
+
 export interface PiState {
   model?: PiModel;
   thinkingLevel?: ThinkingLevel;
@@ -123,7 +135,6 @@ export type PiEvent =
   | { type: "message_start" }
   | { type: "message_update"; assistantMessageEvent: AssistantMessageEvent }
   | { type: "message_end"; message?: unknown }
-  | { type: "bash_execution_update"; id?: string; delta: string }
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args?: unknown }
   | { type: "tool_execution_update"; toolCallId: string; partialResult?: unknown }
   | { type: "tool_execution_end"; toolCallId: string; result?: unknown; isError?: boolean }

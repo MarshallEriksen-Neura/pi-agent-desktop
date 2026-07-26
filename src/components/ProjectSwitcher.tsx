@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ChevronDown, FolderOpen, Folder, Check, X } from "lucide-react";
 import { useWorkspace, projectName } from "@/lib/workspace";
@@ -17,6 +17,12 @@ export function ProjectSwitcher() {
     useWorkspace();
   const [open, setOpen] = useState(false);
   const t = useT();
+
+  // `mock` depends on isTauri() (window), so the prerendered HTML can't know it.
+  // Render nothing until hydrated — matches the server output in both modes.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
 
   // browser preview has no real projects — keep the original static subtitle
   if (mock) {

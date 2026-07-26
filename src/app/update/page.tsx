@@ -3,13 +3,22 @@
 import { useEffect } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { Button } from "@appica/ui-react/button";
-import { GitBranch, Tag, RefreshCw, GitCommitHorizontal } from "lucide-react";
+import {
+  GitBranch,
+  Tag,
+  RefreshCw,
+  GitCommitHorizontal,
+  SquareTerminal,
+} from "lucide-react";
 import {
   useUpdate,
   APP_VERSION,
   MOCK_APPLY_ERROR,
   type UpdatePhase,
 } from "@/lib/update";
+import { useCliUpdate } from "@/lib/pi/cli-update";
+import { usePi } from "@/lib/pi/store";
+import { useWorkspace } from "@/lib/workspace";
 import { useI18n, useT } from "@/lib/i18n";
 import { PiMark } from "@/components/PiMark";
 import { SettingsPage, InsetGroup, GroupRow } from "@/components/settings-ui";
@@ -91,12 +100,14 @@ const mono: React.CSSProperties = {
 
 export default function UpdatePage() {
   const u = useUpdate();
+  const cli = useCliUpdate();
   const t = useT();
   const { locale } = useI18n();
 
   // Auto-check when the page opens, like iOS Software Update.
   useEffect(() => {
     u.check();
+    cli.check();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -349,6 +360,96 @@ export default function UpdatePage() {
             </span>
           }
         />
+      </InsetGroup>
+
+      {/* pi CLI — the engine underneath; updates itself via `pi update` */}
+      <InsetGroup header={t("cliUpdate.sectionTitle")} footer={t("cliUpdate.sectionFooter")}>
+        <GroupRow
+          first
+          icon={<SquareTerminal size={15} />}
+          title={t("cliUpdate.installed")}
+          detail={
+            cli.phase === "notFound" ? t("cliUpdate.notFound") : undefined
+          }
+          trailing={
+            <span style={{ ...mono, fontSize: 13, color: "var(--text-secondary)" }}>
+              {cli.info?.installed ?? "—"}
+            </span>
+          }
+        />
+        <GroupRow
+          title={t("cliUpdate.latest")}
+          detail={
+            cli.phase === "upToDate"
+              ? t("cliUpdate.upToDate")
+              : cli.phase === "available" || cli.phase === "updating"
+                ? t("update.availableStatus", { version: cli.info?.latest ?? "?" })
+                : cli.phase === "updated"
+                  ? t("cliUpdate.updated")
+                  : cli.phase === "error"
+                    ? cli.error ?? t("update.checkFailed")
+                    : undefined
+          }
+          trailing={
+            <span
+              style={{
+                ...mono,
+                fontSize: 13,
+                color:
+                  cli.phase === "available" || cli.phase === "updating"
+                    ? "var(--accent)"
+                    : "var(--text-secondary)",
+              }}
+            >
+              {cli.info?.latest ?? "—"}
+            </span>
+          }
+        />
+        <div style={{ padding: "12px 16px", borderTop: "1px solid var(--separator)", display: "flex", gap: 8 }}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => cli.check()}
+            disabled={cli.phase === "checking" || cli.phase === "updating"}
+            style={{ borderRadius: 10, flex: 1, fontWeight: 600 }}
+          >
+            {cli.phase === "checking" ? t("update.checking") : t("update.check")}
+          </Button>
+          {(cli.phase === "available" ||
+            cli.phase === "updating" ||
+            cli.phase === "error") && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => void cli.apply()}
+              disabled={cli.phase === "updating"}
+              style={{
+                borderRadius: 10,
+                flex: 1,
+                fontWeight: 600,
+                opacity: cli.phase === "updating" ? 0.7 : 1,
+              }}
+            >
+              {cli.phase === "updating"
+                ? t("cliUpdate.updating")
+                : t("cliUpdate.updateNow")}
+            </Button>
+          )}
+          {cli.phase === "updated" && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() =>
+                void usePi
+                  .getState()
+                  .restart(useWorkspace.getState().root ?? undefined)
+              }
+              style={{ borderRadius: 10, flex: 1, fontWeight: 600 }}
+            >
+              {t("cliUpdate.restartPi")}
+            </Button>
+          )}
+        </div>
       </InsetGroup>
 
       {/* update source — honest empty state until the repo is published */}

@@ -58,6 +58,24 @@
   --agent-thinking: var(--ios-purple);
   --diff-add-bg: rgba(52, 199, 89, 0.14);
   --diff-add-text: #248a3d;
+
+  /* Terminal / ANSI colors */
+  --ansi-black: #1e1e1e;
+  --ansi-red: #ff3b30;
+  --ansi-green: #34c759;
+  --ansi-yellow: #ff9500;
+  --ansi-blue: #007aff;
+  --ansi-magenta: #af52de;
+  --ansi-cyan: #30b0c7;
+  --ansi-white: #f2f2f7;
+  --ansi-bright-black: #8e8e93;
+  --ansi-bright-red: #ff6961;
+  --ansi-bright-green: #5ac777;
+  --ansi-bright-yellow: #ffb340;
+  --ansi-bright-blue: #409cff;
+  --ansi-bright-magenta: #bf66ff;
+  --ansi-bright-cyan: #5dc1e0;
+  --ansi-bright-white: #ffffff;
   --diff-remove-bg: rgba(255, 59, 48, 0.12);
   --diff-remove-text: #c4271e;
   --danger: var(--ios-red);
@@ -114,6 +132,30 @@
   --accent-hover: #339cff;
   --accent-muted: rgba(10, 132, 255, 0.18);
   --focus-ring: rgba(10, 132, 255, 0.5);
+
+  --agent-thinking: var(--ios-purple);
+  --diff-add-bg: rgba(52, 199, 89, 0.14);
+  --diff-add-text: #5ac777;
+  --diff-del-bg: rgba(255, 59, 48, 0.16);
+  --diff-del-text: #ff6961;
+
+  /* Terminal / ANSI colors (dark theme) */
+  --ansi-black: #2d2d2d;
+  --ansi-red: #ff6961;
+  --ansi-green: #5ac777;
+  --ansi-yellow: #ffb340;
+  --ansi-blue: #409cff;
+  --ansi-magenta: #bf66ff;
+  --ansi-cyan: #5dc1e0;
+  --ansi-white: #e5e5ea;
+  --ansi-bright-black: #636366;
+  --ansi-bright-red: #ff8a80;
+  --ansi-bright-green: #72d687;
+  --ansi-bright-yellow: #ffc570;
+  --ansi-bright-blue: #60acff;
+  --ansi-bright-magenta: #cf88ff;
+  --ansi-bright-cyan: #7dd4f0;
+  --ansi-bright-white: #ffffff;
 
   --agent-thinking: #bf5af2;
   --diff-add-bg: rgba(52, 199, 89, 0.18);
@@ -308,3 +350,43 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── ANSI color classes (ansi_up) ── */
+.ansi-black-fg { color: var(--ansi-black); }
+.ansi-red-fg { color: var(--ansi-red); }
+.ansi-green-fg { color: var(--ansi-green); }
+.ansi-yellow-fg { color: var(--ansi-yellow); }
+.ansi-blue-fg { color: var(--ansi-blue); }
+.ansi-magenta-fg { color: var(--ansi-magenta); }
+.ansi-cyan-fg { color: var(--ansi-cyan); }
+.ansi-white-fg { color: var(--ansi-white); }
+.ansi-bright-black-fg { color: var(--ansi-bright-black); }
+.ansi-bright-red-fg { color: var(--ansi-bright-red); }
+.ansi-bright-green-fg { color: var(--ansi-bright-green); }
+.ansi-bright-yellow-fg { color: var(--ansi-bright-yellow); }
+.ansi-bright-blue-fg { color: var(--ansi-bright-blue); }
+.ansi-bright-magenta-fg { color: var(--ansi-bright-magenta); }
+.ansi-bright-cyan-fg { color: var(--ansi-bright-cyan); }
+.ansi-bright-white-fg { color: var(--ansi-bright-white); }
+
+.ansi-black-bg { background-color: var(--ansi-black); }
+.ansi-red-bg { background-color: var(--ansi-red); }
+.ansi-green-bg { background-color: var(--ansi-green); }
+.ansi-yellow-bg { background-color: var(--ansi-yellow); }
+.ansi-blue-bg { background-color: var(--ansi-blue); }
+.ansi-magenta-bg { background-color: var(--ansi-magenta); }
+.ansi-cyan-bg { background-color: var(--ansi-cyan); }
+.ansi-white-bg { background-color: var(--ansi-white); }
+.ansi-bright-black-bg { background-color: var(--ansi-bright-black); }
+.ansi-bright-red-bg { background-color: var(--ansi-bright-red); }
+.ansi-bright-green-bg { background-color: var(--ansi-bright-green); }
+.ansi-bright-yellow-bg { background-color: var(--ansi-bright-yellow); }
+.ansi-bright-blue-bg { background-color: var(--ansi-bright-blue); }
+.ansi-bright-magenta-bg { background-color: var(--ansi-bright-magenta); }
+.ansi-bright-cyan-bg { background-color: var(--ansi-bright-cyan); }
+.ansi-bright-white-bg { background-color: var(--ansi-bright-white); }
+
+.ansi-bold { font-weight: 600; }
+.ansi-dim { opacity: 0.6; }
+.ansi-italic { font-style: italic; }
+.ansi-underline { text-decoration: underline; }

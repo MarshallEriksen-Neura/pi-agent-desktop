@@ -27,7 +27,9 @@ export const en = {
 
   // top bar
   "topbar.toggleSidebar": "Toggle sidebar",
-  "topbar.manageModels": "Manage models",
+  "topbar.updateAvailable": "Update available",
+  "topbar.updateAvailableVersion": "Update {version} available",
+  "topbar.dismissUpdate": "Not now",
   "topbar.askAnything": "Ask Pi anything…",
   "topbar.toggleTerminal": "Toggle terminal",
   "topbar.toggleTheme": "Toggle theme",
@@ -79,6 +81,19 @@ export const en = {
   "agent.thought": "Thought",
   "agent.thinking": "Thinking…",
 
+  // retry transparency
+  "retry.inProgress": "Retrying… (attempt {attempt}/{max})",
+  "retry.success": "Retry succeeded after {attempt} attempts",
+  "retry.failed": "Retry failed: {reason}",
+
+  // queue
+  "queue.badge": "{count} queued",
+  "queue.cancel": "Cancel queue",
+
+  // message operations
+  "message.copy": "Copy",
+  "message.fork": "Fork",
+
   // composer slash commands
   "slash.builtin": "built-in",
   "cmd.new": "Start a new session",
@@ -118,6 +133,9 @@ export const en = {
 
   // editor canvas
   "editor.piEditing": "Pi is editing…",
+  "editor.imageLoading": "Loading image…",
+  "editor.imageError": "Cannot display this image",
+  "editor.imageMockHint": "Image preview is available in the desktop app",
 
   // terminal drawer
   "terminal.title": "Terminal",
@@ -267,8 +285,22 @@ export const en = {
   "settings.fontSizeDetail": "scales all interface text",
   "settings.defaultOption": "Default",
   "settings.customColor": "Custom color",
+  "settings.bgImage": "Background image",
+  "settings.bgImageDetail": "use a picture as the app background (large images are scaled down)",
+  "settings.chooseImage": "Choose image…",
+  "settings.replaceImage": "Replace image…",
+  "settings.removeImage": "Remove",
+  "settings.surfaceOpacity": "Surface opacity",
+  "settings.imageBlur": "Image blur",
+  "settings.customCss": "Custom CSS",
+  "settings.customCssFooter":
+    "Paste any CSS — it applies instantly and is saved locally across restarts. Add !important to override inline styles; clear the box to remove it.",
+  "settings.customCssPlaceholder": "/* paste your CSS here — applies live */",
   "settings.resetAppearance": "Reset appearance",
-  "settings.resetAppearanceDetail": "Clear custom colors and text size",
+  "settings.resetAppearanceDetail":
+    "Clear custom colors, background image, CSS and text size",
+  "settings.notifications": "Desktop Notifications",
+  "settings.notificationsDetail": "Show OS notifications when messages complete while window is hidden",
 
   // models page
   "models.title": "Models",
@@ -287,6 +319,24 @@ export const en = {
   "models.cyclingFooter":
     "enabledModels patterns for Ctrl+P cycling — written to global settings.json. Same format as the --models CLI flag.",
   "models.cyclingPlaceholder": "e.g. claude-* or gpt-4o",
+  "models.custom": "Custom models",
+  "models.customFooter":
+    "Defined in ~/.pi/agent/models.json for OpenAI-compatible or custom endpoints. Restart pi after changes for them to appear in the model list.",
+  "models.customParseError": "models.json has invalid JSON — fix it manually first: {error}",
+  "models.customEmpty": "No custom models yet",
+  "models.addModel": "Add model",
+  "models.removeModel": "Remove model",
+  "models.providerId": "Provider ID",
+  "models.apiType": "API type",
+  "models.baseUrl": "Base URL",
+  "models.apiKey": "API key",
+  "models.modelId": "Model ID",
+  "models.modelName": "Display name",
+  "models.contextWindow": "Context window",
+  "models.maxTokens": "Max tokens",
+  "models.reasoningToggle": "Reasoning model",
+  "models.addConfirm": "Add",
+  "models.cancel": "Cancel",
 
   // plugins page
   "plugins.title": "Plugins",
@@ -431,6 +481,23 @@ export const en = {
   "update.checkFailed": "Couldn't reach the release repository",
   "update.problem": "Problem",
   "update.lastChecked": "Last checked at {time}",
+  "cliUpdate.title": "pi CLI update available.",
+  "cliUpdate.message": "{latest} is out — you have {installed}.",
+  "cliUpdate.updateNow": "Update",
+  "cliUpdate.later": "Later",
+  "cliUpdate.skip": "Skip version",
+  "cliUpdate.retry": "Retry",
+  "cliUpdate.updating": "Updating pi…",
+  "cliUpdate.updated": "pi updated — restart pi to use the new version.",
+  "cliUpdate.restartPi": "Restart pi",
+  "cliUpdate.updateFailed": "pi update failed: {reason}",
+  "cliUpdate.sectionTitle": "pi CLI",
+  "cliUpdate.sectionFooter":
+    "The desktop app runs on the pi CLI. Updates run `pi update`; versions come from release tags on badlogic/pi-mono.",
+  "cliUpdate.installed": "Installed",
+  "cliUpdate.latest": "Latest",
+  "cliUpdate.notFound": "pi was not found on PATH",
+  "cliUpdate.upToDate": "pi is up to date",
   "settings.softwareUpdate": "Software Update",
   "settings.softwareUpdateDetail": "Version {version}",
 } as const;

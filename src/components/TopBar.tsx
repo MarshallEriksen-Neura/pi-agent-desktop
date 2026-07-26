@@ -1,12 +1,13 @@
 "use client";
 
-import Link from "next/link";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
 import { Chip } from "@appica/ui-react/chip";
 import {
   PanelLeft,
-  Gem,
-  ChevronRight,
+  ArrowDownToLine,
+  X,
   SquareTerminal,
   Moon,
   Sun,
@@ -15,7 +16,7 @@ import {
   Command,
 } from "lucide-react";
 import { useUI } from "@/lib/store";
-import { usePi } from "@/lib/pi/store";
+import { useUpdate } from "@/lib/update";
 import { useT } from "@/lib/i18n";
 import { IconButton, Kbd } from "./primitives";
 import { ProjectSwitcher } from "./ProjectSwitcher";
@@ -40,9 +41,20 @@ export function TopBar() {
   } = useUI();
 
   const fileName = activeFile.split("/").pop() ?? activeFile;
-  const currentModel = usePi((s) => s.currentModel);
-  const cycleModel = usePi((s) => s.cycleModel);
+  const updatePhase = useUpdate((s) => s.phase);
+  const updateInfo = useUpdate((s) => s.info);
+  const updateDismissed = useUpdate((s) => s.dismissed);
+  const dismissUpdate = useUpdate((s) => s.dismiss);
   const t = useT();
+  const router = useRouter();
+
+  // one silent check on launch so the reminder can surface without visiting settings
+  useEffect(() => {
+    const { phase, lastCheckedAt, check } = useUpdate.getState();
+    if (phase === "idle" && lastCheckedAt === null) void check();
+  }, []);
+
+  const showUpdate = updatePhase === "available" && !updateDismissed;
 
   return (
     <header
@@ -79,65 +91,65 @@ export function TopBar() {
         <ProjectSwitcher />
       </div>
 
-      {/* model pill — tap to cycle, link icon to manage */}
-      {currentModel && (
-        <Chip
-          variant="primary"
-          size="sm"
-          onClick={() => cycleModel()}
-          render={
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              transition={{ type: "spring", stiffness: 500, damping: 24 }}
-            />
-          }
-          style={{
-            marginLeft: "auto",
-            gap: 6,
-            fontSize: 11.5,
-            fontWeight: 500,
-            color: "var(--accent)",
-            background: "var(--accent-muted)",
-            borderRadius: 99,
-            whiteSpace: "nowrap",
-            cursor: "pointer",
-          }}
-        >
-          <Gem size={12} style={{ flexShrink: 0 }} />
-          {/* iOS-clock-style roll when the model cycles */}
-          <AnimatePresence mode="popLayout" initial={false}>
-            <motion.span
-              key={`${currentModel.provider}/${currentModel.id}`}
-              initial={{ y: 6, opacity: 0, filter: "blur(2px)" }}
-              animate={{ y: 0, opacity: 1, filter: "blur(0px)" }}
-              exit={{ y: -6, opacity: 0, filter: "blur(2px)" }}
-              transition={{ type: "spring", stiffness: 500, damping: 30 }}
-              style={{ display: "inline-block" }}
-            >
-              {currentModel.name ?? currentModel.id}
-            </motion.span>
-          </AnimatePresence>
-          <Link
-            href="/models/"
-            onClick={(e) => e.stopPropagation()}
-            title={t("topbar.manageModels")}
+      {/* update reminder pill — only when a desktop update is available; tap to open the update page */}
+      <AnimatePresence initial={false}>
+        {showUpdate && (
+          <Chip
+            variant="primary"
+            size="sm"
+            onClick={() => router.push("/update/")}
+            render={
+              <motion.button
+                initial={{ opacity: 0, scale: 0.9, y: -4 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: -4 }}
+                whileTap={{ scale: 0.95 }}
+                transition={{ type: "spring", stiffness: 500, damping: 30 }}
+              />
+            }
             style={{
-              display: "grid",
-              placeItems: "center",
-              color: "var(--text-tertiary)",
-              textDecoration: "none",
+              marginLeft: "auto",
+              gap: 6,
+              fontSize: 11.5,
+              fontWeight: 500,
+              color: "var(--accent)",
+              background: "var(--accent-muted)",
+              borderRadius: 99,
+              whiteSpace: "nowrap",
+              cursor: "pointer",
             }}
           >
-            <ChevronRight size={12} />
-          </Link>
-        </Chip>
-      )}
+            <ArrowDownToLine size={12} style={{ flexShrink: 0 }} />
+            <span>
+              {updateInfo?.latestVersion
+                ? t("topbar.updateAvailableVersion", { version: updateInfo.latestVersion })
+                : t("topbar.updateAvailable")}
+            </span>
+            <span
+              role="button"
+              title={t("topbar.dismissUpdate")}
+              onClick={(e) => {
+                e.stopPropagation();
+                dismissUpdate();
+              }}
+              style={{
+                display: "grid",
+                placeItems: "center",
+                color: "var(--text-tertiary)",
+                cursor: "pointer",
+              }}
+            >
+              <X size={12} />
+            </span>
+          </Chip>
+        )}
+      </AnimatePresence>
 
       {/* command palette pill (⌘K) */}
       <button
         onClick={() => setCommandPalette(true)}
         style={{
-          marginLeft: currentModel ? 0 : "auto",
+          marginLeft: showUpdate ? 0 : "auto",
           display: "flex",
           alignItems: "center",
           gap: 8,

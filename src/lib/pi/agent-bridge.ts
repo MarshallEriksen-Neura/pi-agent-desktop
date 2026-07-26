@@ -18,6 +18,8 @@ import { useUI } from "@/lib/store";
 import { useWorkspace } from "@/lib/workspace";
 import { termBus, ansi } from "@/lib/terminal-bus";
 import { editorBus } from "@/lib/editor-bus";
+import { initPetBridge } from "@/lib/pet/bridge";
+import { useTerminalBlocks } from "@/lib/terminal-blocks";
 
 const EDIT_TOOL = /^(edit|write|multi[_-]?edit|str[_-]?replace(?:[_-]?editor)?|create[_-]?file|apply[_-]?patch)$/i;
 const BASH_TOOL = /^(bash|shell|run[_-]?command|exec)$/i;
@@ -29,6 +31,8 @@ interface ToolRec {
   oldText?: string;
   /** chars of the bash partialResult already streamed to the terminal */
   streamed: number;
+  /** block ID if in block mode */
+  blockId?: string;
 }
 
 /* ── helpers ── */
@@ -141,6 +145,9 @@ export function initAgentBridge() {
   if (bridged) return;
   bridged = true;
 
+  // Initialize pet bridge alongside agent bridge
+  initPetBridge();
+
   const client = getPiClient();
   const recs = new Map<string, ToolRec>();
 
@@ -180,7 +187,22 @@ export function initAgentBridge() {
       rec.kind = "bash";
       const cmd = argCommand(args);
       ui.setTerminalOpen(true);
-      termBus.writeln(ansi.dim("$ ") + ansi.bold(cmd ?? e.toolName));
+
+      const blocksStore = useTerminalBlocks.getState();
+      if (blocksStore.viewMode === "blocks") {
+        // blocks mode: create a command block for this agent bash
+        rec.blockId = blocksStore.addBlock({
+          source: "agent",
+          command: cmd ?? e.toolName,
+          output: "",
+          status: "running",
+          startedAt: Date.now(),
+          toolCallId: e.toolCallId,
+        });
+      } else {
+        // classic mode: write to xterm
+        termBus.writeln(ansi.dim("$ ") + ansi.bold(cmd ?? e.toolName));
+      }
     }
 
     recs.set(e.toolCallId, rec);
@@ -196,11 +218,20 @@ export function initAgentBridge() {
     if (e.type !== "tool_execution_update") return;
     const rec = recs.get(e.toolCallId);
     if (!rec || rec.kind !== "bash") return;
-    // partialResult is cumulative — stream only the unseen suffix
+
     const text = toText(e.partialResult);
-    if (text.length > rec.streamed) {
-      termBus.write(text.slice(rec.streamed).replace(/\r?\n/g, "\r\n"));
-      rec.streamed = text.length;
+    if (text.length <= rec.streamed) return;
+
+    const delta = text.slice(rec.streamed);
+    rec.streamed = text.length;
+
+    const blocksStore = useTerminalBlocks.getState();
+    if (rec.blockId && blocksStore.viewMode === "blocks") {
+      // blocks mode: append to the block
+      blocksStore.appendOutput(rec.blockId, delta);
+    } else {
+      // classic mode: write to xterm
+      termBus.write(delta.replace(/\r?\n/g, "\r\n"));
     }
   });
 
@@ -222,10 +253,23 @@ export function initAgentBridge() {
 
     if (rec.kind === "bash") {
       const text = resultText;
-      if (text.length > rec.streamed) {
-        termBus.write(text.slice(rec.streamed).replace(/\r?\n/g, "\r\n"));
+      const delta = text.slice(rec.streamed);
+
+      const blocksStore = useTerminalBlocks.getState();
+      if (rec.blockId && blocksStore.viewMode === "blocks") {
+        // blocks mode: finalize the block
+        if (delta) blocksStore.appendOutput(rec.blockId, delta);
+        blocksStore.updateBlock(rec.blockId, {
+          status: e.isError ? "error" : "success",
+          endedAt: Date.now(),
+        });
+      } else {
+        // classic mode: write remaining output to xterm
+        if (delta.length > 0) {
+          termBus.write(delta.replace(/\r?\n/g, "\r\n"));
+        }
+        if (!text.endsWith("\n")) termBus.writeln();
       }
-      if (!text.endsWith("\n")) termBus.writeln();
       return;
     }
 

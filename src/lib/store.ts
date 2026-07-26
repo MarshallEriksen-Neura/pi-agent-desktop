@@ -1,15 +1,31 @@
 "use client";
 
 import { create } from "zustand";
+import { useAppearance } from "./appearance";
 
 export type Theme = "light" | "dark";
 export type TaskStatus = "done" | "running" | "queued";
+
+const THEME_STORAGE_KEY = "pi-desktop.theme";
+
+/** sync <html> with the active theme (data-theme + Appica UI .light/.dark classes) */
+function applyThemeDom(theme: Theme) {
+  if (typeof document === "undefined") return;
+  const el = document.documentElement;
+  el.setAttribute("data-theme", theme);
+  el.classList.toggle("dark", theme === "dark");
+  el.classList.toggle("light", theme === "light");
+}
 
 export interface AgentTask {
   id: string;
   title: string;
   detail: string;
   status: TaskStatus;
+}
+
+export interface NotificationSettings {
+  enabled: boolean;
 }
 
 const IDLE_TASKS: AgentTask[] = [
@@ -43,7 +59,12 @@ interface UIState {
   demoTick: number; // bump to ask the editor to run the streaming demo
   pendingReview: PendingReview | null;
 
+  /* notification settings */
+  notificationSettings: NotificationSettings;
+
   toggleTheme: () => void;
+  /** restore the saved theme — call once on mount */
+  initTheme: () => void;
   toggleZen: () => void;
   toggleSidebar: () => void;
   toggleAgentPanel: () => void;
@@ -62,6 +83,7 @@ interface UIState {
   finishDemo: () => void;
   requestReview: (r: PendingReview) => Promise<boolean>;
   resolveReview: (accept: boolean) => void;
+  setNotificationEnabled: (enabled: boolean) => void;
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -77,18 +99,33 @@ export const useUI = create<UIState>((set) => ({
   agentRunning: false,
   demoTick: 0,
   pendingReview: null,
+  notificationSettings: { enabled: true },
 
   toggleTheme: () =>
     set((s) => {
       const theme = s.theme === "dark" ? "light" : "dark";
-      if (typeof document !== "undefined") {
-        const el = document.documentElement;
-        el.setAttribute("data-theme", theme);
-        // Appica UI themes via .light/.dark classes — keep them in sync
-        el.classList.toggle("dark", theme === "dark");
-        el.classList.toggle("light", theme === "light");
+      applyThemeDom(theme);
+      // re-derive appearance overrides that depend on the theme (bg image base)
+      useAppearance.getState().set({});
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, theme);
+      } catch {
+        // storage unavailable (private mode) — keep the choice in-memory only
       }
       return { theme };
+    }),
+  initTheme: () =>
+    set((s) => {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(THEME_STORAGE_KEY);
+      } catch {
+        // storage unavailable — stay on the default
+      }
+      if (saved !== "light" && saved !== "dark") return {};
+      if (saved === s.theme) return {};
+      applyThemeDom(saved);
+      return { theme: saved };
     }),
   toggleZen: () => set((s) => ({ zenMode: !s.zenMode })),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
@@ -149,4 +186,8 @@ export const useUI = create<UIState>((set) => ({
     reviewResolver?.(accept);
     reviewResolver = null;
   },
+  setNotificationEnabled: (enabled) =>
+    set((s) => ({
+      notificationSettings: { ...s.notificationSettings, enabled },
+    })),
 }));

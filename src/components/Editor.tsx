@@ -1,19 +1,42 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { EditorState, StateEffect, StateField } from "@codemirror/state";
+import {
+  Compartment,
+  EditorState,
+  StateEffect,
+  StateField,
+} from "@codemirror/state";
 import {
   EditorView,
   lineNumbers,
   highlightActiveLine,
   highlightActiveLineGutter,
+  highlightSpecialChars,
   drawSelection,
   keymap,
   Decoration,
   type DecorationSet,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { javascript } from "@codemirror/lang-javascript";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentWithTab,
+} from "@codemirror/commands";
+import {
+  bracketMatching,
+  foldGutter,
+  indentOnInput,
+  LanguageDescription,
+} from "@codemirror/language";
+import { languages } from "@codemirror/language-data";
+import {
+  search,
+  searchKeymap,
+  highlightSelectionMatches,
+} from "@codemirror/search";
+import { useI18n } from "@/lib/i18n";
 import { useUI } from "@/lib/store";
 import { WORKSPACE_FILES, DEMO_EDIT } from "@/lib/files";
 import { useWorkspace } from "@/lib/workspace";
@@ -61,13 +84,62 @@ const streamField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+/** per-view slot for the lazily-loaded language support of the active file */
+const langCompartment = new Compartment();
+
+/* CodeMirror's search panel localizes through its own phrase system —
+   keys are CM's built-in English strings, so they can't route through t(). */
+const SEARCH_PHRASES_ZH: Record<string, string> = {
+  "Find": "查找",
+  "Replace": "替换",
+  "next": "下一个",
+  "previous": "上一个",
+  "all": "全部",
+  "match case": "区分大小写",
+  "by word": "全字匹配",
+  "regexp": "正则",
+  "replace": "替换",
+  "replace all": "全部替换",
+  "close": "关闭",
+  "Go to line": "跳转到行",
+  "go": "跳转",
+  "current match": "当前匹配",
+  "replaced $ matches": "已替换 $ 处匹配",
+  "replaced match on line $": "已替换第 $ 行的匹配",
+  "on line": "所在行",
+};
+
+/**
+ * Resolve `file`'s language from the official registry and slot it into the
+ * compartment. Parsers are code-split — only the matched one is fetched.
+ * `isCurrent` guards against a slow load landing after the user switched files.
+ */
+async function loadLanguageFor(
+  view: EditorView,
+  file: string,
+  isCurrent: () => boolean
+) {
+  const desc = LanguageDescription.matchFilename(languages, file);
+  if (!desc) return;
+  const support = await desc.load();
+  if (isCurrent()) {
+    view.dispatch({ effects: langCompartment.reconfigure(support) });
+  }
+}
+
 function extensionsFor(file: string) {
   const base = [
     lineNumbers(),
+    foldGutter(),
     highlightActiveLine(),
     highlightActiveLineGutter(),
+    highlightSpecialChars(),
     drawSelection(),
     history(),
+    indentOnInput(),
+    bracketMatching(),
+    highlightSelectionMatches(),
+    search({ top: true }),
     keymap.of([
       {
         key: "Mod-s",
@@ -78,15 +150,16 @@ function extensionsFor(file: string) {
       },
       ...defaultKeymap,
       ...historyKeymap,
+      ...searchKeymap,
+      indentWithTab,
     ]),
     piTheme,
     piHighlight,
     streamField,
+    langCompartment.of([]),
   ];
-  if (file.endsWith(".ts") || file.endsWith(".tsx")) {
-    base.push(javascript({ typescript: true, jsx: file.endsWith(".tsx") }));
-  } else if (file.endsWith(".js") || file.endsWith(".jsx") || file.endsWith(".mjs")) {
-    base.push(javascript({ jsx: file.endsWith(".jsx") }));
+  if (useI18n.getState().locale === "zh") {
+    base.push(EditorState.phrases.of(SEARCH_PHRASES_ZH));
   }
   return base;
 }
@@ -119,6 +192,7 @@ export function Editor() {
       parent: hostRef.current!,
     });
     viewRef.current = view;
+    void loadLanguageFor(view, file, () => fileRef.current === file);
 
     /* real agent edits — highlight the changed lines of the active file */
     const timers: number[] = [];
@@ -156,6 +230,11 @@ export function Editor() {
       cancelRef.current = true;
       unsub();
       timers.forEach((t) => clearTimeout(t));
+      // switching to a non-text file unmounts the editor — keep unsaved edits
+      const cur = fileRef.current;
+      if (useWorkspace.getState().docs[cur] !== undefined) {
+        useWorkspace.getState().updateDoc(cur, view.state.doc.toString());
+      }
       view.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -183,6 +262,7 @@ export function Editor() {
         extensions: extensionsFor(activeFile),
       })
     );
+    void loadLanguageFor(view, activeFile, () => fileRef.current === activeFile);
   }, [activeFile, activeDoc]);
 
   /* agent streaming-edit demo: read → reason → edit → review → test */

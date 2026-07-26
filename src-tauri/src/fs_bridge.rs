@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024; // 2 MB guard for the editor
+const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB guard for image preview
 
 /// Directories that never belong in a coding-agent file tree.
 const SKIP_DIRS: &[&str] = &[
@@ -83,6 +84,22 @@ pub fn fs_read_file(path: String) -> Result<String, String> {
         ));
     }
     fs::read_to_string(p).map_err(|e| format!("cannot read {path}: {e}"))
+}
+
+/// Read a binary file (image preview) as base64 — text-decoding it would fail.
+#[tauri::command]
+pub fn fs_read_file_base64(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let p = Path::new(&path);
+    let meta = fs::metadata(p).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "file too large for preview ({} KB)",
+            meta.len() / 1024
+        ));
+    }
+    let bytes = fs::read(p).map_err(|e| format!("cannot read {path}: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 #[tauri::command]

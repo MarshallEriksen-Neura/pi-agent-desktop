@@ -5,6 +5,7 @@ import { isTauri } from "./pi/client";
 import { usePi } from "./pi/store";
 import { useSessions } from "./pi/sessions";
 import { WORKSPACE_FILES } from "./files";
+import { isImageFile } from "./image-files";
 import { useUI } from "./store";
 
 export interface FsEntry {
@@ -199,7 +200,8 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
 
   openFile: async (path) => {
     const { docs, mock } = get();
-    if (docs[path] === undefined) {
+    // images are fetched as base64 by the ImageViewer — no text doc to load
+    if (docs[path] === undefined && !isImageFile(path)) {
       try {
         const content = mock
           ? (WORKSPACE_FILES[path] ?? "")
@@ -214,7 +216,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   },
 
   reloadFile: async (path) => {
-    if (get().mock) return;
+    if (get().mock || isImageFile(path)) return;
     try {
       const content = await tauriInvoke<string>("fs_read_file", { path });
       set((s) => ({ docs: { ...s.docs, [path]: content } }));

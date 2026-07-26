@@ -25,6 +25,8 @@ pub(crate) fn home_dir() -> Result<PathBuf, String> {
 fn settings_path(scope: &str, root: Option<&str>) -> Result<PathBuf, String> {
     match scope {
         "global" => Ok(home_dir()?.join(".pi").join("agent").join("settings.json")),
+        // custom model/provider definitions — global only, no project override
+        "models" => Ok(home_dir()?.join(".pi").join("agent").join("models.json")),
         "project" => match root {
             Some(r) => Ok(PathBuf::from(r).join(".pi").join("settings.json")),
             None => std::env::current_dir()

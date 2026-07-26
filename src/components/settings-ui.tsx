@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { Switch } from "@appica/ui-react/switch";
 import { ToggleGroup } from "@appica/ui-react/toggle-group";
@@ -215,9 +215,11 @@ export function GroupRow({
 export function IOSSwitch({
   checked,
   onChange,
+  disabled,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <Switch
@@ -225,6 +227,7 @@ export function IOSSwitch({
       onCheckedChange={onChange}
       size="md"
       className="data-checked:bg-(--success)"
+      disabled={disabled}
     />
   );
 }
@@ -581,6 +584,110 @@ export function StringListEditor({
         </motion.button>
       </div>
     </div>
+  );
+}
+
+/** Labeled range slider with a live value readout. */
+export function SliderRow({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  onChange,
+  format,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onChange: (v: number) => void;
+  format?: (v: number) => string;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+      <span
+        style={{
+          fontSize: 12,
+          color: "var(--text-tertiary)",
+          minWidth: 96,
+          flexShrink: 0,
+        }}
+      >
+        {label}
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{ flex: 1, accentColor: "var(--accent)", minWidth: 0 }}
+      />
+      <span
+        style={{
+          fontSize: 11.5,
+          fontVariantNumeric: "tabular-nums",
+          color: "var(--text-secondary)",
+          minWidth: 42,
+          textAlign: "right",
+          flexShrink: 0,
+        }}
+      >
+        {format ? format(value) : value}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Multi-line code editor for pasted CSS. Changes apply live (debounced) and
+ * commit immediately on blur.
+ */
+export function CodeArea({
+  value,
+  onChange,
+  placeholder,
+  rows = 8,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  rows?: number;
+}) {
+  const [draft, setDraft] = useState(value);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => setDraft(value), [value]);
+
+  const push = (v: string) => {
+    setDraft(v);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => onChange(v), 250);
+  };
+
+  return (
+    <textarea
+      value={draft}
+      placeholder={placeholder}
+      rows={rows}
+      spellCheck={false}
+      onChange={(e) => push(e.target.value)}
+      onBlur={() => {
+        window.clearTimeout(timer.current);
+        onChange(draft);
+      }}
+      style={{
+        ...inputStyle,
+        display: "block",
+        resize: "vertical",
+        minHeight: 120,
+        lineHeight: 1.55,
+        whiteSpace: "pre",
+        tabSize: 2,
+      }}
+    />
   );
 }
 

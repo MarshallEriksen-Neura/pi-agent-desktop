@@ -76,6 +76,7 @@ class MockTransport implements Transport {
   readonly kind = "mock" as const;
   private listeners = new Set<(line: string) => void>();
   private model: PiModel = MOCK_MODELS[1];
+  private agentActive = false;
 
   async start() {
     this.emit({
@@ -143,45 +144,54 @@ class MockTransport implements Transport {
       case "prompt": {
         this.respond(cmd);
         const msg = (cmd as { message?: string }).message?.toLowerCase() ?? "";
+        this.agentActive = true;
         this.emit({ type: "agent_start" });
         this.emit({ type: "turn_start" });
 
         // keyword-triggered extension UI simulation (browser testing)
-        if (msg.includes("confirm")) {
-          this.emit({
-            type: "extension_ui_request",
-            id: `ui-${Date.now()}`,
-            method: "confirm",
-            title: "pi-review",
-            message: "Apply suggested refactor to runAgentLoop()?",
-          });
-        } else if (msg.includes("select")) {
-          this.emit({
-            type: "extension_ui_request",
-            id: `ui-${Date.now()}`,
-            method: "select",
-            title: "Choose a branch strategy",
-            options: ["rebase onto main", "merge main", "create feature branch"],
-          });
+        if (msg.includes("confirm") || msg.includes("approve")) {
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "confirm",
+              title: "pi-review",
+              message: "Apply suggested refactor to runAgentLoop()?",
+            });
+          }, 400);
+        } else if (msg.includes("select") || msg.includes("choose")) {
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "select",
+              title: "Choose a branch strategy",
+              options: ["rebase onto main", "merge main", "create feature branch"],
+            });
+          }, 400);
         } else if (msg.includes("input")) {
-          this.emit({
-            type: "extension_ui_request",
-            id: `ui-${Date.now()}`,
-            method: "input",
-            title: "Commit message",
-            placeholder: "feat: …",
-          });
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "input",
+              title: "Commit message",
+              placeholder: "feat: …",
+            });
+          }, 400);
         } else if (msg.includes("notify")) {
-          this.emit({
-            type: "extension_ui_request",
-            id: `ui-${Date.now()}`,
-            method: "notify",
-            message: "Index refreshed — 1,204 symbols",
-            notifyType: "info",
-          });
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "notify",
+              message: "Index refreshed — 1,204 symbols",
+              notifyType: "info",
+            });
+          }, 400);
         }
 
-        // a simulated tool call so tool cards render in preview
+        // Simulate realistic agent execution with tool calls
         const toolId = `tc-${Date.now()}`;
         setTimeout(() => {
           this.emit({
@@ -191,6 +201,7 @@ class MockTransport implements Transport {
             args: { path: "src/lib/agent.ts" },
           });
         }, 250);
+
         setTimeout(() => {
           this.emit({
             type: "tool_execution_end",
@@ -198,11 +209,12 @@ class MockTransport implements Transport {
             result: "142 lines",
             isError: false,
           });
+
           this.emit({ type: "message_start" });
           const text =
             "(mock) pi is not connected — this is the browser preview stream. " +
-            "Try prompts containing “confirm”, “select”, “input” or “notify” " +
-            "to preview extension UI sheets.";
+            "Try prompts containing \"confirm\", \"select\", \"input\" or \"notify\" " +
+            "to preview extension UI sheets. Pet animation should respond to state changes.";
           let i = 0;
           const tick = () => {
             if (i < text.length) {
@@ -219,8 +231,9 @@ class MockTransport implements Transport {
             } else {
               this.emit({ type: "message_end" });
               this.emit({ type: "turn_end" });
-              this.emit({ type: "agent_end" });
+              this.emit({ type: "agent_end", messages: [{ role: "assistant", content: text }] });
               this.emit({ type: "agent_settled" });
+              this.agentActive = false;
             }
           };
           tick();
@@ -229,29 +242,31 @@ class MockTransport implements Transport {
       }
       case "abort":
         this.respond(cmd);
-        this.emit({ type: "agent_settled" });
+        if (this.agentActive) {
+          this.emit({ type: "agent_end" });
+          this.emit({ type: "agent_settled" });
+          this.agentActive = false;
+        }
         break;
       case "bash": {
-        // stream fake output chunks, then respond (matches real event order)
-        const bid = (cmd as { id?: string }).id;
+        // real pi returns output in the response data (BashResult), no events
         const command = (cmd as { command?: string }).command ?? "";
-        const lines = [
+        const output = [
           `(mock shell) $ ${command}`,
           "pi is not connected — this is the browser preview.",
           "Run inside Tauri with pi installed for a real shell.",
-        ];
-        lines.forEach((l, i) =>
-          setTimeout(
-            () =>
-              this.emit({
-                type: "bash_execution_update",
-                id: bid,
-                delta: l + "\n",
-              }),
-            120 + i * 160
-          )
+          "",
+        ].join("\n");
+        setTimeout(
+          () =>
+            this.respond(cmd, {
+              output,
+              exitCode: 0,
+              cancelled: false,
+              truncated: false,
+            }),
+          200
         );
-        setTimeout(() => this.respond(cmd, { exitCode: 0 }), 120 + lines.length * 160);
         break;
       }
       case "abort_bash":

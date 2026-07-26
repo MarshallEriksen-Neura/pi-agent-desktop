@@ -22,6 +22,7 @@ import {
   FileText,
   ArrowDownToLine,
   ChevronRight,
+  Bell,
 } from "lucide-react";
 import { APP_VERSION } from "@/lib/update";
 import { usePiSettings, type SettingsScope, type PiSettings } from "@/lib/pi/settings";
@@ -30,11 +31,17 @@ import { useI18n, useT } from "@/lib/i18n";
 import type { ThinkingLevel } from "@/lib/pi/protocol";
 import {
   useAppearance,
+  imageFileToDataUrl,
   ACCENT_PRESETS,
   BG_PRESETS,
   TEXT_PRESETS,
   FONT_SCALES,
 } from "@/lib/appearance";
+import {
+  requestNotificationPermission,
+  getNotificationPermission,
+} from "@/lib/notifications";
+import { useUI } from "@/lib/store";
 import {
   SettingsPage,
   InsetGroup,
@@ -44,7 +51,10 @@ import {
   ColorSwatches,
   TextRow,
   NumberRow,
+  SliderRow,
+  CodeArea,
 } from "@/components/settings-ui";
+import { PetSettings } from "@/components/PetSettings";
 
 const TRUST_OPTIONS = ["ask", "always", "never"] as const;
 const BUILTIN_THEMES = ["dark", "light"] as const;
@@ -81,9 +91,15 @@ export default function PiSettingsPage() {
   const ap = useAppearance();
   const t = useT();
   const router = useRouter();
+  const { notificationSettings, setNotificationEnabled } = useUI();
+  const [notifPermission, setNotifPermission] = useState<
+    "granted" | "denied" | "default" | "unsupported"
+  >("default");
 
   useEffect(() => {
     s.load();
+    // Check notification permission on mount
+    setNotifPermission(getNotificationPermission());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -106,6 +122,18 @@ export default function PiSettingsPage() {
 
   const compaction = (effective.compaction ?? {}) as { enabled?: boolean };
   const retry = (effective.retry ?? {}) as { enabled?: boolean };
+
+  /** background image picker — reads the file, downscales, applies instantly */
+  const onPickImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!f) return;
+    try {
+      ap.set({ bgImage: await imageFileToDataUrl(f) });
+    } catch {
+      // undecodable file — leave the current background untouched
+    }
+  };
 
   /** theme segmented state — "custom" keeps the name input visible before commit */
   const themeVal = effective.theme;
@@ -231,6 +259,80 @@ export default function PiSettingsPage() {
           </div>
         ))}
 
+        {/* background image — full-window picture behind translucent surfaces */}
+        <div
+          style={{ padding: "12px 14px", borderTop: "1px solid var(--separator)" }}
+        >
+          <div
+            style={{ fontSize: 12, color: "var(--text-tertiary)", marginBottom: 8 }}
+          >
+            {t("settings.bgImage")} — {t("settings.bgImageDetail")}
+          </div>
+          {ap.bgImage && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={ap.bgImage}
+              alt=""
+              style={{
+                display: "block",
+                width: "100%",
+                height: 96,
+                objectFit: "cover",
+                borderRadius: 10,
+                border: "1px solid var(--separator)",
+                marginBottom: 10,
+              }}
+            />
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button variant="outline" size="sm" style={{ borderRadius: 8, position: "relative", overflow: "hidden" }}>
+              {ap.bgImage ? t("settings.replaceImage") : t("settings.chooseImage")}
+              <input
+                type="file"
+                accept="image/*"
+                onChange={onPickImage}
+                aria-label={t("settings.chooseImage")}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  opacity: 0,
+                  cursor: "pointer",
+                }}
+              />
+            </Button>
+            {ap.bgImage && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => ap.set({ bgImage: null })}
+                style={{ borderRadius: 8, color: "var(--danger, #E5484D)" }}
+              >
+                {t("settings.removeImage")}
+              </Button>
+            )}
+          </div>
+          {ap.bgImage && (
+            <>
+              <SliderRow
+                label={t("settings.surfaceOpacity")}
+                value={Math.round(ap.bgSurfaceOpacity * 100)}
+                min={20}
+                max={100}
+                onChange={(v) => ap.set({ bgSurfaceOpacity: v / 100 })}
+                format={(v) => `${v}%`}
+              />
+              <SliderRow
+                label={t("settings.imageBlur")}
+                value={ap.bgImageBlur}
+                min={0}
+                max={24}
+                onChange={(v) => ap.set({ bgImageBlur: v })}
+                format={(v) => `${v}px`}
+              />
+            </>
+          )}
+        </div>
+
         <div
           style={{ padding: "12px 14px", borderTop: "1px solid var(--separator)" }}
         >
@@ -261,6 +363,20 @@ export default function PiSettingsPage() {
             onClick={() => ap.reset()}
           />
         )}
+      </InsetGroup>
+
+      {/* custom CSS — pasted styles injected live into the app */}
+      <InsetGroup
+        header={t("settings.customCss")}
+        footer={t("settings.customCssFooter")}
+      >
+        <div style={{ padding: "12px 14px" }}>
+          <CodeArea
+            value={ap.customCss}
+            onChange={(css) => ap.set({ customCss: css })}
+            placeholder={t("settings.customCssPlaceholder")}
+          />
+        </div>
       </InsetGroup>
 
       {/* scope switch — mirrors `pi config` (Tab toggles global/project) */}
@@ -652,6 +768,54 @@ export default function PiSettingsPage() {
               />
             </InsetGroup>
           )}
+
+          {/* desktop pet */}
+          <InsetGroup header="Desktop Pet" footer="A companion that shows your agent's status">
+            <div style={{ padding: "14px" }}>
+              <PetSettings />
+            </div>
+          </InsetGroup>
+
+          {/* desktop notifications */}
+          <InsetGroup
+            header={t("settings.notifications")}
+            footer={t("settings.notificationsDetail")}
+          >
+            <div style={dim("notifications")}>
+              <GroupRow
+                first
+                icon={<Bell size={15} />}
+                iconBg="var(--accent)"
+                title={t("settings.notifications")}
+                detail={
+                  notifPermission === "denied"
+                    ? "Permission denied by browser"
+                    : notifPermission === "unsupported"
+                      ? "Not supported in this browser"
+                      : notifPermission === "granted"
+                        ? "Enabled"
+                        : "Tap to enable"
+                }
+                trailing={
+                  <IOSSwitch
+                    checked={notificationSettings.enabled && notifPermission === "granted"}
+                    disabled={notifPermission === "denied" || notifPermission === "unsupported"}
+                    onChange={async (enabled) => {
+                      if (enabled && notifPermission !== "granted") {
+                        const granted = await requestNotificationPermission();
+                        setNotifPermission(getNotificationPermission());
+                        if (granted) {
+                          setNotificationEnabled(true);
+                        }
+                      } else {
+                        setNotificationEnabled(enabled);
+                      }
+                    }}
+                  />
+                }
+              />
+            </div>
+          </InsetGroup>
 
           {/* images sent to the LLM */}
           <InsetGroup header={t("settings.images")} footer={t("settings.imagesFooter")}>

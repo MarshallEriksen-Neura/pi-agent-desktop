@@ -39,8 +39,11 @@ interface UpdateState {
   error: string | null;
   lastCheckedAt: number | null;
   mock: boolean;
+  /** User closed the top-bar reminder — stays hidden until the next launch. */
+  dismissed: boolean;
   check: () => Promise<void>;
   apply: () => Promise<void>;
+  dismiss: () => void;
 }
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -65,6 +68,7 @@ export const useUpdate = create<UpdateState>((set, get) => ({
   error: null,
   lastCheckedAt: null,
   mock: !isTauri(),
+  dismissed: false,
 
   check: async () => {
     const { phase } = get();
@@ -107,4 +111,6 @@ export const useUpdate = create<UpdateState>((set, get) => ({
       set({ phase: "available", error: msg });
     }
   },
+
+  dismiss: () => set({ dismissed: true }),
 }));
