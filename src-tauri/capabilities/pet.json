@@ -5,6 +5,7 @@
   "windows": ["pet"],
   "permissions": [
     "core:default",
+    "core:webview:default",
     "core:window:allow-start-dragging"
   ]
 }

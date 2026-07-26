@@ -10,7 +10,7 @@
  * on the main window's store.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { usePet } from "@/lib/pet/store";
 import { PetSprite } from "@/components/PetSprite";
 import { loadPet as loadPetById } from "@/lib/pet";
@@ -22,16 +22,13 @@ import type { PetConfigUpdate, PetStateUpdate } from "@/lib/pet/types";
 
 export default function PetWindow() {
   const { activePet, state, body, animationStartedAt, checkExpiry } = usePet();
-  // Mount gate: the page is statically prerendered at build time, so anything
-  // window/time/localStorage-dependent must only render after hydration.
-  const [mounted, setMounted] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
 
-  useEffect(() => {
-    setMounted(true);
+  useLayoutEffect(() => {
     setLastUpdate(Date.now());
-    // Frameless transparent window: the app-wide background must not paint here
+    // Belt-and-suspenders transparency; the <style> tag in render also handles it
+    // from the very first paint, so the pet window never looks opaque.
     document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
   }, []);
@@ -144,43 +141,36 @@ export default function PetWindow() {
     }
   };
 
-  // Nothing until hydrated — the prerendered HTML stays empty and always matches
-  if (!mounted) return null;
-
-  if (!activePet) {
-    return (
-      <div className="w-full h-full flex items-center justify-center bg-transparent">
-        <div className="text-xs text-gray-500">No pet selected</div>
-      </div>
-    );
-  }
-
+  // Render content unconditionally — SSR and first client render both render
+  // the same tree (activePet defaults to null), so there's no hydration mismatch
+  // and the pet window is never an empty (opaque-white) box.
   return (
-    <div
-      className="w-full h-full flex flex-col items-center justify-end cursor-move select-none"
-      onMouseDown={handleMouseDown}
-      style={{
-        // Transparent background for Tauri window
-        backgroundColor: "transparent",
-      }}
-    >
-      {/* Connection error indicator */}
-      {connectionError && (
+    <>
+      {/* Force html/body transparent from the very first paint — this lives in
+          the prerendered HTML too, so a Tauri transparent window with no JS
+          effect yet cannot appear as an opaque square. */}
+      <style
+        dangerouslySetInnerHTML={{
+          __html: "html,body{background:transparent!important}",
+        }}
+      />
+      {activePet ? (
         <div
-          className="absolute top-2 left-1/2 -translate-x-1/2
-                     bg-red-500/90 text-white text-[10px] px-2 py-1 rounded
-                     shadow-lg whitespace-nowrap z-10"
+          className="w-full h-full flex items-center justify-center"
+          onMouseDown={handleMouseDown}
         >
-          {connectionError}
+          <PetSprite
+            pet={activePet}
+            state={state}
+            animationStartedAt={animationStartedAt}
+            bubble={body}
+          />
+        </div>
+      ) : (
+        <div className="w-full h-full flex items-center justify-center text-white/50 text-xs">
+          No pet selected
         </div>
       )}
-
-      <PetSprite
-        pet={activePet}
-        state={state}
-        animationStartedAt={animationStartedAt}
-        bubble={body}
-      />
-    </div>
+    </>
   );
 }

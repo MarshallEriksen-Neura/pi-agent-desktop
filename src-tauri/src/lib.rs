@@ -61,7 +61,12 @@ pub fn run() {
             pet_window::pet_window_set_position,
             open_external
         ])
-        .setup(|_app| Ok(()))
+        .setup(|app| {
+            if let Err(e) = pet_window::create_pet_window(app.handle()) {
+                eprintln!("[pet-window] failed to pre-create pet window: {e}");
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running Pi desktop");
 }

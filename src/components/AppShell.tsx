@@ -20,6 +20,13 @@ import { useWorkspace } from "@/lib/workspace";
 import { useI18n } from "@/lib/i18n";
 import { useAppearance } from "@/lib/appearance";
 import { useUI } from "@/lib/store";
+import { usePet } from "@/lib/pet/store";
+import { loadBuiltinPet } from "@/lib/pet/index";
+import { loadPetPreferences } from "@/lib/pet/persistence";
+import { showPetWindow } from "@/lib/pet/commands";
+import { isTauri } from "@/lib/pi/client";
+import { emit } from "@tauri-apps/api/event";
+import type { PetConfigUpdate } from "@/lib/pet/types";
 
 /** Root chrome: nav rail + page content. Connects to pi on mount. */
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -70,6 +77,24 @@ function MainShell({ children }: { children: React.ReactNode }) {
       destroyPetBridge(); // cleanup on unmount
     };
   }, [connect]);
+
+  // Auto-launch the pet companion on startup when the user previously enabled
+  // it — instead of waiting until they open PetSettings. (PetSettings also does
+  // this on its own mount, but it only mounts when the settings page is open.)
+  useEffect(() => {
+    if (!isTauri()) return;
+    const prefs = loadPetPreferences();
+    if (!prefs.enabled || !prefs.petId) return;
+    void loadBuiltinPet(prefs.petId)
+      .then((pet) => {
+        usePet.getState().loadPet(pet);
+        void showPetWindow();
+        emit("pet-config-update", { petId: prefs.petId } satisfies PetConfigUpdate).catch(
+          () => {},
+        );
+      })
+      .catch((e) => console.error("[AppShell] failed to auto-launch pet:", e));
+  }, []);
 
   return (
     <TooltipProvider delay={400}>
