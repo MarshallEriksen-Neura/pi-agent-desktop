@@ -1,0 +1,659 @@
+"use client";
+
+import { useEffect, useId, useState } from "react";
+import { motion } from "motion/react";
+import { Switch } from "@appica/ui-react/switch";
+import { ToggleGroup } from "@appica/ui-react/toggle-group";
+import { Toggle } from "@appica/ui-react/toggle";
+import { Plus, X } from "lucide-react";
+import { WindowControls } from "./WindowControls";
+
+/** iOS Settings-style page scaffold: centered column, large title. */
+export function SettingsPage({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        height: "100%",
+        overflowY: "auto",
+        background: "var(--bg-elevated)",
+      }}
+    >
+      <div
+        data-tauri-drag-region
+        style={{
+          height: 44,
+          position: "sticky",
+          top: 0,
+          zIndex: 5,
+          display: "flex",
+          justifyContent: "flex-end",
+          padding: "0 12px",
+        }}
+      >
+        <WindowControls />
+      </div>
+      <div style={{ maxWidth: 640, margin: "0 auto", padding: "0 24px 64px" }}>
+        <motion.h1
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 300, damping: 28 }}
+          style={{
+            fontSize: 32,
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+            margin: "8px 0 4px",
+          }}
+        >
+          {title}
+        </motion.h1>
+        {subtitle && (
+          <p
+            style={{
+              fontSize: 13,
+              color: "var(--text-secondary)",
+              margin: "0 0 20px",
+            }}
+          >
+            {subtitle}
+          </p>
+        )}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** iOS inset grouped list. */
+export function InsetGroup({
+  header,
+  footer,
+  children,
+}: {
+  header?: string;
+  footer?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section style={{ marginTop: 22 }}>
+      {header && (
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            color: "var(--text-tertiary)",
+            padding: "0 16px 7px",
+          }}
+        >
+          {header}
+        </div>
+      )}
+      <div
+        style={{
+          background: "var(--bg-base)",
+          borderRadius: "var(--radius-lg)",
+          border: "1px solid var(--separator)",
+          overflow: "hidden",
+          boxShadow: "var(--shadow-sm)",
+        }}
+      >
+        {children}
+      </div>
+      {footer && (
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-tertiary)",
+            padding: "7px 16px 0",
+            lineHeight: 1.5,
+          }}
+        >
+          {footer}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** A row inside an InsetGroup — hairline separators between siblings. */
+export function GroupRow({
+  icon,
+  iconBg,
+  title,
+  detail,
+  trailing,
+  onClick,
+  first = false,
+}: {
+  icon?: React.ReactNode;
+  iconBg?: string;
+  title: React.ReactNode;
+  detail?: React.ReactNode;
+  trailing?: React.ReactNode;
+  onClick?: () => void;
+  first?: boolean;
+}) {
+  const Comp = onClick ? motion.button : motion.div;
+  return (
+    <Comp
+      onClick={onClick}
+      whileTap={onClick ? { scale: 0.99 } : undefined}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        width: "100%",
+        padding: "11px 16px",
+        border: "none",
+        borderTop: first ? "none" : "1px solid var(--separator)",
+        background: "transparent",
+        textAlign: "left",
+        cursor: onClick ? "pointer" : "default",
+        fontFamily: "var(--font-ui)",
+      }}
+      className={onClick ? "pi-row" : undefined}
+    >
+      {icon && (
+        <span
+          style={{
+            display: "grid",
+            placeItems: "center",
+            width: 30,
+            height: 30,
+            borderRadius: 8,
+            fontSize: 15,
+            flexShrink: 0,
+            color: "#fff",
+            background: iconBg ?? "var(--accent)",
+          }}
+        >
+          {icon}
+        </span>
+      )}
+      <span style={{ minWidth: 0, flex: 1 }}>
+        <span
+          style={{
+            display: "block",
+            fontSize: 14,
+            color: "var(--text-primary)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {title}
+        </span>
+        {detail && (
+          <span
+            style={{
+              display: "block",
+              fontSize: 12,
+              color: "var(--text-tertiary)",
+              marginTop: 1,
+            }}
+          >
+            {detail}
+          </span>
+        )}
+      </span>
+      {trailing}
+    </Comp>
+  );
+}
+
+/** iOS toggle switch — Appica Switch, tinted with our success green. */
+export function IOSSwitch({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <Switch
+      checked={checked}
+      onCheckedChange={onChange}
+      size="md"
+      className="data-checked:bg-(--success)"
+    />
+  );
+}
+
+/** Round color swatch strip: "default" slot + presets + custom color picker. */
+export function ColorSwatches({
+  value,
+  onChange,
+  presets,
+  defaultLabel,
+  customLabel,
+}: {
+  value: string | null;
+  onChange: (v: string | null) => void;
+  presets: readonly string[];
+  defaultLabel: string;
+  customLabel: string;
+}) {
+  const SIZE = 26;
+  const isPreset = (c: string) =>
+    value !== null && value.toLowerCase() === c.toLowerCase();
+  const isCustom =
+    value !== null && !presets.some((p) => p.toLowerCase() === value.toLowerCase());
+
+  const circle = (selected: boolean): React.CSSProperties => ({
+    width: SIZE,
+    height: SIZE,
+    borderRadius: "50%",
+    border: "none",
+    padding: 0,
+    cursor: "pointer",
+    flexShrink: 0,
+    boxShadow: selected
+      ? "0 0 0 2px var(--bg-base), 0 0 0 4px var(--accent)"
+      : "inset 0 0 0 1px var(--separator)",
+  });
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      {/* default — crossed-out swatch, clears the override */}
+      <motion.button
+        whileTap={{ scale: 0.9 }}
+        aria-label={defaultLabel}
+        title={defaultLabel}
+        onClick={() => onChange(null)}
+        style={{
+          ...circle(value === null),
+          background:
+            "linear-gradient(135deg, transparent 44%, var(--danger) 46%, var(--danger) 54%, transparent 56%), var(--bg-elevated)",
+        }}
+      />
+      {presets.map((c) => (
+        <motion.button
+          key={c}
+          whileTap={{ scale: 0.9 }}
+          aria-label={c}
+          title={c}
+          onClick={() => onChange(c)}
+          style={{ ...circle(isPreset(c)), background: c }}
+        />
+      ))}
+      {/* custom — native color picker behind a rainbow swatch */}
+      <label
+        aria-label={customLabel}
+        title={customLabel}
+        style={{
+          ...circle(isCustom),
+          position: "relative",
+          display: "block",
+          background: isCustom
+            ? (value as string)
+            : "conic-gradient(#ff3b30, #ff9500, #ffcc00, #34c759, #30b0c7, #007aff, #af52de, #ff3b30)",
+        }}
+      >
+        <input
+          type="color"
+          value={value ?? "#808080"}
+          onChange={(e) => onChange(e.target.value)}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            opacity: 0,
+            cursor: "pointer",
+          }}
+        />
+      </label>
+    </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  padding: "6px 10px",
+  fontSize: 13,
+  fontFamily: "var(--font-mono, monospace)",
+  color: "var(--text-primary)",
+  background: "var(--bg-sunken)",
+  border: "1px solid var(--separator)",
+  borderRadius: 8,
+  outline: "none",
+};
+
+/**
+ * Single-line text setting row. Commits on blur/Enter; committing an empty
+ * string calls onCommit(undefined) so the key is removed (pi default applies).
+ */
+export function TextRow({
+  label,
+  detail,
+  value,
+  placeholder,
+  onCommit,
+  first = false,
+  dimmed = false,
+}: {
+  label: string;
+  detail?: string;
+  value: string | undefined;
+  placeholder?: string;
+  onCommit: (v: string | undefined) => void;
+  first?: boolean;
+  dimmed?: boolean;
+}) {
+  const [draft, setDraft] = useState(value ?? "");
+  useEffect(() => setDraft(value ?? ""), [value]);
+
+  const commit = () => {
+    const v = draft.trim();
+    if (v === (value ?? "")) return;
+    onCommit(v === "" ? undefined : v);
+  };
+
+  return (
+    <div
+      style={{
+        padding: "11px 16px",
+        borderTop: first ? "none" : "1px solid var(--separator)",
+        opacity: dimmed ? 0.45 : 1,
+      }}
+    >
+      <div style={{ fontSize: 13.5, color: "var(--text-primary)" }}>{label}</div>
+      {detail && (
+        <div style={{ fontSize: 12, color: "var(--text-tertiary)", margin: "1px 0 0" }}>
+          {detail}
+        </div>
+      )}
+      <input
+        type="text"
+        value={draft}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") setDraft(value ?? "");
+        }}
+        style={{ ...inputStyle, marginTop: 7 }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Numeric setting row — TextRow semantics with validation. Empty commits
+ * undefined (key removed); invalid or out-of-range input reverts.
+ */
+export function NumberRow({
+  label,
+  detail,
+  value,
+  placeholder,
+  min,
+  max,
+  onCommit,
+  first = false,
+  dimmed = false,
+}: {
+  label: string;
+  detail?: string;
+  value: number | undefined;
+  /** shown when unset — usually pi's built-in default */
+  placeholder?: string;
+  min?: number;
+  max?: number;
+  onCommit: (v: number | undefined) => void;
+  first?: boolean;
+  dimmed?: boolean;
+}) {
+  const asText = value === undefined ? "" : String(value);
+  const [draft, setDraft] = useState(asText);
+  useEffect(() => setDraft(asText), [asText]);
+
+  const commit = () => {
+    const v = draft.trim();
+    if (v === asText) return;
+    if (v === "") return onCommit(undefined);
+    const n = Number(v);
+    const bad =
+      !Number.isFinite(n) ||
+      (min !== undefined && n < min) ||
+      (max !== undefined && n > max);
+    if (bad) return setDraft(asText); // revert, never write invalid input
+    onCommit(n);
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "11px 16px",
+        borderTop: first ? "none" : "1px solid var(--separator)",
+        opacity: dimmed ? 0.45 : 1,
+      }}
+    >
+      <span style={{ minWidth: 0, flex: 1 }}>
+        <span style={{ display: "block", fontSize: 13.5, color: "var(--text-primary)" }}>
+          {label}
+        </span>
+        {detail && (
+          <span
+            style={{ display: "block", fontSize: 12, color: "var(--text-tertiary)", marginTop: 1 }}
+          >
+            {detail}
+          </span>
+        )}
+      </span>
+      <input
+        type="text"
+        inputMode="numeric"
+        value={draft}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") setDraft(asText);
+        }}
+        style={{ ...inputStyle, width: 110, textAlign: "right", flexShrink: 0 }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Editor for string-array settings (enabledModels, skills, npmCommand, …).
+ * Deleting the last item commits undefined so the key is removed.
+ */
+export function StringListEditor({
+  items,
+  onChange,
+  addPlaceholder,
+  dimmed = false,
+}: {
+  items: string[] | undefined;
+  onChange: (items: string[] | undefined) => void;
+  addPlaceholder?: string;
+  dimmed?: boolean;
+}) {
+  const [draft, setDraft] = useState("");
+  const list = items ?? [];
+
+  const commitList = (next: string[]) => onChange(next.length === 0 ? undefined : next);
+
+  const add = () => {
+    const v = draft.trim();
+    if (!v) return;
+    commitList([...list, v]);
+    setDraft("");
+  };
+
+  return (
+    <div style={{ padding: "8px 16px 11px", opacity: dimmed ? 0.45 : 1 }}>
+      {list.map((item, i) => (
+        <div
+          key={`${item}-${i}`}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "5px 0",
+            borderBottom: "1px solid var(--separator)",
+          }}
+        >
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 12.5,
+              fontFamily: "var(--font-mono, monospace)",
+              color: "var(--text-primary)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={item}
+          >
+            {item}
+          </span>
+          <motion.button
+            whileTap={{ scale: 0.85 }}
+            aria-label={`remove ${item}`}
+            onClick={() => commitList(list.filter((_, j) => j !== i))}
+            style={{
+              display: "grid",
+              placeItems: "center",
+              width: 22,
+              height: 22,
+              border: "none",
+              borderRadius: 6,
+              background: "transparent",
+              color: "var(--text-tertiary)",
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            <X size={13} />
+          </motion.button>
+        </div>
+      ))}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+        <input
+          type="text"
+          value={draft}
+          placeholder={addPlaceholder}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") add();
+          }}
+          style={inputStyle}
+        />
+        <motion.button
+          whileTap={{ scale: 0.9 }}
+          aria-label="add"
+          onClick={add}
+          disabled={!draft.trim()}
+          style={{
+            display: "grid",
+            placeItems: "center",
+            width: 28,
+            height: 28,
+            border: "1px solid var(--separator)",
+            borderRadius: 8,
+            background: "var(--bg-base)",
+            color: draft.trim() ? "var(--accent)" : "var(--text-tertiary)",
+            cursor: draft.trim() ? "pointer" : "default",
+            flexShrink: 0,
+          }}
+        >
+          <Plus size={14} />
+        </motion.button>
+      </div>
+    </div>
+  );
+}
+
+/** iOS segmented control — Appica ToggleGroup in single-select mode. */
+export function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: readonly T[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  // layoutId must be unique per instance or thumbs animate across controls
+  const thumbId = useId();
+  return (
+    <ToggleGroup
+      value={[value]}
+      onValueChange={(groupValue: unknown[]) => {
+        const next = groupValue[0] as T | undefined;
+        if (next) onChange(next); // ignore deselect — segmented always has one active
+      }}
+      style={{
+        display: "flex",
+        gap: 2,
+        padding: 3,
+        borderRadius: 10,
+        background: "var(--bg-sunken)",
+        border: "1px solid var(--separator)",
+        width: "100%",
+      }}
+    >
+      {options.map((opt) => {
+        const active = opt === value;
+        return (
+          <Toggle
+            key={opt}
+            value={opt}
+            aria-label={opt}
+            style={{
+              position: "relative",
+              flex: 1,
+              padding: "5px 10px",
+              fontSize: 12.5,
+              fontWeight: active ? 600 : 400,
+              border: "none",
+              borderRadius: 8,
+              cursor: "pointer",
+              background: "transparent",
+              color: active ? "var(--text-primary)" : "var(--text-secondary)",
+              zIndex: 1,
+              height: "auto",
+            }}
+          >
+            {active && (
+              <motion.span
+                layoutId={thumbId}
+                transition={{ type: "spring", stiffness: 500, damping: 34 }}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  borderRadius: 8,
+                  background: "var(--bg-base)",
+                  boxShadow: "var(--shadow-sm)",
+                  border: "1px solid var(--separator)",
+                  zIndex: -1,
+                }}
+              />
+            )}
+            {opt}
+          </Toggle>
+        );
+      })}
+    </ToggleGroup>
+  );
+}

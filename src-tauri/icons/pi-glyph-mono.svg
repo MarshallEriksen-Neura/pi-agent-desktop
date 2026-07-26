@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- monochrome glyph for tray / status-bar / template icons (tint via fill of parent or replace stroke color) -->
+  <g fill="none" stroke="#000000" stroke-width="92" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M236 414 C284 352 372 356 512 354 C640 352 724 350 790 362"/>
+    <path d="M412 362 C402 470 392 572 368 662 C360 692 348 706 330 712"/>
+    <path d="M636 360 C630 470 628 580 646 654 C658 700 700 718 736 690 C748 680 754 668 756 654"/>
+  </g>
+</svg>

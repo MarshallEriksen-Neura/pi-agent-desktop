@@ -1,0 +1,46 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# next.js
+/.next/
+/out/
+
+# next.js auto-generated
+next-env.d.ts
+
+# production
+/build
+
+# tauri
+/src-tauri/target
+/src-tauri/gen
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts.timestamp
+
+# env / secrets
+.env
+.env*.local
+*.pem
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# agent / tool metadata (local only, not project source)
+.firecrawl/
+.ragcode/
+.omc/
+.omx/

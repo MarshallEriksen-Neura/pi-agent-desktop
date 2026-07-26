@@ -1,0 +1,416 @@
+import type { en } from "./en";
+
+/** Simplified-Chinese UI strings — keys must mirror en.ts exactly. */
+export const zh: Record<keyof typeof en, string> = {
+  // common
+  "common.cancel": "取消",
+  "common.confirm": "确认",
+  "common.done": "完成",
+  "common.close": "关闭",
+  "common.loading": "加载中…",
+
+  // nav rail
+  "nav.workspace": "工作区",
+  "nav.models": "模型",
+  "nav.plugins": "插件",
+  "nav.skills": "技能",
+  "nav.store": "商店",
+  "nav.settings": "设置",
+  "nav.piStatus": "pi：{status}",
+
+  // status words
+  "status.ready": "就绪",
+  "status.running": "运行中",
+  "status.connecting": "连接中",
+  "status.disconnected": "已断开",
+  "status.queued": "排队中",
+  "status.done": "已完成",
+  "status.error": "出错",
+
+  // top bar
+  "topbar.toggleSidebar": "切换侧边栏",
+  "topbar.manageModels": "管理模型",
+  "topbar.askAnything": "问 Pi 任何问题…",
+  "topbar.toggleTerminal": "切换终端",
+  "topbar.toggleTheme": "切换主题",
+  "topbar.zenMode": "禅模式",
+  "topbar.toggleAgentPanel": "切换智能体面板",
+  "topbar.minimize": "最小化",
+  "topbar.maximize": "最大化",
+  "topbar.restore": "还原",
+  "topbar.close": "关闭",
+
+  // zen mode floating input
+  "zen.busy": "Pi 正在工作…",
+  "zen.idle": "禅模式 · 让 Pi 写代码…",
+  "zen.exit": "退出",
+
+  // project switcher
+  "project.none": "未打开项目",
+  "project.recent": "最近项目",
+  "project.noRecents": "暂无最近项目",
+  "project.open": "打开项目文件夹…",
+  "project.remove": "从列表移除",
+  "project.switching": "切换中…",
+  "project.welcomeTitle": "打开一个项目",
+  "project.welcomeBody": "选择一个文件夹 — 其中的文件会显示在浏览器里，Pi 将在该目录下工作。",
+
+  // sidebar
+  "sidebar.sessions": "会话",
+  "sidebar.explorer": "文件浏览",
+  "sidebar.newSession": "新建会话",
+  "session.untitled": "新会话",
+  "session.delete": "删除会话",
+  "agent.history": "会话历史",
+  "agent.newSession": "新建会话",
+  "palette.newSession": "新建聊天会话",
+
+  // agent panel
+  "agent.working": "Pi 正在工作",
+  "agent.statusLine": "Pi 状态：{status}",
+  "agent.emptyAsk": "让 Pi 写代码。输入 ",
+  "agent.emptyOr": " 查看流式编辑演示，或输入 ",
+  "agent.emptyAfter": " 查看并行子智能体演示。",
+  "agent.composerBusy": "Pi 正在工作…（⏎ 排队）",
+  "agent.composerIdle": "让 Pi 写代码… ⏎",
+  "agent.stop": "停止",
+  "agent.send": "发送",
+  "agent.pastedImage": "粘贴的图片",
+  "agent.removeImage": "移除图片",
+  "agent.thought": "已思考",
+  "agent.thinking": "思考中…",
+
+  // composer slash commands
+  "slash.builtin": "内置",
+  "cmd.new": "新建会话",
+  "cmd.compact": "压缩会话上下文",
+  "cmd.model": "切换到下一个模型",
+  "cmd.thinking": "切换思考等级",
+  "cmd.demo": "运行流式编辑演示",
+  "cmd.agents": "运行并行子智能体演示",
+
+  // demo task strip
+  "demoTask.read": "读取 src/lib/agent.ts",
+  "demoTask.reason": "结合上下文推理",
+  "demoTask.edit": "编辑 runAgentLoop()",
+  "demoTask.test": "运行测试套件",
+
+  // subagents
+  "subagents.title": "子智能体",
+  "subagents.running": "{n} 个运行中",
+  "subagents.working": "工作中…",
+
+  // command palette
+  "palette.ask": "让 Pi 实现…",
+  "palette.zen": "切换禅模式",
+  "palette.theme": "切换主题",
+  "palette.terminal": "切换终端",
+  "palette.cycleModel": "切换模型",
+  "palette.refresh": "刷新 pi 状态",
+  "palette.language": "切换语言 (中/EN)",
+  "palette.placeholder": "问 Pi 任何问题，或输入命令…",
+  "palette.empty": "没有匹配的命令",
+
+  // model picker
+  "modelPicker.select": "选择模型",
+  "modelPicker.choose": "选择模型",
+  "modelPicker.none": "尚未配置任何模型。",
+  "modelPicker.manage": "管理模型…",
+
+  // editor canvas
+  "editor.piEditing": "Pi 正在编辑…",
+
+  // terminal drawer
+  "terminal.title": "终端",
+  "terminal.close": "关闭终端",
+
+  // diff review card
+  "review.edited": "Pi 编辑了 {file}",
+  "review.applied": "已应用",
+  "review.reverted": "已撤销",
+  "review.reject": "拒绝",
+  "review.accept": "接受",
+
+  // extension sheet
+  "ext.request": "扩展请求",
+
+  // settings page
+  "settings.title": "设置",
+  "settings.subtitleMock": "浏览器预览 — 编辑仅保存在内存中。",
+  "settings.subtitleLive": "编辑会直接写入 pi 的 settings.json · 重启 pi 后生效",
+  "settings.saved": "设置已保存。重启 pi 后更改生效。",
+  "settings.restarting": "正在重启…",
+  "settings.restartPi": "重启 pi",
+  "settings.language": "语言 / Language",
+  "settings.languageFooter": "本应用的界面语言 — 仅保存在本地，不影响 pi。",
+  "settings.scope": "作用域",
+  "settings.scopeGlobalFooter": "全局 — 对所有项目生效。文件：{path}",
+  "settings.scopeProjectFooter":
+    "项目 — 覆盖当前工作区的全局设置（深度合并）。变暗的行继承自全局。文件：{path}",
+  "settings.problem": "问题",
+  "settings.invalidJson": "settings.json 包含无效的 JSON",
+  "settings.modelDefaults": "默认模型设置",
+  "settings.modelDefaultsFooter":
+    "defaultProvider / defaultModel 决定 pi 启动时使用的模型。先在「模型」页选择一个模型，再在这里设为默认。",
+  "settings.defaultModel": "默认模型",
+  "settings.defaultModelUnset": "未设置 — pi 会选择第一个已认证的提供商",
+  "settings.useCurrent": "使用当前",
+  "settings.defaultThinkingLevel": "默认思考级别",
+  "settings.appearance": "外观与启动",
+  "settings.theme": "主题",
+  "settings.quietStartup": "静默启动",
+  "settings.quietStartupDetail": "隐藏 pi 的启动头信息",
+  "settings.hideThinking": "隐藏思考块",
+  "settings.hideThinkingDetail": "不在输出中渲染模型的思考内容",
+  "settings.agentBehavior": "智能体行为",
+  "settings.agentBehaviorFooter":
+    "上下文窗口填满时，自动压缩会对旧上下文进行摘要。自动重试会在提供商出现临时错误时重新尝试。",
+  "settings.autoCompaction": "自动压缩",
+  "settings.autoRetry": "自动重试",
+  "settings.projectTrust": "项目信任",
+  "settings.projectTrustFooter":
+    "非交互模式下 pi 如何处理不受信任的项目级设置和扩展：ask/never 会忽略它们，always 会始终加载。仅限全局设置。",
+  "settings.advanced": "高级",
+  "settings.advancedFooter":
+    "这里的所有编辑都写入纯 JSON — 与 pi CLI 读取的是同一个文件。此界面未覆盖的键会原样保留。",
+  "settings.cacheMissNotices": "缓存未命中提示",
+  "settings.cacheMissNoticesDetail": "在会话记录中显示明显的提示词缓存未命中",
+  "settings.thinkingBudgets": "思考预算",
+  "settings.thinkingBudgetsFooter":
+    "各思考级别的自定义 token 预算。留空 = pi 内置默认值（见占位符）。",
+  "settings.customTheme": "自定义主题名",
+  "settings.customThemeDetail":
+    "来自已安装包的主题（如 pi-curated-themes）。名称无效时回退到 dark。",
+  "settings.externalEditor": "外部编辑器",
+  "settings.externalEditorDetail":
+    "Ctrl+G 外部编辑器命令 — VS Code 需加 --wait。留空 = $VISUAL / $EDITOR。",
+  "settings.reserveTokens": "预留 token",
+  "settings.reserveTokensDetail": "为 LLM 回复预留的 token 数",
+  "settings.keepRecentTokens": "保留最近 token",
+  "settings.keepRecentTokensDetail": "不参与摘要的最近上下文 token 数",
+  "settings.maxRetries": "最大重试次数",
+  "settings.baseDelayMs": "基础延迟（毫秒）",
+  "settings.baseDelayMsDetail": "指数退避基数：2s、4s、8s…",
+  "settings.providerRetry": "提供商级重试（高级）",
+  "settings.providerRetryFooter":
+    "SDK 级重试 — 除非确有需要，提供商最大重试请保持 0；调高可能让 SDK 在 pi 感知前吞掉配额错误。",
+  "settings.providerTimeoutMs": "请求超时（毫秒）",
+  "settings.providerTimeoutMsDetail": "提供商/SDK 请求超时",
+  "settings.providerMaxRetries": "提供商最大重试",
+  "settings.providerMaxRetriesDetail": "SDK 重试次数 — 推荐 0",
+  "settings.providerMaxRetryDelayMs": "最大重试延迟（毫秒）",
+  "settings.providerMaxRetryDelayMsDetail":
+    "提供商要求等待过久时立即失败。0 = 不设上限。",
+  "settings.sdkDefault": "SDK 默认",
+  "settings.messageDelivery": "消息投递",
+  "settings.messageDeliveryFooter":
+    "排队的引导/后续消息如何送达智能体，以及首选的流式传输方式。",
+  "settings.steeringMode": "引导消息",
+  "settings.followUpMode": "后续消息",
+  "settings.transport": "传输方式",
+  "settings.httpIdleTimeoutMs": "HTTP 空闲超时（毫秒）",
+  "settings.websocketConnectTimeoutMs": "WebSocket 连接超时（毫秒）",
+  "settings.zeroDisables": "0 = 禁用",
+  "settings.network": "网络",
+  "settings.networkFooter":
+    "作为 HTTP_PROXY / HTTPS_PROXY 应用于 pi 的所有网络流量。仅限全局设置。",
+  "settings.httpProxy": "HTTP 代理",
+  "settings.httpProxyDetail": "代理地址，如 http://127.0.0.1:7890",
+  "settings.images": "图片",
+  "settings.imagesFooter": "控制 pi 发送给 LLM 的图片。",
+  "settings.imagesAutoResize": "自动缩放图片",
+  "settings.imagesAutoResizeDetail": "发送前缩小到最大 2000×2000",
+  "settings.imagesBlock": "屏蔽图片",
+  "settings.imagesBlockDetail": "从不向 LLM 发送图片",
+  "settings.branchSummary": "分支摘要",
+  "settings.branchSummaryFooter": "通过 /tree 切换会话分支时的摘要行为。",
+  "settings.branchSkipPrompt": "跳过摘要询问",
+  "settings.branchSkipPromptDetail":
+    "/tree 导航时不再询问「是否摘要分支？」（默认不摘要）",
+  "settings.branchReserveTokens": "预留 token",
+  "settings.shellSessions": "Shell 与会话",
+  "settings.shellSessionsFooter":
+    "npm 命令以 argv 数组存储 — 输入按空白分词，含空格的路径请直接编辑 JSON。会话目录优先级：--session-dir > PI_CODING_AGENT_SESSION_DIR > 此设置。",
+  "settings.shellPath": "Shell 路径",
+  "settings.shellPathDetail": "自定义 shell（如 Windows 上的 Cygwin）。支持 ~。",
+  "settings.shellCommandPrefix": "Shell 命令前缀",
+  "settings.shellCommandPrefixDetail":
+    "加在每条 bash 命令前，如 shopt -s expand_aliases",
+  "settings.npmCommand": "npm 命令",
+  "settings.npmCommandDetail": "包安装所用命令，如 mise exec node@20 -- npm",
+  "settings.sessionDir": "会话目录",
+  "settings.sessionDirDetail": "会话文件的存储位置。支持绝对/相对路径与 ~。",
+  "settings.privacy": "隐私与更新",
+  "settings.privacyFooter":
+    "安装回报仅上报版本安装/更新 — 更新检查始终开启（可用 PI_OFFLINE=1 关闭）。",
+  "settings.installTelemetry": "安装遥测",
+  "settings.installTelemetryDetail": "安装/更新后向 pi.dev 发送匿名版本回报",
+  "settings.collapseChangelog": "折叠更新日志",
+  "settings.collapseChangelogDetail": "更新后显示精简版更新日志",
+  "settings.anthropicExtraUsage": "Anthropic 超额用量警告",
+  "settings.anthropicExtraUsageDetail": "订阅认证可能产生付费超额用量时发出警告",
+  "settings.settingsFile": "设置文件",
+  "settings.fileWillBeCreated": "{path}（首次编辑时创建）",
+  "settings.customUi": "界面自定义",
+  "settings.customUiFooter":
+    "个性化本应用 — 仅保存在本地，在深色/浅色主题下均生效，不影响 pi。",
+  "settings.accentColor": "强调色",
+  "settings.bgColor": "背景颜色",
+  "settings.textColor": "文字颜色",
+  "settings.fontSize": "文字大小",
+  "settings.fontSizeDetail": "缩放界面中的所有文字",
+  "settings.defaultOption": "默认",
+  "settings.customColor": "自定义颜色",
+  "settings.resetAppearance": "恢复默认外观",
+  "settings.resetAppearanceDetail": "清除自定义颜色与文字大小",
+
+  // models page
+  "models.title": "模型",
+  "models.subtitleMock":
+    "浏览器预览 — 显示模拟模型。在安装了 pi 的 Tauri 中运行可获取实时数据。",
+  "models.subtitleLive": "已连接到 pi · {status}",
+  "models.activeModel": "当前模型",
+  "models.activeBadge": "使用中",
+  "models.noModel": "未选择模型",
+  "models.pickBelow": "在下方选择一个",
+  "models.thinkingLevel": "思考级别",
+  "models.thinkingFooter": "级别越高，回答前思考越久。对应 pi 的 set_thinking_level。",
+  "models.reasoning": "推理",
+  "models.cycling": "模型循环",
+  "models.cyclingFooter":
+    "Ctrl+P 循环切换的 enabledModels 模式 — 写入全局 settings.json。格式与 --models CLI 参数相同。",
+  "models.cyclingPlaceholder": "如 claude-* 或 gpt-4o",
+
+  // plugins page
+  "plugins.title": "插件",
+  "plugins.subtitleMock": "浏览器预览 — 显示模拟数据。",
+  "plugins.subtitleLive": "包来自 settings.json · 命令来自正在运行的 pi 进程。",
+  "plugins.globalHeader": "已安装的包 — 全局",
+  "plugins.globalFooter":
+    "来自 ~/.pi/agent/settings.json → packages。npm 包安装在 ~/.pi/agent/npm/，git 克隆在 ~/.pi/agent/git/。移除会执行 `pi remove`，需重启才能卸载。",
+  "plugins.noPackages": "尚未安装任何包",
+  "plugins.browseStore": "前往商店添加",
+  "plugins.projectHeader": "已安装的包 — 项目",
+  "plugins.projectFooter":
+    "来自 .pi/settings.json — 与团队共享；项目受信任后，pi 启动时会自动安装缺失的包。",
+  "plugins.liveCommands": "扩展命令（运行中）",
+  "plugins.liveCommandsFooter":
+    "正在运行的 pi 进程从扩展（本地文件和已安装的包）注册的斜杠命令。",
+  "plugins.noExtCommands": "没有扩展命令",
+  "plugins.extLoadPath": "扩展从 ~/.pi/agent/extensions 和已安装的包加载",
+  "plugins.builtins": "内置命令",
+  "plugins.actions": "操作",
+  "plugins.refresh": "刷新",
+  "plugins.refreshDetail": "重新读取 settings.json 并重新查询 pi 的命令",
+  "plugins.restartTitle": "重启 pi 以应用更改",
+  "plugins.restartDetail": "包的更改将在下次启动 pi 时生效",
+  "plugins.remove": "移除",
+  "plugins.removing": "移除中…",
+  "plugins.removeFailed": "pi remove 失败（退出码 {code}）：{err}",
+  "plugins.pinned": "固定 @{version}",
+  "plugins.filteredResources": "已过滤资源",
+  "plugins.localResources": "本地资源",
+  "plugins.localResourcesFooter":
+    "settings.json 中的额外加载路径。全局路径相对 ~/.pi/agent 解析，项目路径相对 .pi。支持 glob、! 排除与 ~。",
+  "plugins.res.skills": "技能",
+  "plugins.res.extensions": "扩展",
+  "plugins.res.prompts": "提示词模板",
+  "plugins.res.themes": "主题",
+  "plugins.addPath": "添加路径或 glob…",
+  "plugins.skillCommands": "技能命令",
+  "plugins.skillCommandsDetail": "将技能注册为 /skill:name 命令",
+
+  // skills page
+  "skills.title": "技能",
+  "skills.subtitleMock": "浏览器预览 — 显示模拟数据。",
+  "skills.subtitleLive": "扫描自运行中 pi 加载技能的目录。",
+  "skills.origin.global": "全局",
+  "skills.origin.project": "项目",
+  "skills.origin.path": "配置路径",
+  "skills.search": "搜索技能…",
+  "skills.scanning": "正在扫描技能目录…",
+  "skills.none": "还没有技能",
+  "skills.noneDetail":
+    "把包含 SKILL.md 的文件夹放进 ~/.pi/agent/skills，或从商店安装包。",
+  "skills.noMatch": "没有匹配“{query}”的技能",
+  "skills.copy": "复制",
+  "skills.copied": "已复制",
+  "skills.viewSource": "查看 SKILL.md",
+  "skills.hideSource": "收起 SKILL.md",
+  "skills.sourceLoading": "加载中…",
+  "skills.sourceError": "无法读取 SKILL.md：{err}",
+  "skills.groupFooter.global": "来自 ~/.pi/agent/skills — 所有项目可用。",
+  "skills.groupFooter.project": "来自本项目的 .pi/skills — 与团队共享。",
+  "skills.groupFooter.path": "来自 settings.json → skills 的额外路径。",
+  "skills.unscannable": "glob 条目不在此处扫描，列表可能不完整：{globs}",
+  "skills.loadHeader": "加载设置",
+  "skills.loadFooter":
+    "settings.json 中的额外技能目录。全局路径相对 ~/.pi/agent 解析，项目路径相对 .pi 解析。更改在重启 pi 后生效。",
+  "skills.rescan": "重新扫描",
+  "skills.rescanDetail": "重新读取 settings.json 并再次扫描技能目录",
+
+  // store page
+  "store.title": "商店",
+  "store.subtitleMock": "浏览器预览 — 模拟结果。真实商店会查询 npm 仓库。",
+  "store.subtitleLive": "带 pi-package 标签的 npm 包 — 与 pi.dev/packages 相同。",
+  "store.search": "搜索",
+  "store.searchFooterGlobal":
+    "安装会执行 `pi install npm:<name>` → 写入 ~/.pi/agent/settings.json，下载到 ~/.pi/agent/npm/。",
+  "store.searchFooterProject":
+    "安装会执行 `pi install -l` → 写入 .pi/settings.json，团队成员也能使用（受信任启动时自动安装）。",
+  "store.filterPlaceholder": "筛选包…",
+  "store.installedLog": "已安装 {name} — 重启 pi 后加载。",
+  "store.installFailed": "pi install 失败（退出码 {code}）：{err}",
+  "store.packagesCount": "{n} 个包",
+  "store.packages": "包",
+  "store.packagesFooter":
+    "包拥有完整的系统访问权限 — 扩展会执行任意代码。安装第三方包前请先审查源码。",
+  "store.registryError": "无法连接 npm 仓库",
+  "store.loadingDetail": "正在查询 registry.npmjs.org",
+  "store.noMatches": "没有匹配结果",
+  "store.tryDifferent": "换个关键词试试",
+  "store.installedBadge": "已安装",
+  "store.install": "安装",
+  "store.installing": "安装中…",
+
+  // state pages (404 / error)
+  "state.notFound.title": "页面不存在",
+  "state.notFound.body": "这个地址不对应应用里的任何视图。返回工作区继续。",
+  "state.notFound.home": "返回工作区",
+  "state.error.title": "视图崩溃了",
+  "state.error.body": "Pi 在渲染时遇到意外错误。请重试；若持续出现，可复制详情并反馈。",
+  "state.error.retry": "重试",
+  "state.error.copy": "复制详情",
+  "state.error.copied": "已复制",
+
+  // software update
+  "update.title": "软件更新",
+  "update.subtitle": "更新以发布仓库的版本标签形式分发。",
+  "update.check": "检查更新",
+  "update.checking": "正在检查…",
+  "update.upToDate": "已是最新版本",
+  "update.availableStatus": "新版本 {version} 可用",
+  "update.availableTitle": "发现新版本",
+  "update.latestTag": "最新发布标签",
+  "update.install": "下载并安装",
+  "update.installing": "正在更新…",
+  "update.installFooter": "Pi 会下载该标签对应的发布版本，完成后自动重启。",
+  "update.mockApply": "浏览器预览 — 安装仅在桌面应用中可用。",
+  "update.currentVersion": "当前安装",
+  "update.version": "版本",
+  "update.channel": "更新通道",
+  "update.channelStable": "稳定版 · git 标签",
+  "update.source": "更新源",
+  "update.sourceRepo": "发布仓库",
+  "update.sourceFooter":
+    "检查通过 `git ls-remote` 读取仓库标签 — 点击安装前不会下载任何内容。",
+  "update.notConfigured": "尚未配置",
+  "update.notConfiguredStatus": "更新源尚未配置",
+  "update.notConfiguredFooter":
+    "当前构建还未附带发布仓库地址。仓库发布后，这里会自动支持检查更新与一键安装。",
+  "update.checkFailed": "无法连接发布仓库",
+  "update.problem": "问题",
+  "update.lastChecked": "上次检查：{time}",
+  "settings.softwareUpdate": "软件更新",
+  "settings.softwareUpdateDetail": "版本 {version}",
+};

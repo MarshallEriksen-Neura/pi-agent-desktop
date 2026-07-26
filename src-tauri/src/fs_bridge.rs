@@ -1,0 +1,91 @@
+//! Workspace filesystem commands for the editor & file tree.
+//! Deliberately minimal: list a directory, read/write a file, report the root.
+
+use serde::Serialize;
+use std::fs;
+use std::path::Path;
+
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024; // 2 MB guard for the editor
+
+/// Directories that never belong in a coding-agent file tree.
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    ".git",
+    ".next",
+    "out",
+    "dist",
+    ".pnpm-store",
+];
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// The workspace root: the last-opened project when one is on record (and its
+/// directory still exists), otherwise the process cwd — which keeps the
+/// "launch from a project directory" dev workflow working.
+#[tauri::command]
+pub fn workspace_root() -> Result<String, String> {
+    if let Some(project) = crate::projects::last_project() {
+        return Ok(project);
+    }
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn fs_list_dir(path: String) -> Result<Vec<FsEntry>, String> {
+    let dir = Path::new(&path);
+    if !dir.is_dir() {
+        return Err(format!("not a directory: {path}"));
+    }
+    let mut entries: Vec<FsEntry> = fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            // hide dotfiles and vendored/build dirs
+            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+                return None;
+            }
+            let is_dir = e.file_type().ok()?.is_dir();
+            Some(FsEntry {
+                path: e.path().to_string_lossy().replace('\\', "/"),
+                name,
+                is_dir,
+            })
+        })
+        .collect();
+
+    // dirs first, then case-insensitive alphabetical — Finder order
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn fs_read_file(path: String) -> Result<String, String> {
+    let p = Path::new(&path);
+    let meta = fs::metadata(p).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(format!(
+            "file too large for the editor ({} KB)",
+            meta.len() / 1024
+        ));
+    }
+    fs::read_to_string(p).map_err(|e| format!("cannot read {path}: {e}"))
+}
+
+#[tauri::command]
+pub fn fs_write_file(path: String, content: String) -> Result<(), String> {
+    fs::write(Path::new(&path), content).map_err(|e| format!("cannot write {path}: {e}"))
+}

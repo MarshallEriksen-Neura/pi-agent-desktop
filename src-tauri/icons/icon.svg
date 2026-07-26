@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- master app icon: hand-drawn serif π on warm paper -->
+  <defs>
+    <radialGradient id="paper" cx="38%" cy="30%" r="90%">
+      <stop offset="0%" stop-color="#f0e7d3"/>
+      <stop offset="100%" stop-color="#e3d6ba"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="230" fill="url(#paper)"/>
+  <g fill="none" stroke="#2b241d" stroke-width="78" stroke-linecap="round" stroke-linejoin="round">
+    <!-- top bar: gentle handwritten wave, dipping in at the left -->
+    <path d="M236 414 C284 352 372 356 512 354 C640 352 724 350 790 362"/>
+    <!-- left leg: leans out with a small foot kick -->
+    <path d="M412 362 C402 470 392 572 368 662 C360 692 348 706 330 712"/>
+    <!-- right leg: drops then curls up like the reference glyph -->
+    <path d="M636 360 C630 470 628 580 646 654 C658 700 700 718 736 690 C748 680 754 668 756 654"/>
+  </g>
+</svg>

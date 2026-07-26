@@ -1,0 +1,310 @@
+@import "tailwindcss";
+@import "@appica/ui-react/styles.css";
+
+@source "../../node_modules/@appica/ui-react/dist";
+
+/* ============================================================================
+   Pi Coding Agent — Design Tokens (iOS-inspired)
+   Two-tier system: primitives -> semantic tokens. Components use semantics only.
+   ========================================================================== */
+
+:root {
+  /* ── Primitives — iOS system colors (do NOT use directly in components) ── */
+  --ios-blue: #007aff;
+  --ios-blue-dark: #0a84ff;
+  --ios-green: #34c759;
+  --ios-red: #ff3b30;
+  --ios-orange: #ff9500;
+  --ios-purple: #af52de;
+  --ios-teal: #30b0c7;
+
+  --gray-6: #f2f2f7;
+  --gray-5: #e5e5ea;
+  --gray-4: #d1d1d6;
+  --gray-3: #c7c7cc;
+  --gray-2: #aeaeb2;
+  --gray-1: #8e8e93;
+
+  /* ── Semantic — Light ── */
+  /* Backgrounds: three elevations distinguished by tone (iOS depth model) */
+  --bg-base: #ffffff;
+  --bg-elevated: #f2f2f7;
+  --bg-overlay: rgba(242, 242, 247, 0.72);
+  --bg-sunken: #ebebf0;
+
+  /* Materials (glass) — pair with backdrop-filter */
+  --material-thin: rgba(255, 255, 255, 0.6);
+  --material-regular: rgba(255, 255, 255, 0.72);
+  --material-thick: rgba(255, 255, 255, 0.85);
+  --blur-strength: 20px;
+
+  /* Text — opacity tiers, self-adapting over any material */
+  --text-primary: rgba(0, 0, 0, 0.9);
+  --text-secondary: rgba(0, 0, 0, 0.55);
+  --text-tertiary: rgba(0, 0, 0, 0.3);
+  --text-on-accent: #ffffff;
+
+  /* Separators — barely visible (iOS separator) */
+  --separator: rgba(60, 60, 67, 0.12);
+  --separator-opaque: #c6c6c8;
+
+  /* Interaction / accent */
+  --accent: var(--ios-blue);
+  --accent-hover: #0071eb;
+  --accent-muted: rgba(0, 122, 255, 0.12);
+  --focus-ring: rgba(0, 122, 255, 0.4);
+
+  /* Agent / diff semantics */
+  --agent-thinking: var(--ios-purple);
+  --diff-add-bg: rgba(52, 199, 89, 0.14);
+  --diff-add-text: #248a3d;
+  --diff-remove-bg: rgba(255, 59, 48, 0.12);
+  --diff-remove-text: #c4271e;
+  --danger: var(--ios-red);
+  --warning: var(--ios-orange);
+  --success: var(--ios-green);
+
+  /* Shadows — iOS keeps these very light, overlays only */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.16);
+
+  /* Radii — continuous-curvature feel, generous */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 28px;
+
+  /* Motion — springs, not ease curves */
+  --spring-snappy: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --spring-smooth: cubic-bezier(0.32, 0.72, 0, 1);
+  --duration-fast: 0.25s;
+  --duration-base: 0.4s;
+
+  /* Typography */
+  --font-ui: -apple-system, "SF Pro Text", "SF Pro Display", "Segoe UI",
+    system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", ui-monospace,
+    Menlo, Consolas, monospace;
+
+  color-scheme: light;
+}
+
+/* ── Semantic — Dark (immersive coding surface) ── */
+:root[data-theme="dark"] {
+  /* Dark elevation: higher = lighter (not shadow) */
+  --bg-base: #000000;
+  --bg-elevated: #1c1c1e;
+  --bg-overlay: rgba(28, 28, 30, 0.72);
+  --bg-sunken: #0a0a0a;
+
+  --material-thin: rgba(30, 30, 32, 0.6);
+  --material-regular: rgba(30, 30, 32, 0.72);
+  --material-thick: rgba(30, 30, 32, 0.85);
+
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.55);
+  --text-tertiary: rgba(255, 255, 255, 0.28);
+  --text-on-accent: #ffffff;
+
+  --separator: rgba(84, 84, 88, 0.36);
+  --separator-opaque: #38383a;
+
+  --accent: var(--ios-blue-dark);
+  --accent-hover: #339cff;
+  --accent-muted: rgba(10, 132, 255, 0.18);
+  --focus-ring: rgba(10, 132, 255, 0.5);
+
+  --agent-thinking: #bf5af2;
+  --diff-add-bg: rgba(52, 199, 89, 0.18);
+  --diff-add-text: #30d158;
+  --diff-remove-bg: rgba(255, 69, 58, 0.18);
+  --diff-remove-text: #ff453a;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+/* ── Appica UI bridge ─────────────────────────────────────────────────────
+   Map Appica's raw tokens onto our iOS token system so every Appica
+   component (Switch, Dialog, Toast, …) renders in the Pi/iOS skin.
+   Appica themes via .light/.dark classes; our toggleTheme keeps the .dark
+   class on <html> in sync with data-theme.                                */
+:root,
+.light {
+  --primary: var(--ios-blue);
+  --primary-foreground: #ffffff;
+  --background: var(--bg-base);
+  --foreground: var(--text-primary);
+  --muted: var(--bg-elevated);
+  --muted-foreground: var(--text-secondary);
+  --border: var(--separator);
+  --ring: var(--focus-ring);
+  --destructive: var(--danger);
+  --radius: 0.75rem; /* 12px — matches --radius-md */
+  --font-sans: var(--font-ui);
+}
+
+:root[data-theme="dark"],
+.dark {
+  --primary: var(--ios-blue-dark);
+  --primary-foreground: #ffffff;
+  --background: var(--bg-base);
+  --foreground: var(--text-primary);
+  --muted: var(--bg-elevated);
+  --muted-foreground: var(--text-secondary);
+  --border: var(--separator);
+  --ring: var(--focus-ring);
+  --destructive: var(--danger);
+}
+
+/* Expose semantic tokens to Tailwind v4 utilities (bg-base, text-primary, ...) */
+@theme inline {
+  --color-base: var(--bg-base);
+  --color-elevated: var(--bg-elevated);
+  --color-sunken: var(--bg-sunken);
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary: var(--text-tertiary);
+  --color-accent: var(--accent);
+  --color-separator: var(--separator);
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-mono);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+}
+
+/* ── Base reset ── */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-optical-sizing: auto;
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background var(--duration-base) var(--spring-smooth);
+}
+
+/* ── Reusable material (iOS glass) ── */
+.material {
+  background: var(--material-regular);
+  backdrop-filter: blur(var(--blur-strength)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--blur-strength)) saturate(180%);
+}
+
+.material-thin {
+  background: var(--material-thin);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+}
+
+/* ── Thin iOS-style scrollbar ── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--text-tertiary);
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── Interactive rows (hover feedback) ── */
+.pi-row:hover {
+  background: var(--separator) !important;
+}
+.pi-row--selected:hover {
+  background: var(--accent-muted) !important;
+}
+
+/* ── Focus ring ── */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* ── Status screens (404 / error / loading) ─────────────────────────────
+   The state pages speak in Pi's own idiom: a terminal transcript with a
+   blinking block caret, and "thinking" dots that reuse the agent's purple. */
+@keyframes pi-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes pi-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.pi-caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 8px;
+  vertical-align: -2px;
+  background: currentColor;
+  animation: pi-caret-blink 1.1s step-end infinite;
+}
+
+.pi-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  background: var(--agent-thinking);
+  animation: pi-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* a 0.01ms blink would flicker — hold both steady instead */
+  .pi-caret {
+    animation: none;
+  }
+  .pi-status-dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* ── Respect reduced-motion (iOS accessibility) ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
