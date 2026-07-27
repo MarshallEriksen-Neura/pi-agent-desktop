@@ -107,6 +107,18 @@ interface PiModelsStore {
   ) => Promise<void>;
   /** Remove a model; a provider left with no models is dropped entirely. */
   removeModel: (providerId: string, modelId: string) => Promise<void>;
+  /**
+   * Edit an existing model. Handles provider/model ID renames atomically:
+   * removes from the old location and upserts at the new one in a single save.
+   * If baseUrl/apiKey are empty the old provider's values are inherited.
+   */
+  updateModel: (
+    oldProviderId: string,
+    oldModelId: string,
+    newProviderId: string,
+    cfg: ProviderConfig,
+    model: CustomModelDef
+  ) => Promise<void>;
 }
 
 const EMPTY: ModelsJson = { providers: {} };
@@ -199,6 +211,54 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
     if (!provider) return;
     provider.models = (provider.models ?? []).filter((m) => m.id !== modelId);
     if (provider.models.length === 0) delete data.providers[providerId];
+    await save(data, set, get);
+  },
+
+  updateModel: async (oldProviderId, oldModelId, newProviderId, cfg, model) => {
+    const st = get();
+    if (st.parseError) return;
+    const data = structuredClone(st.data);
+
+    // Snapshot the old provider before we potentially delete it, so we can
+    // fall back to its baseUrl/apiKey when the user left those fields empty.
+    const oldSnap = data.providers[oldProviderId]
+      ? { ...data.providers[oldProviderId] }
+      : undefined;
+
+    // Remove old entry; drop the provider if it becomes empty
+    const oldProvider = data.providers[oldProviderId];
+    if (oldProvider) {
+      oldProvider.models = (oldProvider.models ?? []).filter((m) => m.id !== oldModelId);
+      if (oldProvider.models.length === 0) delete data.providers[oldProviderId];
+    }
+
+    // Upsert into the (possibly renamed) provider
+    const existing = data.providers[newProviderId];
+    const provider: CustomProvider = existing
+      ? {
+          ...existing,
+          ...(cfg.baseUrl ? { baseUrl: cfg.baseUrl } : {}),
+          ...(cfg.api ? { api: cfg.api } : {}),
+          ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+          models: [...(existing.models ?? [])],
+        }
+      : {
+          // provider doesn't exist yet — use submitted values, falling back to
+          // the old snapshot so an unchanged baseUrl/apiKey isn't lost
+          baseUrl: cfg.baseUrl || oldSnap?.baseUrl || "",
+          api: cfg.api || oldSnap?.api || "openai-completions",
+          ...(cfg.apiKey
+            ? { apiKey: cfg.apiKey }
+            : oldSnap?.apiKey
+              ? { apiKey: oldSnap.apiKey }
+              : {}),
+          models: [],
+        };
+    const idx = provider.models.findIndex((m) => m.id === model.id);
+    if (idx >= 0) provider.models[idx] = model;
+    else provider.models.push(model);
+    data.providers[newProviderId] = provider;
+
     await save(data, set, get);
   },
 }));

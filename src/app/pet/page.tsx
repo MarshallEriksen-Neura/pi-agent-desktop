@@ -167,8 +167,10 @@ export default function PetWindow() {
           />
         </div>
       ) : (
-        <div className="w-full h-full flex items-center justify-center text-white/50 text-xs">
-          No pet selected
+        <div className="w-full h-full flex items-center justify-center">
+          <div className="rounded-xl bg-gray-600/80 text-white text-xs px-3 py-2">
+            No pet selected
+          </div>
         </div>
       )}
     </>

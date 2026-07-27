@@ -105,7 +105,12 @@ export default function PiSettingsPage() {
 
   const file = scope === "global" ? s.global : s.project;
   const own: PiSettings = useMemo(() => file.data ?? {}, [file]);
-  const effective = s.effective();
+  // effective() deep-merges global+project on every call; only recompute when
+  // the underlying data actually changes (already subscribed via `s`).
+  const effective = useMemo(
+    () => s.effective(),
+    [s.global.data, s.project.data]
+  );
 
   /** where a displayed value comes from: this scope's file, or inherited (dotted paths OK) */
   const inherited = (key: string) =>

@@ -16,7 +16,7 @@ import {
 } from "@/components/settings-ui";
 import { PROVIDER_META, fmtCtx } from "@/components/provider-meta";
 import { useT } from "@/lib/i18n";
-import { Settings, Check, Plus, X, Boxes } from "lucide-react";
+import { Settings, Check, Plus, X, Boxes, Pencil } from "lucide-react";
 
 const fieldInput: React.CSSProperties = {
   width: "100%",
@@ -54,27 +54,49 @@ function Field({
   );
 }
 
-/** Inline "add custom model" form — writes to ~/.pi/agent/models.json. */
-function AddModelForm({ onDone }: { onDone: () => void }) {
+interface ModelFormInitial {
+  providerId: string;
+  baseUrl: string;
+  api: string;
+  apiKey: string;
+  modelId: string;
+  name: string;
+  contextWindow: string;
+  maxTokens: string;
+  reasoning: boolean;
+}
+
+/** Unified add/edit form for custom models — writes to ~/.pi/agent/models.json. */
+function ModelForm({
+  onDone,
+  initial,
+  originalKey,
+}: {
+  onDone: () => void;
+  initial?: ModelFormInitial;
+  originalKey?: { pid: string; modelId: string };
+}) {
   const t = useT();
   const custom = usePiModels();
+  const isEditing = !!originalKey;
 
-  const [providerId, setProviderId] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [api, setApi] = useState<string>(API_TYPES[0]);
-  const [apiKey, setApiKey] = useState("");
-  const [modelId, setModelId] = useState("");
-  const [name, setName] = useState("");
-  const [contextWindow, setContextWindow] = useState("");
-  const [maxTokens, setMaxTokens] = useState("");
-  const [reasoning, setReasoning] = useState(false);
+  const [providerId, setProviderId] = useState(initial?.providerId ?? "");
+  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
+  const [api, setApi] = useState<string>(initial?.api ?? API_TYPES[0]);
+  const [apiKey, setApiKey] = useState(initial?.apiKey ?? "");
+  const [modelId, setModelId] = useState(initial?.modelId ?? "");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [contextWindow, setContextWindow] = useState(initial?.contextWindow ?? "");
+  const [maxTokens, setMaxTokens] = useState(initial?.maxTokens ?? "");
+  const [reasoning, setReasoning] = useState(initial?.reasoning ?? false);
 
-  const existingProvider = custom.data.providers[providerId.trim()];
-  // an existing provider already carries baseUrl/apiKey — only new ones need them
+  const targetProviderExists = custom.data.providers[providerId.trim()] !== undefined;
+  // valid when providerId+modelId are non-empty AND either the target provider
+  // exists (can inherit its baseUrl) OR baseUrl is explicitly provided
   const valid =
     providerId.trim() !== "" &&
     modelId.trim() !== "" &&
-    (existingProvider !== undefined || baseUrl.trim() !== "");
+    (targetProviderExists || baseUrl.trim() !== "");
 
   const submit = async () => {
     if (!valid) return;
@@ -87,13 +109,29 @@ function AddModelForm({ onDone }: { onDone: () => void }) {
     const max = Number(maxTokens);
     if (maxTokens.trim() && Number.isFinite(max) && max > 0) model.maxTokens = max;
 
-    await custom.addModel(
-      providerId.trim(),
-      { baseUrl: baseUrl.trim(), api, apiKey: apiKey.trim() || undefined },
-      model
-    );
+    if (isEditing && originalKey) {
+      await custom.updateModel(
+        originalKey.pid,
+        originalKey.modelId,
+        providerId.trim(),
+        { baseUrl: baseUrl.trim(), api, apiKey: apiKey.trim() || undefined },
+        model
+      );
+    } else {
+      await custom.addModel(
+        providerId.trim(),
+        { baseUrl: baseUrl.trim(), api, apiKey: apiKey.trim() || undefined },
+        model
+      );
+    }
     onDone();
   };
+
+  // For placeholder hints: in add mode, show the existing provider's config;
+  // in edit mode, the form is already pre-filled so no hints needed
+  const hintProvider = !isEditing
+    ? custom.data.providers[providerId.trim()]
+    : undefined;
 
   return (
     <div
@@ -133,8 +171,8 @@ function AddModelForm({ onDone }: { onDone: () => void }) {
           type="text"
           value={baseUrl}
           placeholder={
-            existingProvider
-              ? existingProvider.baseUrl
+            hintProvider
+              ? hintProvider.baseUrl
               : "https://api.example.com/v1"
           }
           onChange={(e) => setBaseUrl(e.target.value)}
@@ -145,7 +183,7 @@ function AddModelForm({ onDone }: { onDone: () => void }) {
         <input
           type="password"
           value={apiKey}
-          placeholder={existingProvider?.apiKey ? "••••••" : "sk-…"}
+          placeholder={hintProvider?.apiKey ? "••••••" : "sk-…"}
           onChange={(e) => setApiKey(e.target.value)}
           style={fieldInput}
         />
@@ -221,7 +259,7 @@ function AddModelForm({ onDone }: { onDone: () => void }) {
           disabled={!valid}
           style={{ borderRadius: 8, opacity: valid ? 1 : 0.5 }}
         >
-          {t("models.addConfirm")}
+          {isEditing ? t("models.editConfirm") : t("models.addConfirm")}
         </Button>
       </div>
     </div>
@@ -235,6 +273,7 @@ export default function ModelsPage() {
   const custom = usePiModels();
   const t = useT();
   const [adding, setAdding] = useState(false);
+  const [editingKey, setEditingKey] = useState<{ pid: string; modelId: string } | null>(null);
 
   useEffect(() => {
     settings.load();
@@ -349,7 +388,7 @@ export default function ModelsPage() {
             : t("models.customFooter")
         }
       >
-        {customEntries.length === 0 && !adding && (
+        {customEntries.length === 0 && !adding && !editingKey && (
           <GroupRow
             first
             icon={<Boxes size={16} />}
@@ -357,40 +396,89 @@ export default function ModelsPage() {
             title={t("models.customEmpty")}
           />
         )}
-        {customEntries.map(({ pid, provider, model }, i) => (
-          <GroupRow
-            key={`${pid}/${model.id}`}
-            first={i === 0}
-            icon={PROVIDER_META[pid]?.icon ?? <Boxes size={16} />}
-            iconBg={PROVIDER_META[pid]?.bg}
-            title={model.name ?? model.id}
-            detail={`${pid} · ${model.id} · ${fmtCtx(model.contextWindow)}${model.reasoning ? ` · ${t("models.reasoning")}` : ""} · ${provider.baseUrl}`}
-            trailing={
-              <motion.button
-                whileTap={{ scale: 0.85 }}
-                aria-label={t("models.removeModel")}
-                title={t("models.removeModel")}
-                onClick={() => custom.removeModel(pid, model.id)}
-                style={{
-                  display: "grid",
-                  placeItems: "center",
-                  width: 24,
-                  height: 24,
-                  border: "none",
-                  borderRadius: 6,
-                  background: "transparent",
-                  color: "var(--danger)",
-                  cursor: "pointer",
-                  flexShrink: 0,
+        {customEntries.map(({ pid, provider, model }, i) => {
+          const isThisEditing =
+            editingKey?.pid === pid && editingKey?.modelId === model.id;
+          if (isThisEditing) {
+            return (
+              <ModelForm
+                key={`${pid}/${model.id}/edit`}
+                originalKey={{ pid, modelId: model.id }}
+                initial={{
+                  providerId: pid,
+                  baseUrl: provider.baseUrl,
+                  api: provider.api,
+                  apiKey: provider.apiKey ?? "",
+                  modelId: model.id,
+                  name: model.name ?? "",
+                  contextWindow: model.contextWindow ? String(model.contextWindow) : "",
+                  maxTokens: model.maxTokens ? String(model.maxTokens) : "",
+                  reasoning: model.reasoning ?? false,
                 }}
-              >
-                <X size={14} />
-              </motion.button>
-            }
-          />
-        ))}
+                onDone={() => setEditingKey(null)}
+              />
+            );
+          }
+          return (
+            <GroupRow
+              key={`${pid}/${model.id}`}
+              first={i === 0}
+              icon={PROVIDER_META[pid]?.icon ?? <Boxes size={16} />}
+              iconBg={PROVIDER_META[pid]?.bg}
+              title={model.name ?? model.id}
+              detail={`${pid} · ${model.id} · ${fmtCtx(model.contextWindow)}${model.reasoning ? ` · ${t("models.reasoning")}` : ""} · ${provider.baseUrl}`}
+              trailing={
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <motion.button
+                    whileTap={{ scale: 0.85 }}
+                    aria-label={t("models.editModel")}
+                    title={t("models.editModel")}
+                    onClick={() => {
+                      setAdding(false);
+                      setEditingKey({ pid, modelId: model.id });
+                    }}
+                    style={{
+                      display: "grid",
+                      placeItems: "center",
+                      width: 24,
+                      height: 24,
+                      border: "none",
+                      borderRadius: 6,
+                      background: "transparent",
+                      color: "var(--text-secondary)",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Pencil size={14} />
+                  </motion.button>
+                  <motion.button
+                    whileTap={{ scale: 0.85 }}
+                    aria-label={t("models.removeModel")}
+                    title={t("models.removeModel")}
+                    onClick={() => custom.removeModel(pid, model.id)}
+                    style={{
+                      display: "grid",
+                      placeItems: "center",
+                      width: 24,
+                      height: 24,
+                      border: "none",
+                      borderRadius: 6,
+                      background: "transparent",
+                      color: "var(--danger)",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <X size={14} />
+                  </motion.button>
+                </div>
+              }
+            />
+          );
+        })}
         {adding ? (
-          <AddModelForm onDone={() => setAdding(false)} />
+          <ModelForm onDone={() => setAdding(false)} />
         ) : (
           <GroupRow
             first={false}
@@ -401,7 +489,14 @@ export default function ModelsPage() {
                 {t("models.addModel")}
               </span>
             }
-            onClick={custom.parseError ? undefined : () => setAdding(true)}
+            onClick={
+              custom.parseError
+                ? undefined
+                : () => {
+                    setEditingKey(null);
+                    setAdding(true);
+                  }
+            }
           />
         )}
       </InsetGroup>

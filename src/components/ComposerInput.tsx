@@ -1,9 +1,10 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { Square, ArrowUp, X } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
+import { ImageLightbox } from "./ImageLightbox";
 import { useT } from "@/lib/i18n";
 
 interface ComposerInputProps {
@@ -12,6 +13,8 @@ interface ComposerInputProps {
   attachments: string[];
   setAttachments: (value: string[]) => void;
   streaming: boolean;
+  /** true while an auto-retry is in flight — also surfaces the Stop button */
+  retrying?: boolean;
   busy: boolean;
   onSubmit: () => void;
   onAbort: () => void;
@@ -31,6 +34,7 @@ export function ComposerInput({
   attachments,
   setAttachments,
   streaming,
+  retrying = false,
   busy,
   onSubmit,
   onAbort,
@@ -41,6 +45,7 @@ export function ComposerInput({
 }: ComposerInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const t = useT();
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   // Auto-resize textarea based on content (2-12 lines).
   // scrollHeight includes the vertical padding (14 top + 40 bottom), so it
@@ -144,6 +149,8 @@ export function ComposerInput({
               <img
                 src={src}
                 alt={t("agent.pastedImage")}
+                title={t("agent.viewImage")}
+                onClick={() => setPreviewSrc(src)}
                 style={{
                   width: 52,
                   height: 52,
@@ -151,6 +158,7 @@ export function ComposerInput({
                   borderRadius: 10,
                   border: "1px solid var(--separator)",
                   display: "block",
+                  cursor: "zoom-in",
                 }}
               />
               <button
@@ -238,7 +246,7 @@ export function ComposerInput({
             right: 14,
           }}
         >
-          {streaming ? (
+          {streaming || retrying ? (
             <motion.button
               onClick={onAbort}
               whileTap={{ scale: 0.9 }}
@@ -346,6 +354,9 @@ export function ComposerInput({
           ⌘↩
         </div>
       </div>
+
+      {/* Click-to-zoom lightbox for attachment previews */}
+      <ImageLightbox src={previewSrc} onClose={() => setPreviewSrc(null)} />
     </div>
   );
 }

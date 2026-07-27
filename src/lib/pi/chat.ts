@@ -261,6 +261,19 @@ export const useChat = create<ChatStore>((set, get) => ({
 
   abort: () => {
     getPiClient().send({ type: "abort" });
+    // Reset UI immediately: stop the streaming spinner and drop any in-flight
+    // retries so the composer flips back to "send" without waiting for events.
+    set((s) => {
+      const next = new Map<string, RetryState>();
+      for (const [id, st] of s.activeRetries) {
+        if (st.status !== "loading") next.set(id, st);
+      }
+      return {
+        streaming: false,
+        activeRetries: next,
+        messages: s.messages.map((m) => ({ ...m, streaming: false })),
+      };
+    });
   },
 
   clear: () => set({ messages: [], streaming: false }),

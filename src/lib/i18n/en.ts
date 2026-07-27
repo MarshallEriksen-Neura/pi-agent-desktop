@@ -78,6 +78,8 @@ export const en = {
   "agent.send": "Send",
   "agent.pastedImage": "Pasted image",
   "agent.removeImage": "Remove image",
+  "agent.viewImage": "View image",
+  "agent.closePreview": "Close preview",
   "agent.thought": "Thought",
   "agent.thinking": "Thinking…",
 
@@ -336,6 +338,8 @@ export const en = {
   "models.maxTokens": "Max tokens",
   "models.reasoningToggle": "Reasoning model",
   "models.addConfirm": "Add",
+  "models.editModel": "Edit model",
+  "models.editConfirm": "Save changes",
   "models.cancel": "Cancel",
 
   // plugins page

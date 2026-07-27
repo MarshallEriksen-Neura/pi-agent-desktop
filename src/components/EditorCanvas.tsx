@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { AnimatePresence, motion } from "motion/react";
 import { Folder, FolderOpen } from "lucide-react";
 import { useUI } from "@/lib/store";
@@ -7,8 +8,35 @@ import { useChat } from "@/lib/pi/chat";
 import { useWorkspace } from "@/lib/workspace";
 import { useT } from "@/lib/i18n";
 import { isImageFile } from "@/lib/image-files";
-import { Editor } from "./Editor";
-import { ImageViewer } from "./ImageViewer";
+
+/**
+ * CodeMirror is ~490 KB of the first-load bundle and nothing is editable until
+ * a file is open, so it loads on demand instead of blocking the first paint.
+ * `ssr: false` keeps it out of the static-export prerender as well.
+ */
+const Editor = dynamic(() => import("./Editor").then((m) => m.Editor), {
+  ssr: false,
+  loading: () => <EditorSkeleton />,
+});
+
+const ImageViewer = dynamic(
+  () => import("./ImageViewer").then((m) => m.ImageViewer),
+  { ssr: false },
+);
+
+/** Quiet stand-in that keeps the editor's box while CodeMirror streams in. */
+function EditorSkeleton() {
+  return (
+    <div
+      aria-hidden
+      style={{
+        height: "100%",
+        borderRadius: "var(--radius-sm)",
+        background: "var(--bg-sunken)",
+      }}
+    />
+  );
+}
 
 /**
  * Base-layer canvas hosting the CodeMirror surface.

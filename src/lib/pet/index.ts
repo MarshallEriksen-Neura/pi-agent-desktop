@@ -2,24 +2,23 @@
  * Pet loader — orchestrates asset download and manifest loading
  */
 
-import { getBuiltinPet } from "./catalog";
+import { fetchBuiltinCatalog, getBuiltinPet } from "./catalog";
 import { ensureBuiltinPet } from "./assets";
 import { loadPetManifest, validateSpritesheet } from "./loader";
 import type { Pet } from "./types";
 
 const BUILTIN_MANIFEST_BASE = "/pets/builtin";
-const CUSTOM_MANIFEST_BASE = "/pets/custom";
 
 /**
- * Load a builtin pet by ID
+ * Load a builtin pet by ID.
  *
  * Local-first: builtin manifests AND spritesheets ship in /public/pets/builtin,
  * so we use them directly. Only if the bundled spritesheet is missing or
  * invalid do we fall back to downloading from the CDN (blob URL).
  */
 export async function loadBuiltinPet(petId: string): Promise<Pet> {
-  const catalogEntry = getBuiltinPet(petId);
-  if (!catalogEntry) {
+  const catalog = await fetchBuiltinCatalog();
+  if (!getBuiltinPet(petId, catalog)) {
     throw new Error(`Unknown builtin pet: ${petId}`);
   }
 
@@ -27,12 +26,9 @@ export async function loadBuiltinPet(petId: string): Promise<Pet> {
   const pet = await loadPetManifest(`${base}/pet.json`, base);
 
   try {
-    // Also warms the image cache for the sprite renderer
     await validateSpritesheet(pet.spritesheetPath);
   } catch {
     // Bundled asset missing/invalid — fall back to CDN download.
-    // Use the returned blob URL as-is; it is a complete opaque URL and
-    // must never be joined with a file name.
     pet.spritesheetPath = await ensureBuiltinPet(petId);
   }
 
@@ -40,22 +36,34 @@ export async function loadBuiltinPet(petId: string): Promise<Pet> {
 }
 
 /**
- * Load a custom pet from user directory
- * Format: /path/to/pets/<pet-id>/pet.json
+ * Load a user-installed custom pet from a filesystem path (Tauri desktop only).
+ *
+ * basePath is the absolute path returned by list_custom_pets (e.g.
+ * C:/Users/…/AppData/Local/dev.pi.desktop/pets/custom/my-pet).
+ * convertFileSrc turns it into an asset:// URL the WebView can load.
  */
-export async function loadCustomPet(petId: string): Promise<Pet> {
-  const manifestPath = `${CUSTOM_MANIFEST_BASE}/${petId}/pet.json`;
-  const spritesheetBasePath = `${CUSTOM_MANIFEST_BASE}/${petId}`;
+export async function loadCustomPetFromDisk(
+  petId: string,
+  basePath: string
+): Promise<Pet> {
+  // Convert filesystem path to an asset:// URL served by Tauri's asset protocol
+  const { convertFileSrc } = await import("@tauri-apps/api/core");
+  const assetBase = convertFileSrc(basePath);
 
-  return await loadPetManifest(manifestPath, spritesheetBasePath);
+  const manifestUrl = `${assetBase}/pet.json`;
+  return await loadPetManifest(manifestUrl, assetBase);
 }
 
 /**
- * Load any pet (tries builtin first, then custom)
+ * Load any pet — builtin by ID, or custom from disk.
+ * When basePath is provided the pet is loaded as a custom disk pet.
  */
-export async function loadPet(petId: string): Promise<Pet> {
-  if (getBuiltinPet(petId)) {
-    return await loadBuiltinPet(petId);
+export async function loadPet(
+  petId: string,
+  basePath?: string
+): Promise<Pet> {
+  if (basePath) {
+    return loadCustomPetFromDisk(petId, basePath);
   }
-  return await loadCustomPet(petId);
+  return loadBuiltinPet(petId);
 }

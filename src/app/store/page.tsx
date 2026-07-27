@@ -14,6 +14,7 @@ import { Badge } from "@appica/ui-react/badge";
 import { usePiSettings, packageSource } from "@/lib/pi/settings";
 import { useT } from "@/lib/i18n";
 import { SettingsPage, InsetGroup, GroupRow, Segmented } from "@/components/settings-ui";
+import { Skeleton } from "@/components/primitives";
 import { AlertTriangle, Package, Check } from "lucide-react";
 
 const SEARCH_URL =
@@ -60,6 +61,16 @@ export default function StorePage() {
     null
   );
   const t = useT();
+
+  const skeletonRows = [0, 1, 2, 3, 4].map((i) => (
+    <GroupRow
+      key={i}
+      first={i === 0}
+      icon={<Skeleton width={16} height={16} radius={5} />}
+      title={<Skeleton width="38%" height={13} />}
+      detail={<Skeleton width="72%" height={12} />}
+    />
+  ));
 
   useEffect(() => {
     settings.load();
@@ -220,7 +231,7 @@ export default function StorePage() {
             detail={fetchError}
           />
         ) : !all ? (
-          <GroupRow first title={t("common.loading")} detail={t("store.loadingDetail")} />
+          <>{skeletonRows}</>
         ) : visible.length === 0 ? (
           <GroupRow first title={t("store.noMatches")} detail={t("store.tryDifferent")} />
         ) : (

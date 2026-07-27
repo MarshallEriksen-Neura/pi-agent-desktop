@@ -9,6 +9,8 @@
   },
   "homepage": "https://github.com/MarshallEriksen-Neura/pi-agent-desktop",
   "scripts": {
+    "predev": "node scripts/gen-pet-manifest.mjs",
+    "prebuild": "node scripts/gen-pet-manifest.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
@@ -38,7 +40,7 @@
     "clsx": "^2.1.1",
     "codemirror": "^6.0.2",
     "lucide-react": "^1.26.0",
-    "motion": "^11.15.0",
+    "motion": "^12.42.2",
     "next": "^15.1.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

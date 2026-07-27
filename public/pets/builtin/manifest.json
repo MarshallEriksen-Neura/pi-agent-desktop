@@ -1,0 +1,9 @@
+{
+  "pets": [
+    {
+      "id": "cow",
+      "displayName": "Cow",
+      "description": "A tiny determined cow with rosy cheeks"
+    }
+  ]
+}

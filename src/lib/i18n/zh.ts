@@ -79,6 +79,8 @@ export const zh: Record<keyof typeof en, string> = {
   "agent.send": "发送",
   "agent.pastedImage": "粘贴的图片",
   "agent.removeImage": "移除图片",
+  "agent.viewImage": "查看图片",
+  "agent.closePreview": "关闭预览",
   "agent.thought": "已思考",
   "agent.thinking": "思考中…",
 
@@ -328,6 +330,8 @@ export const zh: Record<keyof typeof en, string> = {
   "models.maxTokens": "最大输出 Token",
   "models.reasoningToggle": "推理模型",
   "models.addConfirm": "添加",
+  "models.editModel": "编辑模型",
+  "models.editConfirm": "保存",
   "models.cancel": "取消",
 
   // plugins page

@@ -53,7 +53,17 @@ export interface BuiltinPet {
   id: string;
   displayName: string;
   description: string;
-  spritesheetFile: string;
+  /** CDN spritesheet filename — only present for pets with a remote fallback */
+  cdnFile?: string;
+}
+
+/** A pet entry returned by the Tauri list_custom_pets command */
+export interface CustomPetEntry {
+  id: string;
+  displayName: string;
+  description: string;
+  /** Absolute filesystem path to the pet directory */
+  basePath: string;
 }
 
 export interface PetStateUpdate {

@@ -59,6 +59,7 @@ pub fn run() {
             pet_window::pet_window_hide,
             pet_window::pet_window_toggle,
             pet_window::pet_window_set_position,
+            pet_window::list_custom_pets,
             open_external
         ])
         .setup(|app| {

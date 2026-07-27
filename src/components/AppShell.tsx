@@ -6,7 +6,6 @@ import { TooltipProvider } from "@appica/ui-react/tooltip";
 import { NavRail } from "./NavRail";
 import { ExtensionSheet } from "./ExtensionSheet";
 import { SubagentDetail } from "./Subagents";
-import { RetryToastManager } from "./RetryToastManager";
 import { CliUpdateToast } from "./CliUpdateToast";
 import { useCliUpdate } from "@/lib/pi/cli-update";
 import { usePi } from "@/lib/pi/store";
@@ -103,7 +102,6 @@ function MainShell({ children }: { children: React.ReactNode }) {
         <div style={{ flex: 1, minWidth: 0, height: "100%" }}>{children}</div>
         <ExtensionSheet />
         <SubagentDetail />
-        <RetryToastManager />
         <CliUpdateToast />
       </div>
     </TooltipProvider>

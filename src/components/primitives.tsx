@@ -160,3 +160,36 @@ export function Row({
     </button>
   );
 }
+
+/**
+ * Shimmer placeholder for data-gated regions. Uses appica's
+ * `skeleton-shimmer` utility for the moving highlight, so it respects
+ * `prefers-reduced-motion` and the disable-animations flag automatically.
+ * Pass width/height/radius to shape it; defaults fit a GroupRow content line.
+ */
+export function Skeleton({
+  width = "100%",
+  height = 14,
+  radius = 7,
+  style,
+}: {
+  width?: number | string;
+  height?: number | string;
+  radius?: number | string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <span
+      aria-hidden
+      className="skeleton-shimmer"
+      style={{
+        display: "block",
+        width,
+        height,
+        borderRadius: radius,
+        background: "var(--material-regular)",
+        ...style,
+      }}
+    />
+  );
+}

@@ -14,6 +14,7 @@ import {
   Segmented,
   StringListEditor,
 } from "@/components/settings-ui";
+import { Skeleton } from "@/components/primitives";
 import {
   Search,
   Wand2,
@@ -426,7 +427,9 @@ export default function SkillsPage() {
   const [resScope, setResScope] = useState<SettingsScope>("global");
 
   useEffect(() => {
-    settings.load().then(() => useSkills.getState().scan());
+    // scan() self-loads settings when needed; no need to await load() first,
+    // which would serialize two IPC round-trips instead of overlapping them.
+    useSkills.getState().scan();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -501,8 +504,16 @@ export default function SkillsPage() {
       </div>
 
       {sk.loading && !sk.scanned ? (
-        <InsetGroup>
-          <GroupRow first title={t("skills.scanning")} />
+        <InsetGroup header={t("skills.title")}>
+          {[0, 1, 2, 3].map((i) => (
+            <GroupRow
+              key={i}
+              first={i === 0}
+              icon={<Skeleton width={16} height={16} radius={5} />}
+              title={<Skeleton width="40%" height={13} />}
+              detail={<Skeleton width="70%" height={12} />}
+            />
+          ))}
         </InsetGroup>
       ) : sk.skills.length === 0 ? (
         <InsetGroup>

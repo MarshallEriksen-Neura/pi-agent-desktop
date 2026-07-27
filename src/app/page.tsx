@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import dynamic from "next/dynamic";
 import { AnimatePresence, motion } from "motion/react";
 import { useUI } from "@/lib/store";
 import { TopBar } from "@/components/TopBar";
@@ -8,12 +9,20 @@ import { Sidebar } from "@/components/Sidebar";
 import { EditorCanvas } from "@/components/EditorCanvas";
 import { AgentPanel } from "@/components/AgentPanel";
 import { CommandPalette } from "@/components/CommandPalette";
-import { TerminalDrawer } from "@/components/TerminalDrawer";
 import { DiffReviewCard } from "@/components/DiffReviewCard";
 import { ModelPicker } from "@/components/ModelPicker";
 import { Kbd } from "@/components/primitives";
 import { Command, Sparkles } from "lucide-react";
 import { useT } from "@/lib/i18n";
+
+/**
+ * xterm is only needed once the drawer opens (⌘J). It renders nothing while
+ * closed, so there is no placeholder to show — just keep it off the first load.
+ */
+const TerminalDrawer = dynamic(
+  () => import("@/components/TerminalDrawer").then((m) => m.TerminalDrawer),
+  { ssr: false },
+);
 
 const springPanel = { type: "spring" as const, stiffness: 300, damping: 30 };
 

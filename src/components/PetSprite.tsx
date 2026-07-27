@@ -25,7 +25,18 @@ export function PetSprite({
   className = "",
 }: PetSpriteProps) {
   const [currentFrame, setCurrentFrame] = useState<number>(0);
+  const [broken, setBroken] = useState<boolean>(false);
   const rafRef = useRef<number | undefined>(undefined);
+
+  // Detect when the spritesheet asset itself fails to load (invalid dimensions,
+  // corrupt file, or offline CDN fallback) so we can show a visible placeholder
+  // instead of a silently transparent — and thus invisible — pet window.
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => setBroken(false);
+    img.onerror = () => setBroken(true);
+    img.src = pet.spritesheetPath;
+  }, [pet.spritesheetPath]);
 
   const animationName = stateToAnimation(state);
   const animation = pet.animations[animationName] || pet.animations.idle;
@@ -68,6 +79,18 @@ export function PetSprite({
       }
     };
   }, [animation, animationStartedAt]);
+
+  if (broken) {
+    return (
+      <div
+        className={`flex items-center justify-center rounded-xl bg-indigo-500/80 text-white text-xs font-medium px-3 py-2 ${className}`}
+        style={{ width: pet.frameWidth, height: pet.frameHeight }}
+      >
+        {pet.displayName}
+        <span className="ml-1 opacity-70">(sprite missing)</span>
+      </div>
+    );
+  }
 
   return (
     <div className={`relative ${className}`}>

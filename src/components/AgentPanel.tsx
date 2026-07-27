@@ -24,6 +24,7 @@ import { SubagentDeck } from "./Subagents";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 import { MessageBubble } from "./MessageBubble";
 import { ComposerInput } from "./ComposerInput";
+import { RetryBanner } from "./RetryBanner";
 import { IconButton, SectionLabel } from "./primitives";
 import {
   Square,
@@ -47,6 +48,10 @@ const DOT: Record<TaskStatus, string> = {
 export function AgentPanel() {
   const { agentTasks, agentRunning, startDemo } = useUI();
   const { messages, streaming, send, abort, queuedPrompts, queuePrompt, clearQueue } = useChat();
+  const retrying = useChat((s) => {
+    for (const st of s.activeRetries.values()) if (st.status === "loading") return true;
+    return false;
+  });
   const piStatus = usePi((s) => s.status);
   const piCommands = usePi((s) => s.commands);
   const [draft, setDraft] = useState("");
@@ -190,7 +195,7 @@ export function AgentPanel() {
     // Note: Cmd+Enter is handled in ComposerInput component
   };
 
-  const busy = streaming || agentRunning;
+  const busy = streaming || agentRunning || retrying;
 
   return (
     <aside
@@ -353,6 +358,10 @@ export function AgentPanel() {
           onHover={setSlashIndex}
           onSelect={pickSlash}
         />
+        {/* inline retry status — lives in the panel, not a bottom-fixed toast */}
+        <div style={{ padding: "0 12px" }}>
+          <RetryBanner />
+        </div>
         <ComposerInput
           draft={draft}
           setDraft={(value) => {
@@ -362,6 +371,7 @@ export function AgentPanel() {
           attachments={attachments}
           setAttachments={setAttachments}
           streaming={streaming}
+          retrying={retrying}
           busy={busy}
           onSubmit={submit}
           onAbort={abort}

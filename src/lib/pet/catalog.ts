@@ -1,62 +1,39 @@
 /**
- * Built-in pet catalog — ported from Codex TUI
+ * Built-in pet catalog — dynamically loaded from build-time manifest
  */
 
 import type { BuiltinPet } from './types';
 
-export const BUILTIN_PETS: BuiltinPet[] = [
-  {
-    id: 'codex',
-    displayName: 'Codex',
-    description: 'The original Codex companion',
-    spritesheetFile: 'codex-spritesheet-v4.webp',
-  },
-  {
-    id: 'dewey',
-    displayName: 'Dewey',
-    description: 'A tidy duck for calm workspace days',
-    spritesheetFile: 'dewey-spritesheet-v4.webp',
-  },
-  {
-    id: 'fireball',
-    displayName: 'Fireball',
-    description: 'Hot path energy for fast iteration',
-    spritesheetFile: 'fireball-spritesheet-v4.webp',
-  },
-  {
-    id: 'rocky',
-    displayName: 'Rocky',
-    description: 'A steady rock when the diff gets large',
-    spritesheetFile: 'rocky-spritesheet-v4.webp',
-  },
-  {
-    id: 'seedy',
-    displayName: 'Seedy',
-    description: 'Small green shoots for new ideas',
-    spritesheetFile: 'seedy-spritesheet-v4.webp',
-  },
-  {
-    id: 'stacky',
-    displayName: 'Stacky',
-    description: 'A balanced stack for deep work',
-    spritesheetFile: 'stacky-spritesheet-v4.webp',
-  },
-  {
-    id: 'bsod',
-    displayName: 'BSOD',
-    description: 'A tiny blue-screen gremlin',
-    spritesheetFile: 'bsod-spritesheet-v4.webp',
-  },
-  {
-    id: 'null-signal',
-    displayName: 'Null Signal',
-    description: 'Quiet signal from the void',
-    spritesheetFile: 'null-signal-spritesheet-v4.webp',
-  },
-];
+/** In-memory cache to avoid repeated fetches within a session */
+let _builtinCache: BuiltinPet[] | null = null;
 
-export function getBuiltinPet(id: string): BuiltinPet | null {
-  return BUILTIN_PETS.find((p) => p.id === id) ?? null;
+/**
+ * Fetch the builtin pet catalog from the bundled manifest.
+ * The manifest is generated at build time by scripts/gen-pet-manifest.mjs.
+ */
+export async function fetchBuiltinCatalog(): Promise<BuiltinPet[]> {
+  if (_builtinCache) return _builtinCache;
+
+  try {
+    const res = await fetch('/pets/builtin/manifest.json');
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const data = await res.json() as { pets: BuiltinPet[] };
+    _builtinCache = data.pets;
+    return data.pets;
+  } catch (e) {
+    console.error('[catalog] Failed to load builtin pet catalog:', e);
+    // Return empty array if manifest is missing (e.g., development before first build)
+    return [];
+  }
+}
+
+/**
+ * Get a specific builtin pet from the catalog
+ */
+export function getBuiltinPet(id: string, catalog: BuiltinPet[]): BuiltinPet | null {
+  return catalog.find((p) => p.id === id) ?? null;
 }
 
 export const CDN_BASE_URL = 'https://persistent.oaistatic.com/codex/pets/v1';

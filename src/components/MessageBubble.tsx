@@ -7,6 +7,7 @@ import { Spinner } from "@appica/ui-react/spinner";
 import { ChevronDown, ChevronRight, MoreVertical } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { useMessageActions } from "@/lib/pi/message-actions";
+import { ImageLightbox } from "./ImageLightbox";
 import type { ChatMessage } from "@/lib/pi/chat";
 
 interface MessageBubbleProps {
@@ -15,19 +16,21 @@ interface MessageBubbleProps {
 
 export function MessageBubble({ m }: MessageBubbleProps) {
   const t = useT();
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   if (m.role === "user") {
     return (
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ type: "spring", stiffness: 400, damping: 28 }}
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "flex-end",
-          gap: 4,
-          margin: "6px 0",
+      <>
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 400, damping: 28 }}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-end",
+            gap: 4,
+            margin: "6px 0",
         }}
       >
         {(m.images?.length ?? 0) > 0 && (
@@ -46,12 +49,15 @@ export function MessageBubble({ m }: MessageBubbleProps) {
                 key={i}
                 src={src}
                 alt=""
+                title={t("agent.viewImage")}
+                onClick={() => setPreviewSrc(src)}
                 style={{
                   maxWidth: 140,
                   maxHeight: 140,
                   borderRadius: 12,
                   border: "1px solid var(--separator)",
                   display: "block",
+                  cursor: "zoom-in",
                 }}
               />
             ))}
@@ -75,7 +81,9 @@ export function MessageBubble({ m }: MessageBubbleProps) {
             {m.text}
           </div>
         )}
-      </motion.div>
+        </motion.div>
+        <ImageLightbox src={previewSrc} onClose={() => setPreviewSrc(null)} />
+      </>
     );
   }
 
