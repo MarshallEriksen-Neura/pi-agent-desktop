@@ -56,6 +56,19 @@ export function TerminalDrawer() {
     let disposed = false;
     let unsub: (() => void) | undefined;
     let observer: MutationObserver | undefined;
+    let resizeObserver: ResizeObserver | undefined;
+    const host = hostRef.current;
+
+    const focusTerm = () => {
+      // xterm's hidden textarea can lose focus between mount and first paint,
+      // or after a parent re-render — request focus again on a microtask and
+      // also on the next frame so it survives late layout work.
+      termRef.current?.focus();
+      queueMicrotask(() => termRef.current?.focus());
+      requestAnimationFrame(() => termRef.current?.focus());
+    };
+
+    const onHostMouseDown = () => focusTerm();
 
     (async () => {
       const [{ Terminal }, { FitAddon }, { WebglAddon }, { Unicode11Addon }, { WebLinksAddon }, { SearchAddon }] =
@@ -93,15 +106,20 @@ export function TerminalDrawer() {
 
       term.open(hostRef.current);
 
-      // webgl must load after open(); fallback to canvas on error
-      try {
-        term.loadAddon(webgl);
-        webglRef.current = webgl;
-      } catch (e) {
-        console.warn("WebGL renderer unavailable, using canvas:", e);
-      }
+      // webgl must load after open(); fallback to canvas on error.
+      // Load asynchronously and after the first fit so its canvas init
+      // doesn't race with the resize that establishes the textarea layout.
+      const tryWebgl = () => {
+        try {
+          term.loadAddon(webgl);
+          webglRef.current = webgl;
+        } catch (e) {
+          console.warn("WebGL renderer unavailable, using canvas:", e);
+        }
+      };
 
       fit.fit();
+      tryWebgl();
 
       termRef.current = term;
       fitRef.current = fit;
@@ -118,7 +136,17 @@ export function TerminalDrawer() {
           blockPromptLine();
         }
       }
-      if (viewMode === "classic") term.focus();
+      focusTerm();
+
+      // keep the terminal sized as the drawer / host changes layout
+      resizeObserver = new ResizeObserver(() => {
+        try {
+          fit.fit();
+        } catch {
+          /* host may briefly report 0 during animations */
+        }
+      });
+      resizeObserver.observe(hostRef.current);
 
       /* follow theme switches */
       observer = new MutationObserver(() => {
@@ -130,10 +158,14 @@ export function TerminalDrawer() {
       });
     })();
 
+    host.addEventListener("mousedown", onHostMouseDown);
+
     return () => {
       disposed = true;
       unsub?.();
       observer?.disconnect();
+      resizeObserver?.disconnect();
+      host.removeEventListener("mousedown", onHostMouseDown);
       webglRef.current?.dispose();
       termRef.current?.dispose();
       termRef.current = null;
