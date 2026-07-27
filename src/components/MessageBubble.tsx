@@ -5,10 +5,17 @@ import { motion } from "motion/react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@appica/ui-react/collapsible";
 import { Spinner } from "@appica/ui-react/spinner";
 import { ChevronDown, ChevronRight, MoreVertical } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n";
 import { useMessageActions } from "@/lib/pi/message-actions";
 import { ImageLightbox } from "./ImageLightbox";
 import type { ChatMessage } from "@/lib/pi/chat";
+
+// Lazy: keeps streamdown + shiki out of the route's First Load JS.
+const StreamdownRenderer = dynamic(
+  () => import("./StreamdownRenderer").then((m) => m.StreamdownRenderer),
+  { ssr: false },
+);
 
 interface MessageBubbleProps {
   m: ChatMessage;
@@ -173,33 +180,8 @@ function AssistantMessage({ m }: { m: ChatMessage }) {
 
       {(m.text || m.streaming) && (
         <div style={{ position: "relative", display: "flex", gap: 4, alignItems: "flex-start" }}>
-          <div
-            style={{
-              flex: 1,
-              fontSize: 13,
-              lineHeight: 1.6,
-              color: "var(--text-primary)",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              padding: "2px 2px 0",
-            }}
-          >
-            {m.text}
-            {m.streaming && (
-              <motion.span
-                animate={{ opacity: [1, 0, 1] }}
-                transition={{ repeat: Infinity, duration: 0.9 }}
-                style={{
-                  display: "inline-block",
-                  width: 7,
-                  height: 14,
-                  marginLeft: 2,
-                  verticalAlign: "-2px",
-                  borderRadius: 2,
-                  background: "var(--accent)",
-                }}
-              />
-            )}
+          <div className="sd-bridge" style={{ flex: 1, padding: "2px 2px 0" }}>
+            <StreamdownRenderer text={m.text} animating={m.streaming} />
           </div>
 
           {!m.streaming && m.text && (

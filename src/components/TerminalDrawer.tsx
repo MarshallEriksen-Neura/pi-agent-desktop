@@ -50,9 +50,9 @@ export function TerminalDrawer() {
   const webglRef = useRef<WebglAddon | null>(null);
   const firstOpenRef = useRef(true);
 
-  /* create the terminal once the drawer first opens */
+  /* create the terminal once the drawer first opens (or switches to classic) */
   useEffect(() => {
-    if (!terminalOpen || termRef.current || !hostRef.current) return;
+    if (!terminalOpen || viewMode !== "classic" || !hostRef.current) return;
     let disposed = false;
     let unsub: (() => void) | undefined;
     let observer: MutationObserver | undefined;
@@ -140,7 +140,7 @@ export function TerminalDrawer() {
       webglRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [terminalOpen]);
+  }, [terminalOpen, viewMode]);
 
   /* refit on window resize while open */
   useEffect(() => {

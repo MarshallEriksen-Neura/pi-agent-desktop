@@ -31,8 +31,10 @@ export default function Home() {
     sidebarOpen,
     agentPanelOpen,
     zenMode,
+    workMode,
     setCommandPalette,
     toggleZen,
+    toggleWork,
     startDemo,
     agentRunning,
   } = useUI();
@@ -50,6 +52,10 @@ export default function Home() {
         e.preventDefault();
         toggleZen();
       }
+      if (mod && e.key === "/") {
+        e.preventDefault();
+        toggleWork();
+      }
       if (mod && e.key.toLowerCase() === "j") {
         e.preventDefault();
         useUI.getState().toggleTerminal();
@@ -60,8 +66,9 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [setCommandPalette, toggleZen]);
 
-  const showSidebar = sidebarOpen && !zenMode;
-  const showAgent = agentPanelOpen && !zenMode;
+  const showSidebar = sidebarOpen && !zenMode && !workMode;
+  const showAgent = !zenMode && (workMode || agentPanelOpen);
+  const showEditor = !zenMode && !workMode;
 
   return (
     <div
@@ -91,10 +98,21 @@ export default function Home() {
           )}
         </AnimatePresence>
 
-        <EditorCanvas />
+        {showEditor && <EditorCanvas />}
 
-        <AnimatePresence initial={false}>
-          {showAgent && (
+        {showAgent &&
+          (workMode ? (
+            <motion.div
+              key="agent-work"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="sd-work"
+            >
+              <AgentPanel />
+            </motion.div>
+          ) : (
             <motion.div
               key="agent"
               initial={{ width: 0, opacity: 0 }}
@@ -105,8 +123,7 @@ export default function Home() {
             >
               <AgentPanel />
             </motion.div>
-          )}
-        </AnimatePresence>
+          ))}
       </div>
 
       <TerminalDrawer />

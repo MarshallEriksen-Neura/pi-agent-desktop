@@ -47,6 +47,7 @@ let reviewResolver: ((accept: boolean) => void) | null = null;
 interface UIState {
   theme: Theme;
   zenMode: boolean;
+  workMode: boolean;
   sidebarOpen: boolean;
   agentPanelOpen: boolean;
   commandPaletteOpen: boolean;
@@ -66,6 +67,7 @@ interface UIState {
   /** restore the saved theme — call once on mount */
   initTheme: () => void;
   toggleZen: () => void;
+  toggleWork: () => void;
   toggleSidebar: () => void;
   toggleAgentPanel: () => void;
   toggleTerminal: () => void;
@@ -89,6 +91,7 @@ interface UIState {
 export const useUI = create<UIState>((set) => ({
   theme: "dark",
   zenMode: false,
+  workMode: false,
   sidebarOpen: true,
   agentPanelOpen: true,
   commandPaletteOpen: false,
@@ -128,6 +131,7 @@ export const useUI = create<UIState>((set) => ({
       return { theme: saved };
     }),
   toggleZen: () => set((s) => ({ zenMode: !s.zenMode })),
+  toggleWork: () => set((s) => ({ workMode: !s.workMode })),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
   setCommandPalette: (open) => set({ commandPaletteOpen: open }),

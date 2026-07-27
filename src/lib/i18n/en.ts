@@ -34,6 +34,7 @@ export const en = {
   "topbar.toggleTerminal": "Toggle terminal",
   "topbar.toggleTheme": "Toggle theme",
   "topbar.zenMode": "Zen mode",
+  "topbar.workMode": "Work mode",
   "topbar.toggleAgentPanel": "Toggle agent panel",
   "topbar.minimize": "Minimize",
   "topbar.maximize": "Maximize",
@@ -119,6 +120,7 @@ export const en = {
   // command palette
   "palette.ask": "Ask Pi to implement…",
   "palette.zen": "Toggle Zen mode",
+  "palette.work": "Toggle Work mode",
   "palette.theme": "Toggle theme",
   "palette.terminal": "Toggle terminal",
   "palette.cycleModel": "Cycle model",

@@ -36,6 +36,7 @@ export const zh: Record<keyof typeof en, string> = {
   "topbar.toggleTerminal": "切换终端",
   "topbar.toggleTheme": "切换主题",
   "topbar.zenMode": "禅模式",
+  "topbar.workMode": "Work 模式",
   "topbar.toggleAgentPanel": "切换智能体面板",
   "topbar.minimize": "最小化",
   "topbar.maximize": "最大化",
@@ -120,6 +121,7 @@ export const zh: Record<keyof typeof en, string> = {
   // command palette
   "palette.ask": "让 Pi 实现…",
   "palette.zen": "切换禅模式",
+  "palette.work": "切换 Work 模式",
   "palette.theme": "切换主题",
   "palette.terminal": "切换终端",
   "palette.cycleModel": "切换模型",

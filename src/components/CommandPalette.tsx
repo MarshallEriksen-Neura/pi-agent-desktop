@@ -13,6 +13,7 @@ import {
 import {
   Sparkles,
   Focus,
+  MessagesSquare,
   Moon,
   SquareTerminal,
   SquarePen,
@@ -94,7 +95,7 @@ export function CommandPalette() {
 }
 
 function PaletteBody() {
-  const { setCommandPalette, toggleZen, toggleTheme, toggleTerminal } = useUI();
+  const { setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal } = useUI();
   const cycleModel = usePi((s) => s.cycleModel);
   const piCommands = usePi((s) => s.commands);
   const refresh = usePi((s) => s.refresh);
@@ -135,6 +136,16 @@ function PaletteBody() {
         run: () => {
           close();
           toggleZen();
+        },
+      },
+      {
+        id: "work",
+        icon: <MessagesSquare size={15} />,
+        label: t("palette.work"),
+        hint: "⌘/",
+        run: () => {
+          close();
+          toggleWork();
         },
       },
       {
@@ -223,7 +234,7 @@ function PaletteBody() {
       },
     }));
     return [...base, ...fromProjects, ...fromPi];
-  }, [setCommandPalette, toggleZen, toggleTheme, toggleTerminal, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t]);
+  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t]);
 
   return (
     <Autocomplete

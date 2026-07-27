@@ -13,6 +13,7 @@ import {
   Sun,
   Focus,
   Sparkles,
+  MessagesSquare,
   Command,
 } from "lucide-react";
 import { useUI } from "@/lib/store";
@@ -33,9 +34,11 @@ export function TopBar() {
     toggleAgentPanel,
     toggleTheme,
     toggleZen,
+    toggleWork,
     toggleTerminal,
     terminalOpen,
     zenMode,
+    workMode,
     theme,
     setCommandPalette,
   } = useUI();
@@ -72,7 +75,7 @@ export function TopBar() {
         zIndex: 20,
       }}
     >
-      {!zenMode && (
+      {!zenMode && !workMode && (
         <IconButton label={t("topbar.toggleSidebar")} onClick={toggleSidebar}>
           <PanelLeft size={16} />
         </IconButton>
@@ -178,7 +181,10 @@ export function TopBar() {
       <IconButton label={t("topbar.zenMode")} onClick={toggleZen} active={zenMode}>
         <Focus size={16} />
       </IconButton>
-      {!zenMode && (
+      <IconButton label={t("topbar.workMode")} onClick={toggleWork} active={workMode}>
+        <MessagesSquare size={16} />
+      </IconButton>
+      {!zenMode && !workMode && (
         <IconButton label={t("topbar.toggleAgentPanel")} onClick={toggleAgentPanel}>
           <Sparkles size={16} />
         </IconButton>
