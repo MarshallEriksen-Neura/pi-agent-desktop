@@ -1,13 +1,21 @@
 "use client";
 
 /**
- * Software-update state — wraps the Rust `update_check` / `update_apply`
- * commands (remote git tag query). In the browser preview the store runs a
- * mock that shows the "update available" flow so the page is explorable.
+ * Software-update state.
+ * The desktop app uses the built-in Tauri updater (`@tauri-apps/plugin-updater`)
+ * for self-update: `check()` compares the running version against the GitHub
+ * release `latest.json`, and `apply()` downloads + installs + relaunches.
+ * The Pi CLI update is handled separately by `useCliUpdate` (Rust `pi_cli_update_check`).
+ * In the browser preview the store runs a mock so the page is explorable.
  */
 
 import { create } from "zustand";
 import { isTauri } from "./pi/client";
+import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+
+const REPO_URL = "https://github.com/MarshallEriksen-Neura/pi-agent-desktop";
 
 /** Mirrors tauri.conf.json / Cargo.toml — shown before the first check lands. */
 export const APP_VERSION = "0.1.0";
@@ -46,14 +54,9 @@ interface UpdateState {
   dismiss: () => void;
 }
 
-async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(cmd, args);
-}
-
 const MOCK_INFO: UpdateInfo = {
   configured: true,
-  repoUrl: "https://github.com/pi-agent/pi-desktop.git",
+  repoUrl: REPO_URL,
   currentVersion: APP_VERSION,
   latestVersion: "v0.2.0",
   latestCommit: "9f3ab12",
@@ -80,7 +83,16 @@ export const useUpdate = create<UpdateState>((set, get) => ({
         await delay(900);
         info = MOCK_INFO;
       } else {
-        info = await invoke<UpdateInfo>("update_check");
+        const currentVersion = await getVersion();
+        const update = await check();
+        info = {
+          configured: true,
+          repoUrl: REPO_URL,
+          currentVersion,
+          latestVersion: update ? update.version : currentVersion,
+          latestCommit: null,
+          updateAvailable: update != null,
+        };
       }
       set({
         info,
@@ -104,8 +116,13 @@ export const useUpdate = create<UpdateState>((set, get) => ({
         await delay(1600);
         throw new Error(MOCK_APPLY_ERROR);
       }
-      await invoke<void>("update_apply");
-      // The real pipeline relaunches the app; nothing to do here yet.
+      const update = await check();
+      if (!update) {
+        set({ phase: "upToDate" });
+        return;
+      }
+      await update.downloadAndInstall();
+      await relaunch();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       set({ phase: "available", error: msg });
