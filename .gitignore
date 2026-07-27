@@ -26,8 +26,8 @@ next-env.d.ts.timestamp
 .env*.local
 *.pem
 
-# updater signing private key (the .pub is safe to commit)
-src-tauri/.tauri-keys/*.key
+# updater signing keys (local only; pubkey lives in tauri.conf.json)
+src-tauri/.tauri-keys/
 
 # logs
 *.log
