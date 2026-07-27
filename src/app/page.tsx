@@ -132,7 +132,9 @@ export default function Home() {
       {/* Zen-mode floating agent input — the immersive core */}
       <AnimatePresence>
         {zenMode && (
-          <motion.div
+          <>
+            <div className={`zen-title${agentRunning ? " is-working" : ""}`}>π Coding Agent</div>
+            <motion.div
             initial={{ opacity: 0, y: 40 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 40 }}
@@ -187,6 +189,7 @@ export default function Home() {
               <Command size={10} />.  {t("zen.exit")}
             </Kbd>
           </motion.div>
+          </>
         )}
       </AnimatePresence>
 

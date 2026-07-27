@@ -503,3 +503,25 @@ body {
   border-left: none !important;
   border-radius: 0 !important;
 }
+
+/* ── Zen-mode brand title ────────────────────────────────────────────────── */
+.zen-title {
+  font-family: var(--font-cormorant);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 42px;
+  letter-spacing: 0.12em;
+  color: var(--text-primary);
+  opacity: 0.55;
+  position: fixed;
+  top: 33vh;
+  left: 50%;
+  translate: -50% -50%;
+  z-index: 39;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.7s ease;
+}
+.zen-title.is-working {
+  opacity: 0.12;
+}

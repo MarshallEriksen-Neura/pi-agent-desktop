@@ -70,6 +70,7 @@ export function TerminalDrawer() {
       if (disposed || !hostRef.current) return;
 
       const term = new Terminal({
+        allowProposedApi: true,
         fontFamily:
           '"SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace',
         fontSize: 12.5,
