@@ -98,6 +98,10 @@ jobs:
           # optional Windows code signing (set the secrets to enable)
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          # Resolve the cc-no-brepro wrapper via the workspace path so Cargo
+          # finds cl.exe regardless of how the local config.toml encodes paths.
+          CC_x86_64-pc-windows-msvc: ${{ github.workspace }}\src-tauri\.cargo\cc-no-brepro.cmd
+          CXX_x86_64-pc-windows-msvc: ${{ github.workspace }}\src-tauri\.cargo\cc-no-brepro.cmd
         with:
           projectPath: .
           releaseId: ${{ needs.create-release.outputs.release_id }}

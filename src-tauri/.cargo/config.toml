@@ -5,5 +5,5 @@
 # and strips `-Brepro` before invoking the real cl.exe. Only affects the
 # windows-msvc C/C++ toolchain.
 [env]
-CC_x86_64-pc-windows-msvc = "D:\\20260302170616\\ragcode-pi\\src-tauri\\.cargo\\cc-no-brepro.cmd"
-CXX_x86_64-pc-windows-msvc = "D:\\20260302170616\\ragcode-pi\\src-tauri\\.cargo\\cc-no-brepro.cmd"
+CC_x86_64-pc-windows-msvc = "src-tauri/.cargo/cc-no-brepro.cmd"
+CXX_x86_64-pc-windows-msvc = "src-tauri/.cargo/cc-no-brepro.cmd"
