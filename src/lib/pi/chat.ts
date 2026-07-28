@@ -5,6 +5,8 @@ import { getPiClient } from "./client";
 import type { PiEvent, AssistantMessageEvent, PiImage } from "./protocol";
 import { showNotification } from "../notifications";
 import { useUI } from "../store";
+import { usePi } from "./store";
+import { t } from "../i18n";
 
 export interface ChatToolCall {
   id: string;
@@ -22,6 +24,10 @@ export interface ChatMessage {
   thinking: string;
   tools: ChatToolCall[];
   streaming: boolean;
+  /** true when this message represents a failed run (pi error / crash / not connected) */
+  isError?: boolean;
+  /** human-readable error detail rendered in a banner */
+  errorText?: string;
 }
 
 export interface RetryState {
@@ -39,7 +45,7 @@ interface ChatStore {
   activeRetries: Map<string, RetryState>;
 
   init: () => void;
-  send: (text: string, images?: string[]) => void;
+  send: (text: string, images?: string[]) => Promise<void>;
   abort: () => void;
   clear: () => void;
   /** Replace the conversation with persisted messages (session restore/switch). */
@@ -75,6 +81,40 @@ function patchLastAssistant(
   return messages;
 }
 
+/** buffer of the most recent pi stderr, used to enrich crash error messages */
+let pendingStderr = "";
+
+/** Build a zustand updater that appends (or upgrades the last) assistant message to an error bubble. */
+function appendAssistantError(text: string) {
+  return (s: ChatStore): Partial<ChatStore> => {
+    const hasAssistant = s.messages.some((m) => m.role === "assistant");
+    return {
+      streaming: false,
+      messages: hasAssistant
+        ? patchLastAssistant(s.messages, (m) => ({
+            ...m,
+            streaming: false,
+            isError: true,
+            errorText: text,
+            text: m.text || text,
+          }))
+        : [
+            ...s.messages,
+            {
+              id: nid(),
+              role: "assistant" as const,
+              text: "",
+              thinking: "",
+              tools: [],
+              streaming: false,
+              isError: true,
+              errorText: text,
+            },
+          ],
+    };
+  };
+}
+
 export const useChat = create<ChatStore>((set, get) => ({
   messages: [],
   streaming: false,
@@ -108,6 +148,37 @@ export const useChat = create<ChatStore>((set, get) => ({
 
     client.on("agent_start", () => set({ streaming: true }));
     client.on("message_start", () => ensureAssistant());
+
+    // ── pi error / crash surfacing ──
+    // All real pi errors land on stderr; an unexpected process exit means the
+    // run was interrupted. Capture stderr so we can enrich the crash message,
+    // and finalize the run as an error if pi dies mid-stream.
+    client.onStderr((line) => {
+      pendingStderr += line + "\n";
+      if (pendingStderr.length > 8000) pendingStderr = pendingStderr.slice(-8000);
+    });
+
+    client.onExit((code) => {
+      const s = get();
+      if (!s.streaming) return; // not mid-run: a normal exit, ignore
+      const detail = pendingStderr.trim();
+      let errText: string;
+      if (detail) {
+        errText = `${t("agent.taskFailed")}\n\n${detail.slice(-2000)}`;
+      } else if (typeof code === "number") {
+        errText = t("agent.piExited", { code: String(code) });
+      } else {
+        errText = t("agent.piExitedUnknown");
+      }
+      useUI.getState().endAgentRun();
+      usePi.setState({ status: "disconnected" });
+      set(appendAssistantError(errText));
+      pendingStderr = "";
+      const { notificationSettings } = useUI.getState();
+      if (notificationSettings.enabled) {
+        showNotification(t("agent.taskFailedTitle"), { body: errText.slice(0, 120) });
+      }
+    });
 
     client.on("message_update", (e: PiEvent) => {
       if (e.type !== "message_update") return;
@@ -231,12 +302,44 @@ export const useChat = create<ChatStore>((set, get) => ({
     });
   },
 
-  send: (text, images) => {
+  send: async (text, images) => {
     const trimmed = text.trim();
     const piImages = (images ?? [])
       .map(dataUrlToPiImage)
       .filter((x): x is PiImage => x !== null);
     if (!trimmed && piImages.length === 0) return;
+
+    // Fast feedback when pi isn't connected at all — don't leave the user blind.
+    const piStatus = usePi.getState().status;
+    const piUsable = piStatus === "ready" || piStatus === "running";
+    if (!piUsable) {
+      set((s) => ({
+        messages: [
+          ...s.messages,
+          {
+            id: nid(),
+            role: "user" as const,
+            text: trimmed,
+            ...(images?.length ? { images } : {}),
+            thinking: "",
+            tools: [],
+            streaming: false,
+          },
+          {
+            id: nid(),
+            role: "assistant" as const,
+            text: "",
+            thinking: "",
+            tools: [],
+            streaming: false,
+            isError: true,
+            errorText: t("agent.piUnavailable"),
+          },
+        ],
+      }));
+      return;
+    }
+
     set((s) => ({
       messages: [
         ...s.messages,
@@ -252,11 +355,27 @@ export const useChat = create<ChatStore>((set, get) => ({
       ],
       streaming: true,
     }));
-    getPiClient().send({
-      type: "prompt",
-      message: trimmed,
-      ...(piImages.length ? { images: piImages } : {}),
-    });
+
+    try {
+      const res = await getPiClient().request({
+        type: "prompt",
+        message: trimmed,
+        ...(piImages.length ? { images: piImages } : {}),
+      });
+      if (!res.success) {
+        set(appendAssistantError(res.error || t("agent.taskFailed")));
+      }
+    } catch {
+      // A thrown request means no ack (timeout / pi died mid-send). Only surface
+      // it when pi is clearly not connected, and avoid duplicating a crash banner
+      // that onExit may have already appended.
+      if (usePi.getState().status === "disconnected") {
+        const last = get().messages[get().messages.length - 1];
+        if (!last || !last.isError) {
+          set(appendAssistantError(t("agent.piNoResponse")));
+        }
+      }
+    }
   },
 
   abort: () => {

@@ -106,6 +106,19 @@
   --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", ui-monospace,
     Menlo, Consolas, monospace;
 
+  /* ── Ink wash accents (models page) ── */
+  --ink-title: rgba(0, 0, 0, 0.9);
+  --ink-accent: #2c5aa0;
+  --ink-border: rgba(60, 60, 67, 0.12);
+  --card-bg: rgba(255, 255, 255, 0.72);
+  --input-bg: rgba(255, 255, 255, 0.55);
+  --ink-paper-bg: radial-gradient(circle at 20% 10%, rgba(44, 90, 160, 0.06) 0%, transparent 40%),
+    linear-gradient(180deg, #f7f5f0 0%, #ede9e1 100%);
+  --ink-hero-bg: radial-gradient(circle at 80% 0%, rgba(44, 90, 160, 0.18) 0%, transparent 50%),
+    radial-gradient(circle at 0% 100%, rgba(196, 92, 72, 0.1) 0%, transparent 45%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.85) 0%, rgba(247, 245, 240, 0.95) 100%);
+  --ink-row-open-bg: rgba(0, 0, 0, 0.01);
+
   color-scheme: light;
 }
 
@@ -167,6 +180,19 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.6);
+
+  /* ── Ink wash accents (models page, dark) ── */
+  --ink-title: rgba(255, 255, 255, 0.92);
+  --ink-accent: #5c9dff;
+  --ink-border: rgba(84, 84, 88, 0.36);
+  --card-bg: rgba(28, 28, 30, 0.72);
+  --input-bg: rgba(28, 28, 30, 0.55);
+  --ink-paper-bg: radial-gradient(circle at 20% 10%, rgba(255, 255, 255, 0.04) 0%, transparent 40%),
+    linear-gradient(180deg, #121212 0%, #0f0f0f 100%);
+  --ink-hero-bg: radial-gradient(circle at 80% 0%, rgba(44, 90, 160, 0.25) 0%, transparent 50%),
+    radial-gradient(circle at 0% 100%, rgba(196, 92, 72, 0.12) 0%, transparent 45%),
+    linear-gradient(135deg, rgba(30, 30, 30, 0.85) 0%, rgba(20, 20, 20, 0.95) 100%);
+  --ink-row-open-bg: rgba(255, 255, 255, 0.02);
 
   color-scheme: dark;
 }
@@ -285,6 +311,12 @@ body {
 :focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* Composer textarea already gets its focus state from the rounded wrapper,
+   so suppress its global focus ring to keep the outline shape consistent. */
+.composer-textarea:focus-visible {
+  box-shadow: none;
 }
 
 /* ── Status screens (404 / error / loading) ─────────────────────────────

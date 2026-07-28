@@ -124,6 +124,42 @@ function AssistantMessage({ m }: { m: ChatMessage }) {
     >
       {m.thinking && <ThinkingBlock text={m.thinking} done={!m.streaming} />}
 
+      {m.isError && (
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "flex-start",
+            padding: "9px 11px",
+            margin: "4px 0",
+            borderRadius: 10,
+            background: "color-mix(in srgb, var(--danger) 12%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--danger) 45%, transparent)",
+            fontSize: 12.5,
+            lineHeight: 1.55,
+            color: "var(--text-primary)",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          <span style={{ color: "var(--danger)", flexShrink: 0, lineHeight: 1.5 }}>⚠</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, color: "var(--danger)", marginBottom: 2 }}>
+              {t("agent.taskFailedTitle")}
+            </div>
+            <div
+              style={{
+                fontFamily: (m.errorText ?? "").includes("\n") ? "var(--font-mono)" : undefined,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {m.errorText ?? t("agent.taskFailed")}
+            </div>
+          </div>
+        </div>
+      )}
+
       {m.tools.map((tool) => (
         <div
           key={tool.id}

@@ -84,11 +84,21 @@ export const zh: Record<keyof typeof en, string> = {
   "agent.closePreview": "关闭预览",
   "agent.thought": "已思考",
   "agent.thinking": "思考中…",
+  "agent.loading": "Pi 正在思考…",
+  "agent.loadingHint": "正在梳理上下文",
 
   // retry transparency
   "retry.inProgress": "重试中…（第 {attempt}/{max} 次）",
   "retry.success": "重试成功（共 {attempt} 次）",
   "retry.failed": "重试失败：{reason}",
+
+  // task failure surfacing
+  "agent.taskFailedTitle": "Pi 任务出错",
+  "agent.taskFailed": "任务执行过程中出现错误，已停止。",
+  "agent.piExited": "Pi 进程已退出（退出码 {code}），任务被中断。",
+  "agent.piExitedUnknown": "Pi 进程已退出，任务被中断。",
+  "agent.piUnavailable": "Pi 未连接或未运行，任务未发送。请在设置中确认 Pi CLI 已安装并启动。",
+  "agent.piNoResponse": "未收到 Pi 的响应，任务可能未被接收。请确认 Pi 正在运行。",
 
   // queue
   "queue.badge": "{count} 个排队中",
@@ -298,6 +308,17 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.resetAppearanceDetail": "清除自定义颜色、背景图片、CSS 与文字大小",
   "settings.notifications": "桌面通知",
   "settings.notificationsDetail": "窗口隐藏时消息完成后显示系统通知",
+  "settings.closeBehavior": "关闭窗口时",
+  "settings.closeBehaviorFooter":
+    "点击关闭按钮时的行为。“每次询问”会弹出本提示；其他选项直接生效，可随时在此修改。",
+  "settings.closeBehavior.ask": "每次询问",
+  "settings.closeBehavior.minimize": "最小化到托盘",
+  "settings.closeBehavior.quit": "退出",
+  "closeDialog.title": "退出还是最小化到托盘？",
+  "closeDialog.message": "你是要退出 Pi Desktop，还是让它留在系统托盘继续运行？",
+  "closeDialog.remember": "记住我的选择",
+  "closeDialog.minimize": "最小化到托盘",
+  "closeDialog.quit": "退出",
 
   // models page
   "models.title": "模型",
@@ -335,6 +356,34 @@ export const zh: Record<keyof typeof en, string> = {
   "models.editModel": "编辑模型",
   "models.editConfirm": "保存",
   "models.cancel": "取消",
+  "models.footer": "定义在 ~/.pi/agent/models.json。修改后需重启 pi 才会出现在模型列表中。",
+  "models.namePlaceholder": "可选显示名称",
+  "models.apiKeyPlaceholder": "可选 — 也支持 !cmd 或 $ENV",
+  "models.customModels": "自定义模型",
+  "models.allModels": "全部模型",
+  "models.allModelsFooter": "pi 所知的每一个模型，按提供商分组。",
+  "models.modelCount": "{n} 个模型",
+  "models.addProvider": "添加提供商",
+  "models.createProvider": "创建",
+  "models.noProviders": "还没有提供商 —— 先添加一个以开始配置模型。",
+  "models.customModelsHelp": "只需配置一次提供商，然后即可获取模型列表或手动添加模型。",
+  "models.saveProvider": "保存提供商",
+  "models.fetchModels": "获取模型列表",
+  "models.fetching": "获取中…",
+  "models.fetchFailed": "获取失败：{error}",
+  "models.selectModelsToAdd": "选择要添加的模型",
+  "models.addAllSelected": "添加选中的 {n} 个",
+  "models.removeProvider": "删除提供商",
+  "models.manualAdd": "手动添加模型",
+  "models.enabledInChat": "聊天中显示的模型",
+  "models.enabledInChatFooter":
+    "仅勾选的模型会显示在聊天 UI 的模型选择器里。全部不勾选则显示所有模型。写入 settings.json 的 enabledModels。",
+  "models.currentModel": "当前模型",
+  "models.currentModelSubtitle": "当前对话正在使用",
+  "models.searchModels": "搜索模型…",
+  "models.noSearchResults": "没有匹配的模型",
+  "models.providerSettings": "服务商设置",
+  "models.configure": "配置",
 
   // plugins page
   "plugins.title": "插件",
@@ -485,4 +534,11 @@ export const zh: Record<keyof typeof en, string> = {
   "cliUpdate.upToDate": "pi 已是最新版本",
   "settings.softwareUpdate": "软件更新",
   "settings.softwareUpdateDetail": "版本 {version}",
+  // file tree context menu
+  "ctx.newFile": "新建文件",
+  "ctx.newFolder": "新建文件夹",
+  "ctx.rename": "重命名",
+  "ctx.delete": "删除",
+  "ctx.newFilePlaceholder": "文件名…",
+  "ctx.newFolderPlaceholder": "文件夹名…",
 };

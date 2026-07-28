@@ -80,6 +80,14 @@ interface WorkspaceStore {
   refreshDir: (path: string) => Promise<void>;
   updateDoc: (path: string, content: string) => void;
   saveFile: (path: string, content: string) => Promise<void>;
+  /** Create a new empty file and open it in the editor. */
+  createFile: (dirPath: string, name: string) => Promise<void>;
+  /** Create a new directory. */
+  createDir: (dirPath: string, name: string) => Promise<void>;
+  /** Delete a file or directory (recursive). */
+  deleteEntry: (path: string, isDir: boolean) => Promise<void>;
+  /** Rename a file or directory in place. */
+  renameEntry: (oldPath: string, newName: string) => Promise<void>;
 }
 
 export const useWorkspace = create<WorkspaceStore>((set, get) => ({
@@ -244,6 +252,92 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     if (get().mock) return; // nowhere to persist in browser preview
     try {
       await tauriInvoke("fs_write_file", { path, content });
+    } catch (e) {
+      set({ loadError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  createFile: async (dirPath, name) => {
+    if (get().mock) return;
+    const path = `${dirPath}/${name}`;
+    try {
+      await tauriInvoke("fs_create_file", { path });
+      await get().refreshDir(dirPath);
+      // open the new empty file in the editor
+      set((s) => ({ docs: { ...s.docs, [path]: "" } }));
+      useUI.getState().setActiveFile(path);
+    } catch (e) {
+      set({ loadError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  createDir: async (dirPath, name) => {
+    if (get().mock) return;
+    const path = `${dirPath}/${name}`;
+    try {
+      await tauriInvoke("fs_create_dir", { path });
+      await get().refreshDir(dirPath);
+    } catch (e) {
+      set({ loadError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  deleteEntry: async (path, isDir) => {
+    if (get().mock) return;
+    try {
+      await tauriInvoke("fs_delete", { path });
+      // remove from docs cache
+      set((s) => {
+        const docs = { ...s.docs };
+        const entries = { ...s.entries };
+        const expanded = { ...s.expanded };
+        if (isDir) {
+          // purge all cached children under this path
+          for (const key of Object.keys(docs)) {
+            if (key.startsWith(path + "/") || key === path) delete docs[key];
+          }
+          for (const key of Object.keys(entries)) {
+            if (key.startsWith(path + "/") || key === path) delete entries[key];
+          }
+          for (const key of Object.keys(expanded)) {
+            if (key.startsWith(path + "/") || key === path) delete expanded[key];
+          }
+        } else {
+          delete docs[path];
+        }
+        return { docs, entries, expanded };
+      });
+      // if this was the active file, deselect it
+      if (useUI.getState().activeFile === path) {
+        useUI.getState().setActiveFile("");
+      }
+      // re-list the parent so it reflects the deletion
+      const parent = path.substring(0, path.lastIndexOf("/"));
+      if (parent) await get().refreshDir(parent);
+    } catch (e) {
+      set({ loadError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  renameEntry: async (oldPath, newName) => {
+    if (get().mock) return;
+    const parent = oldPath.substring(0, oldPath.lastIndexOf("/"));
+    const newPath = `${parent}/${newName}`;
+    try {
+      await tauriInvoke("fs_rename", { from: oldPath, to: newPath });
+      // migrate cached doc content to new key
+      set((s) => {
+        const docs = { ...s.docs };
+        if (oldPath in docs) {
+          docs[newPath] = docs[oldPath];
+          delete docs[oldPath];
+        }
+        return { docs };
+      });
+      if (useUI.getState().activeFile === oldPath) {
+        useUI.getState().setActiveFile(newPath);
+      }
+      if (parent) await get().refreshDir(parent);
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
     }

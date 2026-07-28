@@ -18,6 +18,10 @@ export interface Transport {
   start(opts: { cwd?: string; binary?: string }): Promise<void>;
   send(line: string): void;
   onLine(cb: (line: string) => void): () => void;
+  /** pi stderr (errors, stack traces, crash logs) */
+  onStderr(cb: (line: string) => void): () => void;
+  /** pi process exited (crashed or stopped) with the exit code */
+  onExit(cb: (code: number) => void): () => void;
   stop(): Promise<void>;
 }
 
@@ -30,13 +34,23 @@ export function isTauri(): boolean {
 class TauriTransport implements Transport {
   readonly kind = "tauri" as const;
   private listeners = new Set<(line: string) => void>();
+  private stderrListeners = new Set<(line: string) => void>();
+  private exitListeners = new Set<(code: number) => void>();
   private unlisten: (() => void) | null = null;
+  private unlistenStderr: (() => void) | null = null;
+  private unlistenExit: (() => void) | null = null;
 
   async start(opts: { cwd?: string; binary?: string }) {
     const { invoke } = await import("@tauri-apps/api/core");
     const { listen } = await import("@tauri-apps/api/event");
     this.unlisten = await listen<string>("pi://line", (e) => {
       this.listeners.forEach((l) => l(e.payload));
+    });
+    this.unlistenStderr = await listen<string>("pi://stderr", (e) => {
+      this.stderrListeners.forEach((l) => l(e.payload));
+    });
+    this.unlistenExit = await listen<number>("pi://exit", (e) => {
+      this.exitListeners.forEach((l) => l(e.payload));
     });
     await invoke("pi_start", {
       cwd: opts.cwd ?? null,
@@ -55,8 +69,20 @@ class TauriTransport implements Transport {
     return () => this.listeners.delete(cb);
   }
 
+  onStderr(cb: (line: string) => void) {
+    this.stderrListeners.add(cb);
+    return () => this.stderrListeners.delete(cb);
+  }
+
+  onExit(cb: (code: number) => void) {
+    this.exitListeners.add(cb);
+    return () => this.exitListeners.delete(cb);
+  }
+
   async stop() {
     this.unlisten?.();
+    this.unlistenStderr?.();
+    this.unlistenExit?.();
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("pi_stop");
   }
@@ -282,6 +308,16 @@ class MockTransport implements Transport {
     return () => this.listeners.delete(cb);
   }
 
+  onStderr(cb: (line: string) => void) {
+    // mock transport never emits stderr
+    return () => {};
+  }
+
+  onExit(cb: (code: number) => void) {
+    // mock transport never exits
+    return () => {};
+  }
+
   async stop() {
     this.listeners.clear();
   }
@@ -299,12 +335,18 @@ export class PiClient {
   private pending = new Map<string, (r: PiResponse) => void>();
   private subs = new Map<string, Set<EventCb>>();
   private anySubs = new Set<EventCb>();
+  private stderrSubs = new Set<(line: string) => void>();
+  private exitSubs = new Set<(code: number) => void>();
   private started = false;
 
   constructor(transport?: Transport) {
     this.transport =
       transport ?? (isTauri() ? new TauriTransport() : new MockTransport());
     this.transport.onLine((line) => this.handleLine(line));
+    this.transport.onStderr((line) => this.stderrSubs.forEach((l) => l(line)));
+    this.transport.onExit((code) => {
+      this.exitSubs.forEach((l) => l(code));
+    });
   }
 
   private handleLine(line: string) {
@@ -355,6 +397,18 @@ export class PiClient {
   onAny(cb: EventCb): () => void {
     this.anySubs.add(cb);
     return () => this.anySubs.delete(cb);
+  }
+
+  /** subscribe to pi stderr lines (errors, stack traces) */
+  onStderr(cb: (line: string) => void): () => void {
+    this.stderrSubs.add(cb);
+    return () => this.stderrSubs.delete(cb);
+  }
+
+  /** subscribe to pi process exit (crash / unexpected stop) */
+  onExit(cb: (code: number) => void): () => void {
+    this.exitSubs.add(cb);
+    return () => this.exitSubs.delete(cb);
   }
 
   async stop() {

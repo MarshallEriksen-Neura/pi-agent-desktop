@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useMemo } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -12,9 +13,12 @@ import {
   DropdownMenuSeparator,
 } from "@appica/ui-react/dropdown-menu";
 import { usePi } from "@/lib/pi/store";
+import { usePiSettings } from "@/lib/pi/settings";
 import { useT } from "@/lib/i18n";
 import { PROVIDER_META, fmtCtx } from "./provider-meta";
-import { Check, ChevronDown, Gem, SlidersHorizontal } from "lucide-react";
+import { resolveModelMetaOrFallback } from "@/lib/model-icon";
+import { ModelIcon } from "./icons";
+import { Check, ChevronDown, SlidersHorizontal } from "lucide-react";
 
 /**
  * Composer model selector — iOS-style chip that opens a menu of the user's
@@ -23,9 +27,31 @@ import { Check, ChevronDown, Gem, SlidersHorizontal } from "lucide-react";
  */
 export function ModelPicker({ compact = false }: { compact?: boolean }) {
   const { models, currentModel, setModel } = usePi();
+  const settings = usePiSettings();
   const t = useT();
 
-  const providers = [...new Set(models.map((m) => m.provider))];
+  useEffect(() => {
+    settings.load();
+  }, [settings]);
+
+  // Honour settings.json `enabledModels`: if it's a non-empty explicit list,
+  // only those models (matched as `provider/id` or bare `id`) appear here.
+  // Empty/legacy glob values mean "show all".
+  const enabled = settings.global.data?.enabledModels as string[] | undefined;
+  const visibleModels = useMemo(() => {
+    if (!enabled || enabled.length === 0) return models;
+    const hasGlob = enabled.some((e) => e.includes("*") || e.includes("?") || !e.includes("/"));
+    if (hasGlob) return models;
+    const set = new Set(enabled);
+    return models.filter((m) => set.has(`${m.provider}/${m.id}`) || set.has(m.id));
+  }, [models, enabled]);
+
+  const providers = [...new Set(visibleModels.map((m) => m.provider))];
+
+  const currentMeta = resolveModelMetaOrFallback(
+    currentModel?.id ?? "none",
+    currentModel?.provider
+  );
 
   return (
     <DropdownMenu>
@@ -54,7 +80,13 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
           />
         }
       >
-        <Gem size={11} style={{ flexShrink: 0, color: "var(--accent)" }} />
+        <span style={{ flexShrink: 0, display: "inline-flex" }}>
+          <ModelIcon
+            iconKey={currentMeta.iconKey}
+            size={11}
+            color={currentMeta.color}
+          />
+        </span>
         {/* iOS-clock-style roll when the model changes (same as TopBar) */}
         <AnimatePresence mode="popLayout" initial={false}>
           <motion.span
@@ -95,7 +127,7 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
           zIndex: 60,
         }}
       >
-        {models.length === 0 && (
+        {visibleModels.length === 0 && (
           <div
             style={{
               padding: "10px 12px",
@@ -122,12 +154,13 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
               {PROVIDER_META[p]?.label ?? p}
             </DropdownMenuGroupLabel>
 
-            {models
+            {visibleModels
               .filter((m) => m.provider === p)
               .map((m) => {
                 const active =
                   currentModel?.id === m.id &&
                   currentModel?.provider === m.provider;
+                const meta = resolveModelMetaOrFallback(m.id, m.provider);
                 return (
                   <DropdownMenuItem
                     key={`${m.provider}/${m.id}`}
@@ -143,15 +176,13 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
                       cursor: "pointer",
                     }}
                   >
-                    <span
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 99,
-                        flexShrink: 0,
-                        background: PROVIDER_META[p]?.bg ?? "var(--text-tertiary)",
-                      }}
-                    />
+                    <span style={{ flexShrink: 0, display: "inline-flex" }}>
+                      <ModelIcon
+                        iconKey={meta.iconKey}
+                        size={14}
+                        color={meta.color}
+                      />
+                    </span>
                     <span
                       style={{
                         flex: 1,

@@ -83,11 +83,21 @@ export const en = {
   "agent.closePreview": "Close preview",
   "agent.thought": "Thought",
   "agent.thinking": "Thinking…",
+  "agent.loading": "Pi is thinking…",
+  "agent.loadingHint": "tracing context",
 
   // retry transparency
   "retry.inProgress": "Retrying… (attempt {attempt}/{max})",
   "retry.success": "Retry succeeded after {attempt} attempts",
   "retry.failed": "Retry failed: {reason}",
+
+  // task failure surfacing
+  "agent.taskFailedTitle": "Pi task failed",
+  "agent.taskFailed": "The task stopped with an error.",
+  "agent.piExited": "Pi process exited (code {code}) — the run was interrupted.",
+  "agent.piExitedUnknown": "Pi process exited — the run was interrupted.",
+  "agent.piUnavailable": "Pi is not connected or not running, so the task was not sent. Check the Pi CLI is installed and started in Settings.",
+  "agent.piNoResponse": "No response from Pi — the task may not have been received. Make sure Pi is running.",
 
   // queue
   "queue.badge": "{count} queued",
@@ -305,6 +315,18 @@ export const en = {
     "Clear custom colors, background image, CSS and text size",
   "settings.notifications": "Desktop Notifications",
   "settings.notificationsDetail": "Show OS notifications when messages complete while window is hidden",
+  "settings.closeBehavior": "When closing the window",
+  "settings.closeBehaviorFooter":
+    'What happens when you click the close button. "Ask" shows this prompt every time; the other choices act immediately and you can change them here anytime.',
+  "settings.closeBehavior.ask": "Ask each time",
+  "settings.closeBehavior.minimize": "Minimize to tray",
+  "settings.closeBehavior.quit": "Quit",
+  "closeDialog.title": "Quit or minimize to tray?",
+  "closeDialog.message":
+    "Do you want to quit Pi Desktop, or keep it running in the system tray?",
+  "closeDialog.remember": "Remember my choice",
+  "closeDialog.minimize": "Minimize to tray",
+  "closeDialog.quit": "Quit",
 
   // models page
   "models.title": "Models",
@@ -343,6 +365,36 @@ export const en = {
   "models.editModel": "Edit model",
   "models.editConfirm": "Save changes",
   "models.cancel": "Cancel",
+  "models.footer":
+    "Defined in ~/.pi/agent/models.json. Restart pi after changes for them to appear in the model list.",
+  "models.namePlaceholder": "optional display name",
+  "models.apiKeyPlaceholder": "optional — !cmd or $ENV also works",
+  "models.customModels": "Custom models",
+  "models.allModels": "All models",
+  "models.allModelsFooter": "Every model pi knows about, grouped by provider.",
+  "models.modelCount": "{n} models",
+  "models.addProvider": "Add provider",
+  "models.createProvider": "Create",
+  "models.noProviders": "No providers yet — add one to start configuring models.",
+  "models.customModelsHelp":
+    "Configure a provider once, then fetch its model list or add models by hand.",
+  "models.saveProvider": "Save provider",
+  "models.fetchModels": "Fetch model list",
+  "models.fetching": "Fetching…",
+  "models.fetchFailed": "Fetch failed: {error}",
+  "models.selectModelsToAdd": "Select models to add",
+  "models.addAllSelected": "Add {n} selected",
+  "models.removeProvider": "Remove provider",
+  "models.manualAdd": "Add model manually",
+  "models.enabledInChat": "Models shown in chat",
+  "models.enabledInChatFooter":
+    "Only checked models appear in the chat model picker. Leave all unchecked to show everything. Saved to settings.json enabledModels.",
+  "models.currentModel": "Current model",
+  "models.currentModelSubtitle": "Active in this conversation",
+  "models.searchModels": "Search models…",
+  "models.noSearchResults": "No models match your search.",
+  "models.providerSettings": "Provider settings",
+  "models.configure": "Configure",
 
   // plugins page
   "plugins.title": "Plugins",
@@ -506,4 +558,12 @@ export const en = {
   "cliUpdate.upToDate": "pi is up to date",
   "settings.softwareUpdate": "Software Update",
   "settings.softwareUpdateDetail": "Version {version}",
+
+  // file tree context menu
+  "ctx.newFile": "New File",
+  "ctx.newFolder": "New Folder",
+  "ctx.rename": "Rename",
+  "ctx.delete": "Delete",
+  "ctx.newFilePlaceholder": "file name…",
+  "ctx.newFolderPlaceholder": "folder name…",
 } as const;

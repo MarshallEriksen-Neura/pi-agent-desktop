@@ -1,34 +1,1011 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Badge } from "@appica/ui-react/badge";
-import { Button } from "@appica/ui-react/button";
-import { usePi, THINKING_LEVELS } from "@/lib/pi/store";
-import { usePiSettings } from "@/lib/pi/settings";
-import { usePiModels, API_TYPES, type CustomModelDef } from "@/lib/pi/models";
 import {
-  SettingsPage,
-  InsetGroup,
-  GroupRow,
-  Segmented,
-  StringListEditor,
-} from "@/components/settings-ui";
-import { PROVIDER_META, fmtCtx } from "@/components/provider-meta";
-import { useT } from "@/lib/i18n";
-import { Settings, Check, Plus, X, Boxes, Pencil } from "lucide-react";
+  Bot,
+  Check,
+  ChevronDown,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings2,
+  Trash2,
+  X,
+} from "lucide-react";
 
-const fieldInput: React.CSSProperties = {
-  width: "100%",
-  padding: "6px 10px",
-  fontSize: 13,
-  fontFamily: "var(--font-mono, monospace)",
-  color: "var(--text-primary)",
-  background: "var(--bg-sunken)",
-  border: "1px solid var(--separator)",
-  borderRadius: 8,
-  outline: "none",
-};
+import {
+  GroupRow,
+  InsetGroup,
+  SettingsPage,
+} from "@/components/settings-ui";
+import { ProviderMeta, PROVIDER_META } from "@/components/provider-meta";
+import { ModelIcon } from "@/components/icons";
+import { resolveModelMetaOrFallback } from "@/lib/model-icon";
+import { useT } from "@/lib/i18n";
+import { usePi } from "@/lib/pi/store";
+import { usePiSettings } from "@/lib/pi/settings";
+import {
+  API_TYPES,
+  type CustomModelDef,
+  type CustomProvider,
+  usePiModels,
+} from "@/lib/pi/models";
+
+const spring = { type: "spring" as const, stiffness: 320, damping: 28 };
+
+export default function ModelsPage() {
+  const t = useT();
+
+  const piStatus = usePi((s) => s.status);
+  const piModels = usePi((s) => s.models);
+
+  const piModelsStore = usePiModels();
+  const customProviders = piModelsStore.data.providers;
+  const customLoaded = piModelsStore.loaded;
+
+  const piSettings = usePiSettings();
+  const dirtyRestart = piSettings.dirtyRestart;
+  const enabledModels = piSettings.effective().enabledModels ?? [];
+
+  const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [addingProvider, setAddingProvider] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<{ id: string; provider: CustomProvider } | null>(null);
+  const [addingModelProviderId, setAddingModelProviderId] = useState<string | null>(null);
+  const [editingModel, setEditingModel] = useState<
+    { providerId: string; model: CustomModelDef } | null
+  >(null);
+  const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null);
+  const [fetchResult, setFetchResult] = useState<{
+    providerId: string;
+    models: string[];
+    selected: string[];
+  } | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    piModelsStore.load();
+    piSettings.load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const ids = Object.keys(customProviders);
+    if (ids.length > 0) {
+      setExpanded((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        ids.forEach((id) => {
+          if (next[id] === undefined) {
+            next[id] = true;
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    }
+  }, [customProviders]);
+
+  const setEnabled = async (modelId: string) => {
+    const next = new Set(enabledModels);
+    if (next.has(modelId)) next.delete(modelId);
+    else next.add(modelId);
+    await piSettings.setKey("global", "enabledModels", Array.from(next));
+  };
+
+  const toggleExpanded = (providerId: string) => {
+    setExpanded((prev) => ({ ...prev, [providerId]: !prev[providerId] }));
+  };
+
+  const handleSaveProvider = async (providerId: string, provider: CustomProvider) => {
+    await piModelsStore.updateProvider(providerId, {
+      baseUrl: provider.baseUrl,
+      api: provider.api,
+      apiKey: provider.apiKey,
+    });
+    setAddingProvider(false);
+    setEditingProvider(null);
+  };
+
+  const handleRemoveProvider = async (providerId: string) => {
+    if (!confirm(t("models.removeProvider") + "?")) return;
+    await piModelsStore.removeProvider(providerId);
+  };
+
+  const handleSaveModel = async (
+    providerId: string,
+    model: CustomModelDef,
+    original?: { providerId: string; modelId: string }
+  ) => {
+    if (original) {
+      await piModelsStore.updateModel(
+        original.providerId,
+        original.modelId,
+        providerId,
+        {
+          baseUrl: customProviders[providerId]?.baseUrl ?? "",
+          api: customProviders[providerId]?.api ?? API_TYPES[0],
+          apiKey: customProviders[providerId]?.apiKey,
+        },
+        model
+      );
+    } else {
+      await piModelsStore.addModel(providerId, {
+        baseUrl: customProviders[providerId]?.baseUrl ?? "",
+        api: customProviders[providerId]?.api ?? API_TYPES[0],
+        apiKey: customProviders[providerId]?.apiKey,
+      }, model);
+    }
+    setAddingModelProviderId(null);
+    setEditingModel(null);
+  };
+
+  const handleRemoveModel = async (providerId: string, modelId: string) => {
+    if (!confirm(t("models.removeModel") + "?")) return;
+    await piModelsStore.removeModel(providerId, modelId);
+  };
+
+  const handleFetch = async (providerId: string) => {
+    const provider = customProviders[providerId];
+    if (!provider) return;
+    setFetchingProviderId(providerId);
+    setFetchError(null);
+    try {
+      const list = await piModelsStore.fetchModels(provider.baseUrl, provider.api, provider.apiKey);
+      const existing = new Set(provider.models.map((m) => m.id));
+      const selectable = list.filter((id) => !existing.has(id));
+      setFetchResult({
+        providerId,
+        models: selectable,
+        selected: selectable,
+      });
+    } catch (e) {
+      setFetchError(String(e));
+    } finally {
+      setFetchingProviderId(null);
+    }
+  };
+
+  const handleAddFetched = async () => {
+    if (!fetchResult) return;
+    const provider = customProviders[fetchResult.providerId];
+    if (!provider) return;
+    await piModelsStore.addModels(
+      fetchResult.providerId,
+      {
+        baseUrl: provider.baseUrl,
+        api: provider.api,
+        apiKey: provider.apiKey,
+      },
+      fetchResult.selected.map((id) => ({ id, name: id }))
+    );
+    setFetchResult(null);
+  };
+
+  const filteredProviderEntries = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return Object.entries(customProviders)
+      .map(([providerId, provider]) => {
+        const providerMatch = providerId.toLowerCase().includes(term);
+        const matchedModels = provider.models.filter(
+          (m) =>
+            providerMatch ||
+            m.id.toLowerCase().includes(term) ||
+            (m.name && m.name.toLowerCase().includes(term))
+        );
+        return { providerId, provider, matchedModels, providerMatch };
+      })
+      .filter(({ matchedModels, providerMatch }) => providerMatch || matchedModels.length > 0);
+  }, [customProviders, search]);
+
+  const paperBg = "var(--ink-paper-bg)";
+
+  return (
+    <SettingsPage title={t("models.title")} subtitle={t("models.customModelsHelp")}>
+      <div
+        className="min-h-full"
+        style={{
+          background: paperBg,
+          padding: "8px 0 48px",
+        }}
+      >
+        <div style={{ display: "grid", gap: 20 }}>
+          {/* Toolbar */}
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ ...spring, delay: 0.05 }}
+            className="flex items-center gap-3"
+          >
+            <div
+              className="flex flex-1 items-center gap-2 rounded-2xl px-3.5 py-2.5"
+              style={{
+                background: "var(--input-bg)",
+                border: "1px solid var(--ink-border)",
+                boxShadow: "inset 0 1px 2px rgba(0,0,0,0.04)",
+              }}
+            >
+              <Search size={16} style={{ color: "var(--muted-foreground)" }} />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={t("models.searchModels")}
+                className="flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--muted-foreground)]"
+                style={{ color: "var(--foreground)" }}
+              />
+              {search && (
+                <button onClick={() => setSearch("")} style={{ color: "var(--muted-foreground)" }}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => setAddingProvider(true)}
+              className="flex shrink-0 items-center gap-1.5 rounded-2xl px-4 py-2.5 text-sm font-medium transition-transform active:scale-95"
+              style={{
+                background: "var(--ink-accent)",
+                color: "#fff",
+                boxShadow: "0 6px 20px rgba(44,90,160,0.28)",
+              }}
+            >
+              <Plus size={16} />
+              {t("models.addProvider")}
+            </button>
+          </motion.div>
+
+          {/* Provider cards */}
+          <motion.section
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ ...spring, delay: 0.1 }}
+            style={{ display: "grid", gap: 14 }}
+          >
+            {filteredProviderEntries.map(({ providerId, provider, matchedModels }) => {
+              const isOpen = !!expanded[providerId];
+              const enabledCount = provider.models.filter((m) =>
+                enabledModels.includes(m.id)
+              ).length;
+              return (
+                <div
+                  key={providerId}
+                  className="overflow-hidden"
+                  style={{
+                    borderRadius: 24,
+                    background: "var(--card-bg)",
+                    border: "1px solid var(--ink-border)",
+                    boxShadow: "0 12px 40px rgba(0,0,0,0.06)",
+                  }}
+                >
+                  <button
+                    onClick={() => toggleExpanded(providerId)}
+                    className="flex w-full items-center justify-between p-4 text-left transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02]"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <ProviderMeta provider={providerId} size={22} />
+                      <div className="min-w-0">
+                        <p
+                          className="truncate text-[15px] font-semibold"
+                          style={{ color: "var(--ink-title)" }}
+                        >
+                          {PROVIDER_META[providerId]?.label ?? providerId}
+                        </p>
+                        <p
+                          className="truncate text-xs"
+                          style={{ color: "var(--muted-foreground)" }}
+                        >
+                          {t("models.modelCount", { n: provider.models.length })}
+                          {enabledCount > 0 && (
+                            <>
+                              {" · "}
+                              {t("models.enabledInChat")}: {enabledCount}
+                            </>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {provider.models.length > 0 && (
+                        <span
+                          className="hidden text-xs sm:inline"
+                          style={{ color: "var(--muted-foreground)" }}
+                        >
+                          {isOpen ? t("models.configure") : t("models.configure")}
+                        </span>
+                      )}
+                      <motion.div
+                        animate={{ rotate: isOpen ? 180 : 0 }}
+                        transition={{ duration: 0.25 }}
+                        style={{ color: "var(--muted-foreground)" }}
+                      >
+                        <ChevronDown size={18} />
+                      </motion.div>
+                    </div>
+                  </button>
+
+                  <AnimatePresence initial={false}>
+                    {isOpen && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+                        className="overflow-hidden"
+                      >
+                        <div
+                          style={{
+                            borderTop: "1px solid var(--ink-border)",
+                            padding: "16px",
+                            background: "var(--ink-row-open-bg)",
+                          }}
+                        >
+                          {/* Provider actions */}
+                          <div className="mb-4 flex flex-wrap gap-2">
+                            <button
+                              onClick={() => setEditingProvider({ id: providerId, provider })}
+                              className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors"
+                              style={{
+                                background: "var(--input-bg)",
+                                border: "1px solid var(--ink-border)",
+                                color: "var(--foreground)",
+                              }}
+                            >
+                              <Settings2 size={13} />
+                              {t("models.providerSettings")}
+                            </button>
+                            <button
+                              onClick={() => handleFetch(providerId)}
+                              disabled={fetchingProviderId === providerId}
+                              className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+                              style={{
+                                background: "var(--input-bg)",
+                                border: "1px solid var(--ink-border)",
+                                color: "var(--foreground)",
+                              }}
+                            >
+                              <RefreshCw
+                                size={13}
+                                className={fetchingProviderId === providerId ? "animate-spin" : ""}
+                              />
+                              {t("models.fetchModels")}
+                            </button>
+                            <button
+                              onClick={() => setAddingModelProviderId(providerId)}
+                              className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors"
+                              style={{
+                                background: "var(--input-bg)",
+                                border: "1px solid var(--ink-border)",
+                                color: "var(--foreground)",
+                              }}
+                            >
+                              <Plus size={13} />
+                              {t("models.addModel")}
+                            </button>
+                            <button
+                              onClick={() => handleRemoveProvider(providerId)}
+                              className="ml-auto inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors"
+                              style={{
+                                background: "rgba(196,92,72,0.08)",
+                                color: "#c45c48",
+                                border: "1px solid rgba(196,92,72,0.18)",
+                              }}
+                            >
+                              <Trash2 size={13} />
+                              {t("models.removeProvider")}
+                            </button>
+                          </div>
+
+                          {/* Models grid */}
+                          {matchedModels.length === 0 ? (
+                            <div
+                              className="rounded-2xl py-8 text-center text-sm"
+                              style={{
+                                background: "var(--input-bg)",
+                                color: "var(--muted-foreground)",
+                              }}
+                            >
+                              {t("models.noSearchResults")}
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                              {matchedModels.map((model) => {
+                                const enabled = enabledModels.includes(model.id);
+                                const meta = resolveModelMetaOrFallback(model.id, providerId);
+                                return (
+                                  <motion.div
+                                    key={model.id}
+                                    layout
+                                    whileTap={{ scale: 0.98 }}
+                                    className="group flex items-center gap-2.5 rounded-2xl border p-3 transition-shadow"
+                                    style={{
+                                      background: "var(--input-bg)",
+                                      borderColor: enabled
+                                        ? "rgba(44,90,160,0.35)"
+                                        : "var(--ink-border)",
+                                      boxShadow: enabled
+                                        ? "0 0 0 1px rgba(44,90,160,0.1)"
+                                        : "none",
+                                    }}
+                                  >
+                                    <button
+                                      onClick={() => setEnabled(model.id)}
+                                      className="flex shrink-0 items-center justify-center rounded-lg transition-colors"
+                                      style={{
+                                        width: 22,
+                                        height: 22,
+                                        background: enabled
+                                          ? "var(--ink-accent)"
+                                          : "var(--card-bg)",
+                                        border: "1.5px solid",
+                                        borderColor: enabled
+                                          ? "var(--ink-accent)"
+                                          : "var(--ink-border)",
+                                        color: enabled ? "#fff" : "transparent",
+                                      }}
+                                    >
+                                      <Check size={13} strokeWidth={3} />
+                                    </button>
+                                    <span style={{ flexShrink: 0, display: "inline-flex" }}>
+                                      <ModelIcon iconKey={meta.iconKey} size={16} color={meta.color} />
+                                    </span>
+                                    <div
+                                      className="min-w-0 flex-1 cursor-pointer"
+                                      onClick={() =>
+                                        setEditingModel({ providerId, model })
+                                      }
+                                    >
+                                      <p
+                                        className="truncate text-sm font-medium"
+                                        style={{ color: "var(--ink-title)" }}
+                                      >
+                                        {model.name || model.id}
+                                      </p>
+                                      <p
+                                        className="truncate text-[11px]"
+                                        style={{ color: "var(--muted-foreground)" }}
+                                      >
+                                        {model.id}
+                                      </p>
+                                    </div>
+                                    <button
+                                      onClick={() => handleRemoveModel(providerId, model.id)}
+                                      className="opacity-0 transition-opacity group-hover:opacity-100"
+                                      style={{ color: "var(--muted-foreground)" }}
+                                    >
+                                      <X size={14} />
+                                    </button>
+                                  </motion.div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })}
+
+            {filteredProviderEntries.length === 0 && customLoaded && (
+              <div
+                className="rounded-3xl border py-12 text-center"
+                style={{
+                  background: "var(--card-bg)",
+                  borderColor: "var(--ink-border)",
+                }}
+              >
+                <div
+                  className="mx-auto mb-3 flex items-center justify-center rounded-2xl"
+                  style={{
+                    width: 56,
+                    height: 56,
+                    background: "rgba(44,90,160,0.08)",
+                    color: "var(--ink-accent)",
+                  }}
+                >
+                  <Bot size={24} strokeWidth={1.5} />
+                </div>
+                <p
+                  className="px-6 text-sm"
+                  style={{ color: "var(--muted-foreground)" }}
+                >
+                  {search ? t("models.noSearchResults") : t("models.noProviders")}
+                </p>
+                {!search && (
+                  <button
+                    onClick={() => setAddingProvider(true)}
+                    className="mt-4 inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-medium"
+                    style={{ background: "var(--ink-accent)", color: "#fff" }}
+                  >
+                    <Plus size={16} />
+                    {t("models.addProvider")}
+                  </button>
+                )}
+              </div>
+            )}
+          </motion.section>
+
+          {/* Enabled in chat note */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.2 }}
+            className="rounded-2xl border px-4 py-3 text-xs"
+            style={{
+              background: "rgba(44,90,160,0.05)",
+              borderColor: "rgba(44,90,160,0.18)",
+              color: "var(--muted-foreground)",
+            }}
+          >
+            {t("models.enabledInChatFooter")}
+          </motion.div>
+
+          {/* All models reported by pi */}
+          {piStatus === "ready" && (
+            <AllModelsSection
+              enabledModels={enabledModels}
+              onToggle={setEnabled}
+            />
+          )}
+
+          {/* Restart hint */}
+          {dirtyRestart && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="rounded-2xl border px-4 py-3 text-sm"
+              style={{
+                background: "rgba(196,92,72,0.08)",
+                borderColor: "rgba(196,92,72,0.2)",
+                color: "#c45c48",
+              }}
+            >
+              {t("models.footer")}
+            </motion.div>
+          )}
+        </div>
+      </div>
+
+      {/* Dialogs */}
+      <ProviderDialog
+        open={addingProvider}
+        onClose={() => setAddingProvider(false)}
+        onSave={handleSaveProvider}
+      />
+      {editingProvider && (
+        <ProviderDialog
+          open
+          providerId={editingProvider.id}
+          provider={editingProvider.provider}
+          onClose={() => setEditingProvider(null)}
+          onSave={handleSaveProvider}
+        />
+      )}
+      {addingModelProviderId && (
+        <ModelDialog
+          open
+          providerId={addingModelProviderId}
+          onClose={() => setAddingModelProviderId(null)}
+          onSave={(m) => handleSaveModel(addingModelProviderId, m)}
+        />
+      )}
+      {editingModel && (
+        <ModelDialog
+          open
+          providerId={editingModel.providerId}
+          model={editingModel.model}
+          onClose={() => setEditingModel(null)}
+          onSave={(m) =>
+            handleSaveModel(editingModel.providerId, m, {
+              providerId: editingModel.providerId,
+              modelId: editingModel.model.id,
+            })
+          }
+        />
+      )}
+      {fetchResult && (
+        <FetchDialog
+          result={fetchResult}
+          onClose={() => setFetchResult(null)}
+          onChangeSelected={(ids) => setFetchResult({ ...fetchResult, selected: ids })}
+          onAdd={handleAddFetched}
+        />
+      )}
+      {fetchError && (
+        <Dialog
+          open
+          title={t("models.fetchFailed", { error: "" })}
+          onClose={() => setFetchError(null)}
+          actions={
+            <GroupButton onClick={() => setFetchError(null)}>{t("models.cancel")}</GroupButton>
+          }
+        >
+          <p className="text-sm" style={{ color: "var(--muted-foreground)" }}>
+            {fetchError}
+          </p>
+        </Dialog>
+      )}
+    </SettingsPage>
+  );
+}
+
+function ProviderDialog({
+  open,
+  providerId,
+  provider,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  providerId?: string;
+  provider?: CustomProvider;
+  onClose: () => void;
+  onSave: (id: string, p: CustomProvider) => void;
+}) {
+  const t = useT();
+  const isEdit = !!provider;
+  const [id, setId] = useState(providerId ?? "");
+  const [api, setApi] = useState(provider?.api ?? API_TYPES[0]);
+  const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "");
+  const [apiKey, setApiKey] = useState(provider?.apiKey ?? "");
+
+  useEffect(() => {
+    if (open) {
+      setId(providerId ?? "");
+      setApi(provider?.api ?? API_TYPES[0]);
+      setBaseUrl(provider?.baseUrl ?? "");
+      setApiKey(provider?.apiKey ?? "");
+    }
+  }, [open, provider, providerId]);
+
+  const submit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    onSave(id.trim(), {
+      baseUrl: baseUrl.trim(),
+      api,
+      apiKey: apiKey.trim() || undefined,
+      models: provider?.models ?? [],
+    });
+  };
+
+  return (
+    <Dialog
+      open={open}
+      title={isEdit ? t("models.providerSettings") : t("models.addProvider")}
+      onClose={onClose}
+      actions={
+        <>
+          <GroupButton onClick={onClose}>{t("models.cancel")}</GroupButton>
+          <GroupButton primary onClick={() => submit()} disabled={!id.trim()}>
+            {isEdit ? t("models.saveProvider") : t("models.createProvider")}
+          </GroupButton>
+        </>
+      }
+    >
+      <form id="provider-form" onSubmit={submit} className="space-y-3">
+        <Field label={t("models.providerId")}>
+          <input
+            value={id}
+            onChange={(e) => setId(e.target.value)}
+            disabled={isEdit}
+            placeholder="openai"
+            className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
+            style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+          />
+        </Field>
+        <Field label={t("models.apiType")}>
+          <select
+            value={api}
+            onChange={(e) => setApi(e.target.value)}
+            className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
+            style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+          >
+            {API_TYPES.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label={t("models.baseUrl")}>
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://api.openai.com/v1"
+            className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
+            style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+          />
+        </Field>
+        <Field label={t("models.apiKey")}>
+          <input
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={t("models.apiKeyPlaceholder")}
+            className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
+            style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+          />
+        </Field>
+      </form>
+    </Dialog>
+  );
+}
+
+function ModelDialog({
+  open,
+  providerId,
+  model,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  providerId: string;
+  model?: CustomModelDef;
+  onClose: () => void;
+  onSave: (m: CustomModelDef) => void;
+}) {
+  const t = useT();
+  const isEdit = !!model;
+  const [id, setId] = useState(model?.id ?? "");
+  const [name, setName] = useState(model?.name ?? "");
+  const [contextWindow, setContextWindow] = useState(model?.contextWindow?.toString() ?? "");
+  const [maxTokens, setMaxTokens] = useState(model?.maxTokens?.toString() ?? "");
+  const [reasoning, setReasoning] = useState(model?.reasoning ?? false);
+
+  useEffect(() => {
+    if (open) {
+      setId(model?.id ?? "");
+      setName(model?.name ?? "");
+      setContextWindow(model?.contextWindow?.toString() ?? "");
+      setMaxTokens(model?.maxTokens?.toString() ?? "");
+      setReasoning(model?.reasoning ?? false);
+    }
+  }, [open, model]);
+
+  const submit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    onSave({
+      id: id.trim(),
+      name: name.trim() || undefined,
+      contextWindow: contextWindow ? Number(contextWindow) : undefined,
+      maxTokens: maxTokens ? Number(maxTokens) : undefined,
+      reasoning,
+    });
+  };
+
+  return (
+    <Dialog
+      open={open}
+      title={isEdit ? t("models.editModel") : t("models.addModel")}
+      onClose={onClose}
+      actions={
+        <>
+          <GroupButton onClick={onClose}>{t("models.cancel")}</GroupButton>
+          <GroupButton primary onClick={() => submit()} disabled={!id.trim()}>
+            {isEdit ? t("models.editConfirm") : t("models.addConfirm")}
+          </GroupButton>
+        </>
+      }
+    >
+      <form id="model-form" onSubmit={submit} className="space-y-3">
+        <Field label={t("models.modelId")}>
+          <input
+            value={id}
+            onChange={(e) => setId(e.target.value)}
+            disabled={isEdit}
+            placeholder="gpt-4o"
+            className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
+            style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+          />
+        </Field>
+        <Field label={t("models.modelName")}>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t("models.namePlaceholder")}
+            className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
+            style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+          />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label={t("models.contextWindow")}>
+            <input
+              value={contextWindow}
+              onChange={(e) => setContextWindow(e.target.value)}
+              type="number"
+              placeholder="128000"
+              className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
+              style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+            />
+          </Field>
+          <Field label={t("models.maxTokens")}>
+            <input
+              value={maxTokens}
+              onChange={(e) => setMaxTokens(e.target.value)}
+              type="number"
+              placeholder="4096"
+              className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
+              style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+            />
+          </Field>
+        </div>
+        <label className="flex items-center gap-2 text-sm" style={{ color: "var(--foreground)" }}>
+          <input
+            type="checkbox"
+            checked={reasoning}
+            onChange={(e) => setReasoning(e.target.checked)}
+            className="h-4 w-4 rounded border"
+            style={{ accentColor: "var(--ink-accent)" }}
+          />
+          {t("models.reasoningToggle")}
+        </label>
+      </form>
+    </Dialog>
+  );
+}
+
+function FetchDialog({
+  result,
+  onClose,
+  onChangeSelected,
+  onAdd,
+}: {
+  result: { providerId: string; models: string[]; selected: string[] };
+  onClose: () => void;
+  onChangeSelected: (ids: string[]) => void;
+  onAdd: () => void;
+}) {
+  const t = useT();
+  const toggle = (id: string) => {
+    const next = new Set(result.selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChangeSelected(Array.from(next));
+  };
+
+  return (
+    <Dialog
+      open
+      title={t("models.selectModelsToAdd")}
+      onClose={onClose}
+      actions={
+        <>
+          <GroupButton onClick={onClose}>{t("models.cancel")}</GroupButton>
+          <GroupButton primary onClick={onAdd} disabled={result.selected.length === 0}>
+            {t("models.addAllSelected", { n: result.selected.length })}
+          </GroupButton>
+        </>
+      }
+    >
+      <div className="max-h-72 overflow-y-auto pr-1">
+        {result.models.length === 0 ? (
+          <p className="py-4 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
+            {t("models.noSearchResults")}
+          </p>
+        ) : (
+          <InsetGroup>
+            {result.models.map((id) => (
+              <GroupRow
+                key={id}
+                onClick={() => toggle(id)}
+                title={
+                  <span className="text-sm" style={{ color: "var(--foreground)" }}>
+                    {id}
+                  </span>
+                }
+                trailing={
+                  <div
+                    className="flex items-center justify-center rounded-md"
+                    style={{
+                      width: 20,
+                      height: 20,
+                      background: result.selected.includes(id)
+                        ? "var(--ink-accent)"
+                        : "transparent",
+                      border: "1.5px solid",
+                      borderColor: result.selected.includes(id)
+                        ? "var(--ink-accent)"
+                        : "var(--ink-border)",
+                      color: "#fff",
+                    }}
+                  >
+                    {result.selected.includes(id) && <Check size={12} strokeWidth={3} />}
+                  </div>
+                }
+              />
+            ))}
+          </InsetGroup>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+function AllModelsSection({
+  enabledModels,
+  onToggle,
+}: {
+  enabledModels: string[];
+  onToggle: (modelId: string) => void | Promise<void>;
+}) {
+  const t = useT();
+  const piModels = usePi((s) => s.models);
+
+  const groups = useMemo(() => {
+    const map = new Map<string, string[]>();
+    piModels.forEach((m) => {
+      const list = map.get(m.provider) ?? [];
+      list.push(m.id);
+      map.set(m.provider, list);
+    });
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [piModels]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ ...spring, delay: 0.25 }}
+      className="overflow-hidden"
+      style={{
+        borderRadius: 24,
+        background: "var(--card-bg)",
+        border: "1px solid var(--ink-border)",
+      }}
+    >
+      <div className="border-b px-5 py-4" style={{ borderColor: "var(--ink-border)" }}>
+        <h3 className="font-semibold" style={{ color: "var(--ink-title)" }}>
+          {t("models.allModels")}
+        </h3>
+        <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+          {t("models.allModelsFooter")}
+        </p>
+      </div>
+      <div className="p-4">
+        {groups.map(([providerId, modelIds]) => (
+          <div key={providerId} className="mb-4 last:mb-0">
+            <div className="mb-2 flex items-center gap-2">
+              <ProviderMeta provider={providerId} />
+              <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                {t("models.modelCount", { n: modelIds.length })}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {modelIds.map((id) => {
+                const enabled = enabledModels.includes(id);
+                return (
+                  <button
+                    key={id}
+                    onClick={() => onToggle(id)}
+                    className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                    style={{
+                      background: enabled
+                        ? "rgba(44,90,160,0.12)"
+                        : "var(--input-bg)",
+                      color: enabled ? "var(--ink-accent)" : "var(--foreground)",
+                      border: "1px solid",
+                      borderColor: enabled
+                        ? "rgba(44,90,160,0.3)"
+                        : "var(--ink-border)",
+                    }}
+                  >
+                    {enabled && <Check size={11} strokeWidth={3} />}
+                    {id}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {groups.length === 0 && (
+          <p className="py-4 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
+            {t("models.noSearchResults")}
+          </p>
+        )}
+      </div>
+    </motion.div>
+  );
+}
 
 function Field({
   label,
@@ -38,14 +1015,10 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label style={{ display: "block", minWidth: 0 }}>
+    <label className="block">
       <span
-        style={{
-          display: "block",
-          fontSize: 12,
-          color: "var(--text-tertiary)",
-          margin: "0 0 4px 2px",
-        }}
+        className="mb-1.5 block text-xs font-medium"
+        style={{ color: "var(--muted-foreground)" }}
       >
         {label}
       </span>
@@ -54,499 +1027,106 @@ function Field({
   );
 }
 
-interface ModelFormInitial {
-  providerId: string;
-  baseUrl: string;
-  api: string;
-  apiKey: string;
-  modelId: string;
-  name: string;
-  contextWindow: string;
-  maxTokens: string;
-  reasoning: boolean;
-}
-
-/** Unified add/edit form for custom models — writes to ~/.pi/agent/models.json. */
-function ModelForm({
-  onDone,
-  initial,
-  originalKey,
+function Dialog({
+  open,
+  title,
+  onClose,
+  actions,
+  children,
 }: {
-  onDone: () => void;
-  initial?: ModelFormInitial;
-  originalKey?: { pid: string; modelId: string };
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
 }) {
-  const t = useT();
-  const custom = usePiModels();
-  const isEditing = !!originalKey;
-
-  const [providerId, setProviderId] = useState(initial?.providerId ?? "");
-  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
-  const [api, setApi] = useState<string>(initial?.api ?? API_TYPES[0]);
-  const [apiKey, setApiKey] = useState(initial?.apiKey ?? "");
-  const [modelId, setModelId] = useState(initial?.modelId ?? "");
-  const [name, setName] = useState(initial?.name ?? "");
-  const [contextWindow, setContextWindow] = useState(initial?.contextWindow ?? "");
-  const [maxTokens, setMaxTokens] = useState(initial?.maxTokens ?? "");
-  const [reasoning, setReasoning] = useState(initial?.reasoning ?? false);
-
-  const targetProviderExists = custom.data.providers[providerId.trim()] !== undefined;
-  // valid when providerId+modelId are non-empty AND either the target provider
-  // exists (can inherit its baseUrl) OR baseUrl is explicitly provided
-  const valid =
-    providerId.trim() !== "" &&
-    modelId.trim() !== "" &&
-    (targetProviderExists || baseUrl.trim() !== "");
-
-  const submit = async () => {
-    if (!valid) return;
-    const model: CustomModelDef = { id: modelId.trim() };
-    if (name.trim()) model.name = name.trim();
-    model.reasoning = reasoning;
-    model.input = ["text", "image"];
-    const ctx = Number(contextWindow);
-    if (contextWindow.trim() && Number.isFinite(ctx) && ctx > 0) model.contextWindow = ctx;
-    const max = Number(maxTokens);
-    if (maxTokens.trim() && Number.isFinite(max) && max > 0) model.maxTokens = max;
-
-    if (isEditing && originalKey) {
-      await custom.updateModel(
-        originalKey.pid,
-        originalKey.modelId,
-        providerId.trim(),
-        { baseUrl: baseUrl.trim(), api, apiKey: apiKey.trim() || undefined },
-        model
-      );
-    } else {
-      await custom.addModel(
-        providerId.trim(),
-        { baseUrl: baseUrl.trim(), api, apiKey: apiKey.trim() || undefined },
-        model
-      );
-    }
-    onDone();
-  };
-
-  // For placeholder hints: in add mode, show the existing provider's config;
-  // in edit mode, the form is already pre-filled so no hints needed
-  const hintProvider = !isEditing
-    ? custom.data.providers[providerId.trim()]
-    : undefined;
-
   return (
-    <div
-      style={{
-        padding: "12px 16px 14px",
-        borderTop: "1px solid var(--separator)",
-        display: "grid",
-        gap: 10,
-      }}
-    >
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label={t("models.providerId")}>
-          <input
-            type="text"
-            value={providerId}
-            placeholder="my-provider"
-            onChange={(e) => setProviderId(e.target.value)}
-            style={fieldInput}
-          />
-        </Field>
-        <Field label={t("models.apiType")}>
-          <select
-            value={api}
-            onChange={(e) => setApi(e.target.value)}
-            style={{ ...fieldInput, height: 32 }}
-          >
-            {API_TYPES.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </div>
-      <Field label={t("models.baseUrl")}>
-        <input
-          type="text"
-          value={baseUrl}
-          placeholder={
-            hintProvider
-              ? hintProvider.baseUrl
-              : "https://api.example.com/v1"
-          }
-          onChange={(e) => setBaseUrl(e.target.value)}
-          style={fieldInput}
-        />
-      </Field>
-      <Field label={t("models.apiKey")}>
-        <input
-          type="password"
-          value={apiKey}
-          placeholder={hintProvider?.apiKey ? "••••••" : "sk-…"}
-          onChange={(e) => setApiKey(e.target.value)}
-          style={fieldInput}
-        />
-      </Field>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label={t("models.modelId")}>
-          <input
-            type="text"
-            value={modelId}
-            placeholder="gpt-5-mini"
-            onChange={(e) => setModelId(e.target.value)}
-            style={fieldInput}
-          />
-        </Field>
-        <Field label={t("models.modelName")}>
-          <input
-            type="text"
-            value={name}
-            placeholder="GPT-5 Mini"
-            onChange={(e) => setName(e.target.value)}
-            style={fieldInput}
-          />
-        </Field>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label={t("models.contextWindow")}>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={contextWindow}
-            placeholder="200000"
-            onChange={(e) => setContextWindow(e.target.value)}
-            style={fieldInput}
-          />
-        </Field>
-        <Field label={t("models.maxTokens")}>
-          <input
-            type="text"
-            inputMode="numeric"
-            value={maxTokens}
-            placeholder="16384"
-            onChange={(e) => setMaxTokens(e.target.value)}
-            style={fieldInput}
-          />
-        </Field>
-      </div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          fontSize: 13,
-          color: "var(--text-primary)",
-          cursor: "pointer",
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={reasoning}
-          onChange={(e) => setReasoning(e.target.checked)}
-          style={{ accentColor: "var(--accent)" }}
-        />
-        {t("models.reasoningToggle")}
-      </label>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 2 }}>
-        <Button variant="ghost" size="sm" onClick={onDone} style={{ borderRadius: 8 }}>
-          {t("models.cancel")}
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={submit}
-          disabled={!valid}
-          style={{ borderRadius: 8, opacity: valid ? 1 : 0.5 }}
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          key="dialog-backdrop"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.35)", backdropFilter: "blur(6px)" }}
+          onClick={onClose}
         >
-          {isEditing ? t("models.editConfirm") : t("models.addConfirm")}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-export default function ModelsPage() {
-  const { models, currentModel, thinkingLevel, setModel, setThinking, mock, status } =
-    usePi();
-  const settings = usePiSettings();
-  const custom = usePiModels();
-  const t = useT();
-  const [adding, setAdding] = useState(false);
-  const [editingKey, setEditingKey] = useState<{ pid: string; modelId: string } | null>(null);
-
-  useEffect(() => {
-    settings.load();
-    custom.load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const providers = [...new Set(models.map((m) => m.provider))];
-
-  const customEntries = Object.entries(custom.data.providers).flatMap(
-    ([pid, p]) => (p.models ?? []).map((m) => ({ pid, provider: p, model: m }))
-  );
-
-  return (
-    <SettingsPage
-      title={t("models.title")}
-      subtitle={
-        mock
-          ? t("models.subtitleMock")
-          : t("models.subtitleLive", { status: t(`status.${status}`) })
-      }
-    >
-      {/* restart-needed banner — model edits apply after a pi restart */}
-      <AnimatePresence>
-        {settings.dirtyRestart && (
           <motion.div
-            initial={{ opacity: 0, y: -8, height: 0 }}
-            animate={{ opacity: 1, y: 0, height: "auto" }}
-            exit={{ opacity: 0, y: -8, height: 0 }}
-            style={{ overflow: "hidden" }}
+            key="dialog-panel"
+            initial={{ opacity: 0, scale: 0.94, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96, y: 10 }}
+            transition={spring}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 420,
+              maxHeight: "80vh",
+              overflow: "hidden",
+              borderRadius: 22,
+              background: "var(--card-bg)",
+              border: "1px solid var(--ink-border)",
+              boxShadow: "0 24px 80px rgba(0,0,0,0.22)",
+            }}
           >
             <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                marginTop: 16,
-                padding: "10px 14px",
-                borderRadius: "var(--radius-lg)",
-                border: "1px solid var(--separator)",
-                background: "var(--accent-muted)",
-                fontSize: 13,
-                color: "var(--text-primary)",
-              }}
+              className="flex items-center justify-between border-b px-5 py-4"
+              style={{ borderColor: "var(--ink-border)" }}
             >
-              <span style={{ flex: 1 }}>{t("settings.saved")}</span>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => settings.restartPi()}
-                disabled={settings.busy}
-                style={{ borderRadius: 8, opacity: settings.busy ? 0.6 : 1 }}
+              <h3
+                className="text-base font-semibold"
+                style={{ color: "var(--ink-title)" }}
               >
-                {settings.busy ? t("settings.restarting") : t("settings.restartPi")}
-              </Button>
+                {title}
+              </h3>
+              <button
+                onClick={onClose}
+                className="rounded-full p-1 transition-colors"
+                style={{ color: "var(--muted-foreground)" }}
+              >
+                <X size={18} />
+              </button>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* active model hero card */}
-      <InsetGroup header={t("models.activeModel")}>
-        {currentModel ? (
-          <GroupRow
-            first
-            icon={PROVIDER_META[currentModel.provider]?.icon ?? <Settings size={16} />}
-            iconBg={PROVIDER_META[currentModel.provider]?.bg}
-            title={
-              <span style={{ fontWeight: 600 }}>
-                {currentModel.name ?? currentModel.id}
-              </span>
-            }
-            detail={`${PROVIDER_META[currentModel.provider]?.label ?? currentModel.provider} · ${fmtCtx(currentModel.contextWindow)}${currentModel.reasoning ? ` · ${t("models.reasoning")}` : ""}`}
-            trailing={
-              <motion.span
-                key={currentModel.id}
-                initial={{ scale: 0.6, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ type: "spring", stiffness: 500, damping: 24 }}
+            <div className="p-5">{children}</div>
+            {actions && (
+              <div
+                className="flex justify-end gap-2 border-t px-5 py-4"
+                style={{ borderColor: "var(--ink-border)" }}
               >
-                <Badge variant="success" size="sm">
-                  {t("models.activeBadge")}
-                </Badge>
-              </motion.span>
-            }
-          />
-        ) : (
-          <GroupRow first title={t("models.noModel")} detail={t("models.pickBelow")} />
-        )}
-      </InsetGroup>
+                {actions}
+              </div>
+            )}
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
 
-      {/* thinking level */}
-      <InsetGroup
-        header={t("models.thinkingLevel")}
-        footer={t("models.thinkingFooter")}
-      >
-        <div style={{ padding: "12px 14px" }}>
-          <Segmented
-            options={THINKING_LEVELS}
-            value={thinkingLevel}
-            onChange={setThinking}
-          />
-        </div>
-      </InsetGroup>
-
-      {/* custom models — ~/.pi/agent/models.json */}
-      <InsetGroup
-        header={t("models.custom")}
-        footer={
-          custom.parseError
-            ? t("models.customParseError", { error: custom.parseError })
-            : t("models.customFooter")
-        }
-      >
-        {customEntries.length === 0 && !adding && !editingKey && (
-          <GroupRow
-            first
-            icon={<Boxes size={16} />}
-            iconBg="var(--text-tertiary)"
-            title={t("models.customEmpty")}
-          />
-        )}
-        {customEntries.map(({ pid, provider, model }, i) => {
-          const isThisEditing =
-            editingKey?.pid === pid && editingKey?.modelId === model.id;
-          if (isThisEditing) {
-            return (
-              <ModelForm
-                key={`${pid}/${model.id}/edit`}
-                originalKey={{ pid, modelId: model.id }}
-                initial={{
-                  providerId: pid,
-                  baseUrl: provider.baseUrl,
-                  api: provider.api,
-                  apiKey: provider.apiKey ?? "",
-                  modelId: model.id,
-                  name: model.name ?? "",
-                  contextWindow: model.contextWindow ? String(model.contextWindow) : "",
-                  maxTokens: model.maxTokens ? String(model.maxTokens) : "",
-                  reasoning: model.reasoning ?? false,
-                }}
-                onDone={() => setEditingKey(null)}
-              />
-            );
-          }
-          return (
-            <GroupRow
-              key={`${pid}/${model.id}`}
-              first={i === 0}
-              icon={PROVIDER_META[pid]?.icon ?? <Boxes size={16} />}
-              iconBg={PROVIDER_META[pid]?.bg}
-              title={model.name ?? model.id}
-              detail={`${pid} · ${model.id} · ${fmtCtx(model.contextWindow)}${model.reasoning ? ` · ${t("models.reasoning")}` : ""} · ${provider.baseUrl}`}
-              trailing={
-                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                  <motion.button
-                    whileTap={{ scale: 0.85 }}
-                    aria-label={t("models.editModel")}
-                    title={t("models.editModel")}
-                    onClick={() => {
-                      setAdding(false);
-                      setEditingKey({ pid, modelId: model.id });
-                    }}
-                    style={{
-                      display: "grid",
-                      placeItems: "center",
-                      width: 24,
-                      height: 24,
-                      border: "none",
-                      borderRadius: 6,
-                      background: "transparent",
-                      color: "var(--text-secondary)",
-                      cursor: "pointer",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Pencil size={14} />
-                  </motion.button>
-                  <motion.button
-                    whileTap={{ scale: 0.85 }}
-                    aria-label={t("models.removeModel")}
-                    title={t("models.removeModel")}
-                    onClick={() => custom.removeModel(pid, model.id)}
-                    style={{
-                      display: "grid",
-                      placeItems: "center",
-                      width: 24,
-                      height: 24,
-                      border: "none",
-                      borderRadius: 6,
-                      background: "transparent",
-                      color: "var(--danger)",
-                      cursor: "pointer",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <X size={14} />
-                  </motion.button>
-                </div>
-              }
-            />
-          );
-        })}
-        {adding ? (
-          <ModelForm onDone={() => setAdding(false)} />
-        ) : (
-          <GroupRow
-            first={false}
-            icon={<Plus size={16} />}
-            iconBg="var(--accent)"
-            title={
-              <span style={{ color: "var(--accent)", fontWeight: 500 }}>
-                {t("models.addModel")}
-              </span>
-            }
-            onClick={
-              custom.parseError
-                ? undefined
-                : () => {
-                    setEditingKey(null);
-                    setAdding(true);
-                  }
-            }
-          />
-        )}
-      </InsetGroup>
-
-      {/* model cycling — enabledModels patterns in global settings.json */}
-      <InsetGroup
-        header={t("models.cycling")}
-        footer={t("models.cyclingFooter")}
-      >
-        <StringListEditor
-          items={settings.global.data?.enabledModels as string[] | undefined}
-          onChange={(items) => settings.setKey("global", "enabledModels", items)}
-          addPlaceholder={t("models.cyclingPlaceholder")}
-        />
-      </InsetGroup>
-
-      {/* all models, grouped by provider */}
-      {providers.map((p) => (
-        <InsetGroup key={p} header={PROVIDER_META[p]?.label ?? p}>
-          {models
-            .filter((m) => m.provider === p)
-            .map((m, i) => {
-              const active =
-                currentModel?.id === m.id && currentModel?.provider === m.provider;
-              return (
-                <GroupRow
-                  key={`${m.provider}/${m.id}`}
-                  first={i === 0}
-                  icon={PROVIDER_META[p]?.icon ?? <Settings size={16} />}
-                  iconBg={PROVIDER_META[p]?.bg}
-                  title={m.name ?? m.id}
-                  detail={`${m.id} · ${fmtCtx(m.contextWindow)}${m.reasoning ? ` · ${t("models.reasoning")}` : ""}`}
-                  onClick={() => setModel(m)}
-                  trailing={
-                    active ? (
-                      <motion.span
-                        initial={{ scale: 0.5, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        transition={{ type: "spring", stiffness: 500, damping: 22 }}
-                        style={{ color: "var(--accent)", fontSize: 15, fontWeight: 700 }}
-                      >
-                        <Check size={14} />
-                      </motion.span>
-                    ) : undefined
-                  }
-                />
-              );
-            })}
-        </InsetGroup>
-      ))}
-    </SettingsPage>
+function GroupButton({
+  primary,
+  disabled,
+  onClick,
+  children,
+}: {
+  primary?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="rounded-xl px-4 py-2 text-sm font-medium transition-transform active:scale-95 disabled:opacity-50"
+      style={{
+        background: primary ? "var(--ink-accent)" : "transparent",
+        color: primary ? "#fff" : "var(--foreground)",
+        border: primary ? "none" : "1px solid var(--ink-border)",
+      }}
+    >
+      {children}
+    </button>
   );
 }

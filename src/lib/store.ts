@@ -7,6 +7,10 @@ export type Theme = "light" | "dark";
 export type TaskStatus = "done" | "running" | "queued";
 
 const THEME_STORAGE_KEY = "pi-desktop.theme";
+const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";
+
+// what happens when the user closes the main window
+export type CloseBehavior = "ask" | "minimize" | "quit";
 
 /** sync <html> with the active theme (data-theme + Appica UI .light/.dark classes) */
 function applyThemeDom(theme: Theme) {
@@ -63,6 +67,10 @@ interface UIState {
   /* notification settings */
   notificationSettings: NotificationSettings;
 
+  /* window close behavior */
+  closeBehavior: CloseBehavior;
+  closeDialogOpen: boolean;
+
   toggleTheme: () => void;
   /** restore the saved theme — call once on mount */
   initTheme: () => void;
@@ -86,6 +94,10 @@ interface UIState {
   requestReview: (r: PendingReview) => Promise<boolean>;
   resolveReview: (accept: boolean) => void;
   setNotificationEnabled: (enabled: boolean) => void;
+  setCloseBehavior: (b: CloseBehavior) => void;
+  /** restore the saved close behavior — call once on mount */
+  initCloseBehavior: () => void;
+  setCloseDialogOpen: (open: boolean) => void;
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -103,6 +115,8 @@ export const useUI = create<UIState>((set) => ({
   demoTick: 0,
   pendingReview: null,
   notificationSettings: { enabled: true },
+  closeBehavior: "ask",
+  closeDialogOpen: false,
 
   toggleTheme: () =>
     set((s) => {
@@ -194,4 +208,25 @@ export const useUI = create<UIState>((set) => ({
     set((s) => ({
       notificationSettings: { ...s.notificationSettings, enabled },
     })),
+  setCloseBehavior: (b) =>
+    set(() => {
+      try {
+        localStorage.setItem(CLOSE_BEHAVIOR_STORAGE_KEY, b);
+      } catch {
+        // storage unavailable — keep the choice in-memory only
+      }
+      return { closeBehavior: b };
+    }),
+  initCloseBehavior: () =>
+    set(() => {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(CLOSE_BEHAVIOR_STORAGE_KEY);
+      } catch {
+        // storage unavailable — stay on the default
+      }
+      if (saved !== "ask" && saved !== "minimize" && saved !== "quit") return {};
+      return { closeBehavior: saved as CloseBehavior };
+    }),
+  setCloseDialogOpen: (open) => set({ closeDialogOpen: open }),
 }));

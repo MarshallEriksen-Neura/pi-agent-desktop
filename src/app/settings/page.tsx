@@ -91,7 +91,8 @@ export default function PiSettingsPage() {
   const ap = useAppearance();
   const t = useT();
   const router = useRouter();
-  const { notificationSettings, setNotificationEnabled } = useUI();
+  const { notificationSettings, setNotificationEnabled, closeBehavior, setCloseBehavior } =
+    useUI();
   const [notifPermission, setNotifPermission] = useState<
     "granted" | "denied" | "default" | "unsupported"
   >("default");
@@ -820,6 +821,29 @@ export default function PiSettingsPage() {
                 }
               />
             </div>
+          </InsetGroup>
+
+          {/* what happens when the main window is closed */}
+          <InsetGroup
+            header={t("settings.closeBehavior")}
+            footer={t("settings.closeBehaviorFooter")}
+          >
+            <GroupRow
+              first
+              icon={<ArrowDownToLine size={15} />}
+              iconBg="var(--accent)"
+              title={t("settings.closeBehavior")}
+              trailing={
+                <div style={{ width: 300, flexShrink: 0 }}>
+                      <Segmented
+                        options={["ask", "minimize", "quit"] as const}
+                        value={closeBehavior}
+                        onChange={setCloseBehavior}
+                        labelOf={(v) => t(`settings.closeBehavior.${v}`)}
+                      />
+                </div>
+              }
+            />
           </InsetGroup>
 
           {/* images sent to the LLM */}

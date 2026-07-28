@@ -7,13 +7,13 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
 pub struct PiProc(pub Mutex<Option<PiHandle>>);
 
 pub struct PiHandle {
-    child: Child,
+    child: Arc<Mutex<Child>>,
     stdin: ChildStdin,
 }
 
@@ -61,9 +61,13 @@ pub fn pi_start(
     let stdout = child.stdout.take().ok_or("no stdout handle")?;
     let stderr = child.stderr.take().ok_or("no stderr handle")?;
 
+    // child is shared so the stdout waiter thread can read the real exit code
+    let child = Arc::new(Mutex::new(child));
+
     // stdout reader → pi://line (one event per JSONL line)
     {
         let app = app.clone();
+        let child = Arc::clone(&child);
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
@@ -71,7 +75,13 @@ pub fn pi_start(
                     let _ = app.emit("pi://line", line);
                 }
             }
-            let _ = app.emit("pi://exit", ());
+            // stdout closed → process exited; capture the exit code (if any)
+            let code = child
+                .lock()
+                .ok()
+                .and_then(|mut c| c.wait().ok())
+                .and_then(|status| status.code());
+            let _ = app.emit("pi://exit", code);
         });
     }
 
@@ -106,8 +116,12 @@ pub fn pi_send(state: State<'_, PiProc>, line: String) -> Result<(), String> {
 pub fn pi_stop(state: State<'_, PiProc>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(mut handle) = guard.take() {
-        let _ = handle.child.kill();
-        let _ = handle.child.wait();
+        let _ = handle
+            .child
+            .lock()
+            .ok()
+            .and_then(|mut c| c.kill().ok());
+        let _ = handle.child.lock().ok().and_then(|mut c| c.wait().ok());
     }
     Ok(())
 }

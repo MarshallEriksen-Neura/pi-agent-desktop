@@ -4,6 +4,10 @@ import { create } from "zustand";
 import { getPiClient, isTauri } from "./client";
 import type { PiModel, PiState, ThinkingLevel } from "./protocol";
 
+// Re-export so `usePiSettings` resolves whether imported from here or from
+// "@/lib/pi/settings" — guards against stale bundler graphs.
+export { usePiSettings } from "./settings";
+
 export type PiStatus = "disconnected" | "connecting" | "ready" | "running";
 
 export interface PiCommandInfo {

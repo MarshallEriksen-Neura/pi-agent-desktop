@@ -224,12 +224,14 @@ export function ComposerInput({
           onPaste={onPaste}
           placeholder={busy ? t("agent.composerBusy") : t("agent.composerIdle")}
           rows={2}
+          className="composer-textarea"
           style={{
             width: "100%",
             padding: "14px 52px 40px 14px", // space for send button + bottom controls
             border: "none",
             outline: "none",
             background: "transparent",
+            borderRadius: 16,
             fontSize: 13.5,
             lineHeight: "20px",
             color: "var(--text-primary)",

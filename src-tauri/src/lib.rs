@@ -2,9 +2,16 @@ mod chat_store;
 mod fs_bridge;
 mod pet_window;
 mod pi_bridge;
+mod pi_models;
 mod pi_settings;
 mod projects;
 mod updater;
+
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    App, Manager,
+};
 
 use pi_bridge::PiProc;
 
@@ -23,6 +30,100 @@ fn open_external(url: String) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let r = std::process::Command::new("xdg-open").arg(&url).spawn();
     r.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Build the system tray so the main window can be minimized to tray and
+/// restored (or quit) from outside the window. Left-click toggles the window,
+/// right-click (or the menu) shows 显示 / 隐藏 / 退出.
+fn create_tray(app: &App) -> tauri::Result<()> {
+    let show_i = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
+    let hide_i = MenuItem::with_id(app, "hide", "隐藏", true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_i, &hide_i, &quit_i])?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .expect("app must have a default window icon for the tray");
+
+    TrayIconBuilder::new()
+        .icon(icon)
+        .tooltip("Pi")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }
+            "hide" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+            "quit" => {
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            let is_left_click = matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            );
+
+            if !is_left_click {
+                return;
+            }
+
+            // Windows fires tray clicks with button_state == Down, while macOS
+            // uses Up. Ignore the Up event on Windows because the actual toggle
+            // already happened on Down; on macOS Up is the correct state.
+            #[cfg(target_os = "windows")]
+            let should_toggle = matches!(
+                event,
+                TrayIconEvent::Click {
+                    button_state: MouseButtonState::Down,
+                    ..
+                } | TrayIconEvent::DoubleClick { .. }
+            );
+
+            #[cfg(not(target_os = "windows"))]
+            let should_toggle = matches!(
+                event,
+                TrayIconEvent::Click {
+                    button_state: MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick { .. }
+            );
+
+            if !should_toggle {
+                return;
+            }
+
+            let app = tray.app_handle();
+            if let Some(w) = app.get_webview_window("main") {
+                if w.is_visible().unwrap_or(false) {
+                    let _ = w.hide();
+                } else {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -47,6 +148,10 @@ pub fn run() {
             fs_bridge::fs_read_file,
             fs_bridge::fs_read_file_base64,
             fs_bridge::fs_write_file,
+            fs_bridge::fs_create_file,
+            fs_bridge::fs_create_dir,
+            fs_bridge::fs_delete,
+            fs_bridge::fs_rename,
             pi_settings::pi_settings_read,
             pi_settings::pi_settings_write,
             pi_settings::pi_cli,
@@ -62,11 +167,15 @@ pub fn run() {
             pet_window::pet_window_toggle,
             pet_window::pet_window_set_position,
             pet_window::list_custom_pets,
-            open_external
+            open_external,
+            pi_models::pi_fetch_models
         ])
         .setup(|app| {
             if let Err(e) = pet_window::create_pet_window(app.handle()) {
                 eprintln!("[pet-window] failed to pre-create pet window: {e}");
+            }
+            if let Err(e) = create_tray(app) {
+                eprintln!("[tray] failed to create system tray: {e}");
             }
             Ok(())
         })

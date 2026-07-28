@@ -696,10 +696,13 @@ export function Segmented<T extends string>({
   options,
   value,
   onChange,
+  labelOf,
 }: {
   options: readonly T[];
   value: T;
   onChange: (v: T) => void;
+  /** optional display label mapper — falls back to the raw option value */
+  labelOf?: (opt: T) => string;
 }) {
   // layoutId must be unique per instance or thumbs animate across controls
   const thumbId = useId();
@@ -722,11 +725,12 @@ export function Segmented<T extends string>({
     >
       {options.map((opt) => {
         const active = opt === value;
+        const label = labelOf ? labelOf(opt) : opt;
         return (
           <Toggle
             key={opt}
             value={opt}
-            aria-label={opt}
+            aria-label={label}
             style={{
               position: "relative",
               flex: 1,
@@ -757,7 +761,7 @@ export function Segmented<T extends string>({
                 }}
               />
             )}
-            {opt}
+            {label}
           </Toggle>
         );
       })}

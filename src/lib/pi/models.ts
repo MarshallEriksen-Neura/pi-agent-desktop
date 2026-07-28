@@ -105,6 +105,22 @@ interface PiModelsStore {
     cfg: ProviderConfig,
     model: CustomModelDef
   ) => Promise<void>;
+  /**
+   * Fetch the provider's model list over HTTP (OpenAI-compatible / Google).
+   * In mock (non-Tauri) mode returns a static sample list so the UI is usable.
+   */
+  fetchModels: (baseUrl: string, api: string, apiKey?: string) => Promise<string[]>;
+  /** Bulk-add many models to a provider in a single save. */
+  addModels: (
+    providerId: string,
+    cfg: ProviderConfig,
+    models: CustomModelDef[]
+  ) => Promise<void>;
+  /** Update a provider's connection settings (baseUrl/api/apiKey); creates the
+   * provider with no models if it doesn't exist yet. Models are preserved. */
+  updateProvider: (providerId: string, cfg: ProviderConfig) => Promise<void>;
+  /** Remove a whole provider (and all its models). */
+  removeProvider: (providerId: string) => Promise<void>;
   /** Remove a model; a provider left with no models is dropped entirely. */
   removeModel: (providerId: string, modelId: string) => Promise<void>;
   /**
@@ -200,6 +216,86 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
     if (idx >= 0) provider.models[idx] = model;
     else provider.models.push(model);
     data.providers[providerId] = provider;
+    await save(data, set, get);
+  },
+
+  fetchModels: async (baseUrl, api, apiKey) => {
+    if (get().mock) {
+      // sample list so the UI flow is testable in the browser
+      await new Promise((r) => setTimeout(r, 300));
+      return [
+        "gpt-4o-mini",
+        "gpt-4o",
+        "gpt-4-turbo",
+        "o3-mini",
+        "text-embedding-3-small",
+      ];
+    }
+    return tauriInvoke<string[]>("pi_fetch_models", {
+      baseUrl,
+      api,
+      apiKey: apiKey ?? null,
+    });
+  },
+
+  addModels: async (providerId, cfg, models) => {
+    const st = get();
+    if (st.parseError) return; // never overwrite a file we couldn't parse
+    if (models.length === 0) return;
+    const data = structuredClone(st.data);
+    const existing = data.providers[providerId];
+    const provider: CustomProvider = existing
+      ? {
+          ...existing,
+          ...(cfg.baseUrl ? { baseUrl: cfg.baseUrl } : {}),
+          ...(cfg.api ? { api: cfg.api } : {}),
+          ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+          models: [...(existing.models ?? [])],
+        }
+      : {
+          baseUrl: cfg.baseUrl,
+          api: cfg.api,
+          ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+          models: [],
+        };
+    const seen = new Set(provider.models.map((m) => m.id));
+    for (const m of models) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      provider.models.push(m);
+    }
+    data.providers[providerId] = provider;
+    await save(data, set, get);
+  },
+
+  updateProvider: async (providerId, cfg) => {
+    const st = get();
+    if (st.parseError) return;
+    const data = structuredClone(st.data);
+    const existing = data.providers[providerId];
+    const provider: CustomProvider = existing
+      ? {
+          ...existing,
+          baseUrl: cfg.baseUrl,
+          api: cfg.api,
+          ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+          models: existing.models ?? [],
+        }
+      : {
+          baseUrl: cfg.baseUrl,
+          api: cfg.api,
+          ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+          models: [],
+        };
+    data.providers[providerId] = provider;
+    await save(data, set, get);
+  },
+
+  removeProvider: async (providerId) => {
+    const st = get();
+    if (st.parseError) return;
+    const data = structuredClone(st.data);
+    delete data.providers[providerId];
     await save(data, set, get);
   },
 

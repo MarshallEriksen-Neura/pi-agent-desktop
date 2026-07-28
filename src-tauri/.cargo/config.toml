@@ -1,0 +1,9 @@
+# Workaround for the `ring` 0.17.x / `cc` 1.x MSVC build failure (error C1056
+# "cannot update the time-date stamp field"), caused by the `-Brepro` flag that
+# `cc` unconditionally adds to cl.exe on Windows. The .cmd launcher forwards the
+# compiler invocation to cc-no-brepro.js, which initialises the VC environment
+# and strips `-Brepro` before invoking the real cl.exe. Only affects the
+# windows-msvc C/C++ toolchain.
+[env]
+CC_x86_64-pc-windows-msvc = "D:\\20260302170616\\ragcode-pi\\src-tauri\\.cargo\\cc-no-brepro.cmd"
+CXX_x86_64-pc-windows-msvc = "D:\\20260302170616\\ragcode-pi\\src-tauri\\.cargo\\cc-no-brepro.cmd"

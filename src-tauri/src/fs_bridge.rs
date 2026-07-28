@@ -1,5 +1,6 @@
 //! Workspace filesystem commands for the editor & file tree.
-//! Deliberately minimal: list a directory, read/write a file, report the root.
+//! Deliberately minimal: list a directory, read/write/create/delete files and
+//! directories, report the root.
 
 use serde::Serialize;
 use std::fs;
@@ -9,6 +10,7 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024; // 2 MB guard for the editor
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB guard for image preview
 
 /// Directories that never belong in a coding-agent file tree.
+/// Dotfiles are no longer wholesale hidden — only these specific noise dirs.
 const SKIP_DIRS: &[&str] = &[
     "node_modules",
     "target",
@@ -51,8 +53,9 @@ pub fn fs_list_dir(path: String) -> Result<Vec<FsEntry>, String> {
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            // hide dotfiles and vendored/build dirs
-            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+            // only skip the noisy vendored/build dirs — dotfiles (.gitignore,
+            // .env, .claude, etc.) are shown so the agent can read/edit them
+            if SKIP_DIRS.contains(&name.as_str()) {
                 return None;
             }
             let is_dir = e.file_type().ok()?.is_dir();
@@ -105,4 +108,44 @@ pub fn fs_read_file_base64(path: String) -> Result<String, String> {
 #[tauri::command]
 pub fn fs_write_file(path: String, content: String) -> Result<(), String> {
     fs::write(Path::new(&path), content).map_err(|e| format!("cannot write {path}: {e}"))
+}
+
+/// Create a new empty file.  Parent directories must already exist.
+/// Fails if the path already exists to avoid silent overwrites.
+#[tauri::command]
+pub fn fs_create_file(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.exists() {
+        return Err(format!("already exists: {path}"));
+    }
+    fs::File::create(p).map(|_| ()).map_err(|e| format!("cannot create {path}: {e}"))
+}
+
+/// Create a directory (and any missing parents).
+#[tauri::command]
+pub fn fs_create_dir(path: String) -> Result<(), String> {
+    fs::create_dir_all(Path::new(&path))
+        .map_err(|e| format!("cannot create directory {path}: {e}"))
+}
+
+/// Delete a file or an entire directory tree.
+/// This is irreversible — the caller (UI) is responsible for confirmation.
+#[tauri::command]
+pub fn fs_delete(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err(format!("not found: {path}"));
+    }
+    if p.is_dir() {
+        fs::remove_dir_all(p).map_err(|e| format!("cannot delete directory {path}: {e}"))
+    } else {
+        fs::remove_file(p).map_err(|e| format!("cannot delete file {path}: {e}"))
+    }
+}
+
+/// Rename or move a file/directory within the workspace.
+#[tauri::command]
+pub fn fs_rename(from: String, to: String) -> Result<(), String> {
+    fs::rename(Path::new(&from), Path::new(&to))
+        .map_err(|e| format!("cannot rename {from} → {to}: {e}"))
 }

@@ -25,6 +25,9 @@ import { loadPetPreferences } from "@/lib/pet/persistence";
 import { showPetWindow } from "@/lib/pet/commands";
 import { isTauri } from "@/lib/pi/client";
 import { emit } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { requestClose } from "@/lib/window-close";
+import { CloseConfirmDialog } from "./CloseConfirmDialog";
 import type { PetConfigUpdate } from "@/lib/pet/types";
 
 /** Root chrome: nav rail + page content. Connects to pi on mount. */
@@ -46,6 +49,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useI18n.getState().initLocale();
     // restore the saved light/dark theme before the appearance overrides land
     useUI.getState().initTheme();
+    // restore the saved window close behavior (ask / minimize / quit)
+    useUI.getState().initCloseBehavior();
     // restore user-customized appearance (colors, background, text scale)
     useAppearance.getState().init();
     // subscribe before connecting so no early events are missed
@@ -71,9 +76,33 @@ function MainShell({ children }: { children: React.ReactNode }) {
       }
     };
     window.addEventListener("keydown", onKey, true);
+
+    // Disable the browser's native context menu so custom menus can show
+    const preventDefaultCtx = (e: MouseEvent) => e.preventDefault();
+    if (isTauri()) {
+      document.addEventListener("contextmenu", preventDefaultCtx);
+    }
+
+    // Intercept the window close request (caption button, Alt+F4, native close)
+    // so we can honor the user's saved behavior instead of always quitting.
+    let closeUnlisten: (() => void) | undefined;
+    if (isTauri()) {
+      getCurrentWindow()
+        .onCloseRequested((event) => {
+          event.preventDefault();
+          requestClose();
+        })
+        .then((fn) => {
+          closeUnlisten = fn;
+        })
+        .catch(() => {});
+    }
+
     return () => {
       window.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("contextmenu", preventDefaultCtx);
       destroyPetBridge(); // cleanup on unmount
+      closeUnlisten?.();
     };
   }, [connect]);
 
@@ -103,6 +132,7 @@ function MainShell({ children }: { children: React.ReactNode }) {
         <ExtensionSheet />
         <SubagentDetail />
         <CliUpdateToast />
+        <CloseConfirmDialog />
       </div>
     </TooltipProvider>
   );

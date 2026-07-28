@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { ScrollArea } from "@appica/ui-react/scroll-area";
 import {
   Collapsible,
@@ -23,6 +23,7 @@ import {
 import { SubagentDeck } from "./Subagents";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 import { MessageBubble } from "./MessageBubble";
+import { PiLoader } from "./PiLoader";
 import { ComposerInput } from "./ComposerInput";
 import { RetryBanner } from "./RetryBanner";
 import { IconButton, SectionLabel } from "./primitives";
@@ -58,6 +59,16 @@ export function AgentPanel() {
   const [attachments, setAttachments] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // "Waiting for first token": streaming is on, but the AI hasn't produced any
+  // visible content yet (no assistant text/thinking/tools/error). This is the
+  // gap between sending and the first streamed character — show the Pi loader.
+  const waitingForFirstToken = streaming && (() => {
+    const last = messages[messages.length - 1];
+    if (!last) return true;
+    if (last.role === "user") return true;
+    return !last.text && !last.thinking && last.tools.length === 0 && !last.isError;
+  })();
   const t = useT();
 
   /** clipboard paste — lift image blobs into data-URL attachments */
@@ -346,6 +357,53 @@ export function AgentPanel() {
         {messages.map((m) => (
           <MessageBubble key={m.id} m={m} />
         ))}
+
+        {/* "Pi is thinking" loader — shown in the right panel during the gap
+            between sending and the AI's first streamed token. */}
+        <AnimatePresence>
+          {waitingForFirstToken && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              transition={{ type: "spring", stiffness: 360, damping: 30 }}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 10,
+                margin: "6px auto 12px",
+                padding: "20px 16px 18px",
+                borderRadius: "var(--radius-md)",
+                background: "var(--bg-base)",
+                border: "1px solid var(--separator)",
+                boxShadow: "var(--shadow-sm)",
+              }}
+            >
+              <PiLoader size={84} />
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 590,
+                  color: "var(--text-primary)",
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                {t("agent.loading")}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-tertiary)",
+                  fontFamily: "var(--font-mono)",
+                  letterSpacing: "0.01em",
+                }}
+              >
+                {t("agent.loadingHint")}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </ScrollArea>
 
       {/* composer */}

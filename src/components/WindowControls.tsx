@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Minus, Square, Copy, X } from "lucide-react";
 import { isTauri } from "@/lib/pi/client";
 import { useT } from "@/lib/i18n";
+import { requestClose } from "@/lib/window-close";
 
 /**
  * Windows/Linux caption buttons (minimize / maximize / close) for the
@@ -41,6 +42,11 @@ export function WindowControls() {
   if (!visible) return null;
 
   const act = async (action: "minimize" | "toggleMaximize" | "close") => {
+    if (action === "close") {
+      // route through the user's close behavior (ask / minimize / quit)
+      requestClose();
+      return;
+    }
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow()[action]();
   };
