@@ -13,6 +13,23 @@ export async function minimizeToTray() {
   }
 }
 
+/**
+ * Restore the main window from the system tray — show, unminimize and focus.
+ * This is the frontend counterpart to minimizeToTray() and the Rust-side
+ * tray-icon click handler. Used by notification click to bring Pi back.
+ */
+export async function restoreFromTray() {
+  if (!isTauri()) return;
+  try {
+    const w = getCurrentWindow();
+    await w.show();
+    await w.unminimize();
+    await w.setFocus();
+  } catch {
+    // window may be unavailable
+  }
+}
+
 /** Fully quit the application (used by the "quit" behavior). */
 export async function quitApp() {
   if (isTauri()) {

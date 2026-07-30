@@ -29,7 +29,11 @@ pub fn pi_start(
     state: State<'_, PiProc>,
     cwd: Option<String>,
     binary: Option<String>,
+    resume_path: Option<String>,
 ) -> Result<(), String> {
+    // Repair/migrate the WSL custom-shell override before the new Pi process
+    // reads settings.json. Native mode is a no-op.
+    crate::wsl::sync_shell_bridge_settings(cwd.as_deref())?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
         return Ok(()); // already running
@@ -37,8 +41,19 @@ pub fn pi_start(
 
     let bin = binary.unwrap_or_else(|| "pi".to_string());
     let mut cmd = Command::new(&bin);
-    cmd.args(["--mode", "rpc"])
-        .stdin(Stdio::piped())
+    cmd.args(["--mode", "rpc"]);
+    // Resume a specific session at process startup so pi loads the full prior
+    // context (past turns, tool results, thinking) into its agent loop — the
+    // post-start `switch_session` RPC is kept only as a best-effort fallback.
+    // `--session <path|id>` is non-interactive (unlike `--resume`), which is
+    // required for headless RPC mode.
+    if let Some(path) = resume_path.as_deref() {
+        let path = path.trim();
+        if !path.is_empty() {
+            cmd.args(["--session", path]);
+        }
+    }
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = cwd {
@@ -115,12 +130,8 @@ pub fn pi_send(state: State<'_, PiProc>, line: String) -> Result<(), String> {
 #[tauri::command]
 pub fn pi_stop(state: State<'_, PiProc>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(mut handle) = guard.take() {
-        let _ = handle
-            .child
-            .lock()
-            .ok()
-            .and_then(|mut c| c.kill().ok());
+    if let Some(handle) = guard.take() {
+        let _ = handle.child.lock().ok().and_then(|mut c| c.kill().ok());
         let _ = handle.child.lock().ok().and_then(|mut c| c.wait().ok());
     }
     Ok(())

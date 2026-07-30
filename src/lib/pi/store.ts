@@ -25,9 +25,9 @@ interface PiStore {
   commands: PiCommandInfo[];
   lastError: string | null;
 
-  connect: (opts?: { cwd?: string }) => Promise<void>;
+  connect: (opts?: { cwd?: string; resumePath?: string }) => Promise<void>;
   /** Stop pi and reconnect — used when the working directory changes. */
-  restart: (cwd?: string) => Promise<void>;
+  restart: (cwd?: string, resumePath?: string) => Promise<void>;
   refresh: () => Promise<void>;
   setModel: (m: PiModel) => Promise<void>;
   setThinking: (level: ThinkingLevel) => Promise<void>;
@@ -58,7 +58,7 @@ export const usePi = create<PiStore>((set, get) => ({
     set({ status: "connecting", lastError: null });
     const client = getPiClient();
     try {
-      await client.start({ cwd: opts?.cwd });
+      await client.start({ cwd: opts?.cwd, resumePath: opts?.resumePath });
 
       // agent activity → status
       client.on("agent_start", () => set({ status: "running" }));
@@ -77,11 +77,11 @@ export const usePi = create<PiStore>((set, get) => ({
     }
   },
 
-  restart: async (cwd) => {
+  restart: async (cwd, resumePath) => {
     const client = getPiClient();
     await client.stop();
     set({ status: "disconnected" });
-    await get().connect({ cwd });
+    await get().connect({ cwd, resumePath });
   },
 
   refresh: async () => {

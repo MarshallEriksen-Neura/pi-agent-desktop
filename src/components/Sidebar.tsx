@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, memo, useMemo } from "react";
 import {
   MessageSquare,
   ChevronRight,
@@ -209,6 +209,10 @@ function InlineInput({
 
 //─── Sidebar ──────────────────────────────────────────────────────────────────
 
+/** When the session history exceeds this many rows, fold the rest behind a
+ *  "show all" toggle so the sidebar renders quickly and stays scannable. */
+const SESSION_COLLAPSE_THRESHOLD = 8;
+
 /** Left navigation — chat-session history + real workspace file tree. */
 export function Sidebar() {
   const workspace = useWorkspace();
@@ -221,6 +225,7 @@ export function Sidebar() {
   const [creatingIn, setCreatingIn] = useState<{ dirPath: string; type: "file" | "dir" } | null>(null);
   const [explorerHover, setExplorerHover] = useState(false);
   const [focusedEntry, setFocusedEntry] = useState<FsEntry | null>(null);
+  const [sessionsExpanded, setSessionsExpanded] = useState(false);
 
   useEffect(() => {
     init();
@@ -259,6 +264,20 @@ export function Sidebar() {
 
   const rootKey = root ?? "";
   const top = entries[rootKey] ?? [];
+
+  // Sessions list: collapse when it grows past a threshold so the sidebar stays
+  // snappy. The active session is always kept visible even when folded.
+  const visibleSessions = useMemo(() => {
+    if (sessionsExpanded || sessions.length <= SESSION_COLLAPSE_THRESHOLD) {
+      return sessions;
+    }
+    const head = sessions.slice(0, SESSION_COLLAPSE_THRESHOLD);
+    if (activeId && !head.some((s) => s.id === activeId)) {
+      const active = sessions.find((s) => s.id === activeId);
+      if (active) return [...head, active];
+    }
+    return head;
+  }, [sessions, sessionsExpanded, activeId]);
 
   // Context-aware creation: create in the focused directory, or root if no focus
   const createInContext = (type: "file" | "dir") => {
@@ -343,9 +362,45 @@ export function Sidebar() {
               <Plus size={14} />
             </motion.button>
           </div>
-          {sessions.map((s) => (
+          {visibleSessions.map((s) => (
             <SessionRow key={s.id} s={s} active={s.id === activeId} />
           ))}
+          {sessions.length > SESSION_COLLAPSE_THRESHOLD && (
+            <motion.button
+              whileTap={{ scale: 0.97 }}
+              transition={{ type: "spring", stiffness: 500, damping: 30 }}
+              onClick={() => setSessionsExpanded((v) => !v)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                width: "calc(100% - 12px)",
+                margin: "2px 6px",
+                padding: "6px 10px",
+                fontSize: 12,
+                textAlign: "left",
+                border: "none",
+                borderRadius: 8,
+                background: "transparent",
+                color: "var(--text-tertiary)",
+                cursor: "pointer",
+              }}
+            >
+              <ChevronRight
+                size={12}
+                style={{
+                  display: "inline-block",
+                  transform: sessionsExpanded ? "rotate(90deg)" : "none",
+                  transition: "transform 0.15s ease",
+                }}
+              />
+              <span>
+                {sessionsExpanded
+                  ? t("sidebar.collapseSessions")
+                  : t("sidebar.showAllSessions", { count: sessions.length })}
+              </span>
+            </motion.button>
+          )}
 
           {/* Explorer header — label + hover-revealed new-file / new-folder buttons */}
           <div
@@ -474,8 +529,12 @@ export function Sidebar() {
  * One history row — click to load, double-click to rename inline,
  * hover reveals delete.
  */
-function SessionRow({ s, active }: { s: ChatSessionMeta; active: boolean }) {
-  const { switchSession, renameSession, deleteSession } = useSessions();
+const SessionRow = memo(function SessionRow({ s, active }: { s: ChatSessionMeta; active: boolean }) {
+  // Select only the stable action references — avoids re-rendering every row
+  // whenever the sessions store mutates (e.g. activeId / list changes).
+  const switchSession = useSessions((st) => st.switchSession);
+  const renameSession = useSessions((st) => st.renameSession);
+  const deleteSession = useSessions((st) => st.deleteSession);
   const [hover, setHover] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -587,7 +646,7 @@ function SessionRow({ s, active }: { s: ChatSessionMeta; active: boolean }) {
       )}
     </div>
   );
-}
+}, (prev, next) => prev.s === next.s && prev.active === next.active);
 
 //─── TreeNode ─────────────────────────────────────────────────────────────────
 

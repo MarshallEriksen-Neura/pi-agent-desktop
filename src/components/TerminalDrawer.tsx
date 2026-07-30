@@ -20,6 +20,7 @@ import { useTerminalBlocks } from "@/lib/terminal-blocks";
 import { TerminalBlocks } from "./TerminalBlocks";
 import { TerminalInput } from "./TerminalInput";
 import { blockPromptLine } from "@/lib/terminal-block-shell";
+import { useRuntime } from "@/lib/pi/runtime";
 
 /** Read current token values so xterm follows the active theme. */
 function buildXtermTheme() {
@@ -43,6 +44,7 @@ function buildXtermTheme() {
 export function TerminalDrawer() {
   const { terminalOpen, setTerminalOpen } = useUI();
   const { viewMode, setViewMode } = useTerminalBlocks();
+  const runtime = useRuntime((state) => state.persistedConfig);
   const t = useT();
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -223,6 +225,20 @@ export function TerminalDrawer() {
             >
               {t("terminal.title")}
             </span>
+            {runtime.mode === "wsl" && (
+              <span
+                style={{
+                  fontSize: 10.5,
+                  color: "var(--success)",
+                  border: "1px solid color-mix(in srgb, var(--success) 35%, transparent)",
+                  borderRadius: 4,
+                  padding: "1px 5px",
+                  lineHeight: 1.4,
+                }}
+              >
+                WSL{runtime.distro ? ` · ${runtime.distro}` : ""}
+              </span>
+            )}
             <Kbd style={{ fontSize: 10, background: "transparent", border: "none" }}>
               <Command size={10} />J
             </Kbd>

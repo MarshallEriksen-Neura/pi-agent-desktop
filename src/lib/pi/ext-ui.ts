@@ -28,6 +28,12 @@ interface ExtUiStore {
       | { cancelled: true }
   ) => void;
   dismissToast: (id: string) => void;
+  /**
+   * Push an app-level toast (not from a pi extension). Auto-dismisses after
+   * `ms` (default 5000). Used for non-extension surfaces such as the
+   * session-restore fallback warning.
+   */
+  pushToast: (message: string, kind?: Toast["kind"], ms?: number) => void;
 }
 
 let toastSeq = 0;
@@ -48,14 +54,7 @@ export const useExtUi = create<ExtUiStore>((set, get) => ({
       const req = e as ExtensionUiRequest;
 
       if (req.method === "notify") {
-        const id = `toast-${++toastSeq}`;
-        set((s) => ({
-          toasts: [
-            ...s.toasts,
-            { id, message: req.message ?? "", kind: req.notifyType ?? "info" },
-          ],
-        }));
-        setTimeout(() => get().dismissToast(id), 3800);
+        get().pushToast(req.message ?? "", req.notifyType ?? "info", 3800);
         return;
       }
 
@@ -86,4 +85,10 @@ export const useExtUi = create<ExtUiStore>((set, get) => ({
 
   dismissToast: (id) =>
     set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+
+  pushToast: (message, kind = "info", ms = 5000) => {
+    const id = `toast-${++toastSeq}`;
+    set((s) => ({ toasts: [...s.toasts, { id, message, kind }] }));
+    setTimeout(() => get().dismissToast(id), ms);
+  },
 }));

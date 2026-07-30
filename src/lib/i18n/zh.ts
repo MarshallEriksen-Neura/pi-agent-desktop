@@ -62,6 +62,8 @@ export const zh: Record<keyof typeof en, string> = {
   "sidebar.sessions": "会话",
   "sidebar.explorer": "文件浏览",
   "sidebar.newSession": "新建会话",
+  "sidebar.showAllSessions": "显示全部（共 {count} 条）",
+  "sidebar.collapseSessions": "收起",
   "session.untitled": "新会话",
   "session.delete": "删除会话",
   "agent.history": "会话历史",
@@ -103,6 +105,10 @@ export const zh: Record<keyof typeof en, string> = {
   // queue
   "queue.badge": "{count} 个排队中",
   "queue.cancel": "取消队列",
+
+  // session restore (上下文未重新载入 agent)
+  "session.restoreFailed": "无法恢复此对话的上下文 —— Pi 已全新启动。下方仍显示聊天历史，但智能体不会记得之前的轮次。",
+  "session.restoreRefused": "Pi 无法载入已保存的会话上下文（{error}）。智能体已全新启动，下方历史仅作展示。",
 
   // message operations
   "message.copy": "复制",
@@ -534,6 +540,21 @@ export const zh: Record<keyof typeof en, string> = {
   "cliUpdate.upToDate": "pi 已是最新版本",
   "settings.softwareUpdate": "软件更新",
   "settings.softwareUpdateDetail": "版本 {version}",
+
+  // 命令环境（仅 Windows）：在 Windows 或 WSL 中运行 Bash
+  "settings.runtime": "命令环境",
+  "settings.runtimeFooter":
+    "让 Agent 与终端命令在 Windows 或 WSL 发行版中执行。Pi 设置、凭据与插件仍保留在 Windows。更改后将重启 Pi。",
+  "settings.runtimeMode": "命令运行于",
+  "settings.runtimeNative": "Windows",
+  "settings.runtimeWsl": "WSL",
+  "settings.runtimeDistro": "WSL 发行版",
+  "settings.runtimeDistroDetail": "执行命令所用的已安装发行版",
+  "settings.runtimeDistroDefault": "默认发行版",
+  "settings.runtimeNoDistros":
+    "未找到 WSL 发行版。请用 `wsl --install` 安装后重新打开设置。",
+  "settings.runtimeApply": "应用并重启 Pi",
+
   // file tree context menu
   "ctx.newFile": "新建文件",
   "ctx.newFolder": "新建文件夹",

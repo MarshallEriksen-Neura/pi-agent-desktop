@@ -7,6 +7,7 @@ import { showNotification } from "../notifications";
 import { useUI } from "../store";
 import { usePi } from "./store";
 import { t } from "../i18n";
+import { restoreFromTray } from "../window-close";
 
 export interface ChatToolCall {
   id: string;
@@ -214,11 +215,11 @@ export const useChat = create<ChatStore>((set, get) => ({
               showNotification("Pi finished", {
                 body,
                 onClick: () => {
-                  // Focus window
-                  if (typeof window !== "undefined") {
-                    window.focus();
-                  }
-                  // Scroll to message - handled by browser focus for now
+                  // Restore the window from the system tray (show + focus).
+                  // The DOM window.focus() alone cannot bring back a window
+                  // that was hidden via Tauri's hide(), so we use the Tauri
+                  // window API via restoreFromTray() instead.
+                  void restoreFromTray();
                 },
               });
               break;

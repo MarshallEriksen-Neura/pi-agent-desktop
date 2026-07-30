@@ -19,9 +19,12 @@ const StreamdownRenderer = dynamic(
 
 interface MessageBubbleProps {
   m: ChatMessage;
+  /** Play the entrance animation. Set false for historical messages so
+   *  virtualized re-mounts don't replay the entrance on scroll. */
+  animateIn?: boolean;
 }
 
-export function MessageBubble({ m }: MessageBubbleProps) {
+export function MessageBubble({ m, animateIn = true }: MessageBubbleProps) {
   const t = useT();
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
@@ -29,7 +32,7 @@ export function MessageBubble({ m }: MessageBubbleProps) {
     return (
       <>
         <motion.div
-          initial={{ opacity: 0, y: 8 }}
+          initial={animateIn ? { opacity: 0, y: 8 } : false}
           animate={{ opacity: 1, y: 0 }}
           transition={{ type: "spring", stiffness: 400, damping: 28 }}
           style={{
@@ -95,11 +98,11 @@ export function MessageBubble({ m }: MessageBubbleProps) {
   }
 
   return (
-    <AssistantMessage m={m} />
+    <AssistantMessage m={m} animateIn={animateIn} />
   );
 }
 
-function AssistantMessage({ m }: { m: ChatMessage }) {
+function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean }) {
   const t = useT();
   const [menuOpen, setMenuOpen] = useState(false);
   const { copyMarkdown, fork } = useMessageActions(m.text, m.id);
@@ -116,7 +119,7 @@ function AssistantMessage({ m }: { m: ChatMessage }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }}
+      initial={animateIn ? { opacity: 0, y: 8 } : false}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 400, damping: 28 }}
       style={{ margin: "6px 0 10px", position: "relative" }}

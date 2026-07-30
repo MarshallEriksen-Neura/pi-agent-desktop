@@ -6,6 +6,7 @@ mod pi_models;
 mod pi_settings;
 mod projects;
 mod updater;
+mod wsl;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -14,6 +15,12 @@ use tauri::{
 };
 
 use pi_bridge::PiProc;
+
+/// Intercept the executable's `-c <command>` form before Tauri starts. Pi uses
+/// this entry point as its WSL-compatible custom shell.
+pub fn run_shell_bridge_if_requested() -> Option<i32> {
+    wsl::run_shell_bridge_if_requested()
+}
 
 /// Open an http(s) URL in the system default browser (terminal web-links).
 #[tauri::command]
@@ -159,6 +166,11 @@ pub fn run() {
             projects::project_open,
             projects::project_remove_recent,
             projects::project_pick,
+            projects::runtime_config_read,
+            projects::runtime_config_write,
+            wsl::wsl_list_distros,
+            wsl::wsl_shell_bridge_path,
+            wsl::wsl_runtime_validate,
             updater::update_check,
             updater::update_apply,
             updater::pi_cli_update_check,

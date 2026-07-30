@@ -10,12 +10,13 @@ import { CliUpdateToast } from "./CliUpdateToast";
 import { useCliUpdate } from "@/lib/pi/cli-update";
 import { usePi } from "@/lib/pi/store";
 import { useChat } from "@/lib/pi/chat";
-import { useSessions } from "@/lib/pi/sessions";
+import { useSessions, peekLatestSessionPath } from "@/lib/pi/sessions";
 import { useExtUi } from "@/lib/pi/ext-ui";
 import { useSubagents } from "@/lib/pi/subagents";
 import { initAgentBridge } from "@/lib/pi/agent-bridge";
 import { destroyPetBridge } from "@/lib/pet/bridge";
 import { useWorkspace } from "@/lib/workspace";
+import { useRuntime } from "@/lib/pi/runtime";
 import { useI18n } from "@/lib/i18n";
 import { useAppearance } from "@/lib/appearance";
 import { useUI } from "@/lib/store";
@@ -58,12 +59,24 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useExtUi.getState().init();
     useSubagents.getState().initPiBridge();
     initAgentBridge(); // tool events → task strip / editor highlights / terminal + pet bridge
-    // resolve the project root first so pi spawns inside it
-    void useWorkspace
+    // load the Windows/WSL command runtime before Pi starts; its shell bridge
+    // may be used by the first agent command
+    void useRuntime
       .getState()
-      .init()
-      .then(() => connect({ cwd: useWorkspace.getState().root ?? undefined }))
-      // session history restores after connect so pi can switch to the stored file
+      .load()
+      // resolve the project root next so Pi and its commands share a cwd
+      .then(() => useWorkspace.getState().init())
+      // peek the newest session's path BEFORE connecting so pi can spawn with
+      // `--session <path>` and load the full prior context in-process — the
+      // later `switch_session` RPC inside sessions.init() is only a fallback
+      .then(async () => {
+        const resumePath = await peekLatestSessionPath();
+        await connect({
+          cwd: useWorkspace.getState().root ?? undefined,
+          resumePath: resumePath || undefined,
+        });
+      })
+      // session history restores after connect so the UI repaints the transcript
       .then(() => useSessions.getState().init())
       // background pi CLI version check — pops the update toast when newer
       .then(() => useCliUpdate.getState().checkOnLaunch());

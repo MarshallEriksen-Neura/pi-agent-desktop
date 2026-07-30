@@ -4,6 +4,12 @@
 # compiler invocation to cc-no-brepro.js, which initialises the VC environment
 # and strips `-Brepro` before invoking the real cl.exe. Only affects the
 # windows-msvc C/C++ toolchain.
+# `relative = true` resolves the path against the directory that contains this
+# `.cargo/` folder (i.e. `src-tauri/`), producing an absolute path that is
+# correct both locally and in CI — no matter what cwd cargo runs from or where
+# the repo is checked out. Do NOT use a bare relative string here: cargo treats
+# `[env]` values as literal strings, so `src-tauri/.cargo/…` would be resolved
+# against cargo's cwd (`src-tauri/`) as `src-tauri/src-tauri/.cargo/…` and fail.
 [env]
-CC_x86_64-pc-windows-msvc = "src-tauri/.cargo/cc-no-brepro.cmd"
-CXX_x86_64-pc-windows-msvc = "src-tauri/.cargo/cc-no-brepro.cmd"
+CC_x86_64-pc-windows-msvc = { value = ".cargo/cc-no-brepro.cmd", relative = true }
+CXX_x86_64-pc-windows-msvc = { value = ".cargo/cc-no-brepro.cmd", relative = true }

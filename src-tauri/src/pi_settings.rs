@@ -19,13 +19,9 @@ pub(crate) fn home_dir() -> Result<PathBuf, String> {
         .map(PathBuf::from)
         .map_err(|_| format!("{VAR} is not set"))
 }
-
-/// `root` is the currently open project (frontend-provided); the process cwd
-/// is only a fallback for callers that predate project selection.
 fn settings_path(scope: &str, root: Option<&str>) -> Result<PathBuf, String> {
     match scope {
         "global" => Ok(home_dir()?.join(".pi").join("agent").join("settings.json")),
-        // custom model/provider definitions — global only, no project override
         "models" => Ok(home_dir()?.join(".pi").join("agent").join("models.json")),
         "project" => match root {
             Some(r) => Ok(PathBuf::from(r).join(".pi").join("settings.json")),
@@ -63,7 +59,6 @@ pub fn pi_settings_read(scope: String, root: Option<String>) -> Result<SettingsF
 
 #[tauri::command]
 pub fn pi_settings_write(scope: String, content: String, root: Option<String>) -> Result<(), String> {
-    // settings.json is shared with the pi CLI — never write something it can't parse
     serde_json::from_str::<serde_json::Value>(&content)
         .map_err(|e| format!("refusing to write invalid JSON: {e}"))?;
 
@@ -85,9 +80,6 @@ pub struct CliResult {
     pub stderr: String,
 }
 
-/// Run the pi CLI for package management. Restricted to non-interactive
-/// package subcommands so a bad frontend call can't start a TUI that hangs
-/// waiting for a terminal.
 #[tauri::command]
 pub fn pi_cli(args: Vec<String>, cwd: Option<String>) -> Result<CliResult, String> {
     const ALLOWED: &[&str] = &["install", "remove", "uninstall", "list", "update"];

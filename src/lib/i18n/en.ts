@@ -61,6 +61,8 @@ export const en = {
   "sidebar.sessions": "Sessions",
   "sidebar.explorer": "Explorer",
   "sidebar.newSession": "New session",
+  "sidebar.showAllSessions": "Show all ({count})",
+  "sidebar.collapseSessions": "Show less",
   "session.untitled": "New chat",
   "session.delete": "Delete session",
   "agent.history": "Session history",
@@ -102,6 +104,10 @@ export const en = {
   // queue
   "queue.badge": "{count} queued",
   "queue.cancel": "Cancel queue",
+
+  // session restore (context not reloaded into the agent)
+  "session.restoreFailed": "Couldn't restore this conversation's context — Pi started fresh. Chat history is still shown, but the agent won't remember prior turns.",
+  "session.restoreRefused": "Pi couldn't load the saved session context ({error}). The agent started fresh; history below is display-only.",
 
   // message operations
   "message.copy": "Copy",
@@ -558,6 +564,20 @@ export const en = {
   "cliUpdate.upToDate": "pi is up to date",
   "settings.softwareUpdate": "Software Update",
   "settings.softwareUpdateDetail": "Version {version}",
+
+  // command environment (Windows only): run Bash natively or inside WSL
+  "settings.runtime": "Command environment",
+  "settings.runtimeFooter":
+    "Run agent and terminal commands in Windows or a WSL distro. Pi settings, credentials, and packages stay on Windows. Changing this restarts pi.",
+  "settings.runtimeMode": "Run commands in",
+  "settings.runtimeNative": "Windows",
+  "settings.runtimeWsl": "WSL",
+  "settings.runtimeDistro": "WSL distro",
+  "settings.runtimeDistroDetail": "Which installed distribution runs commands",
+  "settings.runtimeDistroDefault": "Default distro",
+  "settings.runtimeNoDistros":
+    "No WSL distros found. Install one with `wsl --install` and reopen settings.",
+  "settings.runtimeApply": "Apply & restart Pi",
 
   // file tree context menu
   "ctx.newFile": "New File",

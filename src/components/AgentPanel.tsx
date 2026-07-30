@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ScrollArea } from "@appica/ui-react/scroll-area";
+import { Virtuoso, type VirtuosoHandle, type Components } from "react-virtuoso";
 import {
   Collapsible,
   CollapsibleTrigger,
@@ -57,7 +57,7 @@ export function AgentPanel() {
   const piCommands = usePi((s) => s.commands);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // "Waiting for first token": streaming is on, but the AI hasn't produced any
@@ -134,12 +134,6 @@ export function AgentPanel() {
       return () => container.removeEventListener('keydown', handleKeyDown);
     }
   }, [messages]);
-
-  /* pin to bottom while streaming */
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, agentTasks]);
 
   /* auto-send queued prompts when agent transitions to idle */
   useEffect(() => {
@@ -251,21 +245,29 @@ export function AgentPanel() {
         </div>
       </div>
 
-      <ScrollArea
-        orientation="vertical"
-        scrollShadow
+      <Virtuoso<ChatMessage>
+        ref={virtuosoRef}
+        data={messages}
+        // streaming? follow new content smoothly only while at the bottom —
+        // scrolling up to read history is never interrupted.
+        followOutput={(isAtBottom) => (streaming && isAtBottom ? "smooth" : false)}
+        // buffer items above/below the viewport so fast scrolls stay filled.
+        increaseViewportBy={{ top: 600, bottom: 600 }}
+        computeItemKey={(_index, m) => m.id}
+        className="material"
         style={{ flex: 1, minHeight: 0 }}
-        viewportProps={{
-          ref: scrollRef as React.Ref<HTMLDivElement>,
-          style: { padding: "4px 12px" },
-        }}
-      >
-        {/* subagent deck — parallel workers, tap a card for detail */}
-        <SubagentDeck />
+        components={
+          {
+            // Top of the scroll area (does NOT stick) — subagents, live task
+            // strip, and the empty-state hint when there are no messages.
+            Header: () => (
+              <div style={{ padding: "4px 12px 0" }}>
+                {/* subagent deck — parallel workers, tap a card for detail */}
+                <SubagentDeck />
 
-        {/* task strip — live pi tool activity (agent-bridge) or the local showcase */}
-        {agentRunning &&
-          agentTasks.map((task, i) => (
+                {/* task strip — live pi tool activity (agent-bridge) or the local showcase */}
+                {agentRunning &&
+                  agentTasks.map((task, i) => (
             <motion.div
               key={task.id}
               initial={{ opacity: 0, y: 10, scale: 0.98 }}
@@ -329,82 +331,94 @@ export function AgentPanel() {
             </motion.div>
           ))}
 
-        {/* conversation stream */}
-        {messages.length === 0 && !agentRunning && (
-          <div
-            style={{
-              fontSize: 12.5,
-              color: "var(--text-tertiary)",
-              padding: "12px 6px",
-              lineHeight: 1.6,
-            }}
-          >
-            {t("agent.emptyAsk")}
-            <code
-              style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}
-            >
-              demo
-            </code>
-            {t("agent.emptyOr")}
-            <code
-              style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}
-            >
-              agents
-            </code>
-            {t("agent.emptyAfter")}
+                {/* conversation stream — empty state */}
+                {messages.length === 0 && !agentRunning && (
+                  <div
+                    style={{
+                      fontSize: 12.5,
+                      color: "var(--text-tertiary)",
+                      padding: "12px 6px",
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {t("agent.emptyAsk")}
+                    <code style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
+                      demo
+                    </code>
+                    {t("agent.emptyOr")}
+                    <code style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
+                      agents
+                    </code>
+                    {t("agent.emptyAfter")}
+                  </div>
+                )}
+              </div>
+            ),
+            // Bottom of the scroll area — the "Pi is thinking" loader shown
+            // during the gap between sending and the first streamed token.
+            Footer: () => (
+              <div style={{ padding: "0 12px 4px" }}>
+                <AnimatePresence>
+                  {waitingForFirstToken && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 6 }}
+                      transition={{ type: "spring", stiffness: 360, damping: 30 }}
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 10,
+                        margin: "6px auto 12px",
+                        padding: "20px 16px 18px",
+                        borderRadius: "var(--radius-md)",
+                        background: "var(--bg-base)",
+                        border: "1px solid var(--separator)",
+                        boxShadow: "var(--shadow-sm)",
+                      }}
+                    >
+                      <PiLoader size={84} />
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 590,
+                          color: "var(--text-primary)",
+                          letterSpacing: "-0.01em",
+                        }}
+                      >
+                        {t("agent.loading")}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "var(--text-tertiary)",
+                          fontFamily: "var(--font-mono)",
+                          letterSpacing: "0.01em",
+                        }}
+                      >
+                        {t("agent.loadingHint")}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            ),
+          } satisfies Components<ChatMessage>
+        }
+        itemContent={(index, m) => (
+          // Only the latest message plays the entrance animation — historical
+          // messages use initial={false} so virtualized re-mounts on scroll
+          // don't replay the fade-in.
+          <div style={{ padding: "0 12px" }}>
+            <MessageBubble
+              key={m.id}
+              m={m}
+              animateIn={index === messages.length - 1}
+            />
           </div>
         )}
-        {messages.map((m) => (
-          <MessageBubble key={m.id} m={m} />
-        ))}
-
-        {/* "Pi is thinking" loader — shown in the right panel during the gap
-            between sending and the AI's first streamed token. */}
-        <AnimatePresence>
-          {waitingForFirstToken && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 6 }}
-              transition={{ type: "spring", stiffness: 360, damping: 30 }}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: 10,
-                margin: "6px auto 12px",
-                padding: "20px 16px 18px",
-                borderRadius: "var(--radius-md)",
-                background: "var(--bg-base)",
-                border: "1px solid var(--separator)",
-                boxShadow: "var(--shadow-sm)",
-              }}
-            >
-              <PiLoader size={84} />
-              <div
-                style={{
-                  fontSize: 13,
-                  fontWeight: 590,
-                  color: "var(--text-primary)",
-                  letterSpacing: "-0.01em",
-                }}
-              >
-                {t("agent.loading")}
-              </div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-tertiary)",
-                  fontFamily: "var(--font-mono)",
-                  letterSpacing: "0.01em",
-                }}
-              >
-                {t("agent.loadingHint")}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </ScrollArea>
+      />
 
       {/* composer */}
       <div style={{ position: "relative" }}>

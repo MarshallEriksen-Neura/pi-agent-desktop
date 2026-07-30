@@ -15,7 +15,7 @@ import {
 
 export interface Transport {
   readonly kind: "tauri" | "mock";
-  start(opts: { cwd?: string; binary?: string }): Promise<void>;
+  start(opts: { cwd?: string; binary?: string; resumePath?: string }): Promise<void>;
   send(line: string): void;
   onLine(cb: (line: string) => void): () => void;
   /** pi stderr (errors, stack traces, crash logs) */
@@ -40,7 +40,7 @@ class TauriTransport implements Transport {
   private unlistenStderr: (() => void) | null = null;
   private unlistenExit: (() => void) | null = null;
 
-  async start(opts: { cwd?: string; binary?: string }) {
+  async start(opts: { cwd?: string; binary?: string; resumePath?: string }) {
     const { invoke } = await import("@tauri-apps/api/core");
     const { listen } = await import("@tauri-apps/api/event");
     this.unlisten = await listen<string>("pi://line", (e) => {
@@ -55,6 +55,7 @@ class TauriTransport implements Transport {
     await invoke("pi_start", {
       cwd: opts.cwd ?? null,
       binary: opts.binary ?? null,
+      resumePath: opts.resumePath ?? null,
     });
   }
 
@@ -360,7 +361,7 @@ export class PiClient {
     this.anySubs.forEach((cb) => cb(ev));
   }
 
-  async start(opts: { cwd?: string; binary?: string } = {}) {
+  async start(opts: { cwd?: string; binary?: string; resumePath?: string } = {}) {
     if (this.started) return;
     this.started = true;
     await this.transport.start(opts);

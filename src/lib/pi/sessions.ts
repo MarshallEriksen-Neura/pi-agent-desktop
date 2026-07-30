@@ -3,6 +3,8 @@
 import { create } from "zustand";
 import { getPiClient, isTauri } from "./client";
 import { useChat, type ChatMessage } from "./chat";
+import { useExtUi } from "./ext-ui";
+import { t } from "../i18n";
 import type { PiState } from "./protocol";
 
 /**
@@ -70,6 +72,19 @@ async function backendList(): Promise<ChatSessionMeta[]> {
   return lsRead()
     .map(({ messages: _messages, ...meta }) => meta)
     .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/**
+ * Read only the newest session's `sessionPath` without touching the store —
+ * used at app launch (before `connect`) so pi can be spawned with
+ * `--session <path>` and resume the full prior context in-process, instead of
+ * starting blank and trying to catch up via a post-start `switch_session` RPC.
+ * Returns "" when there is no prior session, the newest one has no pinned path
+ * yet, or in browser preview.
+ */
+export async function peekLatestSessionPath(): Promise<string> {
+  const list = await backendList();
+  return list[0]?.sessionPath?.trim() ?? "";
 }
 
 async function backendLoad(id: string): Promise<ChatMessage[]> {
@@ -230,15 +245,29 @@ export const useSessions = create<SessionsStore>((set, get) => ({
         restoring = false;
       }
       set({ activeId: latest.id });
-      // …and point pi back at the matching session file
+      // …and point pi back at the matching session file. This is a fallback:
+      // pi should already have resumed this session at startup via
+      // `--session <path>`. If the RPC fails or pi refuses, warn loudly instead
+      // of silently letting the agent run with no context while the UI shows
+      // history (the exact "AI forgot" symptom this guards against).
       if (isTauri() && latest.sessionPath) {
         try {
-          await getPiClient().request({
+          const r = await getPiClient().request({
             type: "switch_session",
             sessionPath: latest.sessionPath,
           });
+          if (!r.success) {
+            // pi refused the switch (file moved/invalid) — surface it so the
+            // user knows the agent below is running without prior context.
+            useExtUi.getState().pushToast(
+              t("session.restoreRefused", { error: r.error ?? "" }),
+              "warning",
+            );
+          }
         } catch {
-          // pi unavailable — UI history still works from the local store
+          // pi unavailable / rpc timeout — UI history still works from the local
+          // store, but the agent has no context. Tell the user, not just the console.
+          useExtUi.getState().pushToast(t("session.restoreFailed"), "warning");
         }
       }
     } else {
@@ -290,12 +319,19 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     const meta = get().sessions.find((s) => s.id === id);
     if (isTauri() && meta?.sessionPath) {
       try {
-        await getPiClient().request({
+        const r = await getPiClient().request({
           type: "switch_session",
           sessionPath: meta.sessionPath,
         });
+        if (!r.success) {
+          useExtUi.getState().pushToast(
+            t("session.restoreRefused", { error: r.error ?? "" }),
+            "warning",
+          );
+        }
       } catch {
         // pi couldn't switch (file moved?) — transcript is still visible
+        useExtUi.getState().pushToast(t("session.restoreFailed"), "warning");
       }
     }
   },

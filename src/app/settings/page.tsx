@@ -27,6 +27,9 @@ import {
 import { APP_VERSION } from "@/lib/update";
 import { usePiSettings, type SettingsScope, type PiSettings } from "@/lib/pi/settings";
 import { usePi, THINKING_LEVELS } from "@/lib/pi/store";
+import { useRuntime } from "@/lib/pi/runtime";
+import { isTauri } from "@/lib/pi/client";
+import { useWorkspace } from "@/lib/workspace";
 import { useI18n, useT } from "@/lib/i18n";
 import type { ThinkingLevel } from "@/lib/pi/protocol";
 import {
@@ -208,6 +211,9 @@ export default function PiSettingsPage() {
           />
         </div>
       </InsetGroup>
+
+      {/* command environment — Windows only: route Pi's Bash through WSL */}
+      <RuntimeSection />
 
       {/* user-customizable UI — app-local, not part of pi's settings.json */}
       <InsetGroup
@@ -1054,5 +1060,168 @@ export default function PiSettingsPage() {
         </p>
       )}
     </SettingsPage>
+  );
+}
+
+/**
+ * Command environment — Windows-only section for routing agent and terminal
+ * Bash commands through a WSL distro. Pi itself remains native so its settings,
+ * credentials, and packages do not move. Hidden on non-Windows / browser.
+ */
+function RuntimeSection() {
+  const t = useT();
+  const {
+    config,
+    persistedConfig,
+    distros,
+    lastError,
+    load,
+    loadDistros,
+    setConfig,
+    save,
+  } = useRuntime();
+  const piSettings = usePiSettings();
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
+
+  const isWindows =
+    isTauri() &&
+    typeof navigator !== "undefined" &&
+    /win/i.test(navigator.userAgent);
+
+  useEffect(() => {
+    if (isWindows) {
+      void load();
+      void loadDistros();
+    }
+  }, [isWindows, load, loadDistros]);
+
+  if (!isWindows) return null;
+
+  const apply = async () => {
+    setApplying(true);
+    setApplyError(null);
+    try {
+      if (!piSettings.loaded) await piSettings.load();
+      const settings = usePiSettings.getState().global.data ?? {};
+      const nextConfig =
+        config.mode === "wsl" && persistedConfig.mode !== "wsl"
+          ? {
+              ...config,
+              nativeShellPath:
+                typeof settings.shellPath === "string" ? settings.shellPath : null,
+              nativeShellCommandPrefix:
+                typeof settings.shellCommandPrefix === "string"
+                  ? settings.shellCommandPrefix
+                  : null,
+              nativeShellSaved: true,
+            }
+          : config;
+
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("wsl_runtime_validate", {
+        config: nextConfig,
+        cwd: useWorkspace.getState().root ?? null,
+      });
+
+      if (nextConfig.mode === "wsl") {
+        // Persist first: every bridge process reads the selected distro from
+        // desktop.json when Pi invokes `<desktop.exe> -c <command>`.
+        await save(nextConfig);
+        const bridgePath = await invoke<string>("wsl_shell_bridge_path");
+        await piSettings.setKey("global", "shellPath", bridgePath);
+        // Older builds wrote an argument array here, but Pi only accepts a
+        // command-prefix string. The bridge needs no prefix at all.
+        await piSettings.setKey("global", "shellCommandPrefix", undefined);
+      } else {
+        await piSettings.setKey(
+          "global",
+          "shellPath",
+          nextConfig.nativeShellPath ?? undefined
+        );
+        await piSettings.setKey(
+          "global",
+          "shellCommandPrefix",
+          nextConfig.nativeShellCommandPrefix ?? undefined
+        );
+        await save(nextConfig);
+      }
+
+      const writeError = usePiSettings.getState().lastError;
+      if (writeError) throw new Error(writeError);
+      await piSettings.restartPi();
+      const restartError =
+        usePiSettings.getState().lastError ?? usePi.getState().lastError;
+      if (restartError) throw new Error(restartError);
+      setConfig(nextConfig);
+    } catch (error) {
+      setApplyError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const distroOptions = ["", ...distros];
+  const distroLabel = (d: string) =>
+    d === "" ? t("settings.runtimeDistroDefault") : d;
+
+  return (
+    <InsetGroup header={t("settings.runtime")} footer={t("settings.runtimeFooter")}>
+      <div style={{ padding: "12px 14px" }}>
+        <div style={{ fontSize: 13.5, marginBottom: 7 }}>
+          {t("settings.runtimeMode")}
+        </div>
+        <Segmented
+          options={["native", "wsl"] as const}
+          value={config.mode}
+          onChange={(v) => setConfig({ ...config, mode: v })}
+          labelOf={(v) =>
+            v === "wsl" ? t("settings.runtimeWsl") : t("settings.runtimeNative")
+          }
+        />
+      </div>
+
+      {config.mode === "wsl" && (
+        <>
+          {distros.length === 0 ? (
+            <div style={{ padding: "0 14px 12px", fontSize: 12.5, color: "var(--text-tertiary)" }}>
+              {t("settings.runtimeNoDistros")}
+            </div>
+          ) : (
+            <div style={{ padding: "0 14px 12px" }}>
+              <div style={{ fontSize: 13.5, marginBottom: 7 }}>
+                {t("settings.runtimeDistro")}
+              </div>
+              <Segmented
+                options={distroOptions}
+                value={config.distro}
+                onChange={(v) => setConfig({ ...config, distro: v })}
+                labelOf={distroLabel}
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      <div style={{ padding: "0 14px 14px" }}>
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={apply}
+          disabled={applying}
+          style={{ borderRadius: 8, opacity: applying ? 0.6 : 1 }}
+        >
+          {applying ? t("settings.restarting") : t("settings.runtimeApply")}
+        </Button>
+        {(applyError || lastError) && (
+          <div
+            role="alert"
+            style={{ marginTop: 8, fontSize: 12.5, color: "var(--danger, #E5484D)" }}
+          >
+            {applyError || lastError}
+          </div>
+        )}
+      </div>
+    </InsetGroup>
   );
 }
