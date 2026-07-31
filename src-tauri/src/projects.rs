@@ -64,7 +64,9 @@ pub fn runtime_config_write(config: crate::wsl::RuntimeConfig) -> Result<(), Str
     write_state(&st)
 }
 
-fn project_key(root: &str) -> String {
+/// Canonical key for a project root — forward slashes, no trailing slash. Used
+/// wherever app-owned state is filed per project (shell backups, chat sessions).
+pub fn project_key(root: &str) -> String {
     root.replace('\\', "/").trim_end_matches('/').to_string()
 }
 

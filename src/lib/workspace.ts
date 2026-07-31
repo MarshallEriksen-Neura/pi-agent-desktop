@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { isTauri } from "./pi/client";
 import { usePi } from "./pi/store";
-import { useSessions } from "./pi/sessions";
+import { useSessions, peekLatestSessionPath, flushActiveSession } from "./pi/sessions";
 import { WORKSPACE_FILES } from "./files";
 import { isImageFile } from "./image-files";
 import { useUI } from "./store";
@@ -156,10 +156,15 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
         loadError: null,
       });
       useUI.getState().setActiveFile("");
-      // pi's cwd is fixed at spawn time — restart it inside the new project
-      await usePi.getState().restart(root);
-      // fresh project → fresh conversation (the old transcript stays in history)
-      await useSessions.getState().newSession();
+      // save the outgoing project's transcript before pi goes away
+      await flushActiveSession();
+      // pi's cwd is fixed at spawn time — restart it inside the new project,
+      // resuming that project's own newest session so its context comes back
+      // with it (history is scoped per project, so nothing leaks across)
+      const resumePath = await peekLatestSessionPath(root);
+      await usePi.getState().restart(root, resumePath || undefined);
+      // re-scope the sidebar history to the new project
+      await useSessions.getState().switchProject(root);
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
     } finally {

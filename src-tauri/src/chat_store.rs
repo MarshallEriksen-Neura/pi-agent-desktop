@@ -41,12 +41,48 @@ fn open_db() -> Result<Connection, String> {
            session_path TEXT NOT NULL DEFAULT '',
            preview TEXT NOT NULL DEFAULT '',
            messages TEXT NOT NULL DEFAULT '[]',
+           project_root TEXT NOT NULL DEFAULT '',
            created_at INTEGER NOT NULL,
            updated_at INTEGER NOT NULL
          );",
     )
     .map_err(|e| e.to_string())?;
+    migrate_project_root(&conn)?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_project
+           ON chat_sessions (project_root, updated_at DESC);",
+    )
+    .map_err(|e| e.to_string())?;
     Ok(conn)
+}
+
+/// Databases written before sessions were scoped per project have no
+/// `project_root` column. Add it, then backfill every existing row with the
+/// last-opened project — those transcripts were, in practice, produced there,
+/// and an empty key would hide them from every project's list.
+fn migrate_project_root(conn: &Connection) -> Result<(), String> {
+    let present: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name = 'project_root'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if present > 0 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE chat_sessions ADD COLUMN project_root TEXT NOT NULL DEFAULT '';",
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(root) = crate::projects::last_project() {
+        conn.execute(
+            "UPDATE chat_sessions SET project_root = ?1 WHERE project_root = ''",
+            params![crate::projects::project_key(&root)],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Run `f` with the (lazily opened) connection.
@@ -68,6 +104,8 @@ pub struct ChatSessionMeta {
     pub name: String,
     pub session_path: String,
     pub preview: String,
+    /// Project root this conversation belongs to (canonical key).
+    pub project_root: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -81,30 +119,39 @@ pub struct ChatSessionSave {
     pub session_path: String,
     #[serde(default)]
     pub preview: String,
+    #[serde(default)]
+    pub project_root: String,
     /// serialized ChatMessage[] — opaque to Rust
     pub messages: String,
     pub created_at: i64,
 }
 
-/// All sessions, most recently updated first (metadata only — no messages).
+/// Sessions belonging to one project, most recently updated first (metadata
+/// only — no messages). Scoping is by project so opening a project shows just
+/// its own history instead of every conversation on the machine.
 #[tauri::command]
-pub fn chat_sessions_list(db: State<'_, ChatDb>) -> Result<Vec<ChatSessionMeta>, String> {
+pub fn chat_sessions_list(
+    db: State<'_, ChatDb>,
+    project_root: String,
+) -> Result<Vec<ChatSessionMeta>, String> {
+    let key = crate::projects::project_key(&project_root);
     with_db(&db, |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, session_path, preview, created_at, updated_at
-                 FROM chat_sessions ORDER BY updated_at DESC",
+                "SELECT id, name, session_path, preview, project_root, created_at, updated_at
+                 FROM chat_sessions WHERE project_root = ?1 ORDER BY updated_at DESC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map(params![key], |r| {
                 Ok(ChatSessionMeta {
                     id: r.get(0)?,
                     name: r.get(1)?,
                     session_path: r.get(2)?,
                     preview: r.get(3)?,
-                    created_at: r.get(4)?,
-                    updated_at: r.get(5)?,
+                    project_root: r.get(4)?,
+                    created_at: r.get(5)?,
+                    updated_at: r.get(6)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -130,18 +177,20 @@ pub fn chat_session_load(db: State<'_, ChatDb>, id: String) -> Result<Option<Str
 /// weirdness in the webview.
 #[tauri::command]
 pub fn chat_session_save(db: State<'_, ChatDb>, session: ChatSessionSave) -> Result<(), String> {
+    let key = crate::projects::project_key(&session.project_root);
     with_db(&db, |conn| {
         conn.execute(
-            "INSERT INTO chat_sessions (id, name, session_path, preview, messages, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO chat_sessions (id, name, session_path, preview, messages, project_root, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
-               name = ?2, session_path = ?3, preview = ?4, messages = ?5, updated_at = ?7",
+               name = ?2, session_path = ?3, preview = ?4, messages = ?5, project_root = ?6, updated_at = ?8",
             params![
                 session.id,
                 session.name,
                 session.session_path,
                 session.preview,
                 session.messages,
+                key,
                 session.created_at,
                 now_ms()
             ],

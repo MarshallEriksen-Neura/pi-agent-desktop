@@ -66,18 +66,21 @@ function MainShell({ children }: { children: React.ReactNode }) {
       .load()
       // resolve the project root next so Pi and its commands share a cwd
       .then(() => useWorkspace.getState().init())
-      // peek the newest session's path BEFORE connecting so pi can spawn with
-      // `--session <path>` and load the full prior context in-process — the
-      // later `switch_session` RPC inside sessions.init() is only a fallback
+      // peek the newest session's path for THIS project BEFORE connecting so pi
+      // can spawn with `--session <path>` and load the full prior context
+      // in-process — the later `switch_session` RPC inside sessions.init() is
+      // only a fallback
       .then(async () => {
-        const resumePath = await peekLatestSessionPath();
+        const root = useWorkspace.getState().root ?? undefined;
+        const resumePath = await peekLatestSessionPath(root ?? "");
         await connect({
-          cwd: useWorkspace.getState().root ?? undefined,
+          cwd: root,
           resumePath: resumePath || undefined,
         });
       })
       // session history restores after connect so the UI repaints the transcript
-      .then(() => useSessions.getState().init())
+      .then(() => useSessions.getState().init(useWorkspace.getState().root ?? ""))
+
       // background pi CLI version check — pops the update toast when newer
       .then(() => useCliUpdate.getState().checkOnLaunch());
 
