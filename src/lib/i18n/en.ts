@@ -79,6 +79,8 @@ export const en = {
   "agent.composerIdle": "Ask Pi to code… ⏎",
   "agent.stop": "Stop",
   "agent.send": "Send",
+  "agent.scrollTop": "Scroll to top",
+  "agent.scrollBottom": "Scroll to bottom",
   "agent.pastedImage": "Pasted image",
   "agent.removeImage": "Remove image",
   "agent.viewImage": "View image",

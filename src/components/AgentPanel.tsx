@@ -32,7 +32,7 @@ import { IconButton, SectionLabel } from "./primitives";
 import {
   Square,
   ArrowUp,
-  ChevronDown,
+  ArrowDown,
   ChevronRight,
   History,
   SquarePen,
@@ -60,6 +60,8 @@ export function AgentPanel() {
   const piCommands = usePi((s) => s.commands);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
+  const [isAtTop, setIsAtTop] = useState(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -213,6 +215,13 @@ export function AgentPanel() {
   };
 
   const busy = streaming || agentRunning || retrying;
+  const canScroll = !(isAtTop && isAtBottom);
+  const scrollToEdge = () => {
+    virtuosoRef.current?.scrollTo({
+      top: isAtBottom ? 0 : Number.MAX_SAFE_INTEGER,
+      behavior: "smooth",
+    });
+  };
 
   return (
     <aside
@@ -260,22 +269,25 @@ export function AgentPanel() {
       {/* extension setStatus lines — live status pushed by pi extensions */}
       <ExtStatusLine />
 
-      <Virtuoso<ChatMessage>
-        ref={virtuosoRef}
-        data={messages}
-        // streaming? follow new content smoothly only while at the bottom —
-        // scrolling up to read history is never interrupted.
-        followOutput={(isAtBottom) => (streaming && isAtBottom ? "smooth" : false)}
-        // buffer items above/below the viewport so fast scrolls stay filled.
-        increaseViewportBy={{ top: 600, bottom: 600 }}
-        computeItemKey={(_index, m) => m.id}
-        className="material"
-        style={{ flex: 1, minHeight: 0 }}
-        components={
-          {
-            // Top of the scroll area (does NOT stick) — subagents, live task
-            // strip, and the empty-state hint when there are no messages.
-            Header: () => (
+      <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+        <Virtuoso<ChatMessage>
+          ref={virtuosoRef}
+          data={messages}
+          atTopStateChange={setIsAtTop}
+          atBottomStateChange={setIsAtBottom}
+          // streaming? follow new content smoothly only while at the bottom —
+          // scrolling up to read history is never interrupted.
+          followOutput={(atBottom) => (streaming && atBottom ? "smooth" : false)}
+          // buffer items above/below the viewport so fast scrolls stay filled.
+          increaseViewportBy={{ top: 600, bottom: 600 }}
+          computeItemKey={(_index, m) => m.id}
+          className="material"
+          style={{ height: "100%" }}
+          components={
+            {
+              // Top of the scroll area (does NOT stick) — subagents, live task
+              // strip, and the empty-state hint when there are no messages.
+              Header: () => (
               <div style={{ padding: "4px 12px 0" }}>
                 {/* subagent deck — parallel workers, tap a card for detail */}
                 <SubagentDeck />
@@ -369,9 +381,9 @@ export function AgentPanel() {
                 )}
               </div>
             ),
-            // Bottom of the scroll area — the "Pi is thinking" loader shown
-            // during the gap between sending and the first streamed token.
-            Footer: () => (
+              // Bottom of the scroll area — the "Pi is thinking" loader shown
+              // during the gap between sending and the first streamed token.
+              Footer: () => (
               <div style={{ padding: "0 12px 4px" }}>
                 <AnimatePresence>
                   {waitingForFirstToken && (
@@ -419,21 +431,44 @@ export function AgentPanel() {
                 </AnimatePresence>
               </div>
             ),
-          } satisfies Components<ChatMessage>
-        }
-        itemContent={(index, m) => (
-          // Only the latest message plays the entrance animation — historical
-          // messages use initial={false} so virtualized re-mounts on scroll
-          // don't replay the fade-in.
-          <div style={{ padding: "0 12px" }}>
-            <MessageBubble
-              key={m.id}
-              m={m}
-              animateIn={index === messages.length - 1}
-            />
+            } satisfies Components<ChatMessage>
+          }
+          itemContent={(index, m) => (
+            // Only the latest message plays the entrance animation — historical
+            // messages use initial={false} so virtualized re-mounts on scroll
+            // don't replay the fade-in.
+            <div style={{ padding: "0 12px" }}>
+              <MessageBubble
+                key={m.id}
+                m={m}
+                animateIn={index === messages.length - 1}
+              />
+            </div>
+          )}
+        />
+
+        {messages.length > 0 && canScroll && (
+          <div
+            style={{
+              position: "absolute",
+              right: 14,
+              bottom: 12,
+              zIndex: 2,
+              border: "1px solid var(--separator)",
+              borderRadius: 8,
+              background: "var(--material-thick)",
+              boxShadow: "var(--shadow-md)",
+            }}
+          >
+            <IconButton
+              label={t(isAtBottom ? "agent.scrollTop" : "agent.scrollBottom")}
+              onClick={scrollToEdge}
+            >
+              {isAtBottom ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
+            </IconButton>
           </div>
         )}
-      />
+      </div>
 
       {/* composer */}
       <div style={{ position: "relative" }}>

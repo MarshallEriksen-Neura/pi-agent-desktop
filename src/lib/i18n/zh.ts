@@ -80,6 +80,8 @@ export const zh: Record<keyof typeof en, string> = {
   "agent.composerIdle": "让 Pi 写代码… ⏎",
   "agent.stop": "停止",
   "agent.send": "发送",
+  "agent.scrollTop": "滚动到顶部",
+  "agent.scrollBottom": "滚动到底部",
   "agent.pastedImage": "粘贴的图片",
   "agent.removeImage": "移除图片",
   "agent.viewImage": "查看图片",
