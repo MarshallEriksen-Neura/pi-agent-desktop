@@ -34,13 +34,13 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
     settings.load();
   }, [settings]);
 
-  // Honour settings.json `enabledModels`: if it's a non-empty explicit list,
-  // only those models (matched as `provider/id` or bare `id`) appear here.
-  // Empty/legacy glob values mean "show all".
-  const enabled = settings.global.data?.enabledModels as string[] | undefined;
+  // Honour the merged settings view so project overrides behave the same here
+  // as they do on the Models page. Exact entries may be provider/id or bare id;
+  // legacy glob patterns remain delegated to pi and therefore show all here.
+  const enabled = settings.effective().enabledModels;
   const visibleModels = useMemo(() => {
     if (!enabled || enabled.length === 0) return models;
-    const hasGlob = enabled.some((e) => e.includes("*") || e.includes("?") || !e.includes("/"));
+    const hasGlob = enabled.some((entry) => entry.includes("*") || entry.includes("?"));
     if (hasGlob) return models;
     const set = new Set(enabled);
     return models.filter((m) => set.has(`${m.provider}/${m.id}`) || set.has(m.id));

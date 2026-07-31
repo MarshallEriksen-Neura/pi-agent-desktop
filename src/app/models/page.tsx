@@ -856,10 +856,33 @@ function FetchDialog({
   onAdd: () => void;
 }) {
   const t = useT();
+  const [search, setSearch] = useState("");
+  const selected = useMemo(() => new Set(result.selected), [result.selected]);
+  const filteredModels = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return result.models;
+    return result.models.filter((id) => id.toLowerCase().includes(query));
+  }, [result.models, search]);
+
   const toggle = (id: string) => {
-    const next = new Set(result.selected);
+    const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else next.add(id);
+    onChangeSelected(Array.from(next));
+  };
+
+  const selectVisible = () => {
+    const next = new Set(selected);
+    filteredModels.forEach((id) => next.add(id));
+    onChangeSelected(Array.from(next));
+  };
+
+  const invertVisible = () => {
+    const next = new Set(selected);
+    filteredModels.forEach((id) => {
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+    });
     onChangeSelected(Array.from(next));
   };
 
@@ -877,14 +900,49 @@ function FetchDialog({
         </>
       }
     >
+      <div className="mb-3 flex items-center gap-2">
+        <div
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-3 py-2"
+          style={{
+            background: "var(--input-bg)",
+            border: "1px solid var(--ink-border)",
+          }}
+        >
+          <Search size={15} className="shrink-0" style={{ color: "var(--muted-foreground)" }} />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={t("models.searchModels")}
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--muted-foreground)]"
+            style={{ color: "var(--foreground)" }}
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              aria-label={t("models.clearSearch")}
+              className="shrink-0"
+              style={{ color: "var(--muted-foreground)" }}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        <GroupButton onClick={selectVisible} disabled={filteredModels.length === 0}>
+          {t("models.selectAll")}
+        </GroupButton>
+        <GroupButton onClick={invertVisible} disabled={filteredModels.length === 0}>
+          {t("models.invertSelection")}
+        </GroupButton>
+      </div>
       <div className="max-h-72 overflow-y-auto pr-1">
-        {result.models.length === 0 ? (
+        {filteredModels.length === 0 ? (
           <p className="py-4 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
             {t("models.noSearchResults")}
           </p>
         ) : (
           <InsetGroup>
-            {result.models.map((id) => (
+            {filteredModels.map((id) => (
               <GroupRow
                 key={id}
                 onClick={() => toggle(id)}
@@ -899,17 +957,17 @@ function FetchDialog({
                     style={{
                       width: 20,
                       height: 20,
-                      background: result.selected.includes(id)
+                      background: selected.has(id)
                         ? "var(--ink-accent)"
                         : "transparent",
                       border: "1.5px solid",
-                      borderColor: result.selected.includes(id)
+                      borderColor: selected.has(id)
                         ? "var(--ink-accent)"
                         : "var(--ink-border)",
                       color: "#fff",
                     }}
                   >
-                    {result.selected.includes(id) && <Check size={12} strokeWidth={3} />}
+                    {selected.has(id) && <Check size={12} strokeWidth={3} />}
                   </div>
                 }
               />
