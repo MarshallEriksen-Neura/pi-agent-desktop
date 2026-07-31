@@ -6,6 +6,18 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ---
 
+## [0.3.1] — 2026-07-31
+
+### Added
+- **会话历史按项目隔离** — 侧边栏只展示当前项目的对话列表，切换项目时自动恢复该项目的最近会话上下文，避免跨项目 session 文件错乱 (`dda416f`)
+- `chat_store` 新增 `project_root` 列与索引，带向后兼容迁移（旧数据自动回填到 last_project）
+- 新增 `switchProject` / `flushActiveSession` API，workspace 切换时先落盘再恢复
+
+### Changed
+- `.gitignore` 添加 `.comate/` 目录
+
+---
+
 ## [0.3.0] — 2026-07-31
 
 ### Added
