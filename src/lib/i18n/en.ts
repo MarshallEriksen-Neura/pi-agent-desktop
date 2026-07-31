@@ -90,6 +90,7 @@ export const en = {
 
   // retry transparency
   "retry.inProgress": "Retrying… (attempt {attempt}/{max})",
+  "retry.inProgressReason": "Retrying… (attempt {attempt}/{max}) — {reason}",
   "retry.success": "Retry succeeded after {attempt} attempts",
   "retry.failed": "Retry failed: {reason}",
 
@@ -100,6 +101,12 @@ export const en = {
   "agent.piExitedUnknown": "Pi process exited — the run was interrupted.",
   "agent.piUnavailable": "Pi is not connected or not running, so the task was not sent. Check the Pi CLI is installed and started in Settings.",
   "agent.piNoResponse": "No response from Pi — the task may not have been received. Make sure Pi is running.",
+  "agent.modelError": "The model returned an error ({reason}).",
+
+  // extension failures / context compaction
+  "ext.error": "Extension {name} failed on {event}",
+  "compaction.aborted": "Context compaction was cancelled.",
+  "compaction.failed": "Context compaction failed: {error}",
 
   // queue
   "queue.badge": "{count} queued",
@@ -132,6 +139,10 @@ export const en = {
   "subagents.title": "Subagents",
   "subagents.running": "{n} running",
   "subagents.working": "working…",
+  "subagents.project": "project",
+  "subagents.projectHint":
+    "Repo-controlled agent — its instructions come from this repository. Only run in repos you trust.",
+  "subagents.usage": "{tokens} tok · ${cost} · {turns} turns",
 
   // command palette
   "palette.ask": "Ask Pi to implement…",
@@ -149,6 +160,9 @@ export const en = {
   "modelPicker.select": "Select model",
   "modelPicker.choose": "Choose model",
   "modelPicker.none": "No models configured yet.",
+  "modelPicker.loadFailed": "Could not load the model list from pi.",
+  "modelPicker.retry": "Retry",
+  "modelPicker.allFiltered": "All models are hidden by enabledModels in settings.json.",
   "modelPicker.manage": "Manage models…",
 
   // editor canvas

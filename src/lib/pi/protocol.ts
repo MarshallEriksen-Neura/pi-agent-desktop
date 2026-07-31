@@ -49,8 +49,8 @@ export type PiCommand =
   | { type: "set_auto_compaction"; enabled: boolean }
   | { type: "set_auto_retry"; enabled: boolean }
   | { type: "abort_retry" }
-  /* bash */
-  | { type: "bash"; command: string; id?: string }
+  /* bash — `id` correlates the streamed bash_execution_update events */
+  | { type: "bash"; command: string; id?: string; excludeFromContext?: boolean }
   | { type: "abort_bash" }
   /* sessions */
   | { type: "get_session_stats" }
@@ -97,7 +97,12 @@ export interface PiModel {
   output?: number;
 }
 
-/** `data` of a successful `bash` response — output arrives here, not as events. */
+/**
+ * `data` of a successful `bash` response — the *final* result. While the command
+ * runs, output also streams as `bash_execution_update` events (see PiEvent), so
+ * a long command need not look frozen until it exits. `output` here may be
+ * truncated even though the event stream carried everything.
+ */
 export interface BashResult {
   /** combined stdout + stderr (sanitized, possibly truncated) */
   output: string;
@@ -119,9 +124,32 @@ export interface PiState {
 
 /* ── Events (stdout) ── */
 
+/**
+ * One streaming delta inside `message_update`. Only the `*_delta` variants carry
+ * `delta`; the `*_start` / `*_end` / `done` variants are lifecycle markers we
+ * currently ignore. `error` carries no `delta` at all — it must be handled
+ * before any delta guard or it is silently dropped.
+ */
 export interface AssistantMessageEvent {
-  type: "text_delta" | "thinking_delta" | "toolcall_delta" | string;
+  type:
+    | "start"
+    | "text_start"
+    | "text_delta"
+    | "text_end"
+    | "thinking_start"
+    | "thinking_delta"
+    | "thinking_end"
+    | "toolcall_start"
+    | "toolcall_delta"
+    | "toolcall_end"
+    | "done"
+    | "error"
+    | string;
   delta?: string;
+  /** index of the content block this delta belongs to */
+  contentIndex?: number;
+  /** type "done" — why generation stopped */
+  reason?: "aborted" | "error" | "stop" | "length" | "toolUse" | string;
   [k: string]: unknown;
 }
 
@@ -132,18 +160,55 @@ export type PiEvent =
   | { type: "agent_settled" }
   | { type: "turn_start" }
   | { type: "turn_end"; message?: unknown; toolResults?: unknown[] }
-  | { type: "message_start" }
-  | { type: "message_update"; assistantMessageEvent: AssistantMessageEvent }
+  | { type: "message_start"; message?: unknown }
+  | { type: "message_update"; message?: unknown; assistantMessageEvent: AssistantMessageEvent }
   | { type: "message_end"; message?: unknown }
+  /**
+   * Output of a direct `bash` command, one event per chunk. Unlike
+   * `tool_execution_update.partialResult` (which is cumulative), `delta` here is
+   * an increment — append it. `id` echoes the `id` of the originating `bash`
+   * command, so concurrent commands can be told apart.
+   */
+  | { type: "bash_execution_update"; id?: string; delta: string }
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args?: unknown }
-  | { type: "tool_execution_update"; toolCallId: string; partialResult?: unknown }
-  | { type: "tool_execution_end"; toolCallId: string; result?: unknown; isError?: boolean }
+  | {
+      type: "tool_execution_update";
+      toolCallId: string;
+      toolName?: string;
+      args?: unknown;
+      /** accumulated output so far — NOT a delta; replace, don't append */
+      partialResult?: unknown;
+    }
+  | {
+      type: "tool_execution_end";
+      toolCallId: string;
+      toolName?: string;
+      args?: unknown;
+      result?: unknown;
+      isError?: boolean;
+    }
   | { type: "queue_update"; steering?: unknown[]; followUp?: unknown[] }
   | { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
-  | { type: "compaction_end"; result?: unknown; aborted?: boolean; willRetry?: boolean }
-  | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number }
+  | {
+      type: "compaction_end";
+      result?: unknown;
+      aborted?: boolean;
+      willRetry?: boolean;
+      errorMessage?: string;
+    }
+  | {
+      type: "auto_retry_start";
+      attempt: number;
+      maxAttempts: number;
+      delayMs: number;
+      /** the transient error that triggered the retry (429 / 5xx / overloaded) */
+      errorMessage?: string;
+    }
   | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
   | { type: "extension_error"; extensionPath: string; event: string; error: string }
+  | { type: "summarization_retry_scheduled"; attempt: number; maxAttempts: number; delayMs: number }
+  | { type: "summarization_retry_attempt_start"; source?: string }
+  | { type: "summarization_retry_finished" }
   | ExtensionUiRequest
   | PiResponse;
 

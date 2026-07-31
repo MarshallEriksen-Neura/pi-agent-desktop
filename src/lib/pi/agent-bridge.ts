@@ -243,7 +243,7 @@ export function initAgentBridge() {
 
     const resultText = toText(e.result);
     ui.patchAgentTask(e.toolCallId, {
-      status: e.isError ? "queued" : "done", // no error state in the strip — dim it
+      status: e.isError ? "error" : "done",
       ...(resultText
         ? { detail: resultText.replace(/\s+/g, " ").slice(0, 80) }
         : {}),

@@ -188,10 +188,19 @@ export function RetryBanner() {
   const items = [...activeRetries.entries()].map(([id, state]) => {
     const message =
       state.status === "loading"
-        ? t("retry.inProgress", {
-            attempt: state.attempt.toString(),
-            max: state.maxAttempts.toString(),
-          })
+        ? // `reason` on a loading retry is the upstream trigger
+          // (auto_retry_start.errorMessage) — show it so a 429/529 is not
+          // reduced to an anonymous spinner.
+          state.reason
+          ? t("retry.inProgressReason", {
+              attempt: state.attempt.toString(),
+              max: state.maxAttempts.toString(),
+              reason: state.reason.slice(0, 90),
+            })
+          : t("retry.inProgress", {
+              attempt: state.attempt.toString(),
+              max: state.maxAttempts.toString(),
+            })
         : state.status === "success"
           ? t("retry.success", { attempt: state.attempt.toString() })
           : t("retry.failed", { reason: state.reason || "unknown" });

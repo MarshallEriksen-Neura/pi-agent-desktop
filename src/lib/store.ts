@@ -4,7 +4,7 @@ import { create } from "zustand";
 import { useAppearance } from "./appearance";
 
 export type Theme = "light" | "dark";
-export type TaskStatus = "done" | "running" | "queued";
+export type TaskStatus = "done" | "running" | "queued" | "error";
 
 const THEME_STORAGE_KEY = "pi-desktop.theme";
 const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";

@@ -44,6 +44,41 @@ export const THINKING_LEVELS: ThinkingLevel[] = [
   "max",
 ];
 
+/**
+ * Startup requests get a long leash: pi spawned with `--session <path>` loads the
+ * whole prior transcript before it serves RPC, and extensions must finish
+ * registering before `get_commands` can answer. The 15s default was short enough
+ * that a resumed session timed out and left the composer with no models.
+ */
+const REFRESH_TIMEOUT_MS = 60_000;
+
+/** bounded catch-up polling while the model list is still empty */
+const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 20_000];
+
+/** `client.on("session")` must be attached once, before the first start() */
+let sessionHooked = false;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Keep asking for the model list while it is still empty. A single refresh at
+ * connect time is not enough: a slow pi boot (session resume, extension load,
+ * WSL hop) can outlast it, and nothing else ever retried — so the composer
+ * stayed modelless until the user restarted pi by hand.
+ */
+function scheduleRetry(get: () => PiStore, attempt: number) {
+  if (attempt >= RETRY_DELAYS_MS.length) return;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    const s = get();
+    if (s.status === "disconnected") return; // gone; restart() will re-arm
+    if (s.models.length > 0) return; // pi answered — nothing to catch up on
+    void s.refresh().then(() => {
+      if (get().models.length === 0) scheduleRetry(get, attempt + 1);
+    });
+  }, RETRY_DELAYS_MS[attempt]);
+}
+
 export const usePi = create<PiStore>((set, get) => ({
   status: "disconnected",
   mock: !isTauri(),
@@ -58,6 +93,14 @@ export const usePi = create<PiStore>((set, get) => ({
     set({ status: "connecting", lastError: null });
     const client = getPiClient();
     try {
+      // Subscribe BEFORE start(): pi announces itself with a `session` event as
+      // soon as its RPC loop is up, which is the only reliable "ready for
+      // requests" signal. Attaching after start() can miss it on a fast boot.
+      if (!sessionHooked) {
+        sessionHooked = true;
+        client.on("session", () => void get().refresh());
+      }
+
       await client.start({ cwd: opts?.cwd, resumePath: opts?.resumePath });
 
       // agent activity → status
@@ -69,6 +112,7 @@ export const usePi = create<PiStore>((set, get) => ({
 
       set({ status: "ready", mock: client.transport.kind === "mock" });
       await get().refresh();
+      scheduleRetry(get, 0); // catch up if pi was still booting
     } catch (e) {
       set({
         status: "disconnected",
@@ -79,6 +123,10 @@ export const usePi = create<PiStore>((set, get) => ({
 
   restart: async (cwd, resumePath) => {
     const client = getPiClient();
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
     await client.stop();
     set({ status: "disconnected" });
     await get().connect({ cwd, resumePath });
@@ -86,21 +134,54 @@ export const usePi = create<PiStore>((set, get) => ({
 
   refresh: async () => {
     const client = getPiClient();
-    try {
-      const [models, state, commands] = await Promise.all([
-        client.request<{ models: PiModel[] }>({ type: "get_available_models" }),
-        client.request<PiState>({ type: "get_state" }),
-        client.request<{ commands: PiCommandInfo[] }>({ type: "get_commands" }),
-      ]);
-      set({
-        models: models.data?.models ?? [],
-        currentModel: state.data?.model ?? null,
-        thinkingLevel: state.data?.thinkingLevel ?? "medium",
-        commands: commands.data?.commands ?? [],
-      });
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
+    // allSettled, not all: these are three independent queries, and
+    // `get_commands` is the slowest (it waits on extension registration). Under
+    // Promise.all a single slow reply discarded the model list and the current
+    // model with it, which is what left the composer showing "no models
+    // configured" against a perfectly healthy pi.
+    const [models, state, commands] = await Promise.allSettled([
+      client.request<{ models: PiModel[] }>(
+        { type: "get_available_models" },
+        REFRESH_TIMEOUT_MS
+      ),
+      client.request<PiState>({ type: "get_state" }, REFRESH_TIMEOUT_MS),
+      client.request<{ commands: PiCommandInfo[] }>(
+        { type: "get_commands" },
+        REFRESH_TIMEOUT_MS
+      ),
+    ]);
+
+    const patch: Partial<PiStore> = {};
+    const errors: string[] = [];
+
+    const failure = (label: string, r: PromiseSettledResult<{ success: boolean; error?: string }>) => {
+      if (r.status === "rejected") {
+        errors.push(`${label}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+        return true;
+      }
+      if (!r.value.success) {
+        errors.push(`${label}: ${r.value.error ?? "failed"}`);
+        return true;
+      }
+      return false;
+    };
+
+    // Only overwrite on success — a failed query must not blank state that a
+    // previous refresh already populated.
+    if (!failure("get_available_models", models) && models.status === "fulfilled") {
+      const list = models.value.data?.models;
+      if (list && list.length > 0) patch.models = list;
+      else if (list) patch.models = [];
     }
+    if (!failure("get_state", state) && state.status === "fulfilled") {
+      patch.currentModel = state.value.data?.model ?? null;
+      patch.thinkingLevel = state.value.data?.thinkingLevel ?? "medium";
+    }
+    if (!failure("get_commands", commands) && commands.status === "fulfilled") {
+      patch.commands = commands.value.data?.commands ?? [];
+    }
+
+    set({ ...patch, lastError: errors.length > 0 ? errors.join(" · ") : null });
   },
 
   setModel: async (m) => {

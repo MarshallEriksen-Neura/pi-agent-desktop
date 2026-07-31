@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ScrollArea } from "@appica/ui-react/scroll-area";
 import { Badge } from "@appica/ui-react/badge";
@@ -10,6 +11,7 @@ import {
   type Subagent,
   type SubagentEvent,
   type SubagentStatus,
+  type SubagentUsage,
 } from "@/lib/pi/subagents";
 import type { ReactNode } from "react";
 import {
@@ -61,6 +63,56 @@ function StatusDot({ status }: { status: SubagentStatus }) {
           status === "running" ? "0 0 0 4px var(--accent-muted)" : "none",
       }}
     />
+  );
+}
+
+/**
+ * Wall-clock since the worker started. Shown instead of a percentage when the
+ * producer reports no step count — a parallel worker has no interpolatable
+ * progress, and inventing one is worse than showing the honest elapsed time.
+ */
+function Elapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const secs = Math.max(0, Math.round((now - since) / 1000));
+  const label = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m${secs % 60}s`;
+  return <>{label}</>;
+}
+
+/** `project` agents come from the repo — flag them wherever the card is shown. */
+function SourceBadge({ source }: { source: Subagent["source"] }) {
+  const t = useT();
+  if (source !== "project") return null;
+  return (
+    <span title={t("subagents.projectHint")}>
+      <Badge variant="warning" size="sm">
+        {t("subagents.project")}
+      </Badge>
+    </span>
+  );
+}
+
+/** compact token + cost readout */
+function UsageLine({ usage }: { usage: SubagentUsage }) {
+  const t = useT();
+  const tokens = usage.input + usage.output;
+  return (
+    <span
+      style={{
+        fontSize: 10.5,
+        fontFamily: "var(--font-mono)",
+        color: "var(--text-tertiary)",
+      }}
+    >
+      {t("subagents.usage", {
+        tokens: tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens),
+        cost: usage.cost.toFixed(3),
+        turns: String(usage.turns),
+      })}
+    </span>
   );
 }
 
@@ -141,6 +193,7 @@ export function SubagentDeck() {
                 >
                   {a.name}
                 </motion.span>
+                <SourceBadge source={a.source} />
                 <span
                   style={{
                     marginLeft: "auto",
@@ -153,8 +206,11 @@ export function SubagentDeck() {
                     <Check size={12} style={{ color: "var(--success)" }} />
                   ) : a.status === "error" ? (
                     <AlertTriangle size={11} style={{ color: "var(--danger)" }} />
+                  ) : a.total ? (
+                    // chain mode reports a real position — show it
+                    `${a.step ?? 0}/${a.total}`
                   ) : (
-                    `${Math.round(a.progress * 100)}%`
+                    <Elapsed since={a.startedAt} />
                   )}
                 </span>
               </div>
@@ -171,6 +227,35 @@ export function SubagentDeck() {
               >
                 {a.task}
               </div>
+
+              {/* model + token/cost, whenever the producer reports them */}
+              {(a.model || a.usage) && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginTop: 4,
+                    overflow: "hidden",
+                  }}
+                >
+                  {a.model && (
+                    <span
+                      style={{
+                        fontSize: 10.5,
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--text-tertiary)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {a.model}
+                    </span>
+                  )}
+                  {a.usage && <UsageLine usage={a.usage} />}
+                </div>
+              )}
 
               {/* live last event line — the card "breathes" while working */}
               <AnimatePresence mode="popLayout">
@@ -197,21 +282,38 @@ export function SubagentDeck() {
                 )}
               </AnimatePresence>
 
-              {/* hairline progress along the bottom edge */}
-              {a.status === "running" && (
-                <motion.div
-                  animate={{ width: `${a.progress * 100}%` }}
-                  transition={{ type: "spring", stiffness: 120, damping: 24 }}
-                  style={{
-                    position: "absolute",
-                    left: 0,
-                    bottom: 0,
-                    height: 2,
-                    background: "var(--accent)",
-                    borderRadius: 2,
-                  }}
-                />
-              )}
+              {/* Bottom edge: a real fraction only when the producer reports a
+                  step count (chain). Otherwise an indeterminate sweep — motion
+                  without claiming a percentage we do not have. */}
+              {a.status === "running" &&
+                (a.total !== undefined ? (
+                  <motion.div
+                    animate={{ width: `${a.progress * 100}%` }}
+                    transition={{ type: "spring", stiffness: 120, damping: 24 }}
+                    style={{
+                      position: "absolute",
+                      left: 0,
+                      bottom: 0,
+                      height: 2,
+                      background: "var(--accent)",
+                      borderRadius: 2,
+                    }}
+                  />
+                ) : (
+                  <motion.div
+                    animate={{ x: ["-100%", "400%"] }}
+                    transition={{ repeat: Infinity, duration: 1.6, ease: "easeInOut" }}
+                    style={{
+                      position: "absolute",
+                      left: 0,
+                      bottom: 0,
+                      width: "25%",
+                      height: 2,
+                      background: "var(--accent)",
+                      borderRadius: 2,
+                    }}
+                  />
+                ))}
             </motion.button>
           )}
           {/* placeholder keeps deck height while a card is expanded */}
@@ -304,6 +406,7 @@ export function SubagentDetail() {
               >
                 {t(`status.${agent.status}`)}
               </Badge>
+              <SourceBadge source={agent.source} />
               <span
                 style={{
                   marginLeft: "auto",
@@ -340,6 +443,53 @@ export function SubagentDetail() {
             >
               {agent.task}
             </div>
+
+            {/* model + token/cost */}
+            {(agent.model || agent.usage) && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "6px 18px 0",
+                }}
+              >
+                {agent.model && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontFamily: "var(--font-mono)",
+                      color: "var(--text-tertiary)",
+                    }}
+                  >
+                    {agent.model}
+                  </span>
+                )}
+                {agent.usage && <UsageLine usage={agent.usage} />}
+              </div>
+            )}
+
+            {/* failure detail — stderr / errorMessage / stopReason */}
+            {agent.errorText && (
+              <div
+                style={{
+                  margin: "10px 18px 0",
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  background: "color-mix(in srgb, var(--danger) 12%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--danger) 45%, transparent)",
+                  fontSize: 11.5,
+                  fontFamily: "var(--font-mono)",
+                  color: "var(--text-primary)",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  maxHeight: 140,
+                  overflow: "auto",
+                }}
+              >
+                {agent.errorText}
+              </div>
+            )}
 
             {/* event timeline */}
             <ScrollArea

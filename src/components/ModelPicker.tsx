@@ -26,7 +26,7 @@ import { Check, ChevronDown, SlidersHorizontal } from "lucide-react";
  * set_model via usePi (optimistic, instant).
  */
 export function ModelPicker({ compact = false }: { compact?: boolean }) {
-  const { models, currentModel, setModel } = usePi();
+  const { models, currentModel, setModel, lastError, refresh } = usePi();
   const settings = usePiSettings();
   const t = useT();
 
@@ -135,7 +135,36 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
               color: "var(--text-tertiary)",
             }}
           >
-            {t("modelPicker.none")}
+            {/* An empty list means one of two very different things: pi answered
+                with nothing configured, or the query never came back. Saying
+                "none configured" for a failed query sends the user to the wrong
+                place — offer a retry instead. */}
+            {models.length === 0 && lastError ? (
+              <>
+                <div style={{ color: "var(--danger)", marginBottom: 6 }}>
+                  {t("modelPicker.loadFailed")}
+                </div>
+                <button
+                  onClick={() => void refresh()}
+                  style={{
+                    border: "1px solid var(--separator)",
+                    background: "var(--bg-base)",
+                    color: "var(--text-primary)",
+                    borderRadius: 6,
+                    padding: "3px 9px",
+                    fontSize: 11.5,
+                    cursor: "pointer",
+                  }}
+                >
+                  {t("modelPicker.retry")}
+                </button>
+              </>
+            ) : models.length > 0 ? (
+              // pi has models but `enabledModels` filtered them all out
+              t("modelPicker.allFiltered")
+            ) : (
+              t("modelPicker.none")
+            )}
           </div>
         )}
 

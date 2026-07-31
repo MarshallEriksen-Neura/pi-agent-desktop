@@ -91,6 +91,7 @@ export const zh: Record<keyof typeof en, string> = {
 
   // retry transparency
   "retry.inProgress": "重试中…（第 {attempt}/{max} 次）",
+  "retry.inProgressReason": "重试中…（第 {attempt}/{max} 次）— {reason}",
   "retry.success": "重试成功（共 {attempt} 次）",
   "retry.failed": "重试失败：{reason}",
 
@@ -101,6 +102,12 @@ export const zh: Record<keyof typeof en, string> = {
   "agent.piExitedUnknown": "Pi 进程已退出，任务被中断。",
   "agent.piUnavailable": "Pi 未连接或未运行，任务未发送。请在设置中确认 Pi CLI 已安装并启动。",
   "agent.piNoResponse": "未收到 Pi 的响应，任务可能未被接收。请确认 Pi 正在运行。",
+  "agent.modelError": "模型返回错误（{reason}）。",
+
+  // 扩展报错 / 上下文压缩
+  "ext.error": "扩展 {name} 在 {event} 阶段出错",
+  "compaction.aborted": "上下文压缩已取消。",
+  "compaction.failed": "上下文压缩失败：{error}",
 
   // queue
   "queue.badge": "{count} 个排队中",
@@ -133,6 +140,10 @@ export const zh: Record<keyof typeof en, string> = {
   "subagents.title": "子智能体",
   "subagents.running": "{n} 个运行中",
   "subagents.working": "工作中…",
+  "subagents.project": "项目",
+  "subagents.projectHint":
+    "该智能体由仓库提供，指令来自当前项目。仅在可信仓库中运行。",
+  "subagents.usage": "{tokens} tok · ${cost} · {turns} 轮",
 
   // command palette
   "palette.ask": "让 Pi 实现…",
@@ -150,6 +161,9 @@ export const zh: Record<keyof typeof en, string> = {
   "modelPicker.select": "选择模型",
   "modelPicker.choose": "选择模型",
   "modelPicker.none": "尚未配置任何模型。",
+  "modelPicker.loadFailed": "无法从 pi 获取模型列表。",
+  "modelPicker.retry": "重试",
+  "modelPicker.allFiltered": "settings.json 的 enabledModels 把所有模型都过滤掉了。",
   "modelPicker.manage": "管理模型…",
 
   // editor canvas

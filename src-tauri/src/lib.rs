@@ -2,6 +2,7 @@ mod chat_store;
 mod fs_bridge;
 mod pet_window;
 mod pi_bridge;
+mod pi_command;
 mod pi_models;
 mod pi_settings;
 mod projects;

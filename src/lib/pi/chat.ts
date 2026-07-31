@@ -6,6 +6,7 @@ import type { PiEvent, AssistantMessageEvent, PiImage } from "./protocol";
 import { showNotification } from "../notifications";
 import { useUI } from "../store";
 import { usePi } from "./store";
+import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
 import { restoreFromTray } from "../window-close";
 
@@ -85,6 +86,36 @@ function patchLastAssistant(
 /** buffer of the most recent pi stderr, used to enrich crash error messages */
 let pendingStderr = "";
 
+/** stderr lines that look like a real failure rather than ordinary logging */
+const STDERR_ERROR =
+  /\b(error|exception|failed|fatal|unauthorized|forbidden|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|[45]\d\d)\b/i;
+
+/** last toast time per message, so a stack trace cannot flood the UI */
+const stderrToastAt = new Map<string, number>();
+const STDERR_TOAST_THROTTLE_MS = 5000;
+
+/**
+ * Throttled warning toast for error-looking stderr while pi is still alive.
+ * `warning` (not `error`) on purpose: stderr has no defined semantics upstream,
+ * so a keyword hit is a hint, not a confirmed failure.
+ */
+function surfaceStderrLine(line: string) {
+  const trimmed = line.trim();
+  if (!trimmed || !STDERR_ERROR.test(trimmed)) return;
+  if (!useChat.getState().streaming) return; // outside a run it is just noise
+
+  const message = trimmed.slice(0, 140);
+  const now = Date.now();
+  const last = stderrToastAt.get(message);
+  if (last !== undefined && now - last < STDERR_TOAST_THROTTLE_MS) return;
+  stderrToastAt.set(message, now);
+  // bound the throttle map — drop entries older than the window
+  for (const [k, ts] of stderrToastAt) {
+    if (now - ts > STDERR_TOAST_THROTTLE_MS) stderrToastAt.delete(k);
+  }
+  useExtUi.getState().pushToast(message, "warning", 6000);
+}
+
 /** Build a zustand updater that appends (or upgrades the last) assistant message to an error bubble. */
 function appendAssistantError(text: string) {
   return (s: ChatStore): Partial<ChatStore> => {
@@ -151,12 +182,16 @@ export const useChat = create<ChatStore>((set, get) => ({
     client.on("message_start", () => ensureAssistant());
 
     // ── pi error / crash surfacing ──
-    // All real pi errors land on stderr; an unexpected process exit means the
-    // run was interrupted. Capture stderr so we can enrich the crash message,
-    // and finalize the run as an error if pi dies mid-stream.
+    // Per the upstream RPC spec every *protocol* error arrives on stdout as a
+    // JSONL event (response.error / extension_error / auto_retry_* /
+    // compaction_end / message_update type="error"). stderr carries no defined
+    // semantics, so it is a diagnostic fallback only: buffered to enrich crash
+    // messages, plus a throttled warning toast for error-looking lines so a
+    // still-alive pi complaining on stderr is not completely invisible.
     client.onStderr((line) => {
       pendingStderr += line + "\n";
       if (pendingStderr.length > 8000) pendingStderr = pendingStderr.slice(-8000);
+      surfaceStderrLine(line);
     });
 
     client.onExit((code) => {
@@ -184,7 +219,34 @@ export const useChat = create<ChatStore>((set, get) => ({
     client.on("message_update", (e: PiEvent) => {
       if (e.type !== "message_update") return;
       const ev: AssistantMessageEvent = e.assistantMessageEvent;
-      if (!ev?.delta) return;
+      if (!ev) return;
+
+      // Model-layer failure — the main channel for provider errors that pi does
+      // not retry. It carries no `delta`, so it must be handled before the
+      // delta guard below or it is silently dropped.
+      if (ev.type === "error") {
+        const reason = typeof ev.reason === "string" ? ev.reason : "error";
+        if (reason === "aborted") {
+          // user interrupt, not a failure — just settle the stream
+          set((s) => ({
+            streaming: false,
+            messages: s.messages.map((m) => ({ ...m, streaming: false })),
+          }));
+          return;
+        }
+        const extra =
+          typeof ev.message === "string"
+            ? ev.message
+            : typeof ev.error === "string"
+              ? ev.error
+              : "";
+        const text = t("agent.modelError", { reason });
+        set(appendAssistantError(extra ? `${text}\n\n${extra}` : text));
+        useUI.getState().endAgentRun();
+        return;
+      }
+
+      if (!ev.delta) return;
       ensureAssistant();
       set((s) => ({
         messages: patchLastAssistant(s.messages, (m) =>
@@ -277,6 +339,8 @@ export const useChat = create<ChatStore>((set, get) => ({
       set({ queuedPrompts: Array(followUpCount).fill("") });
     });
 
+    // This is the real channel for transient provider failures (429 / 5xx /
+    // overloaded / token limits) — `errorMessage` carries the upstream text.
     client.on("auto_retry_start", (e: PiEvent) => {
       if (e.type !== "auto_retry_start") return;
       const id = `retry-${Date.now()}`;
@@ -284,7 +348,24 @@ export const useChat = create<ChatStore>((set, get) => ({
         attempt: e.attempt,
         maxAttempts: e.maxAttempts,
         status: "loading",
+        ...(e.errorMessage ? { reason: e.errorMessage } : {}),
       });
+    });
+
+    // Context compaction: `aborted` is benign (user/agent cancelled it),
+    // `errorMessage` is a real failure. `willRetry` means pi re-sends the prompt
+    // by itself, so staying silent there avoids a confusing double signal.
+    client.on("compaction_end", (e: PiEvent) => {
+      if (e.type !== "compaction_end") return;
+      if (e.errorMessage) {
+        useExtUi
+          .getState()
+          .pushToast(t("compaction.failed", { error: e.errorMessage.slice(0, 120) }), "error", 6000);
+        return;
+      }
+      if (e.aborted) {
+        useExtUi.getState().pushToast(t("compaction.aborted"), "info", 4000);
+      }
     });
 
     client.on("auto_retry_end", (e: PiEvent) => {
@@ -295,7 +376,9 @@ export const useChat = create<ChatStore>((set, get) => ({
         if (state.status === "loading") {
           get().updateRetry(id, {
             status: e.success ? "success" : "error",
-            reason: e.finalError,
+            // keep the auto_retry_start trigger text when pi sends no
+            // finalError, otherwise the banner loses its only error detail
+            ...(e.finalError ? { reason: e.finalError } : {}),
           });
           break;
         }
@@ -367,15 +450,17 @@ export const useChat = create<ChatStore>((set, get) => ({
         set(appendAssistantError(res.error || t("agent.taskFailed")));
       }
     } catch {
-      // A thrown request means no ack (timeout / pi died mid-send). Only surface
-      // it when pi is clearly not connected, and avoid duplicating a crash banner
-      // that onExit may have already appended.
-      if (usePi.getState().status === "disconnected") {
-        const last = get().messages[get().messages.length - 1];
-        if (!last || !last.isError) {
-          set(appendAssistantError(t("agent.piNoResponse")));
-        }
+      // A thrown request means no ack (rpc timeout / pi died mid-send). Surface
+      // it regardless of connection status — a live-but-unresponsive pi used to
+      // leave `streaming` stuck on true, spinning the composer forever. The only
+      // thing we skip is a duplicate banner when onExit already wrote one.
+      const last = get().messages[get().messages.length - 1];
+      if (last?.isError) {
+        set({ streaming: false }); // banner already there, just settle the UI
+      } else {
+        set(appendAssistantError(t("agent.piNoResponse")));
       }
+      useUI.getState().endAgentRun();
     }
   },
 

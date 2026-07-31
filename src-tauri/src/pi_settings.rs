@@ -8,7 +8,7 @@
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 pub(crate) fn home_dir() -> Result<PathBuf, String> {
     #[cfg(windows)]
@@ -88,7 +88,7 @@ pub fn pi_cli(args: Vec<String>, cwd: Option<String>) -> Result<CliResult, Strin
         _ => return Err("only pi package subcommands are allowed".into()),
     }
 
-    let mut cmd = Command::new("pi");
+    let mut cmd = crate::pi_command::command(None)?;
     cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

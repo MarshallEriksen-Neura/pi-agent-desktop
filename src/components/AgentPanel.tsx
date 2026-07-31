@@ -14,6 +14,7 @@ import { useChat, type ChatMessage } from "@/lib/pi/chat";
 import { usePi } from "@/lib/pi/store";
 import { useSessions } from "@/lib/pi/sessions";
 import { useSubagents } from "@/lib/pi/subagents";
+import { useExtUi } from "@/lib/pi/ext-ui";
 import { useT } from "@/lib/i18n";
 import {
   filterSlashCommands,
@@ -26,6 +27,7 @@ import { MessageBubble } from "./MessageBubble";
 import { PiLoader } from "./PiLoader";
 import { ComposerInput } from "./ComposerInput";
 import { RetryBanner } from "./RetryBanner";
+import { ExtStatusLine, ExtWidgets } from "./ExtensionSurfaces";
 import { IconButton, SectionLabel } from "./primitives";
 import {
   Square,
@@ -43,6 +45,7 @@ const DOT: Record<TaskStatus, string> = {
   done: "var(--success)",
   running: "var(--agent-thinking)",
   queued: "var(--text-tertiary)",
+  error: "var(--danger)",
 };
 
 /** Right rail — real pi conversation stream + demo task strip. */
@@ -70,6 +73,15 @@ export function AgentPanel() {
     return !last.text && !last.thinking && last.tools.length === 0 && !last.isError;
   })();
   const t = useT();
+
+  /* an extension pushed text into the editor (set_editor_text) — pi treats this
+     as replacing the draft, so mirror that and consume it so it applies once. */
+  const extEditorText = useExtUi((s) => s.editorText);
+  useEffect(() => {
+    if (extEditorText === null) return;
+    setDraft(extEditorText);
+    useExtUi.getState().clearEditorText();
+  }, [extEditorText]);
 
   /** clipboard paste — lift image blobs into data-URL attachments */
   const onComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -244,6 +256,9 @@ export function AgentPanel() {
           </IconButton>
         </div>
       </div>
+
+      {/* extension setStatus lines — live status pushed by pi extensions */}
+      <ExtStatusLine />
 
       <Virtuoso<ChatMessage>
         ref={virtuosoRef}
@@ -433,6 +448,8 @@ export function AgentPanel() {
         {/* inline retry status — lives in the panel, not a bottom-fixed toast */}
         <div style={{ padding: "0 12px" }}>
           <RetryBanner />
+          {/* extension widgets pinned above the editor */}
+          <ExtWidgets placement="aboveEditor" />
         </div>
         <ComposerInput
           draft={draft}
@@ -452,6 +469,10 @@ export function AgentPanel() {
           queuedPrompts={queuedPrompts}
           onClearQueue={clearQueue}
         />
+        {/* extension widgets pinned below the editor */}
+        <div style={{ padding: "0 12px 8px" }}>
+          <ExtWidgets placement="belowEditor" />
+        </div>
       </div>
     </aside>
   );

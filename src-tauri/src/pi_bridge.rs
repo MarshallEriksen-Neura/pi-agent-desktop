@@ -6,7 +6,7 @@
 //! through `pi_send` and are written to the child's stdin.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
@@ -39,8 +39,8 @@ pub fn pi_start(
         return Ok(()); // already running
     }
 
-    let bin = binary.unwrap_or_else(|| "pi".to_string());
-    let mut cmd = Command::new(&bin);
+    let bin = binary.as_deref().unwrap_or("pi");
+    let mut cmd = crate::pi_command::command(binary.as_deref())?;
     cmd.args(["--mode", "rpc"]);
     // Resume a specific session at process startup so pi loads the full prior
     // context (past turns, tool results, thinking) into its agent loop — the
@@ -70,7 +70,7 @@ pub fn pi_start(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("failed to spawn `{bin}`: {e}"))?;
+        .map_err(|e| format!("failed to spawn Pi CLI `{bin}`: {e}"))?;
 
     let stdin = child.stdin.take().ok_or("no stdin handle")?;
     let stdout = child.stdout.take().ok_or("no stdout handle")?;

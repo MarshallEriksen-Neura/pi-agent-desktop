@@ -52,6 +52,8 @@ export function blockPromptLine() {
   termBus.write("\x1b[2m$\x1b[0m ");
 }
 
+let bashSeq = 0;
+
 async function runBlockCommand(cmd: string) {
   const blocks = useTerminalBlocks.getState();
   const blockId = blocks.addBlock({
@@ -63,14 +65,28 @@ async function runBlockCommand(cmd: string) {
   });
 
   const client = getPiClient();
+  // Correlate the live output stream with this block: pi echoes the command's
+  // `id` back on every bash_execution_update, so a second command running in
+  // parallel cannot leak into this card.
+  const id = `blk-${++bashSeq}`;
+  let streamed = 0;
+  const off = client.on("bash_execution_update", (e) => {
+    if (e.type !== "bash_execution_update" || e.id !== id) return;
+    if (!e.delta) return;
+    streamed += e.delta.length;
+    useTerminalBlocks.getState().appendOutput(blockId, e.delta);
+  });
   try {
     const r = await client.request<BashResult>(
-      { type: "bash", command: cmd },
+      { type: "bash", command: cmd, id },
       120_000
     );
     if (r.success && r.data) {
+      // append only what the stream had not already delivered — truncated
+      // output can be shorter than the stream, leaving nothing to add
+      const rest = streamed > 0 ? r.data.output.slice(streamed) : r.data.output;
+      if (rest) blocks.appendOutput(blockId, rest);
       blocks.updateBlock(blockId, {
-        output: r.data.output,
         status: r.data.cancelled
           ? "cancelled"
           : r.data.exitCode === 0
@@ -93,6 +109,7 @@ async function runBlockCommand(cmd: string) {
       endedAt: Date.now(),
     });
   } finally {
+    off();
     blockPromptLine();
   }
 }

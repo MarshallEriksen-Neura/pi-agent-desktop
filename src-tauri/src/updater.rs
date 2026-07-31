@@ -151,7 +151,7 @@ pub struct PiCliUpdateInfo {
 
 /// `pi --version` → "0.81.1"; None when pi is missing or errors.
 fn pi_installed_version() -> Option<String> {
-    let mut cmd = Command::new("pi");
+    let mut cmd = crate::pi_command::command(None).ok()?;
     cmd.arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -169,11 +169,104 @@ class MockTransport implements Transport {
         });
         break;
       case "prompt": {
-        this.respond(cmd);
         const msg = (cmd as { message?: string }).message?.toLowerCase() ?? "";
+
+        // ── error-path injection (browser testing of the failure surfaces) ──
+        // `err-timeout` deliberately never acks so PiClient.request() hits its
+        // own 15s timer — that is the whole point of the case, so it must be
+        // checked before respond().
+        if (msg.includes("err-timeout")) return;
+
+        this.respond(cmd);
+
+        if (msg.includes("err-model")) {
+          this.agentActive = true;
+          this.emit({ type: "agent_start" });
+          setTimeout(() => {
+            this.emit({
+              type: "message_update",
+              assistantMessageEvent: {
+                type: "error",
+                reason: "error",
+                message: "400 invalid_request_error: prompt is too long (210k > 200k tokens)",
+              },
+            });
+            this.agentActive = false;
+          }, 400);
+          break;
+        }
+
+        if (msg.includes("err-ext")) {
+          setTimeout(() => {
+            this.emit({
+              type: "extension_error",
+              extensionPath: "/home/user/.pi/extensions/pi-review.ts",
+              event: "tool_call",
+              error: "TypeError: Cannot read properties of undefined (reading 'diff')",
+            });
+            // an extension blowing up does not kill the run — settle it so the
+            // composer does not sit spinning in the mock
+            this.emit({ type: "agent_settled" });
+          }, 300);
+          break;
+        }
+
+        if (msg.includes("err-retry")) {
+          this.agentActive = true;
+          this.emit({ type: "agent_start" });
+          setTimeout(() => {
+            this.emit({
+              type: "auto_retry_start",
+              attempt: 1,
+              maxAttempts: 3,
+              delayMs: 2000,
+              errorMessage: "529 overloaded_error: Overloaded",
+            });
+          }, 300);
+          setTimeout(() => {
+            this.emit({
+              type: "auto_retry_end",
+              success: false,
+              attempt: 3,
+              finalError: "429 rate_limit_error: retry budget exhausted",
+            });
+            this.emit({ type: "agent_settled" });
+            this.agentActive = false;
+          }, 2200);
+          break;
+        }
+
+        if (msg.includes("err-compact")) {
+          setTimeout(() => {
+            this.emit({ type: "compaction_start", reason: "threshold" });
+          }, 200);
+          setTimeout(() => {
+            this.emit({ type: "compaction_end", result: null, aborted: true });
+          }, 900);
+          setTimeout(() => {
+            this.emit({
+              type: "compaction_end",
+              result: null,
+              aborted: false,
+              errorMessage: "API quota exceeded",
+            });
+            // compaction is out-of-band from the turn — settle so the mock
+            // composer does not spin after the two toasts land
+            this.emit({ type: "agent_settled" });
+          }, 1600);
+          break;
+        }
+
         this.agentActive = true;
         this.emit({ type: "agent_start" });
         this.emit({ type: "turn_start" });
+
+        // subagent fan-out preview — emits the real `subagent` tool shape so the
+        // deck's details.results[] parsing is exercised without the extension
+        if (msg.includes("subagent")) {
+          this.simulateSubagent();
+          break;
+        }
 
         // keyword-triggered extension UI simulation (browser testing)
         if (msg.includes("confirm") || msg.includes("approve")) {
@@ -216,6 +309,83 @@ class MockTransport implements Transport {
               notifyType: "info",
             });
           }, 400);
+        } else if (msg.includes("timeout")) {
+          // dialog with a timeout — pi auto-resolves its side, the sheet
+          // should disappear on its own instead of waiting for a click
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "select",
+              title: "Allow dangerous command?",
+              message: "rm -rf ./build — auto-blocks in 6s",
+              options: ["Allow", "Block"],
+              timeout: 6000,
+            });
+          }, 400);
+        } else if (msg.includes("status")) {
+          // two keys at once, then one of them clears — exercises the map
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "setStatus",
+              statusKey: "pi-review",
+              statusText: "Turn 3 running…",
+            });
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}-b`,
+              method: "setStatus",
+              statusKey: "indexer",
+              statusText: "1,204 symbols",
+            });
+          }, 400);
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "setStatus",
+              statusKey: "pi-review",
+            }); // no statusText → clears that key only
+          }, 6000);
+        } else if (msg.includes("widget")) {
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "setWidget",
+              widgetKey: "todos",
+              widgetLines: ["── todos ──", "☑ wire ext surfaces", "☐ verify build"],
+              widgetPlacement: "aboveEditor",
+            });
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}-b`,
+              method: "setWidget",
+              widgetKey: "hint",
+              widgetLines: ["tip: /review before commit"],
+              widgetPlacement: "belowEditor",
+            });
+          }, 400);
+        } else if (msg.includes("title")) {
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "setTitle",
+              title: "pi — ragcode-pi",
+            });
+          }, 400);
+        } else if (msg.includes("prefill")) {
+          setTimeout(() => {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-${Date.now()}`,
+              method: "set_editor_text",
+              text: "/review --staged",
+            });
+          }, 400);
         }
 
         // Simulate realistic agent execution with tool calls
@@ -240,8 +410,9 @@ class MockTransport implements Transport {
           this.emit({ type: "message_start" });
           const text =
             "(mock) pi is not connected — this is the browser preview stream. " +
-            "Try prompts containing \"confirm\", \"select\", \"input\" or \"notify\" " +
-            "to preview extension UI sheets. Pet animation should respond to state changes.";
+            "Try prompts containing \"confirm\", \"select\", \"input\", \"notify\", " +
+            "\"timeout\", \"status\", \"widget\", \"title\" or \"prefill\" to preview the " +
+            "extension UI surfaces. Pet animation should respond to state changes.";
           let i = 0;
           const tick = () => {
             if (i < text.length) {
@@ -276,14 +447,29 @@ class MockTransport implements Transport {
         }
         break;
       case "bash": {
-        // real pi returns output in the response data (BashResult), no events
+        // real pi streams incremental output as bash_execution_update events
+        // (each echoing this command's id) and then returns the full BashResult
+        // in the response — mirror both so the browser preview exercises the
+        // same de-duplication path the Tauri build uses.
         const command = (cmd as { command?: string }).command ?? "";
-        const output = [
+        const lines = [
           `(mock shell) $ ${command}`,
           "pi is not connected — this is the browser preview.",
           "Run inside Tauri with pi installed for a real shell.",
           "",
-        ].join("\n");
+        ];
+        const output = lines.join("\n");
+        lines.forEach((line, i) => {
+          setTimeout(
+            () =>
+              this.emit({
+                type: "bash_execution_update",
+                id: cmd.id,
+                delta: line + "\n",
+              }),
+            60 + i * 60
+          );
+        });
         setTimeout(
           () =>
             this.respond(cmd, {
@@ -292,7 +478,7 @@ class MockTransport implements Transport {
               cancelled: false,
               truncated: false,
             }),
-          200
+          60 + lines.length * 60 + 80
         );
         break;
       }
@@ -302,6 +488,184 @@ class MockTransport implements Transport {
       default:
         this.respond(cmd, {});
     }
+  }
+
+  /**
+   * Browser preview of a `subagent` parallel fan-out. Mirrors the payload the
+   * reference extension emits — `partialResult.details.results[]` with
+   * `exitCode: -1` while a worker runs — so the deck's parsing can be exercised
+   * without installing the extension.
+   */
+  private simulateSubagent() {
+    const toolCallId = `tc-sub-${Date.now()}`;
+    interface Worker {
+      agent: string;
+      agentSource: "user" | "project";
+      task: string;
+      model: string;
+      steps: { name: string; args: Record<string, unknown> }[];
+      answer: string;
+      /** set to make this worker fail */
+      error?: string;
+    }
+    const workers: Worker[] = [
+      {
+        agent: "scout",
+        agentSource: "user",
+        task: "Map the auth flow across the codebase",
+        model: "claude-sonnet-4-5",
+        steps: [
+          { name: "grep", args: { pattern: "session|token" } },
+          { name: "read", args: { path: "src/lib/auth/session.ts" } },
+        ],
+        answer: "entry → middleware → session.verify → rotate",
+      },
+      {
+        agent: "reviewer",
+        agentSource: "project",
+        task: "Review the streaming diff patch",
+        model: "claude-opus-4-8",
+        steps: [{ name: "bash", args: { command: "git diff HEAD" } }],
+        answer: "1 suggestion: await reason() lacks a timeout guard",
+      },
+      {
+        agent: "worker",
+        agentSource: "user",
+        task: "Typecheck the workspace",
+        model: "claude-sonnet-4-5",
+        steps: [{ name: "bash", args: { command: "npx tsc --noEmit" } }],
+        answer: "",
+        error: "exit 1: tsc failed — 3 type errors in src/lib/agent.ts",
+      },
+    ];
+
+    const zero = {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+      turns: 0,
+    };
+    const parts: Record<number, unknown[]> = {};
+    const finished: Record<number, boolean> = {};
+    workers.forEach((_, i) => {
+      parts[i] = [];
+    });
+
+    /** the whole results array, rebuilt on every mutation (it is cumulative) */
+    const snapshot = () =>
+      workers.map((w, i) => {
+        const done = finished[i] === true;
+        const failed = done && Boolean(w.error);
+        return {
+          agent: w.agent,
+          agentSource: w.agentSource,
+          task: w.task,
+          exitCode: done ? (w.error ? 1 : 0) : -1, // -1 = still running
+          messages: parts[i].length > 0 ? [{ role: "assistant", content: parts[i] }] : [],
+          stderr: failed ? w.error : "",
+          usage: done
+            ? {
+                input: 12_000 + i * 2_000,
+                output: 800 + i * 150,
+                cacheRead: 6_000,
+                cacheWrite: 900,
+                cost: 0.03 + i * 0.01,
+                contextTokens: 18_000 + i * 3_000,
+                turns: w.steps.length + 1,
+              }
+            : zero,
+          model: w.model,
+          ...(failed ? { stopReason: "error", errorMessage: w.error } : {}),
+        };
+      });
+
+    const details = () => ({
+      mode: "parallel",
+      agentScope: "user",
+      projectAgentsDir: null,
+      results: snapshot(),
+    });
+
+    const emitUpdate = () => {
+      const results = snapshot();
+      const done = results.filter((r) => r.exitCode !== -1).length;
+      this.emit({
+        type: "tool_execution_update",
+        toolCallId,
+        toolName: "subagent",
+        partialResult: {
+          content: [
+            {
+              type: "text",
+              text: `Parallel: ${done}/${results.length} done, ${results.length - done} running...`,
+            },
+          ],
+          details: details(),
+        },
+      });
+    };
+
+    this.emit({
+      type: "tool_execution_start",
+      toolCallId,
+      toolName: "subagent",
+      args: { tasks: workers.map((w) => ({ agent: w.agent, task: w.task })) },
+    });
+
+    // all workers are seeded up front, then each reports its own steps
+    setTimeout(emitUpdate, 300);
+    let settleAt = 0;
+    workers.forEach((w, i) => {
+      w.steps.forEach((s, j) => {
+        setTimeout(
+          () => {
+            parts[i].push({ type: "toolCall", name: s.name, arguments: s.args });
+            emitUpdate();
+          },
+          400 + i * 300 + j * 700
+        );
+      });
+      const at = 400 + i * 300 + w.steps.length * 700 + 500;
+      settleAt = Math.max(settleAt, at);
+      setTimeout(() => {
+        parts[i].push({ type: "text", text: w.error ?? w.answer });
+        finished[i] = true;
+        emitUpdate();
+      }, at);
+    });
+
+    setTimeout(() => {
+      const results = snapshot();
+      const ok = results.filter((r) => r.exitCode === 0).length;
+      this.emit({
+        type: "tool_execution_end",
+        toolCallId,
+        toolName: "subagent",
+        result: {
+          content: [{ type: "text", text: `Parallel: ${ok}/${results.length} succeeded` }],
+          details: details(),
+        },
+        isError: false,
+      });
+      this.emit({ type: "message_start" });
+      this.emit({
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "text_delta",
+          delta:
+            `(mock) fanned out to ${workers.length} subagents — ${ok} succeeded. ` +
+            "Tap a card to open its timeline.",
+        },
+      });
+      this.emit({ type: "message_end" });
+      this.emit({ type: "turn_end" });
+      this.emit({ type: "agent_end" });
+      this.emit({ type: "agent_settled" });
+      this.agentActive = false;
+    }, settleAt + 400);
   }
 
   onLine(cb: (line: string) => void) {
@@ -363,8 +727,8 @@ export class PiClient {
 
   async start(opts: { cwd?: string; binary?: string; resumePath?: string } = {}) {
     if (this.started) return;
-    this.started = true;
     await this.transport.start(opts);
+    this.started = true;
   }
 
   /** fire-and-forget */
@@ -372,9 +736,16 @@ export class PiClient {
     this.transport.send(JSON.stringify(cmd));
   }
 
-  /** request with response correlation via id */
+  /**
+   * Request with response correlation via id.
+   *
+   * A caller-supplied `id` is preserved rather than replaced: pi echoes it on
+   * out-of-band events too (`bash_execution_update.id`), so overwriting it would
+   * break the caller's own correlation.
+   */
   request<T = unknown>(cmd: PiCommand, timeoutMs = 15_000): Promise<PiResponse<T>> {
-    const id = `req-${++this.seq}`;
+    const given = (cmd as { id?: unknown }).id;
+    const id = typeof given === "string" && given ? given : `req-${++this.seq}`;
     const withId = { ...cmd, id };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

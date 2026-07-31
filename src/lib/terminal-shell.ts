@@ -7,8 +7,14 @@ import { termBus, ansi } from "./terminal-bus";
 /**
  * Interactive shell line-discipline for the terminal drawer.
  * Local line editing (xterm gives us raw keys), then each entered line is
- * sent to pi's `bash` RPC. Per pi's rpc.md, output does NOT stream as events —
- * it comes back in the response `data` as a BashResult.
+ * sent to pi's `bash` RPC.
+ *
+ * Output arrives twice over: as `bash_execution_update` events while the command
+ * runs (each carrying an incremental `delta` and the `id` we sent), and once more
+ * in the response `data` as a BashResult. We render the live stream and then
+ * write only the tail the events did not cover — the response `output` can be
+ * truncated while the event stream is complete, so the events are the better
+ * source when both are available.
  */
 
 let running = false;
@@ -69,13 +75,23 @@ export function handleTermInput(data: string) {
 async function runBash(cmd: string) {
   running = true;
   const client = getPiClient();
+  const id = `bash-${++bashSeq}`;
+  // chars already painted from the live event stream — the response output is
+  // sliced past this so nothing is printed twice
+  let streamed = 0;
+  const off = client.on("bash_execution_update", (e) => {
+    if (e.type !== "bash_execution_update" || e.id !== id) return;
+    if (!e.delta) return;
+    streamed += e.delta.length;
+    termBus.write(e.delta.replace(/\r?\n/g, "\r\n"));
+  });
   try {
     const r = await client.request<BashResult>(
-      { type: "bash", command: cmd, id: `bash-${++bashSeq}` },
+      { type: "bash", command: cmd, id },
       120_000
     );
     if (r.success && r.data) {
-      writeResult(r.data);
+      writeResult(r.data, streamed);
     } else if (r.error) {
       termBus.writeln(ansi.red(r.error));
     }
@@ -84,17 +100,24 @@ async function runBash(cmd: string) {
       ansi.red(e instanceof Error ? e.message : "bash failed")
     );
   } finally {
+    off();
     running = false;
     promptLine();
   }
 }
 
-function writeResult(r: BashResult) {
-  if (r.output) {
+/**
+ * @param streamed chars already written from `bash_execution_update` events —
+ *   only the remainder of `output` is painted. Truncated output can be *shorter*
+ *   than what streamed, in which case there is nothing left to write.
+ */
+function writeResult(r: BashResult, streamed = 0) {
+  const rest = streamed > 0 ? r.output.slice(streamed) : r.output;
+  if (rest) {
     // normalize LF → CRLF for xterm; keep the prompt on its own line
-    termBus.write(r.output.replace(/\r?\n/g, "\r\n"));
-    if (!r.output.endsWith("\n")) termBus.write("\r\n");
+    termBus.write(rest.replace(/\r?\n/g, "\r\n"));
   }
+  if (r.output && !r.output.endsWith("\n")) termBus.write("\r\n");
   if (r.cancelled) {
     termBus.writeln(ansi.dim("(cancelled)"));
   } else if (typeof r.exitCode === "number" && r.exitCode !== 0) {
