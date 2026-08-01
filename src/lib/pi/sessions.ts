@@ -199,6 +199,16 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 /** true while load() repaints the chat — the autosave listener must not fire */
 let restoring = false;
 
+/** true once syncSessionPath has successfully captured pi's sessionPath */
+let sessionPathSynced = false;
+
+/**
+ * Retry delays for syncSessionPath when pi isn't ready to answer get_state yet
+ * (session resume, extension load, WSL hop can all delay readiness). The
+ * initial call in init()/switchProject()/startFresh() may hit this window.
+ */
+const SYNC_DELAYS_MS = [2_000, 5_000, 10_000];
+
 /** Persist the active session with the current chat transcript right now. */
 async function flushSave() {
   if (saveTimer) {
@@ -239,54 +249,60 @@ function scheduleSave() {
  */
 export const flushActiveSession = () => flushSave();
 
-/** Ask pi for its current session file path and pin it on the active record. */
-async function syncSessionPath() {
-  if (!isTauri()) return;
-  try {
-    const r = await getPiClient().request<PiState>({ type: "get_state" });
-    const path = r.data?.sessionPath;
-    const { activeId } = useSessions.getState();
-    if (!path || !activeId) return;
-    useSessions.setState((s) => ({
-      sessions: s.sessions.map((x) =>
-        x.id === activeId ? { ...x, sessionPath: path } : x
-      ),
-    }));
-    const meta = useSessions
-      .getState()
-      .sessions.find((x) => x.id === activeId);
-    if (meta) await backendSave(meta, useChat.getState().messages);
-  } catch {
-    // pi not ready yet — the next flushSave will still persist the transcript
-  }
-}
-
 /**
- * Point pi back at an existing session file. This is a fallback: pi should
- * already have resumed the session at startup (or after a project switch) via
- * `--session <path>`. If the RPC fails or pi refuses, warn loudly instead of
- * silently letting the agent run with no context while the UI shows history
- * (the exact "AI forgot" symptom this guards against).
+ * Ask pi for its current session file path and pin it on the active record.
+ *
+ * pi's `get_state` RPC returns `sessionFile` (full .jsonl path) and `sessionId`
+ * (UUID). It does NOT return a field called `sessionPath` (that was a wrong
+ * assumption in the original protocol types), and pi does NOT emit a `session`
+ * event in RPC mode — so `client.lastSessionId` is always empty in practice.
+ *
+ * Both `sessionFile` and `sessionId` are valid for `--session <path|id>` at
+ * process startup, which is how context is restored on the next launch.
+ *
+ * Without one of these, sessionPath stays empty in SQLite and the next app
+ * launch spawns pi without `--session` — the agent loses all prior context
+ * while the UI still shows history (the "AI forgot" symptom).
  */
-async function pointPiAt(sessionPath: string) {
-  if (!isTauri() || !sessionPath) return;
-  try {
-    const r = await getPiClient().request({
-      type: "switch_session",
-      sessionPath,
-    });
-    if (!r.success) {
-      // pi refused the switch (file moved/invalid) — surface it so the user
-      // knows the agent below is running without prior context.
-      useExtUi.getState().pushToast(
-        t("session.restoreRefused", { error: r.error ?? "" }),
-        "warning",
+async function syncSessionPath(): Promise<void> {
+  if (!isTauri()) return;
+  for (let attempt = 0; attempt <= SYNC_DELAYS_MS.length; attempt++) {
+    let path = "";
+    try {
+      const r = await getPiClient().request<PiState>({ type: "get_state" });
+      // pi returns sessionFile (full path) and sessionId (UUID), NOT sessionPath.
+      // Prefer the full file path; fall back to the UUID. Both work with --session.
+      path = r.data?.sessionFile ?? r.data?.sessionId ?? r.data?.sessionPath ?? "";
+    } catch {
+      // get_state not ready yet — will retry
+    }
+    // Fall back to the session id captured from pi's `session` event (rarely
+    // populated in practice — pi RPC mode doesn't emit it — but harmless).
+    if (!path) path = getPiClient().lastSessionId;
+
+    const { activeId } = useSessions.getState();
+    if (path && activeId) {
+      sessionPathSynced = true;
+      useSessions.setState((s) => ({
+        sessions: s.sessions.map((x) =>
+          x.id === activeId ? { ...x, sessionPath: path } : x
+        ),
+      }));
+      const meta = useSessions
+        .getState()
+        .sessions.find((x) => x.id === activeId);
+      if (meta) await backendSave(meta, useChat.getState().messages);
+      return; // success
+    }
+    // Nothing yet — pi may still be booting. Retry.
+    if (attempt < SYNC_DELAYS_MS.length) {
+      await new Promise((r) => setTimeout(r, SYNC_DELAYS_MS[attempt]));
+    } else {
+      console.warn(
+        "[syncSessionPath] failed after retries — no sessionFile/sessionId from get_state. " +
+          "Next launch will start pi without --session.",
       );
     }
-  } catch {
-    // pi unavailable / rpc timeout — UI history still works from the local
-    // store, but the agent has no context. Tell the user, not just the console.
-    useExtUi.getState().pushToast(t("session.restoreFailed"), "warning");
   }
 }
 
@@ -302,6 +318,7 @@ async function repaint(id: string) {
 
 /** Begin an empty conversation in `projectRoot` and reset pi's session. */
 function startFresh(projectRoot: string) {
+  sessionPathSynced = false;
   useChat.getState().clear();
   const meta = createMeta(projectRoot);
   useSessions.setState((s) => ({
@@ -333,17 +350,28 @@ export const useSessions = create<SessionsStore>((set, get) => ({
 
     const latest = sessions[0];
     if (latest) {
-      // refresh-restore: repaint this project's newest conversation…
+      // refresh-restore: repaint this project's newest conversation. Pi was
+      // already spawned with --session <path> in AppShell (via
+      // peekLatestSessionPath), so the agent loop has the full prior context.
+      // No switch_session RPC needed — just sync the path for future saves.
       await repaint(latest.id);
       set({ activeId: latest.id });
-      // …and make sure pi is pointed at the matching session file.
-      await pointPiAt(latest.sessionPath);
     } else {
       const meta = createMeta(key);
       set({ sessions: [meta], activeId: meta.id });
       void backendSave(meta, []);
     }
     void syncSessionPath();
+
+    // Retry sessionPath sync when pi announces it's ready — the call above
+    // may run before pi can answer get_state (slow boot, session resume, WSL
+    // hop). The `session` event is pi's "ready for requests" signal, so it's
+    // the most reliable trigger. The retry loop inside syncSessionPath is the
+    // safety net in case this listener misses the event (connect() runs before
+    // init()).
+    getPiClient().on("session", () => {
+      if (!sessionPathSynced) void syncSessionPath();
+    });
 
     // autosave — every chat change lands in the active session (debounced)
     useChat.subscribe((s, prev) => {
@@ -359,6 +387,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     const key = projectKey(projectRoot);
     if (get().initialized && key === get().projectRoot) return;
     await flushSave(); // persist the outgoing project's transcript first
+    sessionPathSynced = false;
 
     const sessions = await backendList(key);
     set({ initialized: true, projectRoot: key, sessions, activeId: null });
@@ -368,7 +397,14 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       // returning to a project resumes where it left off
       await repaint(latest.id);
       set({ activeId: latest.id });
-      await pointPiAt(latest.sessionPath);
+      // Restart pi with the new project root and session path — both cwd
+      // and context must change for the switched project.
+      try {
+        const { usePi } = await import("./store");
+        await usePi.getState().restart(projectRoot, latest.sessionPath);
+      } catch {
+        // restart failed — UI still works from local store
+      }
       void syncSessionPath();
     } else {
       startFresh(key);
@@ -387,12 +423,43 @@ export const useSessions = create<SessionsStore>((set, get) => ({
   switchSession: async (id) => {
     if (id === get().activeId) return;
     await flushSave();
+    sessionPathSynced = false;
 
     await repaint(id);
     set({ activeId: id });
 
     const meta = get().sessions.find((s) => s.id === id);
-    await pointPiAt(meta?.sessionPath ?? "");
+    const sessionPath = meta?.sessionPath ?? "";
+
+    if (sessionPath) {
+      // Always restart pi with --session <path> to guarantee full context
+      // restoration. The switch_session RPC is unreliable — pi may return
+      // success without actually loading prior context into its agent loop,
+      // leaving the agent with no memory while the UI shows history (the
+      // "AI forgot" symptom). --session at spawn time is the only mechanism
+      // proven to load the full transcript (past turns, tool results,
+      // thinking) into the agent loop.
+      try {
+        const { usePi } = await import("./store");
+        const { useWorkspace } = await import("../workspace");
+        const root = useWorkspace.getState().root ?? undefined;
+        await usePi.getState().restart(root, sessionPath);
+        void syncSessionPath();
+      } catch {
+        useExtUi.getState().pushToast(t("session.restoreFailed"), "warning");
+      }
+    } else {
+      // No session path was ever persisted for this conversation — pi cannot
+      // resume prior context. Create a new session so the sessionPath gets
+      // pinned for future launches, and tell the user explicitly.
+      useExtUi.getState().pushToast(t("session.contextLost"), "warning", 8000);
+      try {
+        await getPiClient().request({ type: "new_session" });
+        await syncSessionPath();
+      } catch {
+        // pi unavailable — sessionPath will stay empty, next switch retries
+      }
+    }
   },
 
   renameSession: async (id, name) => {

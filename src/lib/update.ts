@@ -15,10 +15,11 @@ import { getVersion } from "@tauri-apps/api/app";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
+import pkg from "../../package.json";
 const REPO_URL = "https://github.com/MarshallEriksen-Neura/pi-agent-desktop";
 
-/** Mirrors tauri.conf.json / Cargo.toml — shown before the first check lands. */
-export const APP_VERSION = "0.1.0";
+/** Version from package.json — kept in sync automatically. */
+export const APP_VERSION = pkg.version;
 
 export interface UpdateInfo {
   configured: boolean;

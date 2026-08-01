@@ -76,8 +76,16 @@ export const zh: Record<keyof typeof en, string> = {
   "agent.emptyAsk": "让 Pi 写代码。输入 ",
   "agent.emptyOr": " 查看流式编辑演示，或输入 ",
   "agent.emptyAfter": " 查看并行子智能体演示。",
-  "agent.composerBusy": "Pi 正在工作…（⏎ 排队）",
+  "agent.composerBusy": "Pi 正在工作…",
   "agent.composerIdle": "让 Pi 写代码… ⏎",
+  "agent.composerSteer": "打断 Pi 并插话… ⌘⏎",
+  "agent.composerQueue": "排队等本轮结束… ⌘⏎",
+  "composer.deliverySteer": "插话",
+  "composer.deliveryQueue": "排队",
+  "composer.deliveryHint": "⌘⏎ 按此方式发送 · ⌘⇧⏎ 用另一种",
+  "message.steered": "插话",
+  "message.queued": "排队",
+  "message.undelivered": "未送达",
   "agent.stop": "停止",
   "agent.send": "发送",
   "agent.scrollTop": "滚动到顶部",
@@ -93,7 +101,7 @@ export const zh: Record<keyof typeof en, string> = {
 
   // retry transparency
   "retry.inProgress": "重试中…（第 {attempt}/{max} 次）",
-  "retry.inProgressReason": "重试中…（第 {attempt}/{max} 次）— {reason}",
+  "retry.round": "第 {rounds} 轮",
   "retry.success": "重试成功（共 {attempt} 次）",
   "retry.failed": "重试失败：{reason}",
 
@@ -104,6 +112,7 @@ export const zh: Record<keyof typeof en, string> = {
   "agent.piExitedUnknown": "Pi 进程已退出，任务被中断。",
   "agent.piUnavailable": "Pi 未连接或未运行，任务未发送。请在设置中确认 Pi CLI 已安装并启动。",
   "agent.piNoResponse": "未收到 Pi 的响应，任务可能未被接收。请确认 Pi 正在运行。",
+  "agent.reconnecting": "Pi 进程崩溃 —— 正在尝试重连并恢复会话…",
   "agent.modelError": "模型返回错误（{reason}）。",
 
   // 扩展报错 / 上下文压缩
@@ -111,13 +120,19 @@ export const zh: Record<keyof typeof en, string> = {
   "compaction.aborted": "上下文压缩已取消。",
   "compaction.failed": "上下文压缩失败：{error}",
 
-  // queue
-  "queue.badge": "{count} 个排队中",
-  "queue.cancel": "取消队列",
+  // queue — 运行中交给 pi 的消息（插话 / 排队）
+  "queue.steering": "{count} 条待插话",
+  "queue.followUp": "{count} 条排队中",
+  "queue.pendingHint": "只能用「停止」撤回",
+  "queue.steerFailed": "pi 拒绝了插话消息",
+  "queue.followUpFailed": "pi 拒绝了排队消息",
+  "queue.noAck": "pi 未确认这条消息 — 未送达",
 
   // session restore (上下文未重新载入 agent)
   "session.restoreFailed": "无法恢复此对话的上下文 —— Pi 已全新启动。下方仍显示聊天历史，但智能体不会记得之前的轮次。",
   "session.restoreRefused": "Pi 无法载入已保存的会话上下文（{error}）。智能体已全新启动，下方历史仅作展示。",
+  "session.noPath": "此对话未保存会话路径 —— Pi 已全新启动。智能体不会记得之前的轮次，下方历史仅作展示。",
+  "session.contextLost": "此对话的上下文无法恢复 —— Pi 已创建新会话。下方仍保留聊天历史，但智能体不会记得之前的轮次。新会话已建立，后续切换将正常工作。",
 
   // message operations
   "message.copy": "复制",
@@ -330,6 +345,10 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.resetAppearanceDetail": "清除自定义颜色、背景图片、CSS 与文字大小",
   "settings.notifications": "桌面通知",
   "settings.notificationsDetail": "窗口隐藏时消息完成后显示系统通知",
+  "settings.notifications.granted": "已开启",
+  "settings.notifications.prompt": "点击开启",
+  "settings.notifications.denied": "已被阻止 — 请在系统设置中允许 Pi 发送通知",
+  "settings.notifications.unsupported": "当前环境不支持",
   "settings.closeBehavior": "关闭窗口时",
   "settings.closeBehaviorFooter":
     "点击关闭按钮时的行为。“每次询问”会弹出本提示；其他选项直接生效，可随时在此修改。",
@@ -581,4 +600,9 @@ export const zh: Record<keyof typeof en, string> = {
   "ctx.delete": "删除",
   "ctx.newFilePlaceholder": "文件名…",
   "ctx.newFolderPlaceholder": "文件夹名…",
+
+  // pet notification reminders
+  "pet.notif.taskComplete": "Pi 任务完成，等待查看",
+  "pet.notif.needsInput": "Pi 需要你的输入",
+  "pet.notif.taskFailed": "Pi 任务出错",
 };

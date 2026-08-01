@@ -14,6 +14,7 @@ import {
 } from "@appica/ui-react/dropdown-menu";
 import { usePi } from "@/lib/pi/store";
 import { usePiSettings } from "@/lib/pi/settings";
+import { hasGlobEntry, isModelEnabled, modelRef } from "@/lib/pi/model-scope";
 import { useT } from "@/lib/i18n";
 import { PROVIDER_META, fmtCtx } from "./provider-meta";
 import { resolveModelMetaOrFallback } from "@/lib/model-icon";
@@ -35,18 +36,28 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
   }, [settings]);
 
   // Honour the merged settings view so project overrides behave the same here
-  // as they do on the Models page. Exact entries may be provider/id or bare id;
-  // legacy glob patterns remain delegated to pi and therefore show all here.
+  // as they do on the Models page. Entries are canonical `provider/id` refs;
+  // legacy bare ids still match (every provider serving that id), and glob
+  // patterns remain delegated to pi and therefore show all here.
   const enabled = settings.effective().enabledModels;
   const visibleModels = useMemo(() => {
     if (!enabled || enabled.length === 0) return models;
-    const hasGlob = enabled.some((entry) => entry.includes("*") || entry.includes("?"));
-    if (hasGlob) return models;
-    const set = new Set(enabled);
-    return models.filter((m) => set.has(`${m.provider}/${m.id}`) || set.has(m.id));
+    if (hasGlobEntry(enabled)) return models;
+    return models.filter((m) => isModelEnabled(enabled, m.provider, m.id));
   }, [models, enabled]);
 
   const providers = [...new Set(visibleModels.map((m) => m.provider))];
+
+  /**
+   * Two providers can serve the same model id (`anthropic/claude-opus-5` and a
+   * proxy's `claude-opus-5`). The group header names the provider, but the rows
+   * would read identically — so tag the ambiguous ones with their provider.
+   */
+  const ambiguousIds = useMemo(() => {
+    const byId = new Map<string, number>();
+    for (const m of visibleModels) byId.set(m.id, (byId.get(m.id) ?? 0) + 1);
+    return new Set([...byId].filter(([, n]) => n > 1).map(([id]) => id));
+  }, [visibleModels]);
 
   const currentMeta = resolveModelMetaOrFallback(
     currentModel?.id ?? "none",
@@ -192,7 +203,7 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
                 const meta = resolveModelMetaOrFallback(m.id, m.provider);
                 return (
                   <DropdownMenuItem
-                    key={`${m.provider}/${m.id}`}
+                    key={modelRef(m.provider, m.id)}
                     onClick={() => setModel(m)}
                     style={{
                       display: "flex",
@@ -223,6 +234,12 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
                       }}
                     >
                       {m.name ?? m.id}
+                      {ambiguousIds.has(m.id) && (
+                        <span style={{ color: "var(--text-tertiary)" }}>
+                          {" · "}
+                          {m.provider}
+                        </span>
+                      )}
                     </span>
                     <span
                       style={{

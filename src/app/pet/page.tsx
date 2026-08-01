@@ -10,7 +10,7 @@
  * on the main window's store.
  */
 
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState, useRef } from "react";
 import { usePet } from "@/lib/pet/store";
 import { PetSprite } from "@/components/PetSprite";
 import { loadPet as loadPetById } from "@/lib/pet";
@@ -131,13 +131,31 @@ export default function PetWindow() {
     return () => clearInterval(healthCheck);
   }, [lastUpdate, state]);
 
-  // Draggable window
-  const handleMouseDown = async () => {
+  // Draggable window — but also detect click (vs drag) so a simple
+  // click on the pet can emit an event to restore the main window.
+  const dragRef = useRef({ x: 0, y: 0 });
+
+  const handleMouseDown = async (e: React.MouseEvent) => {
+    dragRef.current.x = e.clientX;
+    dragRef.current.y = e.clientY;
+
     try {
       const window = getCurrentWindow();
       await window.startDragging();
     } catch (err) {
       console.error("[PetWindow] Drag failed:", err);
+    }
+  };
+
+  const handleMouseUp = (e: React.MouseEvent) => {
+    // If the mouse barely moved, treat it as a click instead of a drag
+    const dx = Math.abs(e.clientX - dragRef.current.x);
+    const dy = Math.abs(e.clientY - dragRef.current.y);
+    if (dx < 5 && dy < 5) {
+      // Tell the main window to restore/focus itself
+      emit("pet-restore-main", {}).catch((err) => {
+        console.error("[PetWindow] Failed to emit pet-restore-main:", err);
+      });
     }
   };
 
@@ -155,9 +173,12 @@ export default function PetWindow() {
         }}
       />
       {activePet ? (
+        // Bottom-aligned: the pet stands on the lower edge of the window and the
+        // leftover space sits above it, which is where the speech bubble grows.
         <div
-          className="w-full h-full flex items-center justify-center"
+          className="w-full h-full flex items-end justify-center"
           onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUp}
         >
           <PetSprite
             pet={activePet}

@@ -117,7 +117,12 @@ export interface BashResult {
 export interface PiState {
   model?: PiModel;
   thinkingLevel?: ThinkingLevel;
+  /** @deprecated pi returns `sessionFile` + `sessionId` instead. Kept for back-compat. */
   sessionPath?: string;
+  /** Full path to the .jsonl session file (what pi's get_state actually returns). */
+  sessionFile?: string;
+  /** Session UUID (what pi's get_state actually returns; --session accepts it). */
+  sessionId?: string;
   sessionName?: string;
   isStreaming?: boolean;
 }

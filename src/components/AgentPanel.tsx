@@ -10,7 +10,7 @@ import {
 } from "@appica/ui-react/collapsible";
 import { Spinner } from "@appica/ui-react/spinner";
 import { useUI, type TaskStatus } from "@/lib/store";
-import { useChat, type ChatMessage } from "@/lib/pi/chat";
+import { useChat, type ChatMessage, type DeliveryMode } from "@/lib/pi/chat";
 import { usePi } from "@/lib/pi/store";
 import { useSessions } from "@/lib/pi/sessions";
 import { useSubagents } from "@/lib/pi/subagents";
@@ -51,7 +51,9 @@ const DOT: Record<TaskStatus, string> = {
 /** Right rail — real pi conversation stream + demo task strip. */
 export function AgentPanel() {
   const { agentTasks, agentRunning, startDemo } = useUI();
-  const { messages, streaming, send, abort, queuedPrompts, queuePrompt, clearQueue } = useChat();
+  const { messages, streaming, send, steer, followUp, abort, queue } = useChat();
+  /** how ⌘⏎ delivers a message typed while a turn is already running */
+  const [delivery, setDelivery] = useState<DeliveryMode>("steer");
   const retrying = useChat((s) => {
     for (const st of s.activeRetries.values()) if (st.status === "loading") return true;
     return false;
@@ -149,22 +151,11 @@ export function AgentPanel() {
     }
   }, [messages]);
 
-  /* auto-send queued prompts when agent transitions to idle */
-  useEffect(() => {
-    if (!streaming && queuedPrompts.length > 0) {
-      const nextPrompt = queuedPrompts[0];
-      if (nextPrompt) {
-        // Remove the first prompt from the queue and send it
-        const remaining = queuedPrompts.slice(1);
-        clearQueue();
-        // Re-add remaining prompts
-        remaining.forEach(p => queuePrompt(p));
-        send(nextPrompt);
-      }
-    }
-  }, [streaming, queuedPrompts, send, queuePrompt, clearQueue]);
+  /* No auto-send-on-idle effect here on purpose: messages typed during a run go
+     straight to pi as `steer`/`follow_up`, and pi executes them itself. Re-sending
+     them locally when `streaming` flipped false is what used to double-send. */
 
-  const submit = () => {
+  const submit = (alt = false) => {
     const text = draft.trim();
     const images = attachments;
     if (!text && images.length === 0) return;
@@ -180,9 +171,16 @@ export function AgentPanel() {
     }
     if (runBuiltinCommand(text)) return; // built-ins act locally
 
-    // If streaming, queue the prompt instead of sending immediately
+    // A turn is already in flight: hand the message to pi rather than sending a
+    // second `prompt`. `steer` cuts into the running turn, `followUp` waits for
+    // it — ⌘⇧⏎ (`alt`) picks whichever the toggle is not set to.
     if (streaming) {
-      queuePrompt(text);
+      const mode: DeliveryMode = alt
+        ? delivery === "steer"
+          ? "followUp"
+          : "steer"
+        : delivery;
+      void (mode === "steer" ? steer(text, images) : followUp(text, images));
       return;
     }
 
@@ -501,8 +499,9 @@ export function AgentPanel() {
           onAbort={abort}
           onKeyDown={onComposerKeyDown}
           onPaste={onComposerPaste}
-          queuedPrompts={queuedPrompts}
-          onClearQueue={clearQueue}
+          queue={queue}
+          delivery={delivery}
+          onDeliveryChange={setDelivery}
         />
         {/* extension widgets pinned below the editor */}
         <div style={{ padding: "0 12px 8px" }}>

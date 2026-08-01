@@ -31,6 +31,12 @@ import {
   type CustomProvider,
   usePiModels,
 } from "@/lib/pi/models";
+import {
+  type ModelRefLike,
+  isModelEnabled,
+  modelRef,
+  toggleModelEnabled,
+} from "@/lib/pi/model-scope";
 
 const spring = { type: "spring" as const, stiffness: 320, damping: 28 };
 
@@ -87,17 +93,37 @@ export default function ModelsPage() {
     }
   }, [customProviders]);
 
-  const setEnabled = async (modelId: string) => {
-    const next = new Set(enabledModels);
-    if (next.has(modelId)) next.delete(modelId);
-    else next.add(modelId);
-    await piSettings.setKey("global", "enabledModels", Array.from(next));
+  /**
+   * Every model we can name in a scope entry: what pi reports plus the
+   * models.json definitions (a freshly added provider isn't in pi's list until
+   * it restarts). Used to rewrite a legacy bare-id entry into per-provider refs.
+   */
+  const scopeModels = useMemo<ModelRefLike[]>(() => {
+    const list = piModels.map((m) => ({ provider: m.provider, id: m.id }));
+    const seen = new Set(list.map((m) => modelRef(m.provider, m.id)));
+    for (const [providerId, provider] of Object.entries(customProviders)) {
+      for (const m of provider.models ?? []) {
+        const ref = modelRef(providerId, m.id);
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        list.push({ provider: providerId, id: m.id });
+      }
+    }
+    return list;
+  }, [piModels, customProviders]);
+
+  const setEnabled = async (providerId: string, modelId: string) => {
+    const next = toggleModelEnabled(enabledModels, providerId, modelId, scopeModels);
+    await piSettings.setKey(
+      "global",
+      "enabledModels",
+      next.length > 0 ? next : undefined
+    );
   };
 
   const toggleExpanded = (providerId: string) => {
     setExpanded((prev) => ({ ...prev, [providerId]: !prev[providerId] }));
   };
-
   const handleSaveProvider = async (providerId: string, provider: CustomProvider) => {
     await piModelsStore.updateProvider(providerId, {
       baseUrl: provider.baseUrl,
@@ -264,7 +290,7 @@ export default function ModelsPage() {
             {filteredProviderEntries.map(({ providerId, provider, matchedModels }) => {
               const isOpen = !!expanded[providerId];
               const enabledCount = provider.models.filter((m) =>
-                enabledModels.includes(m.id)
+                isModelEnabled(enabledModels, providerId, m.id)
               ).length;
               return (
                 <div
@@ -409,7 +435,11 @@ export default function ModelsPage() {
                           ) : (
                             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                               {matchedModels.map((model) => {
-                                const enabled = enabledModels.includes(model.id);
+                                const enabled = isModelEnabled(
+                                  enabledModels,
+                                  providerId,
+                                  model.id
+                                );
                                 const meta = resolveModelMetaOrFallback(model.id, providerId);
                                 return (
                                   <motion.div
@@ -428,7 +458,7 @@ export default function ModelsPage() {
                                     }}
                                   >
                                     <button
-                                      onClick={() => setEnabled(model.id)}
+                                      onClick={() => setEnabled(providerId, model.id)}
                                       className="flex shrink-0 items-center justify-center rounded-lg transition-colors"
                                       style={{
                                         width: 22,
@@ -984,7 +1014,7 @@ function AllModelsSection({
   onToggle,
 }: {
   enabledModels: string[];
-  onToggle: (modelId: string) => void | Promise<void>;
+  onToggle: (providerId: string, modelId: string) => void | Promise<void>;
 }) {
   const t = useT();
   const piModels = usePi((s) => s.models);
@@ -1030,11 +1060,11 @@ function AllModelsSection({
             </div>
             <div className="flex flex-wrap gap-2">
               {modelIds.map((id) => {
-                const enabled = enabledModels.includes(id);
+                const enabled = isModelEnabled(enabledModels, providerId, id);
                 return (
                   <button
-                    key={id}
-                    onClick={() => onToggle(id)}
+                    key={modelRef(providerId, id)}
+                    onClick={() => onToggle(providerId, id)}
                     className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors"
                     style={{
                       background: enabled

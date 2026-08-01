@@ -119,6 +119,25 @@
     linear-gradient(135deg, rgba(255, 255, 255, 0.85) 0%, rgba(247, 245, 240, 0.95) 100%);
   --ink-row-open-bg: rgba(0, 0, 0, 0.01);
 
+  /* ── Desktop pet bubble (宣纸 + iOS) ──
+     Theme-independent on purpose: the pet floats over the user's wallpaper, not
+     over our app surface, so the bubble stays paper in both themes — dark ink on
+     warm paper is the only combination that survives an arbitrary backdrop. */
+  --pet-paper-top: #fbf9f3;
+  --pet-paper-bottom: #efe9db;
+  --pet-ink: #262421;
+  --pet-ink-text: #211f1d;
+  --pet-ink-line: rgba(38, 36, 33, 0.56);
+  /* seal inks: 花青 / 藤黄 / 朱砂 / 焦墨 */
+  --pet-seal-running: #3f6ea8;
+  --pet-seal-waiting: #c9922f;
+  --pet-seal-review: #c1443a;
+  --pet-seal-failed: #2b2724;
+  /* Serif first — 宋体 where it exists, Georgia as the Latin stand-in — so the
+     text reads as brushed rather than as UI chrome. */
+  --pet-bubble-font: "Songti SC", "Source Han Serif SC", "Noto Serif SC", Georgia,
+    "Times New Roman", var(--font-ui);
+
   color-scheme: light;
 }
 
@@ -556,4 +575,140 @@ body {
 }
 .zen-title.is-working {
   opacity: 0.12;
+}
+
+/* ── Desktop pet speech bubble ────────────────────────────────────────────
+   Paper, ink and seal for [PetBubble.tsx](../components/PetBubble.tsx). The
+   geometry (corners, tail, spring) lives in the component; everything here is
+   material. Nothing takes pointer events — the whole pet window is one drag
+   handle, so clicks must fall through to the container underneath. */
+.pet-bubble {
+  position: relative;
+  display: inline-block;
+  /* room for the tail, which is drawn outside the text box */
+  margin-bottom: 11px;
+  transform-origin: bottom center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.pet-bubble__paper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* the bleed and the feathered edge both spill past the viewport */
+  overflow: visible;
+}
+
+.pet-bubble__cast {
+  fill: #000;
+  opacity: 0.14;
+  filter: blur(4.5px);
+  transform: translateY(3px);
+}
+
+.pet-bubble__bleed {
+  fill: var(--pet-ink);
+  opacity: 0.12;
+  filter: blur(2.6px);
+  transform: translateY(1.5px);
+}
+
+.pet-bubble__grain {
+  opacity: 0.09;
+  mix-blend-mode: multiply;
+}
+
+/* the damp halo a brush leaves in the fibre around its own line — clipped to
+   the sheet, so it soaks inward instead of glowing around the bubble */
+.pet-bubble__halo {
+  fill: none;
+  stroke: var(--pet-ink);
+  stroke-opacity: 0.17;
+  stroke-width: 3.4;
+  filter: blur(1.8px);
+}
+
+/* brush pressure: 24% of the outline runs heavier than the rest */
+.pet-bubble__stress {
+  fill: none;
+  stroke: var(--pet-ink);
+  stroke-opacity: 0.22;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-dasharray: 24 76;
+  stroke-dashoffset: -30;
+  filter: blur(0.6px);
+}
+
+.pet-bubble__line {
+  fill: none;
+  stroke: var(--pet-ink-line);
+  stroke-width: 1.15;
+  stroke-linejoin: round;
+}
+
+.pet-bubble__content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  /* 留白 — the text never crowds the brush edge */
+  padding: 7px 14px;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  font-family: var(--pet-bubble-font);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-align: center;
+  color: var(--pet-ink-text);
+}
+
+.pet-bubble__label {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* 落款印 — a stamped square, not a status LED */
+.pet-bubble__seal {
+  flex: none;
+  width: 7.5px;
+  height: 7.5px;
+  border-radius: 1.5px;
+  transform: rotate(-9deg);
+  opacity: 0.9;
+  box-shadow:
+    inset 0 0 0 0.75px rgba(255, 255, 255, 0.32),
+    0 0 0 0.5px rgba(38, 36, 33, 0.14);
+}
+
+/* while the agent is running the seal breathes, so activity stays legible even
+   when the text itself has not changed */
+@keyframes pet-seal-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: rotate(-9deg) scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: rotate(-9deg) scale(1);
+  }
+}
+
+.pet-bubble__seal.is-live {
+  animation: pet-seal-breathe 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-bubble__seal.is-live {
+    animation: none;
+  }
 }

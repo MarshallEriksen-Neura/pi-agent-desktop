@@ -186,24 +186,29 @@ export function RetryBanner() {
   const t = useT();
 
   const items = [...activeRetries.entries()].map(([id, state]) => {
-    const message =
-      state.status === "loading"
-        ? // `reason` on a loading retry is the upstream trigger
-          // (auto_retry_start.errorMessage) — show it so a 429/529 is not
-          // reduced to an anonymous spinner.
-          state.reason
-          ? t("retry.inProgressReason", {
-              attempt: state.attempt.toString(),
-              max: state.maxAttempts.toString(),
-              reason: state.reason.slice(0, 90),
-            })
-          : t("retry.inProgress", {
-              attempt: state.attempt.toString(),
-              max: state.maxAttempts.toString(),
-            })
-        : state.status === "success"
-          ? t("retry.success", { attempt: state.attempt.toString() })
-          : t("retry.failed", { reason: state.reason || "unknown" });
+    let message: string;
+    if (state.status === "loading") {
+      let head = t("retry.inProgress", {
+        attempt: state.attempt.toString(),
+        max: state.maxAttempts.toString(),
+      });
+      // pi restarts the attempt counter per request it retries, so a provider
+      // that keeps refusing loops 1/3, 2/3, 1/3, … — say which round we are on
+      // instead of looking stuck on the first attempt forever.
+      if ((state.rounds ?? 1) > 1) {
+        head += ` · ${t("retry.round", { rounds: String(state.rounds) })}`;
+      }
+      // `reason` on a loading retry is the upstream trigger
+      // (auto_retry_start.errorMessage) — show it so a 429/529 is not reduced
+      // to an anonymous spinner.
+      message = state.reason ? `${head} — ${state.reason.slice(0, 90)}` : head;
+    } else if (state.status === "success") {
+      message = t("retry.success", { attempt: state.attempt.toString() });
+    } else {
+      message = t("retry.failed", {
+        reason: (state.reason || "unknown").slice(0, 120),
+      });
+    }
     return { id, type: state.status, message };
   });
 

@@ -13,7 +13,10 @@
     "core:window:allow-show",
     "core:window:allow-set-focus",
     "core:window:allow-unminimize",
+    "core:window:allow-is-visible",
+    "core:window:allow-is-minimized",
     "updater:default",
-    "process:default"
+    "process:default",
+    "notification:default"
   ]
 }

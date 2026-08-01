@@ -104,6 +104,10 @@ class MockTransport implements Transport {
   private listeners = new Set<(line: string) => void>();
   private model: PiModel = MOCK_MODELS[1];
   private agentActive = false;
+  /** mid-turn messages waiting to be injected into the running turn */
+  private steering: string[] = [];
+  /** messages waiting for the current turn to end */
+  private followUps: string[] = [];
 
   async start() {
     this.emit({
@@ -130,6 +134,59 @@ class MockTransport implements Transport {
       data,
       error,
     } satisfies PiResponse);
+  }
+
+  /** mirror pi's pending-queue snapshot after every enqueue/dequeue */
+  private emitQueue() {
+    this.emit({
+      type: "queue_update",
+      steering: this.steering.map((message) => ({ message })),
+      followUp: this.followUps.map((message) => ({ message })),
+    });
+  }
+
+  /**
+   * Run one dequeued follow-up as its own turn.
+   *
+   * Deliberately a compact replay rather than a reuse of the `prompt` case —
+   * that branch carries all the error-injection keywords and is left untouched.
+   */
+  private runQueuedTurn(message: string) {
+    this.agentActive = true;
+    this.emit({ type: "agent_start" });
+    this.emit({ type: "turn_start" });
+    this.emit({ type: "message_start" });
+    const text = `(mock) ran queued follow-up → "${message}"`;
+    let i = 0;
+    const tick = () => {
+      if (i < text.length) {
+        const step = Math.min(3, text.length - i);
+        this.emit({
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", delta: text.slice(i, i + step) },
+        });
+        i += step;
+        setTimeout(tick, 20);
+        return;
+      }
+      this.emit({ type: "message_end" });
+      this.emit({ type: "turn_end" });
+      this.emit({ type: "agent_end" });
+      this.agentActive = false;
+      this.drainFollowUps();
+    };
+    setTimeout(tick, 120);
+  }
+
+  /** start the next queued follow-up, or settle if the queue is empty */
+  private drainFollowUps() {
+    const next = this.followUps.shift();
+    if (next === undefined) {
+      this.emit({ type: "agent_settled" });
+      return;
+    }
+    this.emitQueue();
+    this.runQueuedTurn(next);
   }
 
   send(line: string) {
@@ -214,25 +271,33 @@ class MockTransport implements Transport {
         if (msg.includes("err-retry")) {
           this.agentActive = true;
           this.emit({ type: "agent_start" });
-          setTimeout(() => {
-            this.emit({
-              type: "auto_retry_start",
-              attempt: 1,
-              maxAttempts: 3,
-              delayMs: 2000,
-              errorMessage: "529 overloaded_error: Overloaded",
-            });
-          }, 300);
+          // Real providers hand back a raw body, and pi restarts the attempt
+          // counter for every request it retries — so a rate-limited key loops
+          // 1/3, 2/3, 1/3, 2/3, … This is the shape that used to stack one
+          // banner per attempt.
+          const body =
+            '429: {"message":"rpm exhausted","type":"quota_exceeded_error","code":"8"}';
+          [300, 900, 1500, 2100].forEach((at, i) => {
+            setTimeout(() => {
+              this.emit({
+                type: "auto_retry_start",
+                attempt: (i % 2) + 1,
+                maxAttempts: 3,
+                delayMs: 600,
+                errorMessage: body,
+              });
+            }, at);
+          });
           setTimeout(() => {
             this.emit({
               type: "auto_retry_end",
               success: false,
               attempt: 3,
-              finalError: "429 rate_limit_error: retry budget exhausted",
+              finalError: body,
             });
             this.emit({ type: "agent_settled" });
             this.agentActive = false;
-          }, 2200);
+          }, 2700);
           break;
         }
 
@@ -430,16 +495,54 @@ class MockTransport implements Transport {
               this.emit({ type: "message_end" });
               this.emit({ type: "turn_end" });
               this.emit({ type: "agent_end", messages: [{ role: "assistant", content: text }] });
-              this.emit({ type: "agent_settled" });
               this.agentActive = false;
+              // a queued follow-up opens its own run instead of settling here
+              this.drainFollowUps();
             }
           };
           tick();
         }, 850);
         break;
       }
+      case "steer": {
+        const message = (cmd as { message?: string }).message ?? "";
+        if (!this.agentActive) {
+          // nothing to cut into — real pi has no turn to inject this message in
+          this.respond(cmd, undefined, "no active turn to steer");
+          break;
+        }
+        this.respond(cmd);
+        this.steering.push(message);
+        this.emitQueue();
+        // real pi injects at the next tool boundary, not instantly
+        setTimeout(() => {
+          const injected = this.steering.shift();
+          this.emitQueue();
+          this.emit({
+            type: "message_update",
+            assistantMessageEvent: {
+              type: "text_delta",
+              delta: `\n\n(mock) steered mid-turn → "${injected}"\n`,
+            },
+          });
+        }, 700);
+        break;
+      }
+      case "follow_up": {
+        const message = (cmd as { message?: string }).message ?? "";
+        this.respond(cmd);
+        this.followUps.push(message);
+        this.emitQueue();
+        // idle already? then there is no turn-end to wait for
+        if (!this.agentActive) this.drainFollowUps();
+        break;
+      }
       case "abort":
         this.respond(cmd);
+        // pi discards what it has not started yet along with the turn
+        this.steering = [];
+        this.followUps = [];
+        this.emitQueue();
         if (this.agentActive) {
           this.emit({ type: "agent_end" });
           this.emit({ type: "agent_settled" });
@@ -485,6 +588,33 @@ class MockTransport implements Transport {
       case "abort_bash":
         this.respond(cmd);
         break;
+      case "new_session": {
+        // Emit a fresh session event so lastSessionId updates and the
+        // session-event listeners (syncSessionPath, refresh) fire — mirroring
+        // what a real pi process does after creating a new session.
+        this.respond(cmd);
+        this.emit({
+          type: "session",
+          version: 3,
+          id: `mock-session-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          cwd: "/mock/workspace",
+        });
+        break;
+      }
+      case "switch_session": {
+        // Acknowledge the switch and re-emit the session event with the
+        // requested path as id, so the mock restart path stays consistent.
+        this.respond(cmd, { sessionPath: (cmd as { sessionPath?: string }).sessionPath });
+        this.emit({
+          type: "session",
+          version: 3,
+          id: (cmd as { sessionPath?: string }).sessionPath || "mock-session",
+          timestamp: new Date().toISOString(),
+          cwd: "/mock/workspace",
+        });
+        break;
+      }
       default:
         this.respond(cmd, {});
     }
@@ -663,8 +793,8 @@ class MockTransport implements Transport {
       this.emit({ type: "message_end" });
       this.emit({ type: "turn_end" });
       this.emit({ type: "agent_end" });
-      this.emit({ type: "agent_settled" });
       this.agentActive = false;
+      this.drainFollowUps();
     }, settleAt + 400);
   }
 
@@ -684,7 +814,10 @@ class MockTransport implements Transport {
   }
 
   async stop() {
-    this.listeners.clear();
+    // Do NOT clear this.listeners — PiClient.handleLine is registered once in
+    // the constructor and must survive restarts. TauriTransport.stop() doesn't
+    // clear its listener set either; clearing here broke the mock restart
+    // flow (all events lost after the first session switch).
   }
 }
 
@@ -704,6 +837,14 @@ export class PiClient {
   private exitSubs = new Set<(code: number) => void>();
   private started = false;
 
+  /**
+   * The session id from pi's most recent `session` event. Captured here (not
+   * via an `on("session")` listener) so it is never missed, regardless of when
+   * listeners register. `--session <path|id>` accepts this id, so it can be
+   * used as a fallback when `get_state` returns an empty sessionPath.
+   */
+  lastSessionId = "";
+
   constructor(transport?: Transport) {
     this.transport =
       transport ?? (isTauri() ? new TauriTransport() : new MockTransport());
@@ -717,6 +858,9 @@ export class PiClient {
   private handleLine(line: string) {
     const ev = parsePiLine(line);
     if (!ev) return;
+    if (ev.type === "session" && ev.id) {
+      this.lastSessionId = ev.id;
+    }
     if (ev.type === "response" && ev.id && this.pending.has(ev.id)) {
       this.pending.get(ev.id)!(ev as PiResponse);
       this.pending.delete(ev.id);

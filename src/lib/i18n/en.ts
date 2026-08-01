@@ -75,8 +75,16 @@ export const en = {
   "agent.emptyAsk": "Ask Pi to code. Type ",
   "agent.emptyOr": " for the streaming-edit showcase, or ",
   "agent.emptyAfter": " for parallel subagents.",
-  "agent.composerBusy": "Pi is working… (⏎ to queue)",
+  "agent.composerBusy": "Pi is working…",
   "agent.composerIdle": "Ask Pi to code… ⏎",
+  "agent.composerSteer": "Interrupt Pi mid-turn… ⌘⏎",
+  "agent.composerQueue": "Queue for after this turn… ⌘⏎",
+  "composer.deliverySteer": "Interrupt",
+  "composer.deliveryQueue": "Queue",
+  "composer.deliveryHint": "⌘⏎ delivers this way · ⌘⇧⏎ uses the other",
+  "message.steered": "interrupted",
+  "message.queued": "queued",
+  "message.undelivered": "not delivered",
   "agent.stop": "Stop",
   "agent.send": "Send",
   "agent.scrollTop": "Scroll to top",
@@ -92,7 +100,7 @@ export const en = {
 
   // retry transparency
   "retry.inProgress": "Retrying… (attempt {attempt}/{max})",
-  "retry.inProgressReason": "Retrying… (attempt {attempt}/{max}) — {reason}",
+  "retry.round": "round {rounds}",
   "retry.success": "Retry succeeded after {attempt} attempts",
   "retry.failed": "Retry failed: {reason}",
 
@@ -103,6 +111,7 @@ export const en = {
   "agent.piExitedUnknown": "Pi process exited — the run was interrupted.",
   "agent.piUnavailable": "Pi is not connected or not running, so the task was not sent. Check the Pi CLI is installed and started in Settings.",
   "agent.piNoResponse": "No response from Pi — the task may not have been received. Make sure Pi is running.",
+  "agent.reconnecting": "Pi crashed — attempting to reconnect and resume your session…",
   "agent.modelError": "The model returned an error ({reason}).",
 
   // extension failures / context compaction
@@ -110,13 +119,19 @@ export const en = {
   "compaction.aborted": "Context compaction was cancelled.",
   "compaction.failed": "Context compaction failed: {error}",
 
-  // queue
-  "queue.badge": "{count} queued",
-  "queue.cancel": "Cancel queue",
+  // queue — messages handed to pi mid-turn (steer / follow-up)
+  "queue.steering": "{count} steering",
+  "queue.followUp": "{count} queued",
+  "queue.pendingHint": "Stop to drop",
+  "queue.steerFailed": "pi rejected the steering message",
+  "queue.followUpFailed": "pi rejected the queued message",
+  "queue.noAck": "pi never acknowledged the message — not delivered",
 
   // session restore (context not reloaded into the agent)
   "session.restoreFailed": "Couldn't restore this conversation's context — Pi started fresh. Chat history is still shown, but the agent won't remember prior turns.",
   "session.restoreRefused": "Pi couldn't load the saved session context ({error}). The agent started fresh; history below is display-only.",
+  "session.noPath": "No session path was saved for this conversation — Pi started fresh. The agent won't remember prior turns, even though chat history is shown below.",
+  "session.contextLost": "This conversation's context couldn't be restored — Pi started a new session. Your chat history is preserved below, but the agent won't remember prior turns. A new session has been created so future switches will work.",
 
   // message operations
   "message.copy": "Copy",
@@ -337,6 +352,11 @@ export const en = {
     "Clear custom colors, background image, CSS and text size",
   "settings.notifications": "Desktop Notifications",
   "settings.notificationsDetail": "Show OS notifications when messages complete while window is hidden",
+  "settings.notifications.granted": "Enabled",
+  "settings.notifications.prompt": "Tap to enable",
+  "settings.notifications.denied":
+    "Blocked — allow notifications for Pi in your system settings",
+  "settings.notifications.unsupported": "Not supported in this environment",
   "settings.closeBehavior": "When closing the window",
   "settings.closeBehaviorFooter":
     'What happens when you click the close button. "Ask" shows this prompt every time; the other choices act immediately and you can change them here anytime.',
@@ -605,4 +625,9 @@ export const en = {
   "ctx.delete": "Delete",
   "ctx.newFilePlaceholder": "file name…",
   "ctx.newFolderPlaceholder": "folder name…",
+
+  // pet notification reminders
+  "pet.notif.taskComplete": "Pi finished — ready for review",
+  "pet.notif.needsInput": "Pi needs your input",
+  "pet.notif.taskFailed": "Pi task failed",
 } as const;

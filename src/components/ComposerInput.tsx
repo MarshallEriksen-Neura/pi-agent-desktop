@@ -2,9 +2,10 @@
 
 import { useRef, useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { Square, ArrowUp, X } from "lucide-react";
+import { Square, ArrowUp, X, Zap, ListPlus } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
 import { ImageLightbox } from "./ImageLightbox";
+import type { DeliveryMode, QueueEntry } from "@/lib/pi/chat";
 import { useT } from "@/lib/i18n";
 
 interface ComposerInputProps {
@@ -16,12 +17,16 @@ interface ComposerInputProps {
   /** true while an auto-retry is in flight — also surfaces the Stop button */
   retrying?: boolean;
   busy: boolean;
-  onSubmit: () => void;
+  /** `alt` swaps steer/queue for this one send (⌘⇧⏎) */
+  onSubmit: (alt?: boolean) => void;
   onAbort: () => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
-  queuedPrompts: string[];
-  onClearQueue: () => void;
+  /** messages already handed to pi that it has not consumed yet */
+  queue: QueueEntry[];
+  /** how ⌘⏎ delivers while a turn is running */
+  delivery: DeliveryMode;
+  onDeliveryChange: (mode: DeliveryMode) => void;
 }
 
 /**
@@ -40,12 +45,15 @@ export function ComposerInput({
   onAbort,
   onKeyDown,
   onPaste,
-  queuedPrompts,
-  onClearQueue,
+  queue,
+  delivery,
+  onDeliveryChange,
 }: ComposerInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const t = useT();
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const steerCount = queue.filter((q) => q.kind === "steer").length;
+  const queuedCount = queue.filter((q) => q.kind === "followUp").length;
 
   // Auto-resize textarea based on content (2-12 lines).
   // scrollHeight includes the vertical padding (14 top + 40 bottom), so it
@@ -70,10 +78,10 @@ export function ComposerInput({
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Cmd/Ctrl+Enter to submit
+    // Cmd/Ctrl+Enter to submit; adding Shift flips steer↔queue for this send
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
-      onSubmit();
+      onSubmit(e.shiftKey);
       return;
     }
     onKeyDown(e);
@@ -87,13 +95,15 @@ export function ComposerInput({
         position: "relative",
       }}
     >
-      {/* Queue badge */}
-      {queuedPrompts.length > 0 && (
+      {/* Pending-with-pi chip. Informational on purpose: the RPC protocol has no
+          un-queue command, so the only way to drop these is Stop (abort). */}
+      {queue.length > 0 && (
         <motion.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -8 }}
           transition={{ type: "spring", stiffness: 400, damping: 26 }}
+          title={queue.map((q) => q.text).filter(Boolean).join("\n") || undefined}
           style={{
             display: "flex",
             alignItems: "center",
@@ -107,23 +117,17 @@ export function ComposerInput({
             color: "var(--text-secondary)",
           }}
         >
-          <span style={{ flex: 1 }}>
-            {t("queue.badge", { count: queuedPrompts.length })}
+          <span style={{ flex: 1, minWidth: 0 }}>
+            {[
+              steerCount > 0 ? t("queue.steering", { count: steerCount }) : "",
+              queuedCount > 0 ? t("queue.followUp", { count: queuedCount }) : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
           </span>
-          <button
-            onClick={onClearQueue}
-            style={{
-              border: "none",
-              background: "transparent",
-              color: "var(--danger)",
-              fontSize: 11.5,
-              cursor: "pointer",
-              padding: "2px 6px",
-              borderRadius: 4,
-            }}
-          >
-            {t("queue.cancel")}
-          </button>
+          <span style={{ fontSize: 10.5, color: "var(--text-tertiary)" }}>
+            {t("queue.pendingHint")}
+          </span>
         </motion.div>
       )}
 
@@ -222,12 +226,19 @@ export function ComposerInput({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={onPaste}
-          placeholder={busy ? t("agent.composerBusy") : t("agent.composerIdle")}
+          placeholder={
+            streaming
+              ? t(delivery === "steer" ? "agent.composerSteer" : "agent.composerQueue")
+              : busy
+                ? t("agent.composerBusy")
+                : t("agent.composerIdle")
+          }
           rows={2}
           className="composer-textarea"
           style={{
             width: "100%",
-            padding: "14px 52px 40px 14px", // space for send button + bottom controls
+            // room for the send button, plus Stop next to it while streaming
+            padding: `14px ${streaming || retrying ? 90 : 52}px 40px 14px`,
             border: "none",
             outline: "none",
             background: "transparent",
@@ -240,14 +251,46 @@ export function ComposerInput({
           }}
         />
 
-        {/* Send / Stop button — top right */}
+        {/* Send / Stop buttons — top right. While a turn is running both are
+            present: the left one delivers into the run, Stop kills it. */}
         <div
           style={{
             position: "absolute",
             top: 14,
             right: 14,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
           }}
         >
+          {(streaming || retrying) && (draft.trim() || attachments.length > 0) && (
+            <motion.button
+              onClick={() => onSubmit()}
+              whileTap={{ scale: 0.9 }}
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              title={t(
+                delivery === "steer" ? "composer.deliverySteer" : "composer.deliveryQueue"
+              )}
+              aria-label={t(
+                delivery === "steer" ? "composer.deliverySteer" : "composer.deliveryQueue"
+              )}
+              style={{
+                width: 32,
+                height: 32,
+                border: "none",
+                borderRadius: 8,
+                background: "var(--accent)",
+                color: "#FFFFFF",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              {delivery === "steer" ? <Zap size={14} /> : <ListPlus size={14} />}
+            </motion.button>
+          )}
           {streaming || retrying ? (
             <motion.button
               onClick={onAbort}
@@ -277,7 +320,7 @@ export function ComposerInput({
             </motion.button>
           ) : (
             <motion.button
-              onClick={onSubmit}
+              onClick={() => onSubmit()}
               whileTap={{ scale: 0.9 }}
               aria-label={t("agent.send")}
               disabled={!draft.trim() && attachments.length === 0}
@@ -314,7 +357,7 @@ export function ComposerInput({
           )}
         </div>
 
-        {/* Bottom controls — model picker (left) + char count hint (right) */}
+        {/* Bottom controls — model picker (left) + delivery mode / char count (right) */}
         <div
           style={{
             position: "absolute",
@@ -327,17 +370,55 @@ export function ComposerInput({
           }}
         >
           <ModelPicker compact />
-          <div
-            style={{
-              fontSize: 10.5,
-              color: "var(--text-tertiary)",
-              fontFamily: "var(--font-mono)",
-              opacity: draft.length > 100 ? 1 : 0,
-              transition: "opacity 0.2s ease",
-            }}
-          >
-            {draft.length > 0 && `${draft.length} chars`}
-          </div>
+          {streaming ? (
+            <div
+              title={t("composer.deliveryHint")}
+              style={{
+                display: "flex",
+                gap: 2,
+                padding: 2,
+                borderRadius: 7,
+                background: "var(--bg-base)",
+                border: "1px solid var(--separator)",
+              }}
+            >
+              {(["steer", "followUp"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => onDeliveryChange(mode)}
+                  style={{
+                    border: "none",
+                    borderRadius: 5,
+                    padding: "2px 7px",
+                    fontSize: 10.5,
+                    cursor: "pointer",
+                    background: delivery === mode ? "var(--accent)" : "transparent",
+                    color:
+                      delivery === mode ? "#FFFFFF" : "var(--text-tertiary)",
+                    transition: "background 0.15s ease, color 0.15s ease",
+                  }}
+                >
+                  {t(
+                    mode === "steer"
+                      ? "composer.deliverySteer"
+                      : "composer.deliveryQueue"
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div
+              style={{
+                fontSize: 10.5,
+                color: "var(--text-tertiary)",
+                fontFamily: "var(--font-mono)",
+                opacity: draft.length > 100 ? 1 : 0,
+                transition: "opacity 0.2s ease",
+              }}
+            >
+              {draft.length > 0 && `${draft.length} chars`}
+            </div>
+          )}
         </div>
 
         {/* Keyboard hint — bottom right corner, very subtle */}

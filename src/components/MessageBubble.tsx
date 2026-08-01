@@ -73,6 +73,28 @@ export function MessageBubble({ m, animateIn = true }: MessageBubbleProps) {
             ))}
           </div>
         )}
+        {/* delivered mid-turn (steer/follow-up), or handed over and rejected */}
+        {(m.delivery || m.isError) && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 10.5,
+              color: m.isError ? "var(--danger)" : "var(--text-tertiary)",
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            {m.delivery && (
+              <span>
+                {t(m.delivery === "steer" ? "message.steered" : "message.queued")}
+              </span>
+            )}
+            {m.isError && (
+              <span>{m.errorText || t("message.undelivered")}</span>
+            )}
+          </div>
+        )}
         {m.text && (
           <div
             style={{

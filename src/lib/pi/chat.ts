@@ -30,6 +30,29 @@ export interface ChatMessage {
   isError?: boolean;
   /** human-readable error detail rendered in a banner */
   errorText?: string;
+  /**
+   * Set on user messages handed to pi while a turn was already in flight:
+   * `steer` was injected into that turn, `followUp` waited for it to end.
+   * Absent on ordinary prompts.
+   */
+  delivery?: DeliveryMode;
+}
+
+/** How a message reaches pi when a turn is already running. */
+export type DeliveryMode = "steer" | "followUp";
+
+/**
+ * A message handed to pi mid-turn that pi has not consumed yet.
+ *
+ * pi is authoritative about how many of these are still pending (`queue_update`);
+ * we are authoritative about their text, because the event's item shape is not
+ * pinned down by the protocol types.
+ */
+export interface QueueEntry {
+  id: string;
+  kind: DeliveryMode;
+  /** original text, or "" for an item pi reported that we never sent ourselves */
+  text: string;
 }
 
 export interface RetryState {
@@ -37,22 +60,29 @@ export interface RetryState {
   maxAttempts: number;
   reason?: string;
   status: "loading" | "success" | "error";
+  /** how many attempt sequences pi has started for this turn (1 = the first) */
+  rounds?: number;
 }
 
 interface ChatStore {
   messages: ChatMessage[];
   streaming: boolean;
   initialized: boolean;
-  queuedPrompts: string[];
+  /** messages already handed to pi mid-turn and not consumed yet */
+  queue: QueueEntry[];
   activeRetries: Map<string, RetryState>;
 
   init: () => void;
   send: (text: string, images?: string[]) => Promise<void>;
+  /** inject into the running turn — pi picks it up without finishing first */
+  steer: (text: string, images?: string[]) => Promise<void>;
+  /** hand to pi's queue — it runs once the current turn ends */
+  followUp: (text: string, images?: string[]) => Promise<void>;
   abort: () => void;
   clear: () => void;
   /** Replace the conversation with persisted messages (session restore/switch). */
   load: (messages: ChatMessage[]) => void;
-  queuePrompt: (text: string) => void;
+  /** drop the local view of pi's queue (abort / session switch) */
   clearQueue: () => void;
   addRetry: (id: string, state: RetryState) => void;
   updateRetry: (id: string, updates: Partial<RetryState>) => void;
@@ -61,6 +91,58 @@ interface ChatStore {
 
 let seq = 0;
 const nid = () => `msg-${++seq}`;
+let qseq = 0;
+const qid = () => `q-${++qseq}`;
+
+/**
+ * The one retry row. pi retries a request sequentially, so every attempt is the
+ * same event in the user's eyes — a fresh key per `auto_retry_start` used to
+ * turn a rate-limited provider into a wall of stacked banners.
+ */
+const RETRY_ID = "retry-active";
+
+/** pull the text out of a `queue_update` item — its shape is not in the spec */
+function queueItemText(item: unknown): string {
+  if (typeof item === "string") return item;
+  if (item && typeof item === "object") {
+    const o = item as Record<string, unknown>;
+    for (const k of ["message", "text", "content", "prompt"]) {
+      if (typeof o[k] === "string") return o[k] as string;
+    }
+  }
+  return "";
+}
+
+/**
+ * Merge pi's pending counts into the local queue view, per lane.
+ *
+ * Items are consumed FIFO, so a shorter list from pi means the front entries
+ * ran — keep the tail and its text. A lane pi does not report at all is left
+ * untouched rather than emptied, so a partial event cannot wipe the chip.
+ */
+function reconcileQueue(
+  local: QueueEntry[],
+  steering?: unknown[],
+  followUp?: unknown[]
+): QueueEntry[] {
+  const lanes: [DeliveryMode, unknown[] | undefined][] = [
+    ["steer", steering],
+    ["followUp", followUp],
+  ];
+  const out: QueueEntry[] = [];
+  for (const [kind, items] of lanes) {
+    const mine = local.filter((q) => q.kind === kind);
+    if (!Array.isArray(items)) {
+      out.push(...mine);
+      continue;
+    }
+    const kept = mine.slice(Math.max(0, mine.length - items.length));
+    for (let i = 0; i < items.length; i++) {
+      out.push(kept[i] ?? { id: qid(), kind, text: queueItemText(items[i]) });
+    }
+  }
+  return out;
+}
 
 /** "data:image/png;base64,AAAA…" → pi RPC ImageContent, or null if not a base64 data URL */
 function dataUrlToPiImage(dataUrl: string): PiImage | null {
@@ -116,6 +198,47 @@ function surfaceStderrLine(line: string) {
   useExtUi.getState().pushToast(message, "warning", 6000);
 }
 
+/**
+ * Provider failures arrive as the raw upstream body — pi passes the response
+ * through verbatim, e.g.
+ * `429: {"message":"rpm exhausted","type":"quota_exceeded_error","code":"8"}`.
+ * Keep the status prefix and the human sentence, drop the JSON envelope.
+ */
+export function formatUpstreamError(raw: string): string {
+  const s = raw.trim();
+  const at = s.indexOf("{");
+  if (at === -1) return s;
+  let body: unknown;
+  try {
+    body = JSON.parse(s.slice(at));
+  } catch {
+    return s; // truncated body, or prose that just happens to contain a brace
+  }
+  const detail = upstreamErrorDetail(body);
+  if (!detail) return s;
+  const prefix = s.slice(0, at).replace(/[\s:—–-]+$/u, "").trim();
+  return prefix ? `${prefix} ${detail}` : detail;
+}
+
+/** `{message}` / `{error:{message}}` / `{error:"…"}` — the shapes providers use */
+function upstreamErrorDetail(body: unknown): string {
+  if (typeof body === "string") return body;
+  if (!body || typeof body !== "object") return "";
+  const o = body as Record<string, unknown>;
+  for (const k of ["message", "error_description", "detail"]) {
+    if (typeof o[k] === "string" && o[k]) return o[k] as string;
+  }
+  return o.error ? upstreamErrorDetail(o.error) : "";
+}
+
+/** drop retry rows that are still spinning — the turn they belong to is over */function dropLoadingRetries(
+  retries: Map<string, RetryState>
+): Map<string, RetryState> {
+  const next = new Map<string, RetryState>();
+  for (const [id, r] of retries) if (r.status !== "loading") next.set(id, r);
+  return next;
+}
+
 /** Build a zustand updater that appends (or upgrades the last) assistant message to an error bubble. */
 function appendAssistantError(text: string) {
   return (s: ChatStore): Partial<ChatStore> => {
@@ -147,11 +270,89 @@ function appendAssistantError(text: string) {
   };
 }
 
+/**
+ * Hand a message to pi while a turn is already in flight.
+ *
+ * `steer` is injected into the running turn (a real interrupt — pi changes
+ * course without finishing first); `follow_up` sits in pi's queue until the
+ * turn ends. Either way **pi owns execution from here**, so the frontend must
+ * not re-send the text when the run settles.
+ *
+ * There is no un-queue command in the RPC protocol: once handed over, the only
+ * way to take it back is `abort`.
+ */
+async function deliverMidTurn(
+  kind: DeliveryMode,
+  text: string,
+  images?: string[]
+): Promise<void> {
+  const trimmed = text.trim();
+  const piImages = (images ?? [])
+    .map(dataUrlToPiImage)
+    .filter((x): x is PiImage => x !== null);
+  if (!trimmed && piImages.length === 0) return;
+
+  const entryId = qid();
+  const messageId = nid();
+
+  // Optimistic: the bubble and the queue chip appear immediately. pi confirms
+  // via `queue_update`, but nothing in the spec promises it will send one.
+  useChat.setState((s) => ({
+    messages: [
+      ...s.messages,
+      {
+        id: messageId,
+        role: "user" as const,
+        text: trimmed,
+        ...(images?.length ? { images } : {}),
+        thinking: "",
+        tools: [],
+        streaming: false,
+        delivery: kind,
+      },
+    ],
+    queue: [...s.queue, { id: entryId, kind, text: trimmed }],
+  }));
+
+  /** roll back the optimistic queue entry and mark the bubble undelivered */
+  const reject = (detail: string) => {
+    useChat.setState((s) => ({
+      queue: s.queue.filter((q) => q.id !== entryId),
+      messages: s.messages.map((m) =>
+        m.id === messageId ? { ...m, isError: true, errorText: detail } : m
+      ),
+    }));
+    useExtUi.getState().pushToast(detail, "error", 5000);
+  };
+
+  const payload = {
+    message: trimmed,
+    ...(piImages.length ? { images: piImages } : {}),
+  };
+
+  try {
+    const res = await getPiClient().request(
+      kind === "steer"
+        ? { type: "steer", ...payload }
+        : { type: "follow_up", ...payload }
+    );
+    if (!res.success) {
+      reject(
+        res.error ||
+          t(kind === "steer" ? "queue.steerFailed" : "queue.followUpFailed")
+      );
+    }
+  } catch {
+    // no ack within the rpc timeout — pi is wedged or gone
+    reject(t("queue.noAck"));
+  }
+}
+
 export const useChat = create<ChatStore>((set, get) => ({
   messages: [],
   streaming: false,
   initialized: false,
-  queuedPrompts: [],
+  queue: [],
   activeRetries: new Map(),
 
   init: () => {
@@ -214,6 +415,32 @@ export const useChat = create<ChatStore>((set, get) => ({
       if (notificationSettings.enabled) {
         showNotification(t("agent.taskFailedTitle"), { body: errText.slice(0, 120) });
       }
+
+      // Auto-reconnect: pi crashed mid-run. After a short delay, if nobody
+      // else has reconnected (restart(), manual action), resume the active
+      // session so the user doesn't have to restart the app. The sessionPath
+      // ensures pi reloads the full prior context via --session.
+      setTimeout(() => {
+        if (usePi.getState().status !== "disconnected") return; // already reconnected
+        void (async () => {
+          try {
+            const { useSessions } = await import("./sessions");
+            const { useWorkspace } = await import("../workspace");
+            const root = useWorkspace.getState().root ?? undefined;
+            const activeId = useSessions.getState().activeId;
+            const meta = useSessions
+              .getState()
+              .sessions.find((x) => x.id === activeId);
+            useExtUi.getState().pushToast(t("agent.reconnecting"), "info", 4000);
+            await usePi.getState().connect({
+              cwd: root,
+              resumePath: meta?.sessionPath || undefined,
+            });
+          } catch {
+            // auto-reconnect failed — user will need to restart manually
+          }
+        })();
+      }, 3000);
     });
 
     client.on("message_update", (e: PiEvent) => {
@@ -236,9 +463,9 @@ export const useChat = create<ChatStore>((set, get) => ({
         }
         const extra =
           typeof ev.message === "string"
-            ? ev.message
+            ? formatUpstreamError(ev.message)
             : typeof ev.error === "string"
-              ? ev.error
+              ? formatUpstreamError(ev.error)
               : "";
         const text = t("agent.modelError", { reason });
         set(appendAssistantError(extra ? `${text}\n\n${extra}` : text));
@@ -330,25 +557,37 @@ export const useChat = create<ChatStore>((set, get) => ({
       set((s) => ({
         streaming: false,
         messages: s.messages.map((m) => ({ ...m, streaming: false })),
+        // pi drains steering and follow-ups before it settles, so nothing can
+        // still be pending here. Clearing unconditionally also means a pi build
+        // that never emits `queue_update` cannot leave a stuck chip behind.
+        queue: [],
+        // Same for a retry pi never closed with `auto_retry_end`: the turn is
+        // over, so the row must not keep spinning with a live Stop button.
+        activeRetries: dropLoadingRetries(s.activeRetries),
       }))
     );
 
     client.on("queue_update", (e: PiEvent) => {
       if (e.type !== "queue_update") return;
-      const followUpCount = Array.isArray(e.followUp) ? e.followUp.length : 0;
-      set({ queuedPrompts: Array(followUpCount).fill("") });
+      set((s) => ({ queue: reconcileQueue(s.queue, e.steering, e.followUp) }));
     });
 
     // This is the real channel for transient provider failures (429 / 5xx /
     // overloaded / token limits) — `errorMessage` carries the upstream text.
     client.on("auto_retry_start", (e: PiEvent) => {
       if (e.type !== "auto_retry_start") return;
-      const id = `retry-${Date.now()}`;
-      get().addRetry(id, {
+      const prev = get().activeRetries.get(RETRY_ID);
+      const live = prev?.status === "loading" ? prev : undefined;
+      // Retries are sequential, so they share one row. pi also restarts the
+      // attempt counter for every request it retries — a provider that keeps
+      // rate-limiting sends 1/3, 2/3, 1/3, 2/3, … — so count those rounds
+      // instead of stacking a banner per attempt.
+      get().addRetry(RETRY_ID, {
         attempt: e.attempt,
         maxAttempts: e.maxAttempts,
         status: "loading",
-        ...(e.errorMessage ? { reason: e.errorMessage } : {}),
+        rounds: live ? (live.rounds ?? 1) + (e.attempt <= live.attempt ? 1 : 0) : 1,
+        ...(e.errorMessage ? { reason: formatUpstreamError(e.errorMessage) } : {}),
       });
     });
 
@@ -360,7 +599,13 @@ export const useChat = create<ChatStore>((set, get) => ({
       if (e.errorMessage) {
         useExtUi
           .getState()
-          .pushToast(t("compaction.failed", { error: e.errorMessage.slice(0, 120) }), "error", 6000);
+          .pushToast(
+            t("compaction.failed", {
+              error: formatUpstreamError(e.errorMessage).slice(0, 120),
+            }),
+            "error",
+            6000
+          );
         return;
       }
       if (e.aborted) {
@@ -370,19 +615,15 @@ export const useChat = create<ChatStore>((set, get) => ({
 
     client.on("auto_retry_end", (e: PiEvent) => {
       if (e.type !== "auto_retry_end") return;
-      // Find the most recent loading retry and update it
-      const retries = get().activeRetries;
-      for (const [id, state] of retries.entries()) {
-        if (state.status === "loading") {
-          get().updateRetry(id, {
-            status: e.success ? "success" : "error",
-            // keep the auto_retry_start trigger text when pi sends no
-            // finalError, otherwise the banner loses its only error detail
-            ...(e.finalError ? { reason: e.finalError } : {}),
-          });
-          break;
-        }
-      }
+      // One slot, so this resolves the row the attempts have been updating.
+      if (!get().activeRetries.has(RETRY_ID)) return;
+      get().updateRetry(RETRY_ID, {
+        status: e.success ? "success" : "error",
+        attempt: e.attempt,
+        // keep the auto_retry_start trigger text when pi sends no
+        // finalError, otherwise the banner loses its only error detail
+        ...(e.finalError ? { reason: formatUpstreamError(e.finalError) } : {}),
+      });
     });
   },
 
@@ -464,24 +705,38 @@ export const useChat = create<ChatStore>((set, get) => ({
     }
   },
 
+  steer: (text, images) => deliverMidTurn("steer", text, images),
+
+  followUp: (text, images) => deliverMidTurn("followUp", text, images),
+
   abort: () => {
-    getPiClient().send({ type: "abort" });
-    // Reset UI immediately: stop the streaming spinner and drop any in-flight
-    // retries so the composer flips back to "send" without waiting for events.
-    set((s) => {
-      const next = new Map<string, RetryState>();
-      for (const [id, st] of s.activeRetries) {
-        if (st.status !== "loading") next.set(id, st);
-      }
-      return {
-        streaming: false,
-        activeRetries: next,
-        messages: s.messages.map((m) => ({ ...m, streaming: false })),
-      };
-    });
+    const client = getPiClient();
+    const s = get();
+
+    // The turn itself.
+    client.send({ type: "abort" });
+
+    // Two side-channels `abort` does not reach on its own: a retry waiting out
+    // its backoff, and a bash tool that is already running in a child process.
+    const retrying = [...s.activeRetries.values()].some((r) => r.status === "loading");
+    if (retrying) client.send({ type: "abort_retry" });
+    const bashRunning = s.messages.some((m) =>
+      m.tools.some((tl) => tl.status === "running" && /^(bash|shell)$/i.test(tl.name))
+    );
+    if (bashRunning) client.send({ type: "abort_bash" });
+
+    // Reset UI immediately: stop the streaming spinner, drop any in-flight
+    // retries, and clear the queue view — aborting is the only way to discard
+    // messages already handed to pi, so the chip must not outlive it.
+    set((st) => ({
+      streaming: false,
+      activeRetries: dropLoadingRetries(st.activeRetries),
+      queue: [],
+      messages: st.messages.map((m) => ({ ...m, streaming: false })),
+    }));
   },
 
-  clear: () => set({ messages: [], streaming: false }),
+  clear: () => set({ messages: [], streaming: false, queue: [] }),
 
   load: (messages) => {
     // continue the id sequence past loaded ids so new messages never collide
@@ -491,6 +746,7 @@ export const useChat = create<ChatStore>((set, get) => ({
     }
     set({
       streaming: false,
+      queue: [],
       messages: messages.map((m) => ({
         ...m,
         streaming: false,
@@ -501,12 +757,8 @@ export const useChat = create<ChatStore>((set, get) => ({
     });
   },
 
-  queuePrompt: (text) => {
-    set((s) => ({ queuedPrompts: [...s.queuedPrompts, text] }));
-  },
-
   clearQueue: () => {
-    set({ queuedPrompts: [] });
+    set({ queue: [] });
   },
 
   addRetry: (id, state) => {

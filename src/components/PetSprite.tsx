@@ -1,15 +1,29 @@
 "use client";
 
 import { useEffect, useState, useRef, useMemo } from "react";
+import { AnimatePresence } from "motion/react";
 import type { Pet, PetState } from "@/lib/pet/types";
 import { stateToAnimation } from "@/lib/pet/state-lifetimes";
 import { currentAnimationFrame } from "@/lib/pet/animator";
+import { PetBubble } from "@/components/PetBubble";
+
+/**
+ * How much to shrink the sprite inside the pet window.
+ *
+ * The default Codex frame is 192x208 while the pet window is only 200x250
+ * ([src-tauri/src/pet_window.rs](../../src-tauri/src/pet_window.rs)), so
+ * rendering 1:1 fills the window edge to edge and leaves no room above the pet
+ * for the speech bubble.
+ */
+export const DEFAULT_PET_SCALE = 0.65;
 
 interface PetSpriteProps {
   pet: Pet;
   state: PetState;
   animationStartedAt: number;
   bubble?: string | null;
+  /** Sprite scale factor; 1 renders the spritesheet at native frame size. */
+  scale?: number;
   className?: string;
 }
 
@@ -22,6 +36,7 @@ export function PetSprite({
   state,
   animationStartedAt,
   bubble,
+  scale = DEFAULT_PET_SCALE,
   className = "",
 }: PetSpriteProps) {
   const [currentFrame, setCurrentFrame] = useState<number>(0);
@@ -80,11 +95,18 @@ export function PetSprite({
     };
   }, [animation, animationStartedAt]);
 
+  // Scaled layout box. The sprite itself keeps its native pixel size and is
+  // shrunk with a transform (so a fractional scale can never sample a
+  // neighbouring frame out of the spritesheet), while the wrapper reserves the
+  // scaled footprint so the bubble anchors to what is actually on screen.
+  const boxWidth = Math.round(pet.frameWidth * scale);
+  const boxHeight = Math.round(pet.frameHeight * scale);
+
   if (broken) {
     return (
       <div
         className={`flex items-center justify-center rounded-xl bg-indigo-500/80 text-white text-xs font-medium px-3 py-2 ${className}`}
-        style={{ width: pet.frameWidth, height: pet.frameHeight }}
+        style={{ width: boxWidth, height: boxHeight }}
       >
         {pet.displayName}
         <span className="ml-1 opacity-70">(sprite missing)</span>
@@ -93,28 +115,31 @@ export function PetSprite({
   }
 
   return (
-    <div className={`relative ${className}`}>
+    <div
+      className={`relative ${className}`}
+      style={{ width: boxWidth, height: boxHeight }}
+    >
       {/* Sprite */}
       <div
         className="pixelated"
         style={{
           ...spriteStyle,
           imageRendering: "pixelated",
+          transform: `scale(${scale})`,
+          transformOrigin: "top left",
         }}
       />
 
-      {/* Bubble */}
-      {bubble && (
-        <div
-          className="absolute -top-12 left-1/2 -translate-x-1/2
-                     bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm
-                     px-3 py-1.5 rounded-lg text-xs font-medium
-                     shadow-lg whitespace-nowrap max-w-[200px] truncate
-                     border border-gray-200 dark:border-gray-700"
-        >
-          {bubble}
-        </div>
-      )}
+      {/* Bubble — anchored to the top edge of the sprite with `bottom-full` so
+          it grows upward and can never overlap the pet regardless of how tall
+          the text renders (a fixed negative offset clipped against the top of
+          the 250px pet window). `mode="wait"` lets the old ink lift off the
+          paper before the new line is brushed on. */}
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 flex justify-center" style={{ width: 'max-content' }}>
+        <AnimatePresence mode="wait">
+          {bubble ? <PetBubble key={bubble} text={bubble} state={state} /> : null}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }

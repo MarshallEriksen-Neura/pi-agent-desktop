@@ -42,7 +42,8 @@ import {
 } from "@/lib/appearance";
 import {
   requestNotificationPermission,
-  getNotificationPermission,
+  refreshNotificationPermission,
+  type NotificationPermissionState,
 } from "@/lib/notifications";
 import { useUI } from "@/lib/store";
 import {
@@ -96,14 +97,13 @@ export default function PiSettingsPage() {
   const router = useRouter();
   const { notificationSettings, setNotificationEnabled, closeBehavior, setCloseBehavior } =
     useUI();
-  const [notifPermission, setNotifPermission] = useState<
-    "granted" | "denied" | "default" | "unsupported"
-  >("default");
+  const [notifPermission, setNotifPermission] =
+    useState<NotificationPermissionState>("default");
 
   useEffect(() => {
     s.load();
-    // Check notification permission on mount
-    setNotifPermission(getNotificationPermission());
+    // Check notification permission on mount (async on the Tauri path)
+    void refreshNotificationPermission().then(setNotifPermission);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -801,21 +801,21 @@ export default function PiSettingsPage() {
                 title={t("settings.notifications")}
                 detail={
                   notifPermission === "denied"
-                    ? "Permission denied by browser"
+                    ? t("settings.notifications.denied")
                     : notifPermission === "unsupported"
-                      ? "Not supported in this browser"
+                      ? t("settings.notifications.unsupported")
                       : notifPermission === "granted"
-                        ? "Enabled"
-                        : "Tap to enable"
+                        ? t("settings.notifications.granted")
+                        : t("settings.notifications.prompt")
                 }
                 trailing={
                   <IOSSwitch
                     checked={notificationSettings.enabled && notifPermission === "granted"}
-                    disabled={notifPermission === "denied" || notifPermission === "unsupported"}
+                    disabled={notifPermission === "unsupported"}
                     onChange={async (enabled) => {
                       if (enabled && notifPermission !== "granted") {
                         const granted = await requestNotificationPermission();
-                        setNotifPermission(getNotificationPermission());
+                        setNotifPermission(await refreshNotificationPermission());
                         if (granted) {
                           setNotificationEnabled(true);
                         }

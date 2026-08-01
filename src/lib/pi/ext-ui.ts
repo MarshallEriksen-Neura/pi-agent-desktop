@@ -18,7 +18,7 @@ export interface ExtWidget {
 }
 
 /** Methods that need a modal sheet and a response. */
-const MODAL_METHODS = new Set(["confirm", "select", "input", "editor"]);
+export const MODAL_METHODS = new Set(["confirm", "select", "input", "editor"]);
 
 /** Fallback key when an extension omits statusKey/widgetKey. */
 const DEFAULT_KEY = "default";

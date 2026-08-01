@@ -1,133 +1,103 @@
-import { test, expect } from '@playwright/test';
+/**
+ * Mid-turn delivery: `steer` (interrupt) and `follow_up` (queue), plus `abort`.
+ *
+ * Drives the real composer against the mock pi transport (`pnpm dev` in a plain
+ * browser), so no store internals are poked — everything goes through the UI the
+ * way a user would.
+ *
+ * NOTE: the repo has no test runner wired up yet (no `@playwright/test`
+ * dependency, no playwright.config, no `test` script), so this spec documents
+ * and pins the intended behaviour rather than running in CI today. To run it:
+ *   pnpm add -D @playwright/test && npx playwright install chromium
+ *   npx playwright test --ui   # with `pnpm dev` on http://localhost:3000
+ */
+import { test, expect } from "@playwright/test";
 
-test.describe('Streaming Queue', () => {
+/** ⌘⏎ on macOS, Ctrl+⏎ elsewhere — the composer accepts either */
+const SUBMIT = process.platform === "darwin" ? "Meta+Enter" : "Control+Enter";
+const SUBMIT_ALT = process.platform === "darwin" ? "Meta+Shift+Enter" : "Control+Shift+Enter";
+
+test.describe("mid-turn delivery", () => {
   test.beforeEach(async ({ page }) => {
-    // Navigate to the app
-    await page.goto('/');
-
-    // Wait for the app to load
-    await page.waitForSelector('[data-testid="agent-panel"], aside.material', { timeout: 5000 });
+    await page.goto("/");
+    await page.waitForSelector("aside.material textarea", { timeout: 5000 });
   });
 
-  test('should show queue badge when prompt queued during streaming', async ({ page }) => {
-    // Set streaming state
-    await page.evaluate(() => {
-      const { useChat } = require('@/lib/pi/chat');
-      useChat.setState({ streaming: true });
-    });
+  /** send `text` and wait until the mock turn is actually streaming */
+  async function startTurn(page: import("@playwright/test").Page, text: string) {
+    const composer = page.locator("aside.material textarea");
+    await composer.fill(text);
+    await composer.press(SUBMIT);
+    // Stop replaces Send while a turn is in flight
+    await expect(page.locator('aside.material button[title="Stop"]')).toBeVisible();
+  }
 
-    // Type a prompt in the composer
-    const input = page.locator('input[placeholder*="Pi"]');
-    await input.fill('test prompt');
-    await input.press('Enter');
+  test("steer interrupts the running turn", async ({ page }) => {
+    await startTurn(page, "first prompt");
 
-    // Queue badge should appear
-    await expect(page.locator('text=/queued/')).toBeVisible({ timeout: 1000 });
+    const composer = page.locator("aside.material textarea");
+    await composer.fill("actually, do it differently");
+    await composer.press(SUBMIT); // default delivery is Interrupt
 
-    // Verify the count shows 1
-    await expect(page.locator('text=/1.*queued|queued.*1/')).toBeVisible();
+    // pending chip reflects pi's own queue_update, not a local array
+    await expect(page.getByText(/1 steering/)).toBeVisible();
+    // the bubble is tagged so the transcript shows how it was delivered
+    await expect(page.getByText("interrupted")).toBeVisible();
+
+    // the mock injects at the next boundary and keeps the same turn going
+    await expect(page.getByText(/steered mid-turn/)).toBeVisible({ timeout: 3000 });
+    await expect(page.getByText(/1 steering/)).toBeHidden();
   });
 
-  test('should auto-send queued prompt when streaming stops', async ({ page }) => {
-    // Set streaming state and queue a prompt
-    await page.evaluate(() => {
-      const { useChat } = require('@/lib/pi/chat');
-      useChat.setState({ streaming: true });
-      useChat.getState().queuePrompt('queued test message');
-    });
+  test("follow-up waits for the turn to end, then runs by itself", async ({ page }) => {
+    await startTurn(page, "first prompt");
 
-    // Verify badge shows
-    await expect(page.locator('text=/1.*queued|queued.*1/')).toBeVisible();
+    const composer = page.locator("aside.material textarea");
+    await composer.fill("and then run the tests");
+    await composer.press(SUBMIT_ALT); // ⇧ flips Interrupt → Queue for one send
 
-    // Track sent messages
-    await page.evaluate(() => {
-      const { getPiClient } = require('@/lib/pi/client');
-      const originalSend = getPiClient().send;
-      getPiClient().send = (cmd: any) => {
-        (window as any).__sentCommands = (window as any).__sentCommands || [];
-        (window as any).__sentCommands.push(cmd);
-        return originalSend.call(getPiClient(), cmd);
-      };
-    });
+    await expect(page.getByText(/1 queued/)).toBeVisible();
+    await expect(page.getByText("queued")).toBeVisible();
 
-    // Transition to idle
-    await page.evaluate(() => {
-      const { useChat } = require('@/lib/pi/chat');
-      useChat.setState({ streaming: false });
-    });
-
-    // Wait a bit for auto-send effect
-    await page.waitForTimeout(200);
-
-    // Verify the prompt was sent
-    const commands = await page.evaluate(() => (window as any).__sentCommands || []);
-    expect(commands.some((cmd: any) =>
-      cmd.type === 'prompt' && cmd.message === 'queued test message'
-    )).toBe(true);
-
-    // Badge should disappear
-    await expect(page.locator('text=/queued/')).not.toBeVisible({ timeout: 500 });
+    // pi owns execution — the frontend must not re-send it as a fresh prompt
+    await expect(page.getByText(/ran queued follow-up/)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText(/1 queued/)).toBeHidden();
   });
 
-  test('should clear queue when cancel button clicked', async ({ page }) => {
-    // Set streaming and queue prompts
-    await page.evaluate(() => {
-      const { useChat } = require('@/lib/pi/chat');
-      useChat.setState({ streaming: true });
-      useChat.getState().queuePrompt('first');
-      useChat.getState().queuePrompt('second');
-    });
+  test("the delivery toggle switches what ⌘⏎ does", async ({ page }) => {
+    await startTurn(page, "first prompt");
 
-    // Wait for badge to appear
-    await expect(page.locator('text=/2.*queued|queued.*2/')).toBeVisible();
+    await page.getByRole("button", { name: "Queue", exact: true }).click();
+    const composer = page.locator("aside.material textarea");
+    await composer.fill("queued via the toggle");
+    await composer.press(SUBMIT);
 
-    // Click cancel button
-    await page.locator('button:has-text("Cancel")').click();
-
-    // Badge should disappear
-    await expect(page.locator('text=/queued/')).not.toBeVisible({ timeout: 500 });
-
-    // Verify queue is empty
-    const queueLength = await page.evaluate(() => {
-      const { useChat } = require('@/lib/pi/chat');
-      return useChat.getState().queuedPrompts.length;
-    });
-    expect(queueLength).toBe(0);
+    await expect(page.getByText(/1 queued/)).toBeVisible();
+    await expect(page.getByText(/steering/)).toBeHidden();
   });
 
-  test('should not queue when not streaming', async ({ page }) => {
-    // Ensure not streaming
-    await page.evaluate(() => {
-      const { useChat } = require('@/lib/pi/chat');
-      useChat.setState({ streaming: false });
-    });
+  test("abort drops what pi has not started yet", async ({ page }) => {
+    await startTurn(page, "first prompt");
 
-    // Track sent messages
-    await page.evaluate(() => {
-      const { getPiClient } = require('@/lib/pi/client');
-      const originalSend = getPiClient().send;
-      getPiClient().send = (cmd: any) => {
-        (window as any).__sentCommands = (window as any).__sentCommands || [];
-        (window as any).__sentCommands.push(cmd);
-        return originalSend.call(getPiClient(), cmd);
-      };
-    });
+    const composer = page.locator("aside.material textarea");
+    await composer.fill("never mind this one");
+    await composer.press(SUBMIT_ALT); // queue it
+    await expect(page.getByText(/1 queued/)).toBeVisible();
 
-    // Type and send a prompt
-    const input = page.locator('input[placeholder*="Pi"]');
-    await input.fill('direct send');
-    await input.press('Enter');
+    await page.locator('aside.material button[title="Stop"]').click();
 
-    // Wait a bit
-    await page.waitForTimeout(100);
+    // Stop is the only way back out — the chip goes with the turn
+    await expect(page.getByText(/queued|steering/)).toBeHidden();
+    await expect(page.locator('aside.material button[title="Stop"]')).toBeHidden();
+  });
 
-    // Should send directly, not queue
-    const commands = await page.evaluate(() => (window as any).__sentCommands || []);
-    expect(commands.some((cmd: any) =>
-      cmd.type === 'prompt' && cmd.message === 'direct send'
-    )).toBe(true);
+  test("nothing is queued when no turn is running", async ({ page }) => {
+    const composer = page.locator("aside.material textarea");
+    await composer.fill("plain prompt");
+    await composer.press(SUBMIT);
 
-    // Badge should not appear
-    await expect(page.locator('text=/queued/')).not.toBeVisible();
+    // goes out as a normal `prompt`, so no pending chip and no delivery tag
+    await expect(page.getByText(/queued|steering/)).toBeHidden();
+    await expect(page.getByText("interrupted")).toBeHidden();
   });
 });
