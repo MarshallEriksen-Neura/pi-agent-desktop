@@ -8,6 +8,8 @@ import { ChevronDown, ChevronRight, MoreVertical } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n";
 import { useMessageActions } from "@/lib/pi/message-actions";
+import { toolDetail, toolTitle } from "@/lib/pi/tool-label";
+import { ActivityLine } from "./ActivityLine";
 import { ImageLightbox } from "./ImageLightbox";
 import type { ChatMessage } from "@/lib/pi/chat";
 
@@ -185,58 +187,17 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
         </div>
       )}
 
-      {m.tools.map((tool) => (
-        <div
+      {m.tools.map((tool, i) => (
+        <ActivityLine
           key={tool.id}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "6px 10px",
-            margin: "4px 0",
-            borderRadius: 9,
-            background: "var(--bg-base)",
-            border: "1px solid var(--separator)",
-            fontSize: 11.5,
-            fontFamily: "var(--font-mono)",
-          }}
-        >
-          <motion.span
-            animate={
-              tool.status === "running"
-                ? { opacity: [1, 0.4, 1] }
-                : { opacity: 1 }
-            }
-            transition={
-              tool.status === "running"
-                ? { repeat: Infinity, duration: 1 }
-                : undefined
-            }
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: 99,
-              flexShrink: 0,
-              background:
-                tool.status === "error"
-                  ? "var(--danger)"
-                  : tool.status === "done"
-                    ? "var(--success)"
-                    : "var(--agent-thinking)",
-            }}
-          />
-          <span style={{ color: "var(--text-secondary)" }}>{tool.name}</span>
-          <span
-            style={{
-              color: "var(--text-tertiary)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {tool.args ? JSON.stringify(tool.args) : ""}
-          </span>
-        </div>
+          status={tool.status}
+          toolName={tool.name}
+          title={toolTitle(tool.name, tool.args)}
+          detail={toolDetail(tool.args)}
+          // only the freshly-started row slides in; earlier rows are already
+          // settled, so a virtualized re-mount must not replay the whole list
+          animateIn={animateIn && i === m.tools.length - 1}
+        />
       ))}
 
       {(m.text || m.streaming) && (

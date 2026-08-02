@@ -403,6 +403,78 @@ body {
   }
 }
 
+/* ── Agent activity lines ───────────────────────────────────────────────
+   The compact "one line per action" idiom: a small spoke indicator while a
+   step runs, and a shimmer on the label during the wait for the first token.
+   Both are CSS-driven so a row costs nothing to keep on screen. */
+@keyframes pi-spark-fade {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.15;
+  }
+}
+
+@keyframes pi-shimmer {
+  to {
+    background-position: -200% center;
+  }
+}
+
+@keyframes pi-icon-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.pi-spark-spoke {
+  animation: pi-spark-fade 0.8s linear infinite;
+}
+
+.pi-icon-breathe {
+  animation: pi-icon-breathe 1.4s ease-in-out infinite;
+}
+
+.pi-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    var(--text-tertiary) 25%,
+    var(--text-primary) 45%,
+    var(--text-tertiary) 65%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: pi-shimmer 2.1s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* the global rule above only shortens durations, and a running animation still
+     wins over plain declarations — drop the animation by name, then pin a
+     legible static state. */
+  .pi-spark-spoke {
+    animation-name: none;
+    opacity: 0.8;
+  }
+  .pi-icon-breathe {
+    animation-name: none;
+    opacity: 1;
+  }
+  .pi-shimmer {
+    animation-name: none;
+    background-image: none;
+    color: var(--text-secondary);
+    -webkit-text-fill-color: var(--text-secondary);
+  }
+}
+
 /* ── ANSI color classes (ansi_up) ── */
 .ansi-black-fg { color: var(--ansi-black); }
 .ansi-red-fg { color: var(--ansi-red); }

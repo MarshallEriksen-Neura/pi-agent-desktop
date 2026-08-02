@@ -26,6 +26,8 @@ export interface AgentTask {
   title: string;
   detail: string;
   status: TaskStatus;
+  /** originating pi tool name — picks the icon on the activity row */
+  tool?: string;
 }
 
 export interface NotificationSettings {
@@ -33,10 +35,10 @@ export interface NotificationSettings {
 }
 
 const IDLE_TASKS: AgentTask[] = [
-  { id: "read", title: "Read src/lib/agent.ts", detail: "142 lines · 3 symbols", status: "queued" },
-  { id: "reason", title: "Reason over context", detail: "depth 3 · 4 candidates", status: "queued" },
-  { id: "edit", title: "Edit runAgentLoop()", detail: "streaming diff · +1 −1", status: "queued" },
-  { id: "test", title: "Run test suite", detail: "pnpm test", status: "queued" },
+  { id: "read", title: "Read src/lib/agent.ts", detail: "142 lines · 3 symbols", status: "queued", tool: "read" },
+  { id: "reason", title: "Reason over context", detail: "depth 3 · 4 candidates", status: "queued", tool: "agent" },
+  { id: "edit", title: "Edit runAgentLoop()", detail: "streaming diff · +1 −1", status: "queued", tool: "edit" },
+  { id: "test", title: "Run test suite", detail: "pnpm test", status: "queued", tool: "bash" },
 ];
 
 export interface PendingReview {

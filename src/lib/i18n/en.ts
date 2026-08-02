@@ -96,7 +96,6 @@ export const en = {
   "agent.thought": "Thought",
   "agent.thinking": "Thinking…",
   "agent.loading": "Pi is thinking…",
-  "agent.loadingHint": "tracing context",
 
   // retry transparency
   "retry.inProgress": "Retrying… (attempt {attempt}/{max})",

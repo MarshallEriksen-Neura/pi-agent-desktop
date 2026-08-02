@@ -20,9 +20,15 @@ import { termBus, ansi } from "@/lib/terminal-bus";
 import { editorBus } from "@/lib/editor-bus";
 import { initPetBridge } from "@/lib/pet/bridge";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
-
-const EDIT_TOOL = /^(edit|write|multi[_-]?edit|str[_-]?replace(?:[_-]?editor)?|create[_-]?file|apply[_-]?patch)$/i;
-const BASH_TOOL = /^(bash|shell|run[_-]?command|exec)$/i;
+import {
+  BASH_TOOL,
+  EDIT_TOOL,
+  argCommand,
+  argPath,
+  normPath,
+  toolDetail,
+  toolTitle,
+} from "./tool-label";
 
 interface ToolRec {
   kind: "edit" | "bash" | "other";
@@ -63,35 +69,6 @@ function toText(v: unknown): string {
   }
 }
 
-function argPath(args: Record<string, unknown>): string | undefined {
-  const p = args.path ?? args.file_path ?? args.filePath ?? args.file;
-  return typeof p === "string" && p.length > 0 ? p : undefined;
-}
-
-function argCommand(args: Record<string, unknown>): string | undefined {
-  const c = args.command ?? args.cmd ?? args.script;
-  return typeof c === "string" && c.length > 0 ? c : undefined;
-}
-
-/** normalize to the workspace key style (forward slashes, absolute in Tauri) */
-function normPath(raw: string): string {
-  const root = (useWorkspace.getState().root ?? "").replace(/\\/g, "/");
-  let p = raw.replace(/\\/g, "/");
-  const absolute = /^[a-zA-Z]:\//.test(p) || p.startsWith("/");
-  if (!absolute && root) p = root.replace(/\/+$/, "") + "/" + p.replace(/^\.\//, "");
-  return p;
-}
-
-/** short display path relative to the project root */
-function relPath(p: string): string {
-  const root = (useWorkspace.getState().root ?? "").replace(/\\/g, "/");
-  const n = p.replace(/\\/g, "/");
-  if (root && n.toLowerCase().startsWith(root.toLowerCase())) {
-    return n.slice(root.length).replace(/^\/+/, "") || n;
-  }
-  return n;
-}
-
 function parentDir(p: string): string {
   const i = p.lastIndexOf("/");
   return i > 0 ? p.slice(0, i) : p;
@@ -114,27 +91,6 @@ function changedLines(prev: string, next: string): number[] {
   const lines: number[] = [];
   for (let i = start; i <= endB && lines.length < HIGHLIGHT_CAP; i++) lines.push(i + 1);
   return lines;
-}
-
-function title(toolName: string, args: Record<string, unknown>): string {
-  if (BASH_TOOL.test(toolName)) {
-    const cmd = argCommand(args) ?? "";
-    return `$ ${cmd}`.trim();
-  }
-  const p = argPath(args);
-  const name = toolName.charAt(0).toUpperCase() + toolName.slice(1);
-  return p ? `${name} ${relPath(normPath(p))}` : name;
-}
-
-function detail(args: Record<string, unknown>): string {
-  const keys = Object.keys(args);
-  if (keys.length === 0) return "";
-  const skip = new Set(["path", "file_path", "filePath", "file", "command", "cmd", "script", "content", "oldText", "newText", "old_str", "new_str"]);
-  const rest = keys.filter((k) => !skip.has(k));
-  return rest
-    .slice(0, 3)
-    .map((k) => `${k}: ${String(args[k]).slice(0, 40)}`)
-    .join(" · ");
 }
 
 /* ── the bridge ── */
@@ -208,9 +164,10 @@ export function initAgentBridge() {
     recs.set(e.toolCallId, rec);
     ui.upsertAgentTask({
       id: e.toolCallId,
-      title: title(e.toolName, args),
-      detail: detail(args),
+      title: toolTitle(e.toolName, args),
+      detail: toolDetail(args),
       status: "running",
+      tool: e.toolName,
     });
   });
 

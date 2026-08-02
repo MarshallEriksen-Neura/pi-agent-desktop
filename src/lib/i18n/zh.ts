@@ -97,7 +97,6 @@ export const zh: Record<keyof typeof en, string> = {
   "agent.thought": "已思考",
   "agent.thinking": "思考中…",
   "agent.loading": "Pi 正在思考…",
-  "agent.loadingHint": "正在梳理上下文",
 
   // retry transparency
   "retry.inProgress": "重试中…（第 {attempt}/{max} 次）",

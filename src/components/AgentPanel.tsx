@@ -9,7 +9,7 @@ import {
   CollapsibleContent,
 } from "@appica/ui-react/collapsible";
 import { Spinner } from "@appica/ui-react/spinner";
-import { useUI, type TaskStatus } from "@/lib/store";
+import { useUI } from "@/lib/store";
 import { useChat, type ChatMessage, type DeliveryMode } from "@/lib/pi/chat";
 import { usePi } from "@/lib/pi/store";
 import { useSessions } from "@/lib/pi/sessions";
@@ -24,7 +24,7 @@ import {
 import { SubagentDeck } from "./Subagents";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 import { MessageBubble } from "./MessageBubble";
-import { PiLoader } from "./PiLoader";
+import { ActivityLine, PiSpark, ShimmerText } from "./ActivityLine";
 import { ComposerInput } from "./ComposerInput";
 import { RetryBanner } from "./RetryBanner";
 import { ExtStatusLine, ExtWidgets } from "./ExtensionSurfaces";
@@ -40,13 +40,6 @@ import {
 } from "lucide-react";
 
 const DEMO_TASK_IDS = new Set(["read", "reason", "edit", "test"]);
-
-const DOT: Record<TaskStatus, string> = {
-  done: "var(--success)",
-  running: "var(--agent-thinking)",
-  queued: "var(--text-tertiary)",
-  error: "var(--danger)",
-};
 
 /** Right rail — real pi conversation stream + demo task strip. */
 export function AgentPanel() {
@@ -293,68 +286,16 @@ export function AgentPanel() {
                 {/* task strip — live pi tool activity (agent-bridge) or the local showcase */}
                 {agentRunning &&
                   agentTasks.map((task, i) => (
-            <motion.div
-              key={task.id}
-              initial={{ opacity: 0, y: 10, scale: 0.98 }}
-              animate={{
-                opacity: task.status === "queued" ? 0.55 : 1,
-                y: 0,
-                scale: 1,
-              }}
-              transition={{
-                type: "spring",
-                stiffness: 320,
-                damping: 26,
-                delay: i * 0.06,
-              }}
-              style={{
-                display: "flex",
-                gap: 10,
-                padding: "10px 14px",
-                marginBottom: 8,
-                borderRadius: "var(--radius-md)",
-                background: "var(--bg-base)",
-                border: "1px solid var(--separator)",
-                boxShadow: "var(--shadow-sm)",
-              }}
-            >
-              <motion.span
-                animate={
-                  task.status === "running"
-                    ? { scale: [1, 1.35, 1], opacity: [1, 0.6, 1] }
-                    : { scale: 1, opacity: 1 }
-                }
-                transition={
-                  task.status === "running"
-                    ? { repeat: Infinity, duration: 1.1, ease: "easeInOut" }
-                    : { type: "spring", stiffness: 400, damping: 20 }
-                }
-                style={{
-                  width: 8,
-                  height: 8,
-                  marginTop: 5,
-                  borderRadius: 99,
-                  flexShrink: 0,
-                  background: DOT[task.status],
-                }}
-              />
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12.5, color: "var(--text-primary)" }}>
-                  {/* the four demo ids are localized; real pi tool tasks carry their own title */}
-                  {DEMO_TASK_IDS.has(task.id) ? t(`demoTask.${task.id}`) : task.title}
-                </div>
-                <div
-                  style={{
-                    fontSize: 11,
-                    fontFamily: "var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  {task.detail}
-                </div>
-              </div>
-            </motion.div>
-          ))}
+                    <ActivityLine
+                      key={task.id}
+                      status={task.status}
+                      toolName={task.tool}
+                      /* the four demo ids are localized; real pi tool tasks carry their own title */
+                      title={DEMO_TASK_IDS.has(task.id) ? t(`demoTask.${task.id}`) : task.title}
+                      detail={task.detail}
+                      delay={i * 0.04}
+                    />
+                  ))}
 
                 {/* conversation stream — empty state */}
                 {messages.length === 0 && !agentRunning && (
@@ -379,51 +320,29 @@ export function AgentPanel() {
                 )}
               </div>
             ),
-              // Bottom of the scroll area — the "Pi is thinking" loader shown
-              // during the gap between sending and the first streamed token.
+              // Bottom of the scroll area — one compact line while the turn has
+              // produced nothing visible yet, so it reads as the first row of the
+              // activity list rather than a loading panel.
               Footer: () => (
-              <div style={{ padding: "0 12px 4px" }}>
+              <div style={{ padding: "0 12px 6px" }}>
                 <AnimatePresence>
                   {waitingForFirstToken && (
                     <motion.div
-                      initial={{ opacity: 0, y: 10 }}
+                      initial={{ opacity: 0, y: -3 }}
                       animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 6 }}
-                      transition={{ type: "spring", stiffness: 360, damping: 30 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ type: "spring", stiffness: 420, damping: 32 }}
                       style={{
                         display: "flex",
-                        flexDirection: "column",
                         alignItems: "center",
-                        gap: 10,
-                        margin: "6px auto 12px",
-                        padding: "20px 16px 18px",
-                        borderRadius: "var(--radius-md)",
-                        background: "var(--bg-base)",
-                        border: "1px solid var(--separator)",
-                        boxShadow: "var(--shadow-sm)",
+                        gap: 7,
+                        padding: "4px 2px",
                       }}
                     >
-                      <PiLoader size={84} />
-                      <div
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 590,
-                          color: "var(--text-primary)",
-                          letterSpacing: "-0.01em",
-                        }}
-                      >
+                      <PiSpark size={13} />
+                      <ShimmerText style={{ fontSize: 12, lineHeight: 1.45 }}>
                         {t("agent.loading")}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "var(--text-tertiary)",
-                          fontFamily: "var(--font-mono)",
-                          letterSpacing: "0.01em",
-                        }}
-                      >
-                        {t("agent.loadingHint")}
-                      </div>
+                      </ShimmerText>
                     </motion.div>
                   )}
                 </AnimatePresence>
