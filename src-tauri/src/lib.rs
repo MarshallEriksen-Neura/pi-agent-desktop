@@ -152,6 +152,7 @@ pub fn run() {
             pi_bridge::pi_start,
             pi_bridge::pi_send,
             pi_bridge::pi_stop,
+            pi_bridge::pi_generate_title,
             fs_bridge::workspace_root,
             fs_bridge::fs_list_dir,
             fs_bridge::fs_read_file,

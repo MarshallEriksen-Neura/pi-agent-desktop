@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { getPiClient, isTauri } from "./client";
 import { useChat, type ChatMessage } from "./chat";
+import { usePi } from "./store";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
 import type { PiState } from "./protocol";
@@ -199,6 +200,11 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 /** true while load() repaints the chat — the autosave listener must not fire */
 let restoring = false;
 
+/** One in-flight title request per desktop conversation. */
+const titleRequests = new Map<string, string>();
+/** Failed requests keep the normal fallback; streaming updates must not retry them. */
+const titleAttempts = new Set<string>();
+
 /** true once syncSessionPath has successfully captured pi's sessionPath */
 let sessionPathSynced = false;
 
@@ -241,6 +247,53 @@ async function flushSave() {
 function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => void flushSave(), 800);
+}
+
+/**
+ * Generate the initial display name outside the primary Pi conversation.
+ *
+ * The request is deliberately best effort: a failed or stale result leaves the
+ * existing first-message fallback intact and must never affect a user prompt.
+ */
+async function generateInitialTitle(messages: ChatMessage[]) {
+  if (!isTauri()) return;
+  const { activeId, sessions } = useSessions.getState();
+  if (!activeId || titleAttempts.has(activeId)) return;
+  const session = sessions.find((item) => item.id === activeId);
+  if (!session) return;
+
+  const userMessages = messages.filter((message) => message.role === "user" && message.text.trim());
+  if (userMessages.length !== 1) return;
+  const firstMessage = userMessages[0];
+  titleAttempts.add(activeId);
+  titleRequests.set(activeId, firstMessage.id);
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const model = usePi.getState().currentModel;
+    const { useWorkspace } = await import("../workspace");
+    const title = await invoke<string>("pi_generate_title", {
+      prompt: firstMessage.text,
+      provider: model?.provider ?? null,
+      modelId: model?.id ?? null,
+      cwd: useWorkspace.getState().root ?? null,
+    });
+    const normalized = title.trim();
+    if (!normalized) return;
+
+    const current = useSessions.getState();
+    const target = current.sessions.find((item) => item.id === activeId);
+    // A late title must never rename another conversation or replace a name
+    // the user entered while the model request was running.
+    if (current.activeId !== activeId || !target || titleRequests.get(activeId) !== firstMessage.id) return;
+    const fallback = deriveName(messages);
+    if (target.name && target.name !== fallback) return;
+    await current.renameSession(activeId, normalized);
+  } catch {
+    // Title generation is optional; the normal first-message fallback remains.
+  } finally {
+    if (titleRequests.get(activeId) === firstMessage.id) titleRequests.delete(activeId);
+  }
 }
 
 /**
@@ -377,6 +430,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     useChat.subscribe((s, prev) => {
       if (restoring || s.messages === prev.messages) return;
       scheduleSave();
+      void generateInitialTitle(s.messages);
     });
 
     // best-effort flush on refresh/close (localStorage path is synchronous)
@@ -472,6 +526,10 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       await backendRename(id, trimmed);
     } catch {
       // keep the optimistic rename — it will persist with the next save
+    }
+    if (id === get().activeId && isTauri()) {
+      // Keep Pi's own session picker in sync with the desktop-side history.
+      void getPiClient().request({ type: "set_session_name", name: trimmed }).catch(() => {});
     }
   },
 

@@ -242,10 +242,14 @@ function upstreamErrorDetail(body: unknown): string {
 /** Build a zustand updater that appends (or upgrades the last) assistant message to an error bubble. */
 function appendAssistantError(text: string) {
   return (s: ChatStore): Partial<ChatStore> => {
-    const hasAssistant = s.messages.some((m) => m.role === "assistant");
+    // A failed request may not have emitted message_start yet. In that case
+    // the last assistant message belongs to the previous turn and must remain
+    // untouched; append a new failure bubble for the current user message.
+    const last = s.messages[s.messages.length - 1];
+    const hasCurrentAssistant = last?.role === "assistant";
     return {
       streaming: false,
-      messages: hasAssistant
+      messages: hasCurrentAssistant
         ? patchLastAssistant(s.messages, (m) => ({
             ...m,
             streaming: false,
@@ -616,14 +620,29 @@ export const useChat = create<ChatStore>((set, get) => ({
     client.on("auto_retry_end", (e: PiEvent) => {
       if (e.type !== "auto_retry_end") return;
       // One slot, so this resolves the row the attempts have been updating.
-      if (!get().activeRetries.has(RETRY_ID)) return;
-      get().updateRetry(RETRY_ID, {
-        status: e.success ? "success" : "error",
-        attempt: e.attempt,
-        // keep the auto_retry_start trigger text when pi sends no
-        // finalError, otherwise the banner loses its only error detail
-        ...(e.finalError ? { reason: formatUpstreamError(e.finalError) } : {}),
-      });
+      const retry = get().activeRetries.get(RETRY_ID);
+      const finalError = e.finalError
+        ? formatUpstreamError(e.finalError)
+        : retry?.reason;
+
+      if (retry) {
+        get().updateRetry(RETRY_ID, {
+          status: e.success ? "success" : "error",
+          attempt: e.attempt,
+          // keep the auto_retry_start trigger text when pi sends no
+          // finalError, otherwise the banner loses its only error detail
+          ...(finalError ? { reason: finalError } : {}),
+        });
+      }
+
+      // The retry banner disappears after five seconds. A terminal provider
+      // failure must also live in the transcript, otherwise the user loses the
+      // upstream error as soon as that transient status row is gone.
+      if (!e.success && get().streaming) {
+        const reason = finalError || t("agent.taskFailed");
+        set(appendAssistantError(t("retry.failed", { reason })));
+        useUI.getState().endAgentRun();
+      }
     });
   },
 

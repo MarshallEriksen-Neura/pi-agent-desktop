@@ -6,6 +6,24 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ---
 
+## [0.4.1] — 2026-08-02
+
+### Added
+- **会话自动标题生成** — 首条用户消息发送后，通过独立的临时 Pi 进程自动生成简洁会话标题（无工具/无扩展/无 session 副作用），含并发锁和超时保护
+- **原生确认对话框** — 模型页面的删除确认从 `window.confirm` 改为 `@tauri-apps/plugin-dialog`，桌面端体验一致
+- `pi_generate_title` Rust 命令注册 + `dialog:allow-message` capability
+
+### Changed
+- Agent 活动面板重构为紧凑单行动态指示行（`ActivityLine`），新增 `PiSpark` 旋转辐条和 `ShimmerText` 渐变动画
+- `auto_retry_end` 处理逻辑改进：终端失败时将错误写入消息 transcript，避免 banner 消失后丢失上下文
+- `appendAssistantError` 精确判断当前回合是否已有 assistant 消息，防止覆盖上一轮内容
+- `renameSession` 同步桌面端命名至 Pi CLI 的 `set_session_name`
+
+### Fixed
+- 重试全部失败后错误信息随 banner 消失而丢失的问题
+
+---
+
 ## [0.4.0] — 2026-08-01
 
 ### Added

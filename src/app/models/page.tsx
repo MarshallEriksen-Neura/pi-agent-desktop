@@ -23,6 +23,7 @@ import { ProviderMeta, PROVIDER_META } from "@/components/provider-meta";
 import { ModelIcon } from "@/components/icons";
 import { resolveModelMetaOrFallback } from "@/lib/model-icon";
 import { useT } from "@/lib/i18n";
+import { isTauri } from "@/lib/pi/client";
 import { usePi } from "@/lib/pi/store";
 import { usePiSettings } from "@/lib/pi/settings";
 import {
@@ -39,6 +40,12 @@ import {
 } from "@/lib/pi/model-scope";
 
 const spring = { type: "spring" as const, stiffness: 320, damping: 28 };
+
+async function confirmRemoval(message: string): Promise<boolean> {
+  if (!isTauri()) return window.confirm(message);
+  const { confirm } = await import("@tauri-apps/plugin-dialog");
+  return confirm(message);
+}
 
 export default function ModelsPage() {
   const t = useT();
@@ -135,7 +142,7 @@ export default function ModelsPage() {
   };
 
   const handleRemoveProvider = async (providerId: string) => {
-    if (!confirm(t("models.removeProvider") + "?")) return;
+    if (!(await confirmRemoval(t("models.removeProvider") + "?"))) return;
     await piModelsStore.removeProvider(providerId);
   };
 
@@ -168,7 +175,7 @@ export default function ModelsPage() {
   };
 
   const handleRemoveModel = async (providerId: string, modelId: string) => {
-    if (!confirm(t("models.removeModel") + "?")) return;
+    if (!(await confirmRemoval(t("models.removeModel") + "?"))) return;
     await piModelsStore.removeModel(providerId, modelId);
   };
 
