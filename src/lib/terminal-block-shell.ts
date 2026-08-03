@@ -4,6 +4,7 @@ import { useTerminalBlocks } from "@/lib/terminal-blocks";
 import { termBus } from "@/lib/terminal-bus";
 import { getPiClient } from "./pi/client";
 import type { BashResult } from "./pi/protocol";
+import { piRequestErrorText } from "./pi/request-error";
 
 /**
  * Block-mode shell handler — each command becomes a card in the blocks view.
@@ -18,7 +19,23 @@ export function handleBlockInput(data: string) {
 
   // Ctrl-C: cancel the running block
   if (data === "\x03" && runningBlock) {
-    getPiClient().send({ type: "abort_bash" });
+    void getPiClient()
+      .request({ type: "abort_bash" })
+      .then((response) => {
+        if (!response.success) {
+          useTerminalBlocks
+            .getState()
+            .appendOutput(
+              runningBlock.id,
+              `\n[abort failed] ${response.error || "abort_bash failed"}\n`
+            );
+        }
+      })
+      .catch((error) => {
+        useTerminalBlocks
+          .getState()
+          .appendOutput(runningBlock.id, `\n[abort failed] ${piRequestErrorText(error)}\n`);
+      });
     return;
   }
 

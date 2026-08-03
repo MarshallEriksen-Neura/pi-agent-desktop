@@ -1,6 +1,9 @@
 "use client";
 
 import { getPiClient } from "./client";
+import { useExtUi } from "./ext-ui";
+import { piRequestErrorText } from "./request-error";
+import { t } from "../i18n";
 
 export interface MessageActions {
   copyMarkdown: () => Promise<void>;
@@ -27,10 +30,25 @@ export function useMessageActions(
 
   const fork = () => {
     if (!entryId) {
-      console.warn("Cannot fork: no entryId available");
+      useExtUi.getState().pushToast(t("message.forkUnavailable"), "warning");
       return;
     }
-    getPiClient().send({ type: "fork", entryId });
+    void (async () => {
+      try {
+        const response = await getPiClient().request({ type: "fork", entryId });
+        if (!response.success) {
+          useExtUi.getState().pushToast(
+            t("message.forkFailed", {
+              error: response.error || t("agent.taskFailed"),
+            }),
+            "error",
+            6000
+          );
+        }
+      } catch (error) {
+        useExtUi.getState().pushToast(piRequestErrorText(error), "error", 6000);
+      }
+    })();
   };
 
   return { copyMarkdown, fork };

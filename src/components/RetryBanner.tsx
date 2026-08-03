@@ -188,10 +188,15 @@ export function RetryBanner() {
   const items = [...activeRetries.entries()].map(([id, state]) => {
     let message: string;
     if (state.status === "loading") {
-      let head = t("retry.inProgress", {
-        attempt: state.attempt.toString(),
-        max: state.maxAttempts.toString(),
-      });
+      let head = t(
+        state.scope === "summarization"
+          ? "retry.summarizationInProgress"
+          : "retry.inProgress",
+        {
+          attempt: state.attempt.toString(),
+          max: state.maxAttempts.toString(),
+        }
+      );
       // pi restarts the attempt counter per request it retries, so a provider
       // that keeps refusing loops 1/3, 2/3, 1/3, … — say which round we are on
       // instead of looking stuck on the first attempt forever.

@@ -2,8 +2,13 @@
 
 import { create } from "zustand";
 import { getPiClient, isTauri } from "./client";
-import type { ExtensionUiRequest, PiEvent } from "./protocol";
+import type {
+  ExtensionUiRequest,
+  ExtensionUiResponse,
+  PiEvent,
+} from "./protocol";
 import { t } from "../i18n";
+import { piRequestErrorText } from "./request-error";
 
 export interface Toast {
   id: string;
@@ -64,6 +69,21 @@ function applyTitle(title: string) {
     .catch(() => {
       // window handle unavailable — the document title still updated
     });
+}
+
+async function sendExtensionResponse(
+  response: ExtensionUiResponse
+): Promise<string | null> {
+  try {
+    const result = await getPiClient().request(response);
+    return result.success
+      ? null
+      : t("ext.responseFailed", {
+          error: result.error || t("agent.taskFailed"),
+        });
+  } catch (error) {
+    return piRequestErrorText(error);
+  }
 }
 
 export const useExtUi = create<ExtUiStore>((set, get) => ({
@@ -140,7 +160,13 @@ export const useExtUi = create<ExtUiStore>((set, get) => ({
       }
 
       // unknown future method — cancel politely so extensions never hang on us
-      client.send({ type: "extension_ui_response", id: req.id, cancelled: true });
+      void sendExtensionResponse({
+        type: "extension_ui_response",
+        id: req.id,
+        cancelled: true,
+      }).then((error) => {
+        if (error) get().pushToast(error, "error", 6000);
+      });
     });
 
     // An extension threw. Previously dropped on the floor: the event was typed
@@ -155,12 +181,19 @@ export const useExtUi = create<ExtUiStore>((set, get) => ({
   },
 
   respond: (req, payload) => {
-    getPiClient().send({
+    void sendExtensionResponse({
       type: "extension_ui_response",
       id: req.id,
       ...payload,
-    } as never);
-    set((s) => ({ queue: s.queue.filter((q) => q.id !== req.id) }));
+    } as ExtensionUiResponse).then((error) => {
+      if (error) {
+        // Keep the sheet open so a failed write/negative acknowledgement does
+        // not look like the extension accepted the user's choice.
+        get().pushToast(error, "error", 6000);
+        return;
+      }
+      set((s) => ({ queue: s.queue.filter((q) => q.id !== req.id) }));
+    });
   },
 
   dismissToast: (id) =>

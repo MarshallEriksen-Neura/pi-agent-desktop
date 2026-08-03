@@ -7,6 +7,7 @@ import { usePi } from "./store";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
 import type { PiState } from "./protocol";
+import { piRequestErrorText } from "./request-error";
 
 /**
  * Chat-session history — zustand in front, SQLite (Tauri/Rust) behind.
@@ -207,6 +208,7 @@ const titleAttempts = new Set<string>();
 
 /** true once syncSessionPath has successfully captured pi's sessionPath */
 let sessionPathSynced = false;
+let sessionPathWarningFor: string | null = null;
 
 /**
  * Retry delays for syncSessionPath when pi isn't ready to answer get_state yet
@@ -319,14 +321,21 @@ export const flushActiveSession = () => flushSave();
  */
 async function syncSessionPath(): Promise<void> {
   if (!isTauri()) return;
+  let lastFailure = "";
   for (let attempt = 0; attempt <= SYNC_DELAYS_MS.length; attempt++) {
     let path = "";
     try {
       const r = await getPiClient().request<PiState>({ type: "get_state" });
+      if (!r.success) {
+        lastFailure = r.error || "get_state failed";
+      }
       // pi returns sessionFile (full path) and sessionId (UUID), NOT sessionPath.
       // Prefer the full file path; fall back to the UUID. Both work with --session.
-      path = r.data?.sessionFile ?? r.data?.sessionId ?? r.data?.sessionPath ?? "";
-    } catch {
+      if (r.success) {
+        path = r.data?.sessionFile ?? r.data?.sessionId ?? r.data?.sessionPath ?? "";
+      }
+    } catch (error) {
+      lastFailure = piRequestErrorText(error);
       // get_state not ready yet — will retry
     }
     // Fall back to the session id captured from pi's `session` event (rarely
@@ -336,6 +345,7 @@ async function syncSessionPath(): Promise<void> {
     const { activeId } = useSessions.getState();
     if (path && activeId) {
       sessionPathSynced = true;
+      sessionPathWarningFor = null;
       useSessions.setState((s) => ({
         sessions: s.sessions.map((x) =>
           x.id === activeId ? { ...x, sessionPath: path } : x
@@ -353,8 +363,12 @@ async function syncSessionPath(): Promise<void> {
     } else {
       console.warn(
         "[syncSessionPath] failed after retries — no sessionFile/sessionId from get_state. " +
-          "Next launch will start pi without --session.",
+          `Next launch will start pi without --session.${lastFailure ? ` ${lastFailure}` : ""}`,
       );
+      if (activeId && sessionPathWarningFor !== activeId) {
+        sessionPathWarningFor = activeId;
+        useExtUi.getState().pushToast(t("session.noPath"), "warning", 8000);
+      }
     }
   }
 }
@@ -369,9 +383,78 @@ async function repaint(id: string) {
   }
 }
 
+/**
+ * Reset Pi's in-memory context. If the RPC command is rejected, restart the
+ * process without a resume path so the new local conversation cannot silently
+ * continue inside the previous conversation's context.
+ */
+async function resetPiSession(
+  projectRoot: string,
+  restartForProject = false
+): Promise<boolean> {
+  if (restartForProject) {
+    try {
+      // `new_session` resets context but cannot change cwd. A project switch
+      // with no saved conversations must therefore restart Pi in the new root.
+      await usePi.getState().restart(projectRoot || undefined);
+      void syncSessionPath();
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      usePi.setState({ status: "disconnected", lastError: detail });
+      useExtUi.getState().pushToast(
+        t("session.projectSwitchFailed", { error: detail }),
+        "error",
+        9000
+      );
+      return false;
+    }
+  }
+
+  let firstFailure = "";
+  try {
+    const response = await getPiClient().request({ type: "new_session" });
+    if (!response.success) {
+      firstFailure = response.error || t("agent.taskFailed");
+      throw new Error(firstFailure);
+    }
+    void syncSessionPath();
+    return true;
+  } catch (error) {
+    firstFailure ||= piRequestErrorText(error);
+  }
+
+  try {
+    await usePi.getState().restart(projectRoot || undefined);
+    useExtUi.getState().pushToast(
+      t("session.newRecovered", { error: firstFailure }),
+      "warning",
+      7000
+    );
+    void syncSessionPath();
+    return true;
+  } catch (error) {
+    const restartFailure =
+      error instanceof Error ? error.message : String(error);
+    usePi.setState({ status: "disconnected", lastError: restartFailure });
+    useExtUi.getState().pushToast(
+      t("session.newFailed", {
+        error: `${firstFailure} · ${restartFailure}`,
+      }),
+      "error",
+      9000
+    );
+    return false;
+  }
+}
+
 /** Begin an empty conversation in `projectRoot` and reset pi's session. */
-function startFresh(projectRoot: string) {
+async function startFresh(
+  projectRoot: string,
+  restartForProject = false
+): Promise<void> {
   sessionPathSynced = false;
+  sessionPathWarningFor = null;
   useChat.getState().clear();
   const meta = createMeta(projectRoot);
   useSessions.setState((s) => ({
@@ -379,10 +462,7 @@ function startFresh(projectRoot: string) {
     activeId: meta.id,
   }));
   void backendSave(meta, []);
-  getPiClient()
-    .request({ type: "new_session" })
-    .then(() => syncSessionPath())
-    .catch(() => {});
+  await resetPiSession(projectRoot, restartForProject);
 }
 
 /* ── store ── */
@@ -454,14 +534,20 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       // Restart pi with the new project root and session path — both cwd
       // and context must change for the switched project.
       try {
-        const { usePi } = await import("./store");
         await usePi.getState().restart(projectRoot, latest.sessionPath);
-      } catch {
-        // restart failed — UI still works from local store
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        usePi.setState({ status: "disconnected", lastError: detail });
+        useExtUi.getState().pushToast(
+          t("session.projectSwitchFailed", { error: detail }),
+          "error",
+          9000
+        );
+        return;
       }
       void syncSessionPath();
     } else {
-      startFresh(key);
+      await startFresh(key, true);
     }
   },
 
@@ -471,7 +557,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     // reuse an untouched session instead of stacking empty ones
     if (active && useChat.getState().messages.length === 0) return;
     await flushSave();
-    startFresh(projectRoot);
+    await startFresh(projectRoot);
   },
 
   switchSession: async (id) => {
@@ -494,25 +580,27 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       // proven to load the full transcript (past turns, tool results,
       // thinking) into the agent loop.
       try {
-        const { usePi } = await import("./store");
         const { useWorkspace } = await import("../workspace");
         const root = useWorkspace.getState().root ?? undefined;
         await usePi.getState().restart(root, sessionPath);
         void syncSessionPath();
-      } catch {
-        useExtUi.getState().pushToast(t("session.restoreFailed"), "warning");
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        usePi.setState({ status: "disconnected", lastError: detail });
+        useExtUi.getState().pushToast(
+          t("session.restoreFailedDetailed", { error: detail }),
+          "error",
+          9000
+        );
       }
     } else {
       // No session path was ever persisted for this conversation — pi cannot
       // resume prior context. Create a new session so the sessionPath gets
       // pinned for future launches, and tell the user explicitly.
       useExtUi.getState().pushToast(t("session.contextLost"), "warning", 8000);
-      try {
-        await getPiClient().request({ type: "new_session" });
-        await syncSessionPath();
-      } catch {
-        // pi unavailable — sessionPath will stay empty, next switch retries
-      }
+      const { useWorkspace } = await import("../workspace");
+      const root = useWorkspace.getState().root ?? get().projectRoot;
+      await resetPiSession(root);
     }
   },
 
@@ -529,7 +617,31 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     }
     if (id === get().activeId && isTauri()) {
       // Keep Pi's own session picker in sync with the desktop-side history.
-      void getPiClient().request({ type: "set_session_name", name: trimmed }).catch(() => {});
+      void (async () => {
+        try {
+          const response = await getPiClient().request({
+            type: "set_session_name",
+            name: trimmed,
+          });
+          if (!response.success) {
+            useExtUi.getState().pushToast(
+              t("session.renameSyncFailed", {
+                error: response.error || t("agent.taskFailed"),
+              }),
+              "warning",
+              6000
+            );
+          }
+        } catch (error) {
+          useExtUi.getState().pushToast(
+            t("session.renameSyncFailed", {
+              error: piRequestErrorText(error),
+            }),
+            "warning",
+            6000
+          );
+        }
+      })();
     }
   },
 
@@ -550,7 +662,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     if (next) {
       await get().switchSession(next.id);
     } else {
-      startFresh(get().projectRoot);
+      await startFresh(get().projectRoot);
     }
   },
 }));

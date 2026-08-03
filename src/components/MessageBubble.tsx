@@ -4,14 +4,22 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@appica/ui-react/collapsible";
 import { Spinner } from "@appica/ui-react/spinner";
-import { ChevronDown, ChevronRight, MoreVertical } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  MoreVertical,
+  RotateCcw,
+  TriangleAlert,
+} from "lucide-react";
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n";
 import { useMessageActions } from "@/lib/pi/message-actions";
 import { toolDetail, toolTitle } from "@/lib/pi/tool-label";
 import { ActivityLine } from "./ActivityLine";
 import { ImageLightbox } from "./ImageLightbox";
-import type { ChatMessage } from "@/lib/pi/chat";
+import { useChat, type ChatMessage } from "@/lib/pi/chat";
 
 // Lazy: keeps streamdown + shiki out of the route's First Load JS.
 const StreamdownRenderer = dynamic(
@@ -151,41 +159,7 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
     >
       {m.thinking && <ThinkingBlock text={m.thinking} done={!m.streaming} />}
 
-      {m.isError && (
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            alignItems: "flex-start",
-            padding: "9px 11px",
-            margin: "4px 0",
-            borderRadius: 10,
-            background: "color-mix(in srgb, var(--danger) 12%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--danger) 45%, transparent)",
-            fontSize: 12.5,
-            lineHeight: 1.55,
-            color: "var(--text-primary)",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-          }}
-        >
-          <span style={{ color: "var(--danger)", flexShrink: 0, lineHeight: 1.5 }}>⚠</span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 600, color: "var(--danger)", marginBottom: 2 }}>
-              {t("agent.taskFailedTitle")}
-            </div>
-            <div
-              style={{
-                fontFamily: (m.errorText ?? "").includes("\n") ? "var(--font-mono)" : undefined,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-              }}
-            >
-              {m.errorText ?? t("agent.taskFailed")}
-            </div>
-          </div>
-        </div>
-      )}
+      {m.isError && <ErrorNotice m={m} />}
 
       {m.tools.map((tool, i) => (
         <ActivityLine
@@ -315,6 +289,148 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
     </motion.div>
   );
 }
+
+/** Map a failure to an actionable hint. Ordered: an auth phrase wins over a
+ *  bare status code, since 403 bodies often also mention quotas. */
+function errorHintKey(text: string): string | null {
+  if (/401|403|unauthorized|forbidden|permission|credential|api[ _-]?key|invalid[ _-]?token|only allows/i.test(text))
+    return "agent.errorHintAuth";
+  if (/429|rate[ _-]?limit|quota|too many requests|insufficient/i.test(text))
+    return "agent.errorHintRate";
+  if (/50\d|529|overloaded|internal server error|bad gateway|service unavailable/i.test(text))
+    return "agent.errorHintServer";
+  if (/econnrefused|enotfound|etimedout|econnreset|fetch failed|network|socket|proxy|certificate|timed? ?out/i.test(text))
+    return "agent.errorHintNetwork";
+  return null;
+}
+
+/**
+ * In-transcript failure notice.
+ *
+ * Deliberately quiet: a hairline left rule and a faint tint rather than a
+ * filled red card, so a failed turn reads as part of the conversation instead
+ * of an alert box. The headline is the one-line summary; raw upstream text goes
+ * in a monospace block — inline when it's short, collapsed when it isn't.
+ */
+function ErrorNotice({ m }: { m: ChatMessage }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const retryLast = useChat((s) => s.retryLast);
+  const streaming = useChat((s) => s.streaming);
+
+  const summary = m.errorText ?? t("agent.taskFailed");
+  const detail = (m.errorDetail ?? "").trim();
+  const hintKey = errorHintKey(`${summary}\n${detail}`);
+  // Short single-line detail is the most useful part of the notice — showing it
+  // costs one line, so don't bury it behind a disclosure.
+  const inlineDetail = detail.length > 0 && detail.length <= 220 && !detail.includes("\n");
+
+  const { copyMarkdown } = useMessageActions(
+    detail ? `${summary}\n\n${detail}` : summary,
+    m.id
+  );
+
+  const handleCopy = async () => {
+    await copyMarkdown();
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  };
+
+  const detailStyle: React.CSSProperties = {
+    fontFamily: "var(--font-mono)",
+    fontSize: 11.5,
+    lineHeight: 1.5,
+    color: "var(--text-secondary)",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+  };
+
+  return (
+    <div
+      style={{
+        margin: "6px 0",
+        padding: "8px 11px",
+        borderRadius: 8,
+        borderLeft: "2px solid color-mix(in srgb, var(--danger) 70%, transparent)",
+        background: "color-mix(in srgb, var(--danger) 7%, var(--bg-elevated))",
+        fontSize: 12.5,
+        lineHeight: 1.55,
+        color: "var(--text-primary)",
+      }}
+    >
+      <div style={{ display: "flex", gap: 7, alignItems: "flex-start" }}>
+        <TriangleAlert
+          size={13}
+          style={{ color: "var(--danger)", flexShrink: 0, marginTop: 3 }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ wordBreak: "break-word" }}>{summary}</div>
+
+          {inlineDetail && <div style={{ ...detailStyle, marginTop: 3 }}>{detail}</div>}
+
+          {hintKey && (
+            <div style={{ marginTop: 4, fontSize: 11.5, color: "var(--text-tertiary)" }}>
+              {t(hintKey)}
+            </div>
+          )}
+
+          {detail && !inlineDetail && (
+            <Collapsible open={open} onOpenChange={setOpen} style={{ marginTop: 5 }}>
+              <CollapsibleTrigger style={errorActionStyle}>
+                {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                {t(open ? "agent.errorLess" : "agent.errorMore")}
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div
+                  style={{
+                    ...detailStyle,
+                    marginTop: 5,
+                    padding: "6px 8px",
+                    borderRadius: 6,
+                    background: "var(--bg-sunken)",
+                    maxHeight: 220,
+                    overflowY: "auto",
+                  }}
+                >
+                  {detail}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          )}
+
+          <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
+            {!streaming && (
+              <button onClick={() => void retryLast()} style={errorActionStyle}>
+                <RotateCcw size={11} />
+                {t("agent.errorRetry")}
+              </button>
+            )}
+            <button onClick={handleCopy} style={errorActionStyle}>
+              {copied ? <Check size={11} /> : <Copy size={11} />}
+              {t(copied ? "agent.errorCopied" : "agent.errorCopy")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const errorActionStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  width: "auto",
+  height: "auto",
+  padding: "3px 7px",
+  borderRadius: 6,
+  border: "none",
+  background: "transparent",
+  color: "var(--text-secondary)",
+  fontSize: 11.5,
+  cursor: "pointer",
+};
 
 function ThinkingBlock({ text, done }: { text: string; done: boolean }) {
   const [open, setOpen] = useState(false);

@@ -131,9 +131,9 @@ export interface PiState {
 
 /**
  * One streaming delta inside `message_update`. Only the `*_delta` variants carry
- * `delta`; the `*_start` / `*_end` / `done` variants are lifecycle markers we
- * currently ignore. `error` carries no `delta` at all — it must be handled
- * before any delta guard or it is silently dropped.
+ * `delta`; `text_end` / `thinking_end` may carry the complete final block in
+ * `content` even when a provider emitted no deltas. `error` carries no `delta`
+ * at all — both shapes must be handled before any delta guard.
  */
 export interface AssistantMessageEvent {
   type:
@@ -151,6 +151,8 @@ export interface AssistantMessageEvent {
     | "error"
     | string;
   delta?: string;
+  /** full block on text_end / thinking_end (some Responses providers only emit this) */
+  content?: string;
   /** index of the content block this delta belongs to */
   contentIndex?: number;
   /** type "done" — why generation stopped */
@@ -211,8 +213,14 @@ export type PiEvent =
     }
   | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
   | { type: "extension_error"; extensionPath: string; event: string; error: string }
-  | { type: "summarization_retry_scheduled"; attempt: number; maxAttempts: number; delayMs: number }
-  | { type: "summarization_retry_attempt_start"; source?: string }
+  | {
+      type: "summarization_retry_scheduled";
+      attempt: number;
+      maxAttempts: number;
+      delayMs: number;
+      errorMessage?: string;
+    }
+  | { type: "summarization_retry_attempt_start"; source?: string; reason?: string }
   | { type: "summarization_retry_finished" }
   | ExtensionUiRequest
   | PiResponse;

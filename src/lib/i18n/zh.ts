@@ -8,6 +8,7 @@ export const zh: Record<keyof typeof en, string> = {
   "common.done": "完成",
   "common.close": "关闭",
   "common.loading": "加载中…",
+  "common.unknown": "未知",
 
   // nav rail
   "nav.workspace": "工作区",
@@ -86,6 +87,8 @@ export const zh: Record<keyof typeof en, string> = {
   "message.steered": "插话",
   "message.queued": "排队",
   "message.undelivered": "未送达",
+  "message.forkUnavailable": "此消息没有 Pi 条目 ID，无法创建分支。",
+  "message.forkFailed": "无法从此消息创建分支：{error}",
   "agent.stop": "停止",
   "agent.send": "发送",
   "agent.scrollTop": "滚动到顶部",
@@ -100,24 +103,46 @@ export const zh: Record<keyof typeof en, string> = {
 
   // retry transparency
   "retry.inProgress": "重试中…（第 {attempt}/{max} 次）",
+  "retry.summarizationInProgress": "上下文摘要重试中…（第 {attempt}/{max} 次）",
   "retry.round": "第 {rounds} 轮",
   "retry.success": "重试成功（共 {attempt} 次）",
   "retry.failed": "重试失败：{reason}",
+  "retry.exhausted": "自动重试已用尽",
 
   // task failure surfacing
   "agent.taskFailedTitle": "Pi 任务出错",
-  "agent.taskFailed": "任务执行过程中出现错误，已停止。",
+  "agent.taskFailed": "任务执行过程中出现错误，已停止",
   "agent.piExited": "Pi 进程已退出（退出码 {code}），任务被中断。",
   "agent.piExitedUnknown": "Pi 进程已退出，任务被中断。",
   "agent.piUnavailable": "Pi 未连接或未运行，任务未发送。请在设置中确认 Pi CLI 已安装并启动。",
-  "agent.piNoResponse": "未收到 Pi 的响应，任务可能未被接收。请确认 Pi 正在运行。",
+  "agent.piSendFailed": "无法将 {command} 请求（{id}）写入 Pi：{reason}",
+  "agent.piAckTimeout": "Pi 在 {seconds} 秒内未确认 {command} 请求（{id}）。Pi 可能卡在预处理阶段，或 RPC 通道已无响应。",
+  "agent.piRequestExited": "Pi 在确认 {command} 请求（{id}）前已退出（退出码 {code}）。",
+  "agent.piRequestStopped": "Pi 在确认 {command} 请求（{id}）前已停止。",
+  "agent.piRequestFailed": "Pi RPC 请求失败：{reason}",
+  "agent.emptyResponse": "Pi 已结束本轮任务，但没有返回文本、思考、工具活动或错误。上游服务可能返回了空响应。",
   "agent.reconnecting": "Pi 进程崩溃 —— 正在尝试重连并恢复会话…",
-  "agent.modelError": "模型返回错误（{reason}）。",
+  "agent.modelError": "模型请求失败（{reason}）",
+  "agent.modelFailed": "模型请求失败",
+
+  // 报错卡片的操作与提示
+  "agent.errorRetry": "重试",
+  "agent.errorCopy": "复制报错内容",
+  "agent.errorCopied": "已复制",
+  "agent.errorMore": "展开详情",
+  "agent.errorLess": "收起详情",
+  "agent.errorHintAuth": "凭证或权限被拒：检查 API Key、账号权限与所选模型是否匹配。",
+  "agent.errorHintRate": "触发限流或额度用尽：稍后重试，或换用其他模型。",
+  "agent.errorHintServer": "服务端暂时故障：通常稍后重试即可恢复。",
+  "agent.errorHintNetwork": "网络无法连通：检查网络、代理与 Base URL 设置。",
+  "rpc.commandFailed": "Pi 拒绝了 {command} 命令：{error}",
 
   // 扩展报错 / 上下文压缩
   "ext.error": "扩展 {name} 在 {event} 阶段出错",
+  "ext.responseFailed": "无法向扩展发送响应：{error}",
   "compaction.aborted": "上下文压缩已取消。",
   "compaction.failed": "上下文压缩失败：{error}",
+  "summarization.finished": "上下文摘要重试已结束。",
 
   // queue — 运行中交给 pi 的消息（插话 / 排队）
   "queue.steering": "{count} 条待插话",
@@ -125,13 +150,17 @@ export const zh: Record<keyof typeof en, string> = {
   "queue.pendingHint": "只能用「停止」撤回",
   "queue.steerFailed": "pi 拒绝了插话消息",
   "queue.followUpFailed": "pi 拒绝了排队消息",
-  "queue.noAck": "pi 未确认这条消息 — 未送达",
 
   // session restore (上下文未重新载入 agent)
   "session.restoreFailed": "无法恢复此对话的上下文 —— Pi 已全新启动。下方仍显示聊天历史，但智能体不会记得之前的轮次。",
+  "session.restoreFailedDetailed": "无法恢复此对话的上下文：{error}。Pi 已断开，避免新提示误用其他会话的上下文。",
   "session.restoreRefused": "Pi 无法载入已保存的会话上下文（{error}）。智能体已全新启动，下方历史仅作展示。",
   "session.noPath": "此对话未保存会话路径 —— Pi 已全新启动。智能体不会记得之前的轮次，下方历史仅作展示。",
   "session.contextLost": "此对话的上下文无法恢复 —— Pi 已创建新会话。下方仍保留聊天历史，但智能体不会记得之前的轮次。新会话已建立，后续切换将正常工作。",
+  "session.newRecovered": "Pi 拒绝了新建会话请求（{error}），应用已通过重启 Pi 建立干净上下文。",
+  "session.newFailed": "无法建立干净的 Pi 会话：{error}。Pi 已断开，避免提示继续使用旧上下文。",
+  "session.projectSwitchFailed": "前端已切换项目，但 Pi 无法在新项目中重启：{error}。Pi 已断开，避免在错误目录中执行任务。",
+  "session.renameSyncFailed": "本地会话标题已保存，但无法同步到 Pi：{error}",
 
   // message operations
   "message.copy": "复制",
@@ -179,6 +208,8 @@ export const zh: Record<keyof typeof en, string> = {
   "modelPicker.none": "尚未配置任何模型。",
   "modelPicker.loadFailed": "无法从 pi 获取模型列表。",
   "modelPicker.retry": "重试",
+  "modelPicker.switchFailed": "无法切换模型：{error}",
+  "thinking.switchFailed": "无法切换思考等级：{error}",
   "modelPicker.allFiltered": "settings.json 的 enabledModels 把所有模型都过滤掉了。",
   "modelPicker.manage": "管理模型…",
 

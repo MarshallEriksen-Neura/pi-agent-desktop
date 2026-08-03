@@ -28,18 +28,18 @@ import { Check, ChevronDown, SlidersHorizontal } from "lucide-react";
  */
 export function ModelPicker({ compact = false }: { compact?: boolean }) {
   const { models, currentModel, setModel, lastError, refresh } = usePi();
-  const settings = usePiSettings();
+  const loadSettings = usePiSettings((s) => s.load);
+  const enabled = usePiSettings((s) => s.effective().enabledModels);
   const t = useT();
 
   useEffect(() => {
-    settings.load();
-  }, [settings]);
+    void loadSettings();
+  }, [loadSettings]);
 
   // Honour the merged settings view so project overrides behave the same here
   // as they do on the Models page. Entries are canonical `provider/id` refs;
   // legacy bare ids still match (every provider serving that id), and glob
   // patterns remain delegated to pi and therefore show all here.
-  const enabled = settings.effective().enabledModels;
   const visibleModels = useMemo(() => {
     if (!enabled || enabled.length === 0) return models;
     if (hasGlobEntry(enabled)) return models;

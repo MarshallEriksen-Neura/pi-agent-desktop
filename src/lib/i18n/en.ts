@@ -6,6 +6,7 @@ export const en = {
   "common.done": "Done",
   "common.close": "Close",
   "common.loading": "Loading…",
+  "common.unknown": "unknown",
 
   // nav rail
   "nav.workspace": "Workspace",
@@ -85,6 +86,8 @@ export const en = {
   "message.steered": "interrupted",
   "message.queued": "queued",
   "message.undelivered": "not delivered",
+  "message.forkUnavailable": "This message has no Pi entry ID, so it cannot be forked.",
+  "message.forkFailed": "Could not fork this message: {error}",
   "agent.stop": "Stop",
   "agent.send": "Send",
   "agent.scrollTop": "Scroll to top",
@@ -99,24 +102,46 @@ export const en = {
 
   // retry transparency
   "retry.inProgress": "Retrying… (attempt {attempt}/{max})",
+  "retry.summarizationInProgress": "Retrying context summary… (attempt {attempt}/{max})",
   "retry.round": "round {rounds}",
   "retry.success": "Retry succeeded after {attempt} attempts",
   "retry.failed": "Retry failed: {reason}",
+  "retry.exhausted": "Automatic retries exhausted",
 
   // task failure surfacing
   "agent.taskFailedTitle": "Pi task failed",
-  "agent.taskFailed": "The task stopped with an error.",
+  "agent.taskFailed": "The task stopped with an error",
   "agent.piExited": "Pi process exited (code {code}) — the run was interrupted.",
   "agent.piExitedUnknown": "Pi process exited — the run was interrupted.",
   "agent.piUnavailable": "Pi is not connected or not running, so the task was not sent. Check the Pi CLI is installed and started in Settings.",
-  "agent.piNoResponse": "No response from Pi — the task may not have been received. Make sure Pi is running.",
+  "agent.piSendFailed": "Could not write the {command} request ({id}) to Pi: {reason}",
+  "agent.piAckTimeout": "Pi did not acknowledge the {command} request ({id}) within {seconds}s. Pi may be busy in preflight or its RPC channel may be stuck.",
+  "agent.piRequestExited": "Pi exited with code {code} before acknowledging the {command} request ({id}).",
+  "agent.piRequestStopped": "Pi was stopped before acknowledging the {command} request ({id}).",
+  "agent.piRequestFailed": "Pi RPC request failed: {reason}",
+  "agent.emptyResponse": "Pi finished the run without returning any text, reasoning, tool activity, or error. The upstream provider may have returned an empty response.",
   "agent.reconnecting": "Pi crashed — attempting to reconnect and resume your session…",
-  "agent.modelError": "The model returned an error ({reason}).",
+  "agent.modelError": "Model request failed ({reason})",
+  "agent.modelFailed": "Model request failed",
+
+  // error card affordances and hints
+  "agent.errorRetry": "Retry",
+  "agent.errorCopy": "Copy error",
+  "agent.errorCopied": "Copied",
+  "agent.errorMore": "Show details",
+  "agent.errorLess": "Hide details",
+  "agent.errorHintAuth": "Credentials or permissions were rejected: check your API key, account access, and whether the selected model is allowed.",
+  "agent.errorHintRate": "Rate limited or out of quota: wait and retry, or switch to another model.",
+  "agent.errorHintServer": "The provider is temporarily failing: retrying shortly usually works.",
+  "agent.errorHintNetwork": "The provider could not be reached: check your network, proxy, and base URL settings.",
+  "rpc.commandFailed": "Pi rejected {command}: {error}",
 
   // extension failures / context compaction
   "ext.error": "Extension {name} failed on {event}",
+  "ext.responseFailed": "Could not send the extension response: {error}",
   "compaction.aborted": "Context compaction was cancelled.",
   "compaction.failed": "Context compaction failed: {error}",
+  "summarization.finished": "Context-summary retry finished.",
 
   // queue — messages handed to pi mid-turn (steer / follow-up)
   "queue.steering": "{count} steering",
@@ -124,13 +149,17 @@ export const en = {
   "queue.pendingHint": "Stop to drop",
   "queue.steerFailed": "pi rejected the steering message",
   "queue.followUpFailed": "pi rejected the queued message",
-  "queue.noAck": "pi never acknowledged the message — not delivered",
 
   // session restore (context not reloaded into the agent)
   "session.restoreFailed": "Couldn't restore this conversation's context — Pi started fresh. Chat history is still shown, but the agent won't remember prior turns.",
+  "session.restoreFailedDetailed": "Couldn't restore this conversation's context: {error}. Pi is disconnected so new prompts cannot accidentally run in the wrong session.",
   "session.restoreRefused": "Pi couldn't load the saved session context ({error}). The agent started fresh; history below is display-only.",
   "session.noPath": "No session path was saved for this conversation — Pi started fresh. The agent won't remember prior turns, even though chat history is shown below.",
   "session.contextLost": "This conversation's context couldn't be restored — Pi started a new session. Your chat history is preserved below, but the agent won't remember prior turns. A new session has been created so future switches will work.",
+  "session.newRecovered": "Pi rejected the new-session request ({error}), so the app restarted Pi with a clean context.",
+  "session.newFailed": "Could not create a clean Pi session: {error}. Pi has been disconnected to prevent prompts from using the previous context.",
+  "session.projectSwitchFailed": "The project changed in the UI, but Pi could not restart in that project: {error}. Pi is disconnected to prevent work in the wrong folder.",
+  "session.renameSyncFailed": "The local title was saved, but Pi could not update its session title: {error}",
 
   // message operations
   "message.copy": "Copy",
@@ -178,6 +207,8 @@ export const en = {
   "modelPicker.none": "No models configured yet.",
   "modelPicker.loadFailed": "Could not load the model list from pi.",
   "modelPicker.retry": "Retry",
+  "modelPicker.switchFailed": "Could not switch models: {error}",
+  "thinking.switchFailed": "Could not change the thinking level: {error}",
   "modelPicker.allFiltered": "All models are hidden by enabledModels in settings.json.",
   "modelPicker.manage": "Manage models…",
 

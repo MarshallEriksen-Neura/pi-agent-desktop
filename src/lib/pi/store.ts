@@ -3,6 +3,9 @@
 import { create } from "zustand";
 import { getPiClient, isTauri } from "./client";
 import type { PiModel, PiState, ThinkingLevel } from "./protocol";
+import { useExtUi } from "./ext-ui";
+import { t } from "../i18n";
+import { piRequestErrorText } from "./request-error";
 
 // Re-export so `usePiSettings` resolves whether imported from here or from
 // "@/lib/pi/settings" — guards against stale bundler graphs.
@@ -58,6 +61,12 @@ const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 20_000];
 /** `client.on("session")` must be attached once, before the first start() */
 let sessionHooked = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let modelChangeSeq = 0;
+let thinkingChangeSeq = 0;
+
+function surfaceSettingFailure(key: string, error: string) {
+  useExtUi.getState().pushToast(t(key, { error }), "error", 6000);
+}
 
 /**
  * Keep asking for the model list while it is still empty. A single refresh at
@@ -127,9 +136,18 @@ export const usePi = create<PiStore>((set, get) => ({
       clearTimeout(retryTimer);
       retryTimer = null;
     }
-    await client.stop();
-    set({ status: "disconnected" });
+    try {
+      await client.stop();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      set({ status: "disconnected", lastError: detail });
+      throw error;
+    }
+    set({ status: "disconnected", lastError: null });
     await get().connect({ cwd, resumePath });
+    if (get().status === "disconnected") {
+      throw new Error(get().lastError || t("agent.piUnavailable"));
+    }
   },
 
   refresh: async () => {
@@ -186,20 +204,42 @@ export const usePi = create<PiStore>((set, get) => ({
 
   setModel: async (m) => {
     const prev = get().currentModel;
-    set({ currentModel: m }); // optimistic — feels iOS-instant
-    const r = await getPiClient().request({
-      type: "set_model",
-      provider: m.provider,
-      modelId: m.id,
-    });
-    if (!r.success) set({ currentModel: prev, lastError: r.error ?? null });
+    const requestSeq = ++modelChangeSeq;
+    set({ currentModel: m, lastError: null }); // optimistic — feels iOS-instant
+    try {
+      const r = await getPiClient().request({
+        type: "set_model",
+        provider: m.provider,
+        modelId: m.id,
+      });
+      if (r.success || requestSeq !== modelChangeSeq) return;
+      const error = r.error || t("agent.taskFailed");
+      set({ currentModel: prev, lastError: error });
+      surfaceSettingFailure("modelPicker.switchFailed", error);
+    } catch (error) {
+      if (requestSeq !== modelChangeSeq) return;
+      const detail = piRequestErrorText(error);
+      set({ currentModel: prev, lastError: detail });
+      surfaceSettingFailure("modelPicker.switchFailed", detail);
+    }
   },
 
   setThinking: async (level) => {
     const prev = get().thinkingLevel;
-    set({ thinkingLevel: level });
-    const r = await getPiClient().request({ type: "set_thinking_level", level });
-    if (!r.success) set({ thinkingLevel: prev, lastError: r.error ?? null });
+    const requestSeq = ++thinkingChangeSeq;
+    set({ thinkingLevel: level, lastError: null });
+    try {
+      const r = await getPiClient().request({ type: "set_thinking_level", level });
+      if (r.success || requestSeq !== thinkingChangeSeq) return;
+      const error = r.error || t("agent.taskFailed");
+      set({ thinkingLevel: prev, lastError: error });
+      surfaceSettingFailure("thinking.switchFailed", error);
+    } catch (error) {
+      if (requestSeq !== thinkingChangeSeq) return;
+      const detail = piRequestErrorText(error);
+      set({ thinkingLevel: prev, lastError: detail });
+      surfaceSettingFailure("thinking.switchFailed", detail);
+    }
   },
 
   cycleModel: async () => {

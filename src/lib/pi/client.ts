@@ -16,7 +16,7 @@ import {
 export interface Transport {
   readonly kind: "tauri" | "mock";
   start(opts: { cwd?: string; binary?: string; resumePath?: string }): Promise<void>;
-  send(line: string): void;
+  send(line: string): Promise<void>;
   onLine(cb: (line: string) => void): () => void;
   /** pi stderr (errors, stack traces, crash logs) */
   onStderr(cb: (line: string) => void): () => void;
@@ -59,10 +59,9 @@ class TauriTransport implements Transport {
     });
   }
 
-  send(line: string) {
-    import("@tauri-apps/api/core").then(({ invoke }) =>
-      invoke("pi_send", { line })
-    );
+  async send(line: string) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("pi_send", { line });
   }
 
   onLine(cb: (line: string) => void) {
@@ -108,8 +107,17 @@ class MockTransport implements Transport {
   private steering: string[] = [];
   /** messages waiting for the current turn to end */
   private followUps: string[] = [];
+  private nextCommandFailure: {
+    command: string;
+    mode: "error" | "timeout" | "send";
+  } | null = null;
+  private failNextStart = false;
 
   async start() {
+    if (this.failNextStart) {
+      this.failNextStart = false;
+      throw new Error("mock pi_start failed: process spawn rejected");
+    }
     this.emit({
       type: "session",
       version: 3,
@@ -134,6 +142,27 @@ class MockTransport implements Transport {
       data,
       error,
     } satisfies PiResponse);
+  }
+
+  /** Emit a short successful assistant turn for browser-only fault arming. */
+  private emitTextTurn(text: string) {
+    const assistant = {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      stopReason: "stop",
+    };
+    this.agentActive = true;
+    this.emit({ type: "agent_start" });
+    this.emit({ type: "message_start", message: assistant });
+    this.emit({
+      type: "message_update",
+      message: assistant,
+      assistantMessageEvent: { type: "text_end", content: text },
+    });
+    this.emit({ type: "message_end", message: assistant });
+    this.emit({ type: "agent_end", messages: [assistant], willRetry: false });
+    this.emit({ type: "agent_settled" });
+    this.agentActive = false;
   }
 
   /** mirror pi's pending-queue snapshot after every enqueue/dequeue */
@@ -189,11 +218,21 @@ class MockTransport implements Transport {
     this.runQueuedTurn(next);
   }
 
-  send(line: string) {
+  async send(line: string) {
     let cmd: PiCommand & { id?: string };
     try {
       cmd = JSON.parse(line);
     } catch {
+      return;
+    }
+    if (this.nextCommandFailure?.command === cmd.type) {
+      const failure = this.nextCommandFailure;
+      this.nextCommandFailure = null;
+      if (failure.mode === "send") {
+        throw new Error(`mock pi_send failed for ${cmd.type}: broken pipe`);
+      }
+      if (failure.mode === "timeout") return;
+      this.respond(cmd, undefined, `mock ${cmd.type} rejected the request`);
       return;
     }
     switch (cmd.type) {
@@ -229,12 +268,110 @@ class MockTransport implements Transport {
         const msg = (cmd as { message?: string }).message?.toLowerCase() ?? "";
 
         // ── error-path injection (browser testing of the failure surfaces) ──
+        if (msg.includes("err-send")) {
+          throw new Error("mock pi_send failed: broken pipe");
+        }
         // `err-timeout` deliberately never acks so PiClient.request() hits its
         // own 15s timer — that is the whole point of the case, so it must be
         // checked before respond().
         if (msg.includes("err-timeout")) return;
 
         this.respond(cmd);
+
+        const armed = /\barm-(compact|model|thinking|session|extension|fork)-(error|timeout|send)\b/.exec(
+          msg
+        );
+        if (armed) {
+          const commands: Record<string, string> = {
+            compact: "compact",
+            model: "set_model",
+            thinking: "cycle_thinking_level",
+            session: "new_session",
+            extension: "extension_ui_response",
+            fork: "fork",
+          };
+          this.nextCommandFailure = {
+            command: commands[armed[1]],
+            mode: armed[2] as "error" | "timeout" | "send",
+          };
+          if (armed[1] === "extension") {
+            this.emit({
+              type: "extension_ui_request",
+              id: `ui-fail-${Date.now()}`,
+              method: "confirm",
+              title: "Mock extension response failure",
+              message: "This dialog must stay open when Pi rejects the response.",
+            });
+          }
+          this.emitTextTurn(
+            `Armed next ${commands[armed[1]]} command to fail via ${armed[2]}.`
+          );
+          break;
+        }
+
+        if (msg.includes("arm-session-fatal")) {
+          this.nextCommandFailure = { command: "new_session", mode: "error" };
+          this.failNextStart = true;
+          this.emitTextTurn("Armed new_session rejection and restart spawn failure.");
+          break;
+        }
+
+        if (msg.includes("err-empty")) {
+          const assistant = {
+            role: "assistant",
+            content: [],
+            stopReason: "stop",
+          };
+          this.agentActive = true;
+          this.emit({ type: "agent_start" });
+          this.emit({ type: "message_start", message: assistant });
+          this.emit({ type: "message_end", message: assistant });
+          this.emit({ type: "agent_end", messages: [assistant], willRetry: false });
+          this.emit({ type: "agent_settled" });
+          this.agentActive = false;
+          break;
+        }
+
+        if (msg.includes("err-summarization")) {
+          const text = "Summary retry recovered";
+          const assistant = {
+            role: "assistant",
+            content: [{ type: "text", text }],
+            stopReason: "stop",
+          };
+          this.agentActive = true;
+          this.emit({ type: "agent_start" });
+          setTimeout(() => {
+            this.emit({
+              type: "summarization_retry_scheduled",
+              attempt: 1,
+              maxAttempts: 3,
+              delayMs: 600,
+              errorMessage: "529 overloaded_error: summary provider overloaded",
+            });
+          }, 200);
+          setTimeout(() => {
+            this.emit({
+              type: "summarization_retry_attempt_start",
+              source: "compaction",
+              reason: "threshold",
+            });
+          }, 800);
+          setTimeout(() => {
+            this.emit({ type: "summarization_retry_finished" });
+            this.emit({ type: "message_start", message: assistant });
+            this.emit({
+              type: "message_update",
+              message: assistant,
+              assistantMessageEvent: { type: "text_end", content: text },
+            });
+            this.emit({ type: "message_end", message: assistant });
+            this.emit({ type: "agent_end", messages: [assistant], willRetry: false });
+            this.emit({ type: "agent_settled" });
+            this.agentActive = false;
+          }, 1600);
+          break;
+        }
 
         if (msg.includes("err-model")) {
           this.agentActive = true;
@@ -319,6 +456,47 @@ class MockTransport implements Transport {
             // composer does not spin after the two toasts land
             this.emit({ type: "agent_settled" });
           }, 1600);
+          break;
+        }
+
+        if (msg.includes("err-responses")) {
+          const errorMessage =
+            'OpenAI API error (403): 403 {"error":{"message":"This account only allows Codex official clients","type":"forbidden_error"}}event: response.failed';
+          const assistant = {
+            role: "assistant",
+            content: [],
+            stopReason: "error",
+            errorMessage,
+          };
+          this.agentActive = true;
+          this.emit({ type: "agent_start" });
+          this.emit({ type: "message_start", message: assistant });
+          this.emit({ type: "message_end", message: assistant });
+          this.emit({ type: "agent_end", messages: [assistant], willRetry: false });
+          this.emit({ type: "agent_settled" });
+          this.agentActive = false;
+          break;
+        }
+
+        if (msg.includes("responses-final-only")) {
+          const text = "Responses final block received";
+          const assistant = {
+            role: "assistant",
+            content: [{ type: "text", text }],
+            stopReason: "stop",
+          };
+          this.agentActive = true;
+          this.emit({ type: "agent_start" });
+          this.emit({ type: "message_start", message: assistant });
+          this.emit({
+            type: "message_update",
+            message: assistant,
+            assistantMessageEvent: { type: "text_end", content: text },
+          });
+          this.emit({ type: "message_end", message: assistant });
+          this.emit({ type: "agent_end", messages: [assistant], willRetry: false });
+          this.emit({ type: "agent_settled" });
+          this.agentActive = false;
           break;
         }
 
@@ -827,10 +1005,62 @@ class MockTransport implements Transport {
 
 type EventCb = (e: PiEvent) => void;
 
+export type PiRequestErrorKind = "send" | "timeout" | "exit" | "stopped";
+
+interface PiRequestErrorOptions {
+  kind: PiRequestErrorKind;
+  command: string;
+  requestId: string;
+  detail?: string;
+  timeoutMs?: number;
+  exitCode?: number;
+}
+
+/** A request failed before Pi confirmed that it had accepted the command. */
+export class PiRequestError extends Error {
+  readonly kind: PiRequestErrorKind;
+  readonly command: string;
+  readonly requestId: string;
+  readonly detail?: string;
+  readonly timeoutMs?: number;
+  readonly exitCode?: number;
+
+  constructor(options: PiRequestErrorOptions) {
+    const suffix = options.detail ? `: ${options.detail}` : "";
+    super(
+      `pi rpc ${options.kind} (${options.command}, ${options.requestId})${suffix}`
+    );
+    this.name = "PiRequestError";
+    this.kind = options.kind;
+    this.command = options.command;
+    this.requestId = options.requestId;
+    this.detail = options.detail;
+    this.timeoutMs = options.timeoutMs;
+    this.exitCode = options.exitCode;
+  }
+}
+
+interface PendingRequest {
+  command: string;
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (response: PiResponse) => void;
+  reject: (error: PiRequestError) => void;
+}
+
+function errorDetail(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
 export class PiClient {
   readonly transport: Transport;
   private seq = 0;
-  private pending = new Map<string, (r: PiResponse) => void>();
+  private pending = new Map<string, PendingRequest>();
   private subs = new Map<string, Set<EventCb>>();
   private anySubs = new Set<EventCb>();
   private stderrSubs = new Set<(line: string) => void>();
@@ -851,8 +1081,30 @@ export class PiClient {
     this.transport.onLine((line) => this.handleLine(line));
     this.transport.onStderr((line) => this.stderrSubs.forEach((l) => l(line)));
     this.transport.onExit((code) => {
+      this.started = false;
+      this.rejectPending("exit", undefined, code);
       this.exitSubs.forEach((l) => l(code));
     });
+  }
+
+  private rejectPending(
+    kind: "exit" | "stopped",
+    detail?: string,
+    exitCode?: number
+  ) {
+    for (const [requestId, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(
+        new PiRequestError({
+          kind,
+          command: pending.command,
+          requestId,
+          detail,
+          exitCode,
+        })
+      );
+    }
+    this.pending.clear();
   }
 
   private handleLine(line: string) {
@@ -862,8 +1114,10 @@ export class PiClient {
       this.lastSessionId = ev.id;
     }
     if (ev.type === "response" && ev.id && this.pending.has(ev.id)) {
-      this.pending.get(ev.id)!(ev as PiResponse);
+      const pending = this.pending.get(ev.id)!;
       this.pending.delete(ev.id);
+      clearTimeout(pending.timer);
+      pending.resolve(ev as PiResponse);
     }
     this.subs.get(ev.type)?.forEach((cb) => cb(ev));
     this.anySubs.forEach((cb) => cb(ev));
@@ -877,7 +1131,10 @@ export class PiClient {
 
   /** fire-and-forget */
   send(cmd: PiCommand) {
-    this.transport.send(JSON.stringify(cmd));
+    void this.transport.send(JSON.stringify(cmd)).catch((error) => {
+      const line = `Pi RPC send failed (${cmd.type}): ${errorDetail(error)}`;
+      this.stderrSubs.forEach((listener) => listener(line));
+    });
   }
 
   /**
@@ -894,13 +1151,35 @@ export class PiClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`pi rpc timeout: ${cmd.type}`));
+        reject(
+          new PiRequestError({
+            kind: "timeout",
+            command: cmd.type,
+            requestId: id,
+            timeoutMs,
+          })
+        );
       }, timeoutMs);
-      this.pending.set(id, (r) => {
-        clearTimeout(timer);
-        resolve(r as PiResponse<T>);
+      this.pending.set(id, {
+        command: cmd.type,
+        timer,
+        resolve: (response) => resolve(response as PiResponse<T>),
+        reject,
       });
-      this.transport.send(JSON.stringify(withId));
+      void this.transport.send(JSON.stringify(withId)).catch((error) => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        clearTimeout(pending.timer);
+        pending.reject(
+          new PiRequestError({
+            kind: "send",
+            command: cmd.type,
+            requestId: id,
+            detail: errorDetail(error),
+          })
+        );
+      });
     });
   }
 
@@ -929,6 +1208,10 @@ export class PiClient {
 
   async stop() {
     this.started = false;
+    this.rejectPending(
+      "stopped",
+      "Pi was stopped before acknowledging the request"
+    );
     await this.transport.stop();
   }
 }

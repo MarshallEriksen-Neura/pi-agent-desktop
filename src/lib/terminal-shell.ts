@@ -3,6 +3,7 @@
 import { getPiClient } from "./pi/client";
 import type { BashResult } from "./pi/protocol";
 import { termBus, ansi } from "./terminal-bus";
+import { piRequestErrorText } from "./pi/request-error";
 
 /**
  * Interactive shell line-discipline for the terminal drawer.
@@ -34,7 +35,14 @@ export function handleTermInput(data: string) {
     // resolves with cancelled=true, which restores the prompt.
     if (data === "\x03") {
       termBus.write("^C\r\n");
-      getPiClient().send({ type: "abort_bash" });
+      void getPiClient()
+        .request({ type: "abort_bash" })
+        .then((response) => {
+          if (!response.success) {
+            termBus.writeln(ansi.red(response.error || "abort_bash failed"));
+          }
+        })
+        .catch((error) => termBus.writeln(ansi.red(piRequestErrorText(error))));
     }
     return; // ignore other typing while a command runs
   }

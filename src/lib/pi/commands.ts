@@ -10,7 +10,29 @@ import { usePi, type PiCommandInfo } from "./store";
 import { useSessions } from "./sessions";
 import { useSubagents } from "./subagents";
 import { useUI } from "../store";
+import { useExtUi } from "./ext-ui";
+import { piRequestErrorText } from "./request-error";
+import { t } from "../i18n";
 import type { TFunc } from "../i18n";
+import type { PiCommand } from "./protocol";
+
+async function runRpcCommand(command: PiCommand): Promise<boolean> {
+  try {
+    const response = await getPiClient().request(command);
+    if (response.success) return true;
+    useExtUi.getState().pushToast(
+      t("rpc.commandFailed", {
+        command: command.type,
+        error: response.error || t("agent.taskFailed"),
+      }),
+      "error",
+      6000
+    );
+  } catch (error) {
+    useExtUi.getState().pushToast(piRequestErrorText(error), "error", 6000);
+  }
+  return false;
+}
 
 export interface BuiltinSlashCommand {
   name: string;
@@ -29,7 +51,7 @@ export const BUILTIN_COMMANDS: BuiltinSlashCommand[] = [
   {
     name: "compact",
     descKey: "cmd.compact",
-    run: () => getPiClient().send({ type: "compact" }),
+    run: () => void runRpcCommand({ type: "compact" }),
   },
   {
     name: "model",
@@ -40,9 +62,9 @@ export const BUILTIN_COMMANDS: BuiltinSlashCommand[] = [
     name: "thinking",
     descKey: "cmd.thinking",
     run: () => {
-      void getPiClient()
-        .request({ type: "cycle_thinking_level" })
-        .then(() => usePi.getState().refresh());
+      void runRpcCommand({ type: "cycle_thinking_level" }).then((accepted) => {
+        if (accepted) void usePi.getState().refresh();
+      });
     },
   },
   {

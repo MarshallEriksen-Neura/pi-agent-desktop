@@ -1,8 +1,14 @@
 "use client";
 
 import { create } from "zustand";
-import { getPiClient } from "./client";
-import type { PiEvent, AssistantMessageEvent, PiImage } from "./protocol";
+import { getPiClient, PiRequestError } from "./client";
+import { piRequestErrorText } from "./request-error";
+import type {
+  PiCommand,
+  PiEvent,
+  AssistantMessageEvent,
+  PiImage,
+} from "./protocol";
 import { showNotification } from "../notifications";
 import { useUI } from "../store";
 import { usePi } from "./store";
@@ -28,8 +34,10 @@ export interface ChatMessage {
   streaming: boolean;
   /** true when this message represents a failed run (pi error / crash / not connected) */
   isError?: boolean;
-  /** human-readable error detail rendered in a banner */
+  /** one-line human summary of the failure — the headline of the error notice */
   errorText?: string;
+  /** raw upstream/technical detail, shown monospaced under the summary */
+  errorDetail?: string;
   /**
    * Set on user messages handed to pi while a turn was already in flight:
    * `steer` was injected into that turn, `followUp` waited for it to end.
@@ -40,6 +48,18 @@ export interface ChatMessage {
 
 /** How a message reaches pi when a turn is already running. */
 export type DeliveryMode = "steer" | "followUp";
+
+function reflectRequestFailure(error: unknown) {
+  if (
+    error instanceof PiRequestError &&
+    (error.kind === "send" || error.kind === "exit")
+  ) {
+    usePi.setState({
+      status: "disconnected",
+      lastError: error.detail || error.message,
+    });
+  }
+}
 
 /**
  * A message handed to pi mid-turn that pi has not consumed yet.
@@ -60,6 +80,8 @@ export interface RetryState {
   maxAttempts: number;
   reason?: string;
   status: "loading" | "success" | "error";
+  /** Distinguishes assistant-turn retries from compaction/branch-summary retries. */
+  scope?: "request" | "summarization";
   /** how many attempt sequences pi has started for this turn (1 = the first) */
   rounds?: number;
 }
@@ -80,6 +102,8 @@ interface ChatStore {
   followUp: (text: string, images?: string[]) => Promise<void>;
   abort: () => void;
   clear: () => void;
+  /** Re-run the last user prompt, replacing the failed turn that followed it. */
+  retryLast: () => Promise<void>;
   /** Replace the conversation with persisted messages (session restore/switch). */
   load: (messages: ChatMessage[]) => void;
   /** drop the local view of pi's queue (abort / session switch) */
@@ -100,6 +124,7 @@ const qid = () => `q-${++qseq}`;
  * turn a rate-limited provider into a wall of stacked banners.
  */
 const RETRY_ID = "retry-active";
+const SUMMARY_RETRY_ID = "summarization-retry-active";
 
 /** pull the text out of a `queue_update` item — its shape is not in the spec */
 function queueItemText(item: unknown): string {
@@ -210,7 +235,7 @@ export function formatUpstreamError(raw: string): string {
   if (at === -1) return s;
   let body: unknown;
   try {
-    body = JSON.parse(s.slice(at));
+    body = JSON.parse(firstJsonObject(s, at) ?? s.slice(at));
   } catch {
     return s; // truncated body, or prose that just happens to contain a brace
   }
@@ -218,6 +243,28 @@ export function formatUpstreamError(raw: string): string {
   if (!detail) return s;
   const prefix = s.slice(0, at).replace(/[\s:—–-]+$/u, "").trim();
   return prefix ? `${prefix} ${detail}` : detail;
+}
+
+/** Isolate the first JSON object from provider text that may append SSE frames. */
+function firstJsonObject(value: string, start: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < value.length; i++) {
+    const ch = value[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) return value.slice(start, i + 1);
+  }
+
+  return null;
 }
 
 /** `{message}` / `{error:{message}}` / `{error:"…"}` — the shapes providers use */
@@ -231,7 +278,43 @@ function upstreamErrorDetail(body: unknown): string {
   return o.error ? upstreamErrorDetail(o.error) : "";
 }
 
-/** drop retry rows that are still spinning — the turn they belong to is over */function dropLoadingRetries(
+/** A provider failure can arrive only on the final assistant message snapshot. */
+function assistantMessageError(
+  message: unknown
+): { summary: string; detail: string } | null {
+  if (!message || typeof message !== "object") return null;
+  const snapshot = message as Record<string, unknown>;
+  if (snapshot.role !== "assistant" || snapshot.stopReason === "aborted") return null;
+
+  const raw =
+    typeof snapshot.errorMessage === "string"
+      ? snapshot.errorMessage.trim()
+      : "";
+  const reason =
+    typeof snapshot.stopReason === "string" ? snapshot.stopReason : "error";
+  if (!raw && reason !== "error") return null;
+
+  return {
+    summary: modelErrorSummary(reason),
+    detail: raw ? formatUpstreamError(raw) : "",
+  };
+}
+
+/**
+ * Headline for a model-layer failure.
+ *
+ * pi reports `reason: "error"` for the whole generic bucket, so repeating it in
+ * the headline ("模型返回错误（error）") is noise — name the reason only when it
+ * actually says something.
+ */
+function modelErrorSummary(reason: string): string {
+  return !reason || reason === "error"
+    ? t("agent.modelFailed")
+    : t("agent.modelError", { reason });
+}
+
+/** drop retry rows that are still spinning — the turn they belong to is over */
+function dropLoadingRetries(
   retries: Map<string, RetryState>
 ): Map<string, RetryState> {
   const next = new Map<string, RetryState>();
@@ -239,8 +322,15 @@ function upstreamErrorDetail(body: unknown): string {
   return next;
 }
 
-/** Build a zustand updater that appends (or upgrades the last) assistant message to an error bubble. */
-function appendAssistantError(text: string) {
+/**
+ * Build a zustand updater that appends (or upgrades the last) assistant message
+ * to an error bubble.
+ *
+ * `summary` is the one-line headline, `detail` the raw upstream text. Neither is
+ * copied into `text`: the notice renders them itself, and mirroring the failure
+ * into the markdown body printed every error twice.
+ */
+function appendAssistantError(summary: string, detail?: string) {
   return (s: ChatStore): Partial<ChatStore> => {
     // A failed request may not have emitted message_start yet. In that case
     // the last assistant message belongs to the previous turn and must remain
@@ -254,8 +344,8 @@ function appendAssistantError(text: string) {
             ...m,
             streaming: false,
             isError: true,
-            errorText: text,
-            text: m.text || text,
+            errorText: summary,
+            ...(detail ? { errorDetail: detail } : {}),
           }))
         : [
             ...s.messages,
@@ -267,7 +357,8 @@ function appendAssistantError(text: string) {
               tools: [],
               streaming: false,
               isError: true,
-              errorText: text,
+              errorText: summary,
+              ...(detail ? { errorDetail: detail } : {}),
             },
           ],
     };
@@ -346,9 +437,63 @@ async function deliverMidTurn(
           t(kind === "steer" ? "queue.steerFailed" : "queue.followUpFailed")
       );
     }
-  } catch {
-    // no ack within the rpc timeout — pi is wedged or gone
-    reject(t("queue.noAck"));
+  } catch (error) {
+    reflectRequestFailure(error);
+    reject(piRequestErrorText(error));
+  }
+}
+
+/**
+ * Issue a `prompt` request whose user bubble is already in the transcript and
+ * surface the outcome. Shared by `send` (a new prompt) and `retryLast` (a re-run
+ * of the prompt whose turn failed).
+ */
+async function dispatchPrompt(
+  message: string,
+  images: PiImage[]
+): Promise<void> {
+  const set = useChat.setState;
+  try {
+    const res = await getPiClient().request({
+      type: "prompt",
+      message,
+      ...(images.length ? { images } : {}),
+    });
+    if (!res.success) set(appendAssistantError(t("agent.taskFailed"), res.error));
+  } catch (error) {
+    // A thrown request means no ack (send failure / timeout / process exit).
+    // Surface the concrete category and backend detail whenever available,
+    // regardless of connection status — a live-but-unresponsive pi used to leave
+    // `streaming` stuck on true, spinning the composer forever. The only thing
+    // we skip is a duplicate banner when onExit already wrote one.
+    const messages = useChat.getState().messages;
+    if (messages[messages.length - 1]?.isError) {
+      set({ streaming: false }); // banner already there, just settle the UI
+    } else {
+      set(appendAssistantError(piRequestErrorText(error)));
+    }
+    reflectRequestFailure(error);
+    useUI.getState().endAgentRun();
+  }
+}
+
+/** Send a user-triggered control command and surface both NACKs and transport failures. */
+async function requestControl(cmd: PiCommand): Promise<void> {
+  try {
+    const response = await getPiClient().request(cmd);
+    if (!response.success) {
+      useExtUi.getState().pushToast(
+        t("rpc.commandFailed", {
+          command: cmd.type,
+          error: response.error || t("agent.taskFailed"),
+        }),
+        "error",
+        6000
+      );
+    }
+  } catch (error) {
+    useExtUi.getState().pushToast(piRequestErrorText(error), "error", 6000);
+    reflectRequestFailure(error);
   }
 }
 
@@ -363,6 +508,8 @@ export const useChat = create<ChatStore>((set, get) => ({
     if (get().initialized) return;
     set({ initialized: true });
     const client = getPiClient();
+    let activeRunStarted = false;
+    let activeRunHadOutput = false;
 
     const ensureAssistant = () =>
       set((s) => {
@@ -383,7 +530,11 @@ export const useChat = create<ChatStore>((set, get) => ({
         };
       });
 
-    client.on("agent_start", () => set({ streaming: true }));
+    client.on("agent_start", () => {
+      activeRunStarted = true;
+      activeRunHadOutput = false;
+      set({ streaming: true });
+    });
     client.on("message_start", () => ensureAssistant());
 
     // ── pi error / crash surfacing ──
@@ -402,22 +553,26 @@ export const useChat = create<ChatStore>((set, get) => ({
     client.onExit((code) => {
       const s = get();
       if (!s.streaming) return; // not mid-run: a normal exit, ignore
-      const detail = pendingStderr.trim();
-      let errText: string;
-      if (detail) {
-        errText = `${t("agent.taskFailed")}\n\n${detail.slice(-2000)}`;
+      const stderr = pendingStderr.trim();
+      let summary: string;
+      let detail = "";
+      if (stderr) {
+        summary = t("agent.taskFailed");
+        detail = stderr.slice(-2000);
       } else if (typeof code === "number") {
-        errText = t("agent.piExited", { code: String(code) });
+        summary = t("agent.piExited", { code: String(code) });
       } else {
-        errText = t("agent.piExitedUnknown");
+        summary = t("agent.piExitedUnknown");
       }
       useUI.getState().endAgentRun();
       usePi.setState({ status: "disconnected" });
-      set(appendAssistantError(errText));
+      set(appendAssistantError(summary, detail));
       pendingStderr = "";
       const { notificationSettings } = useUI.getState();
       if (notificationSettings.enabled) {
-        showNotification(t("agent.taskFailedTitle"), { body: errText.slice(0, 120) });
+        showNotification(t("agent.taskFailedTitle"), {
+          body: (detail ? `${summary} ${detail}` : summary).slice(0, 120),
+        });
       }
 
       // Auto-reconnect: pi crashed mid-run. After a short delay, if nobody
@@ -471,13 +626,33 @@ export const useChat = create<ChatStore>((set, get) => ({
             : typeof ev.error === "string"
               ? formatUpstreamError(ev.error)
               : "";
-        const text = t("agent.modelError", { reason });
-        set(appendAssistantError(extra ? `${text}\n\n${extra}` : text));
+        activeRunHadOutput = true;
+        set(appendAssistantError(modelErrorSummary(reason), extra));
         useUI.getState().endAgentRun();
         return;
       }
 
+      // Responses-compatible providers are allowed to send only the complete
+      // block on *_end. Replace (rather than append) so a provider that also
+      // emitted deltas cannot duplicate its final text.
+      if (
+        (ev.type === "text_end" || ev.type === "thinking_end") &&
+        typeof ev.content === "string"
+      ) {
+        if (ev.content.length > 0) activeRunHadOutput = true;
+        ensureAssistant();
+        set((s) => ({
+          messages: patchLastAssistant(s.messages, (m) =>
+            ev.type === "thinking_end"
+              ? { ...m, thinking: ev.content as string }
+              : { ...m, text: ev.content as string }
+          ),
+        }));
+        return;
+      }
+
       if (!ev.delta) return;
+      activeRunHadOutput = true;
       ensureAssistant();
       set((s) => ({
         messages: patchLastAssistant(s.messages, (m) =>
@@ -490,7 +665,19 @@ export const useChat = create<ChatStore>((set, get) => ({
       }));
     });
 
-    client.on("message_end", () => {
+    client.on("message_end", (e: PiEvent) => {
+      if (e.type !== "message_end") return;
+      const providerError = assistantMessageError(e.message);
+      if (providerError) {
+        activeRunHadOutput = true;
+        const last = get().messages[get().messages.length - 1];
+        if (!last?.isError) {
+          set(appendAssistantError(providerError.summary, providerError.detail));
+        }
+        useUI.getState().endAgentRun();
+        return;
+      }
+
       set((s) => {
         const updated = patchLastAssistant(s.messages, (m) => ({
           ...m,
@@ -526,6 +713,7 @@ export const useChat = create<ChatStore>((set, get) => ({
 
     client.on("tool_execution_start", (e: PiEvent) => {
       if (e.type !== "tool_execution_start") return;
+      activeRunHadOutput = true;
       ensureAssistant();
       set((s) => ({
         messages: patchLastAssistant(s.messages, (m) => ({
@@ -557,19 +745,34 @@ export const useChat = create<ChatStore>((set, get) => ({
       }));
     });
 
-    client.on("agent_settled", () =>
-      set((s) => ({
-        streaming: false,
-        messages: s.messages.map((m) => ({ ...m, streaming: false })),
-        // pi drains steering and follow-ups before it settles, so nothing can
-        // still be pending here. Clearing unconditionally also means a pi build
-        // that never emits `queue_update` cannot leave a stuck chip behind.
-        queue: [],
-        // Same for a retry pi never closed with `auto_retry_end`: the turn is
-        // over, so the row must not keep spinning with a live Stop button.
-        activeRetries: dropLoadingRetries(s.activeRetries),
-      }))
-    );
+    client.on("agent_settled", () => {
+      const emptyTerminal =
+        get().streaming && activeRunStarted && !activeRunHadOutput;
+      set((s) => {
+        const common = {
+          streaming: false,
+          // pi drains steering and follow-ups before it settles, so nothing can
+          // still be pending here. Clearing unconditionally also means a pi build
+          // that never emits `queue_update` cannot leave a stuck chip behind.
+          queue: [],
+          // Same for a retry pi never closed with `auto_retry_end`: the turn is
+          // over, so the row must not keep spinning with a live Stop button.
+          activeRetries: dropLoadingRetries(s.activeRetries),
+        };
+        if (emptyTerminal) {
+          return {
+            ...common,
+            ...appendAssistantError(t("agent.emptyResponse"))(s),
+          };
+        }
+        return {
+          ...common,
+          messages: s.messages.map((m) => ({ ...m, streaming: false })),
+        };
+      });
+      activeRunStarted = false;
+      activeRunHadOutput = false;
+    });
 
     client.on("queue_update", (e: PiEvent) => {
       if (e.type !== "queue_update") return;
@@ -590,9 +793,43 @@ export const useChat = create<ChatStore>((set, get) => ({
         attempt: e.attempt,
         maxAttempts: e.maxAttempts,
         status: "loading",
+        scope: "request",
         rounds: live ? (live.rounds ?? 1) + (e.attempt <= live.attempt ? 1 : 0) : 1,
         ...(e.errorMessage ? { reason: formatUpstreamError(e.errorMessage) } : {}),
       });
+    });
+
+    // Summarization uses a separate retry loop from assistant turns. Pi exposes
+    // the triggering provider error only on `summarization_retry_scheduled`, so
+    // dropping these events made compaction/branch-summary stalls look idle.
+    client.on("summarization_retry_scheduled", (e: PiEvent) => {
+      if (e.type !== "summarization_retry_scheduled") return;
+      get().addRetry(SUMMARY_RETRY_ID, {
+        attempt: e.attempt,
+        maxAttempts: e.maxAttempts,
+        status: "loading",
+        scope: "summarization",
+        ...(e.errorMessage
+          ? { reason: formatUpstreamError(e.errorMessage) }
+          : {}),
+      });
+    });
+
+    client.on("summarization_retry_attempt_start", (e: PiEvent) => {
+      if (e.type !== "summarization_retry_attempt_start") return;
+      const retry = get().activeRetries.get(SUMMARY_RETRY_ID);
+      if (!retry) return;
+      get().updateRetry(SUMMARY_RETRY_ID, {
+        scope: "summarization",
+        ...(e.source ? { reason: retry.reason || e.source } : {}),
+      });
+    });
+
+    client.on("summarization_retry_finished", (e: PiEvent) => {
+      if (e.type !== "summarization_retry_finished") return;
+      if (!get().activeRetries.has(SUMMARY_RETRY_ID)) return;
+      get().removeRetry(SUMMARY_RETRY_ID);
+      useExtUi.getState().pushToast(t("summarization.finished"), "info", 3500);
     });
 
     // Context compaction: `aborted` is benign (user/agent cancelled it),
@@ -639,8 +876,7 @@ export const useChat = create<ChatStore>((set, get) => ({
       // failure must also live in the transcript, otherwise the user loses the
       // upstream error as soon as that transient status row is gone.
       if (!e.success && get().streaming) {
-        const reason = finalError || t("agent.taskFailed");
-        set(appendAssistantError(t("retry.failed", { reason })));
+        set(appendAssistantError(t("retry.exhausted"), finalError));
         useUI.getState().endAgentRun();
       }
     });
@@ -700,28 +936,48 @@ export const useChat = create<ChatStore>((set, get) => ({
       streaming: true,
     }));
 
-    try {
-      const res = await getPiClient().request({
-        type: "prompt",
-        message: trimmed,
-        ...(piImages.length ? { images: piImages } : {}),
-      });
-      if (!res.success) {
-        set(appendAssistantError(res.error || t("agent.taskFailed")));
+    await dispatchPrompt(trimmed, piImages);
+  },
+
+  retryLast: async () => {
+    const s = get();
+    if (s.streaming) return;
+
+    // The prompt to re-run is the last user message; everything after it is the
+    // failed turn, which this retry replaces. pi has no `regenerate` command, so
+    // this is a fresh `prompt` — the transcript just doesn't grow a duplicate
+    // user bubble for it.
+    let at = -1;
+    for (let i = s.messages.length - 1; i >= 0; i--) {
+      if (s.messages[i].role === "user") {
+        at = i;
+        break;
       }
-    } catch {
-      // A thrown request means no ack (rpc timeout / pi died mid-send). Surface
-      // it regardless of connection status — a live-but-unresponsive pi used to
-      // leave `streaming` stuck on true, spinning the composer forever. The only
-      // thing we skip is a duplicate banner when onExit already wrote one.
-      const last = get().messages[get().messages.length - 1];
-      if (last?.isError) {
-        set({ streaming: false }); // banner already there, just settle the UI
-      } else {
-        set(appendAssistantError(t("agent.piNoResponse")));
-      }
-      useUI.getState().endAgentRun();
     }
+    if (at === -1) return;
+
+    const source = s.messages[at];
+    const trimmed = source.text.trim();
+    const piImages = (source.images ?? [])
+      .map(dataUrlToPiImage)
+      .filter((x): x is PiImage => x !== null);
+    if (!trimmed && piImages.length === 0) return;
+
+    const kept = s.messages.slice(0, at + 1);
+    const piStatus = usePi.getState().status;
+    if (piStatus !== "ready" && piStatus !== "running") {
+      set({ messages: kept, activeRetries: dropLoadingRetries(s.activeRetries) });
+      set(appendAssistantError(t("agent.piUnavailable")));
+      return;
+    }
+
+    set({
+      messages: kept,
+      streaming: true,
+      activeRetries: dropLoadingRetries(s.activeRetries),
+    });
+
+    await dispatchPrompt(trimmed, piImages);
   },
 
   steer: (text, images) => deliverMidTurn("steer", text, images),
@@ -733,16 +989,16 @@ export const useChat = create<ChatStore>((set, get) => ({
     const s = get();
 
     // The turn itself.
-    client.send({ type: "abort" });
+    void requestControl({ type: "abort" });
 
     // Two side-channels `abort` does not reach on its own: a retry waiting out
     // its backoff, and a bash tool that is already running in a child process.
     const retrying = [...s.activeRetries.values()].some((r) => r.status === "loading");
-    if (retrying) client.send({ type: "abort_retry" });
+    if (retrying) void requestControl({ type: "abort_retry" });
     const bashRunning = s.messages.some((m) =>
       m.tools.some((tl) => tl.status === "running" && /^(bash|shell)$/i.test(tl.name))
     );
-    if (bashRunning) client.send({ type: "abort_bash" });
+    if (bashRunning) void requestControl({ type: "abort_bash" });
 
     // Reset UI immediately: stop the streaming spinner, drop any in-flight
     // retries, and clear the queue view — aborting is the only way to discard
