@@ -14,7 +14,7 @@
  */
 
 import { create } from "zustand";
-import { isTauri } from "./client";
+import { getBackendKind, getPort } from "../backend/composition/container";
 import { usePi } from "./store";
 import { useWorkspace } from "../workspace";
 
@@ -111,21 +111,6 @@ interface ScopeFile {
 
 const EMPTY_SCOPE: ScopeFile = { path: "", exists: false, data: null, parseError: null };
 
-const MOCK_GLOBAL: PiSettings = {
-  defaultProvider: "anthropic",
-  defaultModel: "claude-sonnet-4-5",
-  defaultThinkingLevel: "medium",
-  theme: "dark",
-  defaultProjectTrust: "ask",
-  compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
-  packages: ["npm:pi-skills", "npm:@juanibiapina/pi-powerbar", "git:github.com/user/pi-tools@v1"],
-};
-
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>) {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(cmd, args);
-}
-
 interface PiSettingsStore {
   mock: boolean;
   loaded: boolean;
@@ -171,7 +156,7 @@ function parseScope(raw: { path: string; exists: boolean; content: string }): Sc
 }
 
 export const usePiSettings = create<PiSettingsStore>((set, get) => ({
-  mock: !isTauri(),
+  mock: false,
   loaded: false,
   busy: false,
   dirtyRestart: false,
@@ -180,30 +165,20 @@ export const usePiSettings = create<PiSettingsStore>((set, get) => ({
   project: EMPTY_SCOPE,
 
   load: async () => {
-    if (get().mock) {
-      set({
-        loaded: true,
-        global: {
-          path: "~/.pi/agent/settings.json",
-          exists: true,
-          data: structuredClone(MOCK_GLOBAL),
-          parseError: null,
-        },
-        project: {
-          path: ".pi/settings.json",
-          exists: false,
-          data: null,
-          parseError: null,
-        },
-      });
-      return;
-    }
+    const isMock = getBackendKind() === "browser-preview";
     try {
+      const piConfiguration = getPort("piConfiguration");
       const [g, p] = await Promise.all([
-        tauriInvoke<{ path: string; exists: boolean; content: string }>("pi_settings_read", { scope: "global" }),
-        tauriInvoke<{ path: string; exists: boolean; content: string }>("pi_settings_read", { scope: "project", root: projectRoot() }),
+        piConfiguration.readSettings("global"),
+        piConfiguration.readSettings("project", projectRoot()),
       ]);
-      set({ loaded: true, global: parseScope(g), project: parseScope(p), lastError: null });
+      set({
+        mock: isMock,
+        loaded: true,
+        global: parseScope(g),
+        project: parseScope(p),
+        lastError: null,
+      });
     } catch (e) {
       set({ lastError: e instanceof Error ? e.message : String(e) });
     }
@@ -228,16 +203,12 @@ export const usePiSettings = create<PiSettingsStore>((set, get) => ({
     // optimistic local update
     set({ [scope]: { ...file, exists: true, data: next } } as never);
 
-    if (st.mock) {
-      set({ dirtyRestart: true });
-      return;
-    }
     try {
-      await tauriInvoke("pi_settings_write", {
+      await getPort("piConfiguration").writeSettings(
         scope,
-        content: JSON.stringify(next, null, 2) + "\n",
-        root: scope === "project" ? projectRoot() : null,
-      });
+        JSON.stringify(next, null, 2) + "\n",
+        scope === "project" ? projectRoot() : null
+      );
       set({ dirtyRestart: true, lastError: null });
     } catch (e) {
       set({ [scope]: file, lastError: e instanceof Error ? e.message : String(e) } as never);
@@ -287,15 +258,9 @@ export const usePiSettings = create<PiSettingsStore>((set, get) => ({
   },
 
   runPiCli: async (args) => {
-    if (get().mock) {
-      return { code: 0, stdout: `(mock) pi ${args.join(" ")}\n`, stderr: "" };
-    }
     set({ busy: true });
     try {
-      return await tauriInvoke<{ code: number; stdout: string; stderr: string }>("pi_cli", {
-        args,
-        cwd: projectRoot(),
-      });
+      return await getPort("piConfiguration").runPiCli(args, projectRoot());
     } finally {
       set({ busy: false });
     }

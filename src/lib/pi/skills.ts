@@ -16,7 +16,7 @@
  */
 
 import { create } from "zustand";
-import { isTauri } from "./client";
+import { getBackendKind, getPort } from "../backend/composition/container";
 import { usePiSettings } from "./settings";
 import { useWorkspace } from "../workspace";
 
@@ -36,11 +36,6 @@ interface FsEntry {
   name: string;
   path: string;
   isDir: boolean;
-}
-
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>) {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(cmd, args);
 }
 
 const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -64,7 +59,7 @@ function parseSkillMd(content: string, fallbackName: string) {
 
 async function readFile(path: string): Promise<string | null> {
   try {
-    return await tauriInvoke<string>("fs_read_file", { path });
+    return await getPort("piConfiguration").readSkillFile(path);
   } catch {
     return null;
   }
@@ -72,7 +67,7 @@ async function readFile(path: string): Promise<string | null> {
 
 async function listDir(path: string): Promise<FsEntry[]> {
   try {
-    return await tauriInvoke<FsEntry[]>("fs_list_dir", { path });
+    return await getPort("piConfiguration").listSkillDirectory(path);
   } catch {
     return []; // missing directory = zero skills, not an error
   }
@@ -178,7 +173,7 @@ interface SkillsStore {
 }
 
 export const useSkills = create<SkillsStore>((set, get) => ({
-  mock: !isTauri(),
+  mock: false,
   loading: false,
   scanned: false,
   skills: [],
@@ -186,11 +181,18 @@ export const useSkills = create<SkillsStore>((set, get) => ({
   error: null,
 
   scan: async () => {
-    if (get().mock) {
-      set({ scanned: true, skills: MOCK_SKILLS, unscannable: [], error: null });
+    const isMock = getBackendKind() === "browser-preview";
+    if (isMock) {
+      set({
+        mock: true,
+        scanned: true,
+        skills: MOCK_SKILLS,
+        unscannable: [],
+        error: null,
+      });
       return;
     }
-    set({ loading: true, error: null });
+    set({ mock: false, loading: true, error: null });
     try {
       if (!usePiSettings.getState().loaded) await usePiSettings.getState().load();
       const s = usePiSettings.getState();
@@ -239,7 +241,7 @@ export const useSkills = create<SkillsStore>((set, get) => ({
   },
 
   readSource: async (file) => {
-    if (get().mock) return MOCK_SOURCE;
-    return tauriInvoke<string>("fs_read_file", { path: file });
+    if (getBackendKind() === "browser-preview") return MOCK_SOURCE;
+    return getPort("piConfiguration").readSkillFile(file);
   },
 }));

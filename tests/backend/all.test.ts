@@ -1,0 +1,12 @@
+import "./command-inventory.test";
+import "./bootstrap-order.test";
+import "./pi-client.test";
+import "./mock-pi-process.test";
+import "./mock-workspace-fs.test";
+import "./runtime-store.test";
+import "./composition.test";
+import "./chat-recovery.test";
+import "./remote-contracts.test";
+import "./project-switch.test";
+import "./session-lifecycle.test";
+import "./backend-provider.test";

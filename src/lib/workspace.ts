@@ -1,12 +1,10 @@
 "use client";
 
 import { create } from "zustand";
-import { isTauri } from "./pi/client";
-import { usePi } from "./pi/store";
-import { useSessions, peekLatestSessionPath, flushActiveSession } from "./pi/sessions";
-import { WORKSPACE_FILES } from "./files";
 import { isImageFile } from "./image-files";
 import { useUI } from "./store";
+import { getBackendKind, getPort } from "./backend/composition/container";
+import { switchWorkspaceProject } from "./orchestration/project-switch";
 
 export interface FsEntry {
   name: string;
@@ -18,36 +16,6 @@ export interface RecentProject {
   path: string;
   name: string;
   lastOpenedAt: number;
-}
-
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>) {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(cmd, args);
-}
-
-/* ── mock tree derived from WORKSPACE_FILES keys (browser preview) ── */
-function mockList(dir: string): FsEntry[] {
-  const prefix = dir === "" ? "" : dir + "/";
-  const dirs = new Set<string>();
-  const files: FsEntry[] = [];
-  for (const key of Object.keys(WORKSPACE_FILES)) {
-    if (!key.startsWith(prefix)) continue;
-    const rest = key.slice(prefix.length);
-    const slash = rest.indexOf("/");
-    if (slash === -1) {
-      files.push({ name: rest, path: key, isDir: false });
-    } else {
-      dirs.add(rest.slice(0, slash));
-    }
-  }
-  return [
-    ...[...dirs].sort().map((name) => ({
-      name,
-      path: prefix + name,
-      isDir: true,
-    })),
-    ...files.sort((a, b) => a.name.localeCompare(b.name)),
-  ];
 }
 
 interface WorkspaceStore {
@@ -92,7 +60,7 @@ interface WorkspaceStore {
 
 export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   root: null,
-  mock: !isTauri(),
+  mock: false,
   initialized: false,
   switching: false,
   recents: [],
@@ -103,20 +71,16 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
 
   init: async () => {
     if (get().initialized) return;
-    if (!isTauri()) {
-      set({
-        root: "",
-        mock: true,
-        initialized: true,
-        entries: { "": mockList("") },
-        docs: { ...WORKSPACE_FILES },
-      });
-      return;
-    }
     try {
-      const root = await tauriInvoke<string>("workspace_root");
-      const top = await tauriInvoke<FsEntry[]>("fs_list_dir", { path: root });
-      set({ root, mock: false, initialized: true, entries: { [root]: top } });
+      const workspaceFs = getPort("workspaceFs");
+      const root = await workspaceFs.root();
+      const top = await workspaceFs.listDir(root);
+      set({
+        root,
+        mock: getBackendKind() === "browser-preview",
+        initialized: true,
+        entries: { [root]: top },
+      });
     } catch (e) {
       set({
         initialized: true,
@@ -129,7 +93,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   loadRecents: async () => {
     if (get().mock) return;
     try {
-      const recents = await tauriInvoke<RecentProject[]>("projects_recent");
+      const recents = await getPort("projectCatalog").listRecent();
       set({ recents });
     } catch {
       // recents are cosmetic — never surface an error for them
@@ -141,30 +105,23 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     if (mock || switching) return;
     set({ switching: true, loadError: null });
     try {
-      // persist + canonicalize first; also refreshes recents ordering
-      const root = await tauriInvoke<string>("project_open", { path });
-      await get().loadRecents();
-      if (root === get().root) return; // already open — reordering recents was enough
-
-      const top = await tauriInvoke<FsEntry[]>("fs_list_dir", { path: root });
-      // full reset — nothing from the previous project may leak into this one
-      set({
-        root,
-        entries: { [root]: top },
-        expanded: {},
-        docs: {},
-        loadError: null,
+      await switchWorkspaceProject({
+        path,
+        currentRoot: get().root,
+        projectCatalog: getPort("projectCatalog"),
+        workspaceFs: getPort("workspaceFs"),
+        setActiveFile: (activePath) => useUI.getState().setActiveFile(activePath),
+        loadRecents: get().loadRecents,
+        applyProjectRoot: (root, top) => {
+          set({
+            root,
+            entries: { [root]: top },
+            expanded: {},
+            docs: {},
+            loadError: null,
+          });
+        },
       });
-      useUI.getState().setActiveFile("");
-      // save the outgoing project's transcript before pi goes away
-      await flushActiveSession();
-      // pi's cwd is fixed at spawn time — restart it inside the new project,
-      // resuming that project's own newest session so its context comes back
-      // with it (history is scoped per project, so nothing leaks across)
-      const resumePath = await peekLatestSessionPath(root);
-      await usePi.getState().restart(root, resumePath || undefined);
-      // re-scope the sidebar history to the new project
-      await useSessions.getState().switchProject(root);
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -175,7 +132,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   pickProject: async () => {
     if (get().mock || get().switching) return;
     try {
-      const picked = await tauriInvoke<string | null>("project_pick");
+      const picked = await getPort("projectCatalog").pick();
       if (picked) await get().openProject(picked);
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
@@ -185,10 +142,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   removeRecent: async (path) => {
     if (get().mock) return;
     try {
-      const recents = await tauriInvoke<RecentProject[]>(
-        "project_remove_recent",
-        { path }
-      );
+      const recents = await getPort("projectCatalog").removeRecent(path);
       set({ recents });
     } catch {
       // list stays as-is on failure
@@ -196,14 +150,12 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   },
 
   toggleDir: async (path) => {
-    const { expanded, entries, mock } = get();
+    const { expanded, entries } = get();
     const open = !expanded[path];
     set({ expanded: { ...expanded, [path]: open } });
     if (open && !entries[path]) {
       try {
-        const children = mock
-          ? mockList(path)
-          : await tauriInvoke<FsEntry[]>("fs_list_dir", { path });
+        const children = await getPort("workspaceFs").listDir(path);
         set((s) => ({ entries: { ...s.entries, [path]: children } }));
       } catch (e) {
         set({ loadError: e instanceof Error ? e.message : String(e) });
@@ -212,13 +164,11 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   },
 
   openFile: async (path) => {
-    const { docs, mock } = get();
+    const { docs } = get();
     // images are fetched as base64 by the ImageViewer — no text doc to load
     if (docs[path] === undefined && !isImageFile(path)) {
       try {
-        const content = mock
-          ? (WORKSPACE_FILES[path] ?? "")
-          : await tauriInvoke<string>("fs_read_file", { path });
+        const content = await getPort("workspaceFs").readFile(path);
         set((s) => ({ docs: { ...s.docs, [path]: content } }));
       } catch (e) {
         set({ loadError: e instanceof Error ? e.message : String(e) });
@@ -231,7 +181,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   reloadFile: async (path) => {
     if (get().mock || isImageFile(path)) return;
     try {
-      const content = await tauriInvoke<string>("fs_read_file", { path });
+      const content = await getPort("workspaceFs").readFile(path);
       set((s) => ({ docs: { ...s.docs, [path]: content } }));
     } catch {
       // binary / deleted / unreadable — keep whatever we had
@@ -242,7 +192,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     const { mock, entries } = get();
     if (mock || !entries[path]) return; // only refresh dirs already listed
     try {
-      const children = await tauriInvoke<FsEntry[]>("fs_list_dir", { path });
+      const children = await getPort("workspaceFs").listDir(path);
       set((s) => ({ entries: { ...s.entries, [path]: children } }));
     } catch {
       // tree stays as-is on failure
@@ -256,7 +206,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     get().updateDoc(path, content);
     if (get().mock) return; // nowhere to persist in browser preview
     try {
-      await tauriInvoke("fs_write_file", { path, content });
+      await getPort("workspaceFs").writeFile(path, content);
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
     }
@@ -266,7 +216,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     if (get().mock) return;
     const path = `${dirPath}/${name}`;
     try {
-      await tauriInvoke("fs_create_file", { path });
+      await getPort("workspaceFs").createFile(path);
       await get().refreshDir(dirPath);
       // open the new empty file in the editor
       set((s) => ({ docs: { ...s.docs, [path]: "" } }));
@@ -280,7 +230,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     if (get().mock) return;
     const path = `${dirPath}/${name}`;
     try {
-      await tauriInvoke("fs_create_dir", { path });
+      await getPort("workspaceFs").createDir(path);
       await get().refreshDir(dirPath);
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
@@ -290,7 +240,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   deleteEntry: async (path, isDir) => {
     if (get().mock) return;
     try {
-      await tauriInvoke("fs_delete", { path });
+      await getPort("workspaceFs").deleteEntry(path);
       // remove from docs cache
       set((s) => {
         const docs = { ...s.docs };
@@ -329,7 +279,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     const parent = oldPath.substring(0, oldPath.lastIndexOf("/"));
     const newPath = `${parent}/${newName}`;
     try {
-      await tauriInvoke("fs_rename", { from: oldPath, to: newPath });
+      await getPort("workspaceFs").renameEntry(oldPath, newPath);
       // migrate cached doc content to new key
       set((s) => {
         const docs = { ...s.docs };

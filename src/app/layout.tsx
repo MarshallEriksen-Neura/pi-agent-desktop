@@ -4,6 +4,7 @@ import "./globals.css";
 import "streamdown/styles.css";
 import { AppShell } from "@/components/AppShell";
 import { GlobalErrorBoundary } from "@/components/GlobalErrorBoundary";
+import { BackendProvider } from "@/components/BackendProvider";
 
 const cormorant = Cormorant_Garamond({
   subsets: ["latin"],
@@ -38,7 +39,9 @@ export default function RootLayout({
       <body>
         {/* app-level last resort — Next's global-error breaks output:"export" */}
         <GlobalErrorBoundary>
-          <AppShell>{children}</AppShell>
+          <BackendProvider>
+            <AppShell>{children}</AppShell>
+          </BackendProvider>
         </GlobalErrorBoundary>
       </body>
     </html>

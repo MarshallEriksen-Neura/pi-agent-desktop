@@ -18,7 +18,7 @@ export function ProjectSwitcher() {
   const [open, setOpen] = useState(false);
   const t = useT();
 
-  // `mock` depends on isTauri() (window), so the prerendered HTML can't know it.
+  // Backend kind is configured client-side, so prerendered HTML cannot know it.
   // Render nothing until hydrated — matches the server output in both modes.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);

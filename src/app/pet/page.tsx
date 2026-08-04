@@ -15,9 +15,7 @@ import { usePet } from "@/lib/pet/store";
 import { PetSprite } from "@/components/PetSprite";
 import { loadPet as loadPetById } from "@/lib/pet";
 import { loadPetPreferences } from "@/lib/pet/persistence";
-import { isTauri } from "@/lib/pi/client";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen, emit } from "@tauri-apps/api/event";
+import { getPort } from "@/lib/backend/composition/container";
 import type { PetConfigUpdate, PetStateUpdate } from "@/lib/pet/types";
 
 export default function PetWindow() {
@@ -54,26 +52,23 @@ export default function PetWindow() {
 
   // Listen for state + config updates from the main window
   useEffect(() => {
-    if (!isTauri()) return;
-
     let disposed = false;
     const unlistenFns: (() => void)[] = [];
 
     const setupListeners = async () => {
       try {
-        const unlistenState = await listen<PetStateUpdate>(
-          "pet-state-update",
-          (event) => {
-            const { state, body } = event.payload;
+        const petWindow = getPort("petWindow");
+        const unlistenState = await petWindow.onStateUpdate(
+          (event: PetStateUpdate) => {
+            const { state, body } = event;
             usePet.getState().setState(state, body);
             setLastUpdate(Date.now());
             setConnectionError(null); // Clear error on successful update
           }
         );
-        const unlistenConfig = await listen<PetConfigUpdate>(
-          "pet-config-update",
-          async (event) => {
-            const { petId } = event.payload;
+        const unlistenConfig = await petWindow.onConfigUpdate(
+          async (event: PetConfigUpdate) => {
+            const { petId } = event;
             if (!petId) {
               usePet.getState().disablePet();
               return;
@@ -96,7 +91,7 @@ export default function PetWindow() {
         unlistenFns.push(unlistenState, unlistenConfig);
         setConnectionError(null);
         // Ask the main window to re-send the current agent state
-        await emit("pet-window-ready", {});
+        await petWindow.emitWindowReady();
       } catch (err) {
         console.error("[PetWindow] Failed to setup listener:", err);
         setConnectionError("Failed to connect to main window");
@@ -140,8 +135,7 @@ export default function PetWindow() {
     dragRef.current.y = e.clientY;
 
     try {
-      const window = getCurrentWindow();
-      await window.startDragging();
+      await getPort("window").startDragging();
     } catch (err) {
       console.error("[PetWindow] Drag failed:", err);
     }
@@ -153,7 +147,7 @@ export default function PetWindow() {
     const dy = Math.abs(e.clientY - dragRef.current.y);
     if (dx < 5 && dy < 5) {
       // Tell the main window to restore/focus itself
-      emit("pet-restore-main", {}).catch((err) => {
+      getPort("petWindow").emitRestoreMain().catch((err) => {
         console.error("[PetWindow] Failed to emit pet-restore-main:", err);
       });
     }

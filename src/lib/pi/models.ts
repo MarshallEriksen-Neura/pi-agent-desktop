@@ -22,7 +22,7 @@
  */
 
 import { create } from "zustand";
-import { isTauri } from "./client";
+import { getBackendKind, getPort } from "../backend/composition/container";
 import { usePiSettings } from "./settings";
 
 export interface CustomModelDef {
@@ -54,31 +54,6 @@ export const API_TYPES = [
   "anthropic-messages",
   "google-generative-ai",
 ] as const;
-
-const MOCK_MODELS: ModelsJson = {
-  providers: {
-    "my-proxy": {
-      baseUrl: "https://api.example.com/v1",
-      api: "openai-completions",
-      apiKey: "sk-mock",
-      models: [
-        {
-          id: "gpt-5-mini",
-          name: "GPT-5 Mini (proxy)",
-          reasoning: true,
-          input: ["text", "image"],
-          contextWindow: 200000,
-          maxTokens: 16384,
-        },
-      ],
-    },
-  },
-};
-
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>) {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(cmd, args);
-}
 
 export interface ProviderConfig {
   baseUrl: string;
@@ -148,7 +123,7 @@ function normalize(data: unknown): ModelsJson {
 }
 
 export const usePiModels = create<PiModelsStore>((set, get) => ({
-  mock: !isTauri(),
+  mock: false,
   loaded: false,
   path: "",
   data: structuredClone(EMPTY),
@@ -156,26 +131,22 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
   lastError: null,
 
   load: async () => {
-    if (get().mock) {
-      set({
-        loaded: true,
-        path: "~/.pi/agent/models.json",
-        data: structuredClone(MOCK_MODELS),
-        parseError: null,
-      });
-      return;
-    }
+    const isMock = getBackendKind() === "browser-preview";
     try {
-      const raw = await tauriInvoke<{ path: string; exists: boolean; content: string }>(
-        "pi_settings_read",
-        { scope: "models" }
-      );
+      const raw = await getPort("piConfiguration").readSettings("models");
       if (!raw.exists || !raw.content.trim()) {
-        set({ loaded: true, path: raw.path, data: structuredClone(EMPTY), parseError: null });
+        set({
+          mock: isMock,
+          loaded: true,
+          path: raw.path,
+          data: structuredClone(EMPTY),
+          parseError: null,
+        });
         return;
       }
       try {
         set({
+          mock: isMock,
           loaded: true,
           path: raw.path,
           data: normalize(JSON.parse(raw.content)),
@@ -220,21 +191,10 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
   },
 
   fetchModels: async (baseUrl, api, apiKey) => {
-    if (get().mock) {
-      // sample list so the UI flow is testable in the browser
-      await new Promise((r) => setTimeout(r, 300));
-      return [
-        "gpt-4o-mini",
-        "gpt-4o",
-        "gpt-4-turbo",
-        "o3-mini",
-        "text-embedding-3-small",
-      ];
-    }
-    return tauriInvoke<string[]>("pi_fetch_models", {
+    return getPort("piConfiguration").fetchModels({
       baseUrl,
       api,
-      apiKey: apiKey ?? null,
+      apiKey,
     });
   },
 
@@ -366,16 +326,12 @@ async function save(
 ) {
   const prev = get().data;
   set({ data: next }); // optimistic
-  if (get().mock) {
-    usePiSettings.setState({ dirtyRestart: true });
-    return;
-  }
   try {
-    await tauriInvoke("pi_settings_write", {
-      scope: "models",
-      content: JSON.stringify(next, null, 2) + "\n",
-      root: null,
-    });
+    await getPort("piConfiguration").writeSettings(
+      "models",
+      JSON.stringify(next, null, 2) + "\n",
+      null
+    );
     usePiSettings.setState({ dirtyRestart: true });
     set({ lastError: null });
   } catch (e) {

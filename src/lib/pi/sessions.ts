@@ -1,13 +1,19 @@
 "use client";
 
 import { create } from "zustand";
-import { getPiClient, isTauri } from "./client";
 import { useChat, type ChatMessage } from "./chat";
-import { usePi } from "./store";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
-import type { PiState } from "./protocol";
-import { piRequestErrorText } from "./request-error";
+import type { GenerateTitleInput, SessionRepositoryPort } from "../backend/ports";
+import { getBackendKind, getPort } from "../backend/composition/container";
+import { getPiClient } from "./client";
+import {
+  readCurrentPiSessionPath,
+  resetPiConversation,
+  restartPiForRestoredSession,
+  getCurrentPiModel,
+  syncPiSessionName,
+} from "../orchestration/session-lifecycle";
 
 /**
  * Chat-session history — zustand in front, SQLite (Tauri/Rust) behind.
@@ -44,7 +50,10 @@ interface SessionsStore {
 
   init: (projectRoot: string) => Promise<void>;
   /** Re-scope history to another project (called after the workspace switches). */
-  switchProject: (projectRoot: string) => Promise<void>;
+  switchProject: (
+    projectRoot: string,
+    options?: { processAlreadyResumed?: boolean },
+  ) => Promise<void>;
   newSession: () => Promise<void>;
   switchSession: (id: string) => Promise<void>;
   renameSession: (id: string, name: string) => Promise<void>;
@@ -59,45 +68,47 @@ export function projectKey(root: string | null | undefined): string {
   return (root ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
+/* ── persistence backend: injected Tauri SQLite repository, or browser mock ── */
 
-/* ── persistence backend: Tauri SQLite, or localStorage in browser preview ── */
-
-interface StoredSession extends ChatSessionMeta {
-  messages: ChatMessage[];
+interface SessionDependencies {
+  repository: SessionRepositoryPort;
+  desktopFeatures: boolean;
+  projectRoot: () => string | null;
 }
 
-const LS_KEY = "pi-desktop.chat-sessions";
+let configuredDependencies: SessionDependencies | null = null;
 
-function lsRead(): StoredSession[] {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
+function defaultDependencies(): SessionDependencies {
+  return {
+    repository: getPort("sessionRepository"),
+    desktopFeatures: getBackendKind() === "desktop-tauri",
+    projectRoot: () => useSessions.getState().projectRoot,
+  };
 }
 
-function lsWrite(all: StoredSession[]) {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(all));
-  } catch {
-    // storage unavailable (private mode) — history lives in memory only
-  }
+function sessionDependencies(): SessionDependencies {
+  return configuredDependencies ?? defaultDependencies();
+}
+
+export function configureSessionDependenciesForTests(
+  dependencies: SessionDependencies | null
+): void {
+  configuredDependencies = dependencies;
+}
+
+export function configureSessionProjectRootResolver(
+  projectRoot: () => string | null,
+): void {
+  configuredDependencies = {
+    repository: getPort("sessionRepository"),
+    desktopFeatures: getBackendKind() === "desktop-tauri",
+    projectRoot,
+  };
 }
 
 async function backendList(projectRoot: string): Promise<ChatSessionMeta[]> {
   const key = projectKey(projectRoot);
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<ChatSessionMeta[]>("chat_sessions_list", {
-      projectRoot: key,
-    });
-  }
-  return lsRead()
-    .filter((s) => projectKey(s.projectRoot) === key)
-    .map(({ messages: _messages, ...meta }) => meta)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+  return sessionDependencies().repository.list(key);
 }
 
 /**
@@ -115,56 +126,23 @@ export async function peekLatestSessionPath(projectRoot: string): Promise<string
 }
 
 async function backendLoad(id: string): Promise<ChatMessage[]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const json = await invoke<string | null>("chat_session_load", { id });
-    if (!json) return [];
-    try {
-      const arr = JSON.parse(json);
-      return Array.isArray(arr) ? (arr as ChatMessage[]) : [];
-    } catch {
-      return [];
-    }
-  }
-  return lsRead().find((s) => s.id === id)?.messages ?? [];
+  return sessionDependencies().repository.load(id);
 }
 
 async function backendSave(meta: ChatSessionMeta, messages: ChatMessage[]) {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("chat_session_save", {
-      session: {
-        id: meta.id,
-        name: meta.name,
-        sessionPath: meta.sessionPath,
-        preview: meta.preview,
-        projectRoot: projectKey(meta.projectRoot),
-        messages: JSON.stringify(messages),
-        createdAt: meta.createdAt,
-      },
-    });
-    return;
-  }
-  const rest = lsRead().filter((s) => s.id !== meta.id);
-  lsWrite([{ ...meta, updatedAt: Date.now(), messages }, ...rest]);
+  await sessionDependencies().repository.save({
+    ...meta,
+    projectRoot: projectKey(meta.projectRoot),
+    messages,
+  });
 }
 
 async function backendRename(id: string, name: string) {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("chat_session_rename", { id, name });
-    return;
-  }
-  lsWrite(lsRead().map((s) => (s.id === id ? { ...s, name } : s)));
+  await sessionDependencies().repository.rename(id, name);
 }
 
 async function backendDelete(id: string) {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("chat_session_delete", { id });
-    return;
-  }
-  lsWrite(lsRead().filter((s) => s.id !== id));
+  await sessionDependencies().repository.delete(id);
 }
 
 /* ── helpers ── */
@@ -258,7 +236,8 @@ function scheduleSave() {
  * existing first-message fallback intact and must never affect a user prompt.
  */
 async function generateInitialTitle(messages: ChatMessage[]) {
-  if (!isTauri()) return;
+  const dependencies = sessionDependencies();
+  if (!dependencies.desktopFeatures) return;
   const { activeId, sessions } = useSessions.getState();
   if (!activeId || titleAttempts.has(activeId)) return;
   const session = sessions.find((item) => item.id === activeId);
@@ -271,15 +250,14 @@ async function generateInitialTitle(messages: ChatMessage[]) {
   titleRequests.set(activeId, firstMessage.id);
 
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const model = usePi.getState().currentModel;
-    const { useWorkspace } = await import("../workspace");
-    const title = await invoke<string>("pi_generate_title", {
+    const model = getCurrentPiModel();
+    const input: GenerateTitleInput = {
       prompt: firstMessage.text,
       provider: model?.provider ?? null,
       modelId: model?.id ?? null,
-      cwd: useWorkspace.getState().root ?? null,
-    });
+      cwd: dependencies.projectRoot(),
+    };
+    const title = await dependencies.repository.generateTitle(input);
     const normalized = title.trim();
     if (!normalized) return;
 
@@ -320,27 +298,13 @@ export const flushActiveSession = () => flushSave();
  * while the UI still shows history (the "AI forgot" symptom).
  */
 async function syncSessionPath(): Promise<void> {
-  if (!isTauri()) return;
+  if (!sessionDependencies().desktopFeatures) return;
   let lastFailure = "";
   for (let attempt = 0; attempt <= SYNC_DELAYS_MS.length; attempt++) {
     let path = "";
-    try {
-      const r = await getPiClient().request<PiState>({ type: "get_state" });
-      if (!r.success) {
-        lastFailure = r.error || "get_state failed";
-      }
-      // pi returns sessionFile (full path) and sessionId (UUID), NOT sessionPath.
-      // Prefer the full file path; fall back to the UUID. Both work with --session.
-      if (r.success) {
-        path = r.data?.sessionFile ?? r.data?.sessionId ?? r.data?.sessionPath ?? "";
-      }
-    } catch (error) {
-      lastFailure = piRequestErrorText(error);
-      // get_state not ready yet — will retry
-    }
-    // Fall back to the session id captured from pi's `session` event (rarely
-    // populated in practice — pi RPC mode doesn't emit it — but harmless).
-    if (!path) path = getPiClient().lastSessionId;
+    const result = await readCurrentPiSessionPath();
+    path = result.path;
+    lastFailure = result.failure;
 
     const { activeId } = useSessions.getState();
     if (path && activeId) {
@@ -392,66 +356,14 @@ async function resetPiSession(
   projectRoot: string,
   restartForProject = false
 ): Promise<boolean> {
-  if (restartForProject) {
-    try {
-      // `new_session` resets context but cannot change cwd. A project switch
-      // with no saved conversations must therefore restart Pi in the new root.
-      await usePi.getState().restart(projectRoot || undefined);
-      void syncSessionPath();
-      return true;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      usePi.setState({ status: "disconnected", lastError: detail });
-      useExtUi.getState().pushToast(
-        t("session.projectSwitchFailed", { error: detail }),
-        "error",
-        9000
-      );
-      return false;
-    }
-  }
-
-  let firstFailure = "";
-  try {
-    const response = await getPiClient().request({ type: "new_session" });
-    if (!response.success) {
-      firstFailure = response.error || t("agent.taskFailed");
-      throw new Error(firstFailure);
-    }
-    void syncSessionPath();
-    return true;
-  } catch (error) {
-    firstFailure ||= piRequestErrorText(error);
-  }
-
-  try {
-    await usePi.getState().restart(projectRoot || undefined);
-    useExtUi.getState().pushToast(
-      t("session.newRecovered", { error: firstFailure }),
-      "warning",
-      7000
-    );
-    void syncSessionPath();
-    return true;
-  } catch (error) {
-    const restartFailure =
-      error instanceof Error ? error.message : String(error);
-    usePi.setState({ status: "disconnected", lastError: restartFailure });
-    useExtUi.getState().pushToast(
-      t("session.newFailed", {
-        error: `${firstFailure} · ${restartFailure}`,
-      }),
-      "error",
-      9000
-    );
-    return false;
-  }
+  return resetPiConversation(projectRoot, () => void syncSessionPath(), restartForProject);
 }
 
 /** Begin an empty conversation in `projectRoot` and reset pi's session. */
 async function startFresh(
   projectRoot: string,
-  restartForProject = false
+  restartForProject = false,
+  processAlreadyReset = false,
 ): Promise<void> {
   sessionPathSynced = false;
   sessionPathWarningFor = null;
@@ -462,7 +374,11 @@ async function startFresh(
     activeId: meta.id,
   }));
   void backendSave(meta, []);
-  await resetPiSession(projectRoot, restartForProject);
+  if (!processAlreadyReset) {
+    await resetPiSession(projectRoot, restartForProject);
+  } else {
+    void syncSessionPath();
+  }
 }
 
 /* ── store ── */
@@ -502,9 +418,11 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     // the most reliable trigger. The retry loop inside syncSessionPath is the
     // safety net in case this listener misses the event (connect() runs before
     // init()).
-    getPiClient().on("session", () => {
-      if (!sessionPathSynced) void syncSessionPath();
-    });
+    if (sessionDependencies().desktopFeatures) {
+      getPiClient().on("session", () => {
+        if (!sessionPathSynced) void syncSessionPath();
+      });
+    }
 
     // autosave — every chat change lands in the active session (debounced)
     useChat.subscribe((s, prev) => {
@@ -517,7 +435,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     window.addEventListener("beforeunload", () => void flushSave());
   },
 
-  switchProject: async (projectRoot) => {
+  switchProject: async (projectRoot, options) => {
     const key = projectKey(projectRoot);
     if (get().initialized && key === get().projectRoot) return;
     await flushSave(); // persist the outgoing project's transcript first
@@ -533,21 +451,16 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       set({ activeId: latest.id });
       // Restart pi with the new project root and session path — both cwd
       // and context must change for the switched project.
-      try {
-        await usePi.getState().restart(projectRoot, latest.sessionPath);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        usePi.setState({ status: "disconnected", lastError: detail });
-        useExtUi.getState().pushToast(
-          t("session.projectSwitchFailed", { error: detail }),
-          "error",
-          9000
+      if (!options?.processAlreadyResumed) {
+        const restored = await restartPiForRestoredSession(
+          projectRoot,
+          latest.sessionPath,
         );
-        return;
+        if (!restored) return;
       }
       void syncSessionPath();
     } else {
-      await startFresh(key, true);
+      await startFresh(key, true, options?.processAlreadyResumed === true);
     }
   },
 
@@ -579,27 +492,15 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       // "AI forgot" symptom). --session at spawn time is the only mechanism
       // proven to load the full transcript (past turns, tool results,
       // thinking) into the agent loop.
-      try {
-        const { useWorkspace } = await import("../workspace");
-        const root = useWorkspace.getState().root ?? undefined;
-        await usePi.getState().restart(root, sessionPath);
-        void syncSessionPath();
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        usePi.setState({ status: "disconnected", lastError: detail });
-        useExtUi.getState().pushToast(
-          t("session.restoreFailedDetailed", { error: detail }),
-          "error",
-          9000
-        );
-      }
+      const root = sessionDependencies().projectRoot() ?? get().projectRoot;
+      const restored = await restartPiForRestoredSession(root || undefined, sessionPath);
+      if (restored) void syncSessionPath();
     } else {
       // No session path was ever persisted for this conversation — pi cannot
       // resume prior context. Create a new session so the sessionPath gets
       // pinned for future launches, and tell the user explicitly.
       useExtUi.getState().pushToast(t("session.contextLost"), "warning", 8000);
-      const { useWorkspace } = await import("../workspace");
-      const root = useWorkspace.getState().root ?? get().projectRoot;
+      const root = sessionDependencies().projectRoot() ?? get().projectRoot;
       await resetPiSession(root);
     }
   },
@@ -615,33 +516,9 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     } catch {
       // keep the optimistic rename — it will persist with the next save
     }
-    if (id === get().activeId && isTauri()) {
+    if (id === get().activeId && sessionDependencies().desktopFeatures) {
       // Keep Pi's own session picker in sync with the desktop-side history.
-      void (async () => {
-        try {
-          const response = await getPiClient().request({
-            type: "set_session_name",
-            name: trimmed,
-          });
-          if (!response.success) {
-            useExtUi.getState().pushToast(
-              t("session.renameSyncFailed", {
-                error: response.error || t("agent.taskFailed"),
-              }),
-              "warning",
-              6000
-            );
-          }
-        } catch (error) {
-          useExtUi.getState().pushToast(
-            t("session.renameSyncFailed", {
-              error: piRequestErrorText(error),
-            }),
-            "warning",
-            6000
-          );
-        }
-      })();
+      void syncPiSessionName(trimmed);
     }
   },
 

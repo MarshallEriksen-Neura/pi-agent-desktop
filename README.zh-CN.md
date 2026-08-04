@@ -86,7 +86,7 @@ flowchart LR
 ```
 
 - **Rust 桥接**（`src-tauri/src/pi_bridge.rs`）—— spawn `pi --mode rpc`，把 stdout JSONL 逐行以 `pi://line` 事件发往前端（`pi_send` 写回 stdin）。
-- **传输层**（`src/lib/pi/client.ts`）—— `TauriTransport`（真实进程）/ `MockTransport`（浏览器预览）在运行时按 `isTauri()` 切换。
+- **后端能力层**（`src/lib/backend/`）——桌面与浏览器组合根会在 UI 挂载前，显式注入进程、文件系统、会话、运行时、窗口、通知和更新能力。
 - **协议**（`src/lib/pi/protocol.ts`）—— 所有 RPC 命令与事件，严格 JSONL（每行一个 JSON 对象）。
 - **状态** —— zustand stores（`usePi` / `chat` / `useUI`），`agent-bridge.ts` 把 pi 工具事件翻译为 UI agent-task 状态。
 
@@ -111,6 +111,7 @@ pnpm tauri:dev      # 完整桌面应用：启动 pnpm dev + Tauri 窗口（真�
 pnpm build          # Next.js 静态导出到 out/
 pnpm tauri:build    # 生产桌面包（会先执行 pnpm build）
 pnpm lint           # next lint
+pnpm test:backend   # 后端 ports、组合根与平台边界的聚焦测试
 ```
 
 Rust 侧检查：

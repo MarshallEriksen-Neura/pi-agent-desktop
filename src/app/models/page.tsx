@@ -23,7 +23,7 @@ import { ProviderMeta, PROVIDER_META } from "@/components/provider-meta";
 import { ModelIcon } from "@/components/icons";
 import { resolveModelMetaOrFallback } from "@/lib/model-icon";
 import { useT } from "@/lib/i18n";
-import { isTauri } from "@/lib/pi/client";
+import { getPort } from "@/lib/backend/composition/container";
 import { usePi } from "@/lib/pi/store";
 import { usePiSettings } from "@/lib/pi/settings";
 import {
@@ -42,9 +42,11 @@ import {
 const spring = { type: "spring" as const, stiffness: 320, damping: 28 };
 
 async function confirmRemoval(message: string): Promise<boolean> {
-  if (!isTauri()) return window.confirm(message);
-  const { confirm } = await import("@tauri-apps/plugin-dialog");
-  return confirm(message);
+  try {
+    return await getPort("window").confirm(message);
+  } catch {
+    return window.confirm(message);
+  }
 }
 
 export default function ModelsPage() {

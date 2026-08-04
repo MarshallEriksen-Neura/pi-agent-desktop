@@ -11,7 +11,7 @@
  */
 
 import { create } from "zustand";
-import { isTauri } from "./client";
+import { getPort } from "../backend/composition/container";
 
 export type RuntimeMode = "native" | "wsl";
 
@@ -26,11 +26,6 @@ export interface RuntimeConfig {
 }
 
 const DEFAULT_CONFIG: RuntimeConfig = { mode: "native", distro: "" };
-
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>) {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(cmd, args);
-}
 
 interface RuntimeStore {
   config: RuntimeConfig;
@@ -50,6 +45,10 @@ interface RuntimeStore {
   save: (config: RuntimeConfig) => Promise<void>;
 }
 
+function runtimePort() {
+  return getPort("runtimeConfig");
+}
+
 export const useRuntime = create<RuntimeStore>((set) => ({
   config: DEFAULT_CONFIG,
   persistedConfig: DEFAULT_CONFIG,
@@ -59,12 +58,8 @@ export const useRuntime = create<RuntimeStore>((set) => ({
   lastError: null,
 
   load: async () => {
-    if (!isTauri()) {
-      set({ loaded: true });
-      return;
-    }
     try {
-      const config = await tauriInvoke<RuntimeConfig>("runtime_config_read");
+      const config = await runtimePort().read();
       const loadedConfig = config ?? DEFAULT_CONFIG;
       set({
         config: loadedConfig,
@@ -78,9 +73,8 @@ export const useRuntime = create<RuntimeStore>((set) => ({
   },
 
   loadDistros: async () => {
-    if (!isTauri()) return;
     try {
-      const distros = await tauriInvoke<string[]>("wsl_list_distros");
+      const distros = await runtimePort().listWslDistros();
       set({ distros: distros ?? [], lastError: null });
     } catch (e) {
       set({ lastError: e instanceof Error ? e.message : String(e) });
@@ -91,13 +85,9 @@ export const useRuntime = create<RuntimeStore>((set) => ({
 
   save: async (config) => {
     set({ config });
-    if (!isTauri()) {
-      set({ persistedConfig: config });
-      return;
-    }
     set({ busy: true });
     try {
-      await tauriInvoke("runtime_config_write", { config });
+      await runtimePort().write(config);
       set({ persistedConfig: config, lastError: null });
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
@@ -108,3 +98,14 @@ export const useRuntime = create<RuntimeStore>((set) => ({
     }
   },
 }));
+
+export function resetRuntimeStoreForTests(): void {
+  useRuntime.setState({
+    config: DEFAULT_CONFIG,
+    persistedConfig: DEFAULT_CONFIG,
+    distros: [],
+    loaded: false,
+    busy: false,
+    lastError: null,
+  });
+}

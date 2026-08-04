@@ -9,17 +9,14 @@ import { usePet } from "@/lib/pet/store";
 import { fetchBuiltinCatalog } from "@/lib/pet/catalog";
 import { loadPet } from "@/lib/pet/index";
 import { showPetWindow, hidePetWindow, togglePetWindow } from "@/lib/pet/commands";
-import { isTauri } from "@/lib/pi/client";
 import { loadPetPreferences, savePetPreferences } from "@/lib/pet/persistence";
-import { emit } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { getBackendKind, getPort } from "@/lib/backend/composition/container";
 import type { PetConfigUpdate, BuiltinPet, CustomPetEntry } from "@/lib/pet/types";
 
 /** Tell an already-open pet window that the selection changed */
 function broadcastPetConfig(petId: string | null) {
-  if (!isTauri()) return;
   const update: PetConfigUpdate = { petId };
-  emit("pet-config-update", update).catch((err) => {
+  getPort("petWindow").emitConfigUpdate(update).catch((err) => {
     console.error("[PetSettings] Failed to broadcast pet config:", err);
   });
 }
@@ -37,6 +34,7 @@ export function PetSettings() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<PetEntry[]>([]);
+  const supportsPetWindow = getBackendKind() === "desktop-tauri";
 
   // Load catalog on mount
   useEffect(() => {
@@ -63,16 +61,14 @@ export function PetSettings() {
       }));
 
       let customEntries: PetEntry[] = [];
-      if (isTauri()) {
-        const custom = await invoke<CustomPetEntry[]>("list_custom_pets");
-        customEntries = custom.map((p) => ({
-          id: p.id,
-          displayName: p.displayName,
-          description: p.description,
-          source: "custom" as const,
-          basePath: p.basePath,
-        }));
-      }
+      const custom = await getPort("petWindow").listCustomPets();
+      customEntries = custom.map((p: CustomPetEntry) => ({
+        id: p.id,
+        displayName: p.displayName,
+        description: p.description,
+        source: "custom" as const,
+        basePath: p.basePath,
+      }));
 
       setCatalog([...builtinEntries, ...customEntries]);
     } catch (e) {
@@ -89,7 +85,7 @@ export function PetSettings() {
         savePetPreferences({ enabled: false, petId: null });
       }
       broadcastPetConfig(null);
-      if (isTauri()) {
+      if (supportsPetWindow) {
         await hidePetWindow();
       }
       return;
@@ -112,7 +108,7 @@ export function PetSettings() {
         savePetPreferences({ enabled: true, petId });
       }
 
-      if (isTauri()) {
+      if (supportsPetWindow) {
         await showPetWindow();
       }
 
@@ -129,7 +125,7 @@ export function PetSettings() {
   };
 
   const handleToggleWindow = async () => {
-    if (!isTauri()) return;
+    if (!supportsPetWindow) return;
     try {
       await togglePetWindow();
     } catch (e) {
@@ -207,7 +203,7 @@ export function PetSettings() {
         )}
       </div>
 
-      {isTauri() && customPets.length === 0 && (
+      {supportsPetWindow && customPets.length === 0 && (
         <div className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800/50 p-2 rounded">
           To add custom pets, place pet folders in:{" "}
           <code className="text-[11px]">AppData/Local/dev.pi.desktop/pets/custom/</code>
@@ -222,7 +218,7 @@ export function PetSettings() {
 
       {loading && <div className="text-xs text-gray-500">Loading pet...</div>}
 
-      {activePet && isTauri() && (
+      {activePet && supportsPetWindow && (
         <button
           onClick={handleToggleWindow}
           className="text-xs px-3 py-1.5 bg-gray-100 dark:bg-gray-800 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -231,7 +227,7 @@ export function PetSettings() {
         </button>
       )}
 
-      {!isTauri() && activePet && (
+      {!supportsPetWindow && activePet && (
         <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-2 rounded">
           Pet window requires Tauri desktop app
         </div>

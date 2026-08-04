@@ -15,6 +15,7 @@ import { usePi } from "./store";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
 import { restoreFromTray } from "../window-close";
+import { getChatRecoveryTarget } from "../orchestration/chat-recovery";
 
 export interface ChatToolCall {
   id: string;
@@ -583,17 +584,12 @@ export const useChat = create<ChatStore>((set, get) => ({
         if (usePi.getState().status !== "disconnected") return; // already reconnected
         void (async () => {
           try {
-            const { useSessions } = await import("./sessions");
-            const { useWorkspace } = await import("../workspace");
-            const root = useWorkspace.getState().root ?? undefined;
-            const activeId = useSessions.getState().activeId;
-            const meta = useSessions
-              .getState()
-              .sessions.find((x) => x.id === activeId);
+            const target = getChatRecoveryTarget();
+            if (!target) return;
             useExtUi.getState().pushToast(t("agent.reconnecting"), "info", 4000);
             await usePi.getState().connect({
-              cwd: root,
-              resumePath: meta?.sessionPath || undefined,
+              cwd: target.cwd,
+              resumePath: target.resumePath,
             });
           } catch {
             // auto-reconnect failed — user will need to restart manually

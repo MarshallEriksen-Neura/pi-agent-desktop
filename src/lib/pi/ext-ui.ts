@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { getPiClient, isTauri } from "./client";
+import { getPiClient } from "./client";
 import type {
   ExtensionUiRequest,
   ExtensionUiResponse,
@@ -9,6 +9,7 @@ import type {
 } from "./protocol";
 import { t } from "../i18n";
 import { piRequestErrorText } from "./request-error";
+import { getPort } from "../backend/composition/container";
 
 export interface Toast {
   id: string;
@@ -63,9 +64,8 @@ let toastSeq = 0;
 /** setTitle — reflect in the document and, under Tauri, the native window. */
 function applyTitle(title: string) {
   if (typeof document !== "undefined") document.title = title;
-  if (!isTauri()) return;
-  void import("@tauri-apps/api/window")
-    .then((m) => m.getCurrentWindow().setTitle(title))
+  void getPort("window")
+    .setTitle(title)
     .catch(() => {
       // window handle unavailable — the document title still updated
     });

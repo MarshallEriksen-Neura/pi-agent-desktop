@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Minus, Square, Copy, X } from "lucide-react";
-import { isTauri } from "@/lib/pi/client";
+import { getBackendKind, getPort } from "@/lib/backend/composition/container";
 import { useT } from "@/lib/i18n";
 import { requestClose } from "@/lib/window-close";
 
@@ -17,18 +17,17 @@ export function WindowControls() {
   const t = useT();
 
   useEffect(() => {
-    if (!isTauri() || navigator.userAgent.includes("Mac")) return;
+    if (getBackendKind() !== "desktop-tauri" || navigator.userAgent.includes("Mac")) return;
     setVisible(true);
 
     let unlisten: (() => void) | undefined;
     let disposed = false;
 
     (async () => {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const win = getCurrentWindow();
+      const win = getPort("window");
       const sync = async () => setMaximized(await win.isMaximized());
       await sync();
-      const off = await win.onResized(sync);
+      const off = await win.onEvent("resized", sync);
       if (disposed) off();
       else unlisten = off;
     })();
@@ -47,8 +46,9 @@ export function WindowControls() {
       requestClose();
       return;
     }
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow()[action]();
+    const win = getPort("window");
+    if (action === "minimize") await win.minimize();
+    else await win.toggleMaximize();
   };
 
   return (

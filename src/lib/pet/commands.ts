@@ -1,24 +1,20 @@
-/**
- * Tauri commands for pet window management
- */
-
-import { invoke } from "@tauri-apps/api/core";
+import { getPort } from "@/lib/backend/composition/container";
 
 export async function showPetWindow(): Promise<void> {
-  await invoke("pet_window_show");
+  await getPort("petWindow").show();
 }
 
 export async function hidePetWindow(): Promise<void> {
-  await invoke("pet_window_hide");
+  await getPort("petWindow").hide();
 }
 
 export async function togglePetWindow(): Promise<boolean> {
-  return await invoke<boolean>("pet_window_toggle");
+  return await getPort("petWindow").toggle();
 }
 
 export async function setPetWindowPosition(
   x: number,
   y: number
 ): Promise<void> {
-  await invoke("pet_window_set_position", { x, y });
+  await getPort("petWindow").setPosition(x, y);
 }

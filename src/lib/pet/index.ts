@@ -6,6 +6,7 @@ import { fetchBuiltinCatalog, getBuiltinPet } from "./catalog";
 import { ensureBuiltinPet } from "./assets";
 import { loadPetManifest, validateSpritesheet } from "./loader";
 import type { Pet } from "./types";
+import { getPort } from "@/lib/backend/composition/container";
 
 const BUILTIN_MANIFEST_BASE = "/pets/builtin";
 
@@ -46,9 +47,7 @@ export async function loadCustomPetFromDisk(
   petId: string,
   basePath: string
 ): Promise<Pet> {
-  // Convert filesystem path to an asset:// URL served by Tauri's asset protocol
-  const { convertFileSrc } = await import("@tauri-apps/api/core");
-  const assetBase = convertFileSrc(basePath);
+  const assetBase = getPort("assetUrl").convertFileSrc(basePath);
 
   const manifestUrl = `${assetBase}/pet.json`;
   return await loadPetManifest(manifestUrl, assetBase);

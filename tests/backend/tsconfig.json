@@ -1,0 +1,24 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "incremental": false,
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "target": "ES2020",
+    "rootDir": "../..",
+    "outDir": "../../.tmp/backend-tests",
+    "jsx": "react-jsx",
+    "types": ["node"]
+  },
+  "include": [
+    "./**/*.ts",
+    "../../src/lib/backend/**/*.ts",
+    "../../src/lib/orchestration/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "src-tauri",
+    "tests/*.spec.ts"
+  ]
+}

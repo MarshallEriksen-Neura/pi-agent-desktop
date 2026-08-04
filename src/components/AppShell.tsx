@@ -10,11 +10,14 @@ import { CliUpdateToast } from "./CliUpdateToast";
 import { useCliUpdate } from "@/lib/pi/cli-update";
 import { usePi } from "@/lib/pi/store";
 import { useChat } from "@/lib/pi/chat";
-import { useSessions, peekLatestSessionPath } from "@/lib/pi/sessions";
+import {
+  configureSessionProjectRootResolver,
+  useSessions,
+  peekLatestSessionPath,
+} from "@/lib/pi/sessions";
 import { useExtUi } from "@/lib/pi/ext-ui";
 import { useSubagents } from "@/lib/pi/subagents";
-import { initAgentBridge } from "@/lib/pi/agent-bridge";
-import { destroyPetBridge } from "@/lib/pet/bridge";
+import { destroyAgentBridge, initAgentBridge } from "@/lib/pi/agent-bridge";
 import { useWorkspace } from "@/lib/workspace";
 import { useRuntime } from "@/lib/pi/runtime";
 import { useI18n } from "@/lib/i18n";
@@ -24,12 +27,23 @@ import { usePet } from "@/lib/pet/store";
 import { loadBuiltinPet } from "@/lib/pet/index";
 import { loadPetPreferences } from "@/lib/pet/persistence";
 import { showPetWindow } from "@/lib/pet/commands";
-import { isTauri } from "@/lib/pi/client";
-import { emit } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { requestClose } from "@/lib/window-close";
 import { CloseConfirmDialog } from "./CloseConfirmDialog";
 import type { PetConfigUpdate } from "@/lib/pet/types";
+import {
+  getBackendKind,
+  getPort,
+} from "@/lib/backend/composition/container";
+import { configureChatRecovery } from "@/lib/orchestration/chat-recovery";
+
+const chatRecoveryService = {
+  getTarget() {
+    const root = useWorkspace.getState().root ?? undefined;
+    const state = useSessions.getState();
+    const session = state.sessions.find((item) => item.id === state.activeId);
+    return { cwd: root, resumePath: session?.sessionPath || undefined };
+  },
+};
 
 /** Root chrome: nav rail + page content. Connects to pi on mount. */
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -54,6 +68,10 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initCloseBehavior();
     // restore user-customized appearance (colors, background, text scale)
     useAppearance.getState().init();
+    configureChatRecovery(chatRecoveryService);
+    configureSessionProjectRootResolver(
+      () => useWorkspace.getState().root,
+    );
     // subscribe before connecting so no early events are missed
     useChat.getState().init();
     useExtUi.getState().init();
@@ -82,7 +100,12 @@ function MainShell({ children }: { children: React.ReactNode }) {
       .then(() => useSessions.getState().init(useWorkspace.getState().root ?? ""))
 
       // background pi CLI version check — pops the update toast when newer
-      .then(() => useCliUpdate.getState().checkOnLaunch());
+      .then(() => useCliUpdate.getState().checkOnLaunch())
+      .catch((cause) => {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        usePi.setState({ status: "disconnected", lastError: error.message });
+        console.error("[AppShell] backend bootstrap failed:", error);
+      });
 
     // Esc collapses the subagent detail back into its card
     const onKey = (e: KeyboardEvent) => {
@@ -95,29 +118,33 @@ function MainShell({ children }: { children: React.ReactNode }) {
 
     // Disable the browser's native context menu so custom menus can show
     const preventDefaultCtx = (e: MouseEvent) => e.preventDefault();
-    if (isTauri()) {
+    const isDesktop = getBackendKind() === "desktop-tauri";
+    if (isDesktop) {
       document.addEventListener("contextmenu", preventDefaultCtx);
     }
 
     // Intercept the window close request (caption button, Alt+F4, native close)
     // so we can honor the user's saved behavior instead of always quitting.
     let closeUnlisten: (() => void) | undefined;
-    if (isTauri()) {
-      getCurrentWindow()
+    let disposed = false;
+    if (isDesktop) {
+      getPort("window")
         .onCloseRequested((event) => {
           event.preventDefault();
           requestClose();
         })
         .then((fn) => {
-          closeUnlisten = fn;
+          if (disposed) fn();
+          else closeUnlisten = fn;
         })
         .catch(() => {});
     }
 
     return () => {
+      disposed = true;
       window.removeEventListener("keydown", onKey, true);
       document.removeEventListener("contextmenu", preventDefaultCtx);
-      destroyPetBridge(); // cleanup on unmount
+      destroyAgentBridge();
       closeUnlisten?.();
     };
   }, [connect]);
@@ -126,16 +153,16 @@ function MainShell({ children }: { children: React.ReactNode }) {
   // it — instead of waiting until they open PetSettings. (PetSettings also does
   // this on its own mount, but it only mounts when the settings page is open.)
   useEffect(() => {
-    if (!isTauri()) return;
+    if (getBackendKind() !== "desktop-tauri") return;
     const prefs = loadPetPreferences();
     if (!prefs.enabled || !prefs.petId) return;
     void loadBuiltinPet(prefs.petId)
       .then((pet) => {
         usePet.getState().loadPet(pet);
         void showPetWindow();
-        emit("pet-config-update", { petId: prefs.petId } satisfies PetConfigUpdate).catch(
-          () => {},
-        );
+        getPort("petWindow")
+          .emitConfigUpdate({ petId: prefs.petId } satisfies PetConfigUpdate)
+          .catch(() => {});
       })
       .catch((e) => console.error("[AppShell] failed to auto-launch pet:", e));
   }, []);

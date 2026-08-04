@@ -9,7 +9,7 @@
  */
 
 import { create } from "zustand";
-import { isTauri } from "./client";
+import { getBackendKind, getPort } from "../backend/composition/container";
 
 export interface PiCliUpdateInfo {
   installed: string | null;
@@ -50,17 +50,6 @@ interface CliUpdateState {
   skip: () => void;
 }
 
-interface CliResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(cmd, args);
-}
-
 function skippedVersion(): string | null {
   try {
     return localStorage.getItem(SKIP_KEY);
@@ -82,12 +71,12 @@ export const useCliUpdate = create<CliUpdateState>((set, get) => ({
   promptVisible: false,
 
   checkOnLaunch: async () => {
-    if (!isTauri()) return; // browser preview — no pi binary, no reminder
+    if (getBackendKind() !== "desktop-tauri") return; // browser preview — no pi binary, no reminder
     // React strict-mode double effect / AppShell remount guard
     if (get().phase !== "idle") return;
     set({ phase: "checking" });
     try {
-      const info = await invoke<PiCliUpdateInfo>("pi_cli_update_check");
+      const info = await getPort("piConfiguration").checkPiCliUpdate();
       const phase = phaseFor(info);
       set({
         info,
@@ -104,7 +93,7 @@ export const useCliUpdate = create<CliUpdateState>((set, get) => ({
   check: async () => {
     const { phase } = get();
     if (phase === "checking" || phase === "updating") return;
-    if (!isTauri()) {
+    if (getBackendKind() !== "desktop-tauri") {
       set({
         info: { installed: null, latest: null, updateAvailable: false },
         phase: "notFound",
@@ -114,7 +103,7 @@ export const useCliUpdate = create<CliUpdateState>((set, get) => ({
     }
     set({ phase: "checking", error: null });
     try {
-      const info = await invoke<PiCliUpdateInfo>("pi_cli_update_check");
+      const info = await getPort("piConfiguration").checkPiCliUpdate();
       set({ info, phase: phaseFor(info) });
     } catch (e) {
       set({ phase: "error", error: String(e) });
@@ -126,10 +115,7 @@ export const useCliUpdate = create<CliUpdateState>((set, get) => ({
     if (phase !== "available" && phase !== "error") return;
     set({ phase: "updating", error: null, output: null });
     try {
-      const r = await invoke<CliResult>("pi_cli", {
-        args: ["update"],
-        cwd: null,
-      });
+      const r = await getPort("piConfiguration").runPiCli(["update"], null);
       if (r.code !== 0) {
         throw new Error(
           (r.stderr || r.stdout || `pi update exited with ${r.code}`)

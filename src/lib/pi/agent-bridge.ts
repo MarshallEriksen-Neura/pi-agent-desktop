@@ -18,7 +18,7 @@ import { useUI } from "@/lib/store";
 import { useWorkspace } from "@/lib/workspace";
 import { termBus, ansi } from "@/lib/terminal-bus";
 import { editorBus } from "@/lib/editor-bus";
-import { initPetBridge } from "@/lib/pet/bridge";
+import { destroyPetBridge, initPetBridge } from "@/lib/pet/bridge";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
 import {
   BASH_TOOL,
@@ -96,6 +96,7 @@ function changedLines(prev: string, next: string): number[] {
 /* ── the bridge ── */
 
 let bridged = false;
+let bridgeUnlisteners: Array<() => void> = [];
 
 export function initAgentBridge() {
   if (bridged) return;
@@ -107,14 +108,18 @@ export function initAgentBridge() {
   const client = getPiClient();
   const recs = new Map<string, ToolRec>();
 
-  client.on("agent_start", () => useUI.getState().beginAgentRun());
+  bridgeUnlisteners.push(
+    client.on("agent_start", () => useUI.getState().beginAgentRun()),
+  );
   const settle = () => useUI.getState().endAgentRun();
-  client.on("agent_settled", settle);
-  client.on("agent_end", (e) => {
-    if (e.type === "agent_end" && !e.willRetry) settle();
-  });
+  bridgeUnlisteners.push(
+    client.on("agent_settled", settle),
+    client.on("agent_end", (e) => {
+      if (e.type === "agent_end" && !e.willRetry) settle();
+    }),
+  );
 
-  client.on("tool_execution_start", (e) => {
+  bridgeUnlisteners.push(client.on("tool_execution_start", (e) => {
     if (e.type !== "tool_execution_start") return;
     const args = asRecord(e.args);
     const ui = useUI.getState();
@@ -169,9 +174,9 @@ export function initAgentBridge() {
       status: "running",
       tool: e.toolName,
     });
-  });
+  }));
 
-  client.on("tool_execution_update", (e) => {
+  bridgeUnlisteners.push(client.on("tool_execution_update", (e) => {
     if (e.type !== "tool_execution_update") return;
     const rec = recs.get(e.toolCallId);
     if (!rec || rec.kind !== "bash") return;
@@ -190,9 +195,9 @@ export function initAgentBridge() {
       // classic mode: write to xterm
       termBus.write(delta.replace(/\r?\n/g, "\r\n"));
     }
-  });
+  }));
 
-  client.on("tool_execution_end", (e) => {
+  bridgeUnlisteners.push(client.on("tool_execution_end", (e) => {
     if (e.type !== "tool_execution_end") return;
     const rec = recs.get(e.toolCallId);
     recs.delete(e.toolCallId);
@@ -251,5 +256,12 @@ export function initAgentBridge() {
         setTimeout(() => editorBus.highlight({ path, lines }), 90);
       })();
     }
-  });
+  }));
+}
+
+export function destroyAgentBridge() {
+  if (!bridged) return;
+  while (bridgeUnlisteners.length > 0) bridgeUnlisteners.pop()?.();
+  destroyPetBridge();
+  bridged = false;
 }

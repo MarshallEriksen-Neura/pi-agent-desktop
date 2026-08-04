@@ -28,7 +28,7 @@ import { APP_VERSION } from "@/lib/update";
 import { usePiSettings, type SettingsScope, type PiSettings } from "@/lib/pi/settings";
 import { usePi, THINKING_LEVELS } from "@/lib/pi/store";
 import { useRuntime } from "@/lib/pi/runtime";
-import { isTauri } from "@/lib/pi/client";
+import { getBackendKind, getPort } from "@/lib/backend/composition/container";
 import { useWorkspace } from "@/lib/workspace";
 import { useI18n, useT } from "@/lib/i18n";
 import type { ThinkingLevel } from "@/lib/pi/protocol";
@@ -1085,7 +1085,7 @@ function RuntimeSection() {
   const [applyError, setApplyError] = useState<string | null>(null);
 
   const isWindows =
-    isTauri() &&
+    getBackendKind() === "desktop-tauri" &&
     typeof navigator !== "undefined" &&
     /win/i.test(navigator.userAgent);
 
@@ -1118,17 +1118,20 @@ function RuntimeSection() {
             }
           : config;
 
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("wsl_runtime_validate", {
+      const runtimeConfig = getPort("runtimeConfig");
+      const validation = await runtimeConfig.validateWsl({
         config: nextConfig,
         cwd: useWorkspace.getState().root ?? null,
       });
+      if (!validation.ok) {
+        throw new Error(validation.error ?? "WSL runtime validation failed");
+      }
 
       if (nextConfig.mode === "wsl") {
         // Persist first: every bridge process reads the selected distro from
         // desktop.json when Pi invokes `<desktop.exe> -c <command>`.
         await save(nextConfig);
-        const bridgePath = await invoke<string>("wsl_shell_bridge_path");
+        const bridgePath = await runtimeConfig.getWslBridgePath();
         await piSettings.setKey("global", "shellPath", bridgePath);
         // Older builds wrote an argument array here, but Pi only accepts a
         // command-prefix string. The bridge needs no prefix at all.

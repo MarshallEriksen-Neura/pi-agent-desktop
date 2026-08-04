@@ -12,6 +12,8 @@ next-env.d.ts
 
 # production
 /build
+/.tmp/
+/packages/*/dist/
 
 # tauri
 /src-tauri/target

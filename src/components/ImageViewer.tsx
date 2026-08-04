@@ -6,6 +6,7 @@ import { ImageOff, Image as ImageIcon } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { useWorkspace } from "@/lib/workspace";
 import { imageMime } from "@/lib/image-files";
+import { getPort } from "@/lib/backend/composition/container";
 
 /** Replaces the CodeMirror surface when the active file is an image. */
 export function ImageViewer({ path }: { path: string }) {
@@ -23,8 +24,7 @@ export function ImageViewer({ path }: { path: string }) {
     if (mock) return;
     (async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const b64 = await invoke<string>("fs_read_file_base64", { path });
+        const b64 = await getPort("workspaceFs").readFileBase64(path);
         if (alive) setSrc(`data:${imageMime(path)};base64,${b64}`);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));

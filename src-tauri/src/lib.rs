@@ -166,6 +166,7 @@ pub fn run() {
             pi_settings::pi_settings_write,
             pi_settings::pi_cli,
             projects::projects_recent,
+            projects::project_resolve,
             projects::project_open,
             projects::project_remove_recent,
             projects::project_pick,

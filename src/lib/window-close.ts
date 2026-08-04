@@ -1,13 +1,10 @@
 import { useUI } from "./store";
-import { isTauri } from "./pi/client";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { exit } from "@tauri-apps/plugin-process";
+import { getPort } from "./backend/composition/container";
 
 /** Hide the main window into the system tray (used by the "minimize" behavior). */
 export async function minimizeToTray() {
-  if (!isTauri()) return;
   try {
-    await getCurrentWindow().hide();
+    await getPort("window").hide();
   } catch {
     // window may already be hidden or unavailable
   }
@@ -19,12 +16,11 @@ export async function minimizeToTray() {
  * tray-icon click handler. Used by notification click to bring Pi back.
  */
 export async function restoreFromTray() {
-  if (!isTauri()) return;
   try {
-    const w = getCurrentWindow();
-    await w.show();
-    await w.unminimize();
-    await w.setFocus();
+    const windowPort = getPort("window");
+    await windowPort.show();
+    await windowPort.unminimize();
+    await windowPort.setFocus();
   } catch {
     // window may be unavailable
   }
@@ -32,14 +28,9 @@ export async function restoreFromTray() {
 
 /** Fully quit the application (used by the "quit" behavior). */
 export async function quitApp() {
-  if (isTauri()) {
-    try {
-      await exit(0);
-    } catch {
-      // fall back to a hard close if the plugin is unavailable
-      window.close();
-    }
-  } else {
+  try {
+    await getPort("window").quit(0);
+  } catch {
     window.close();
   }
 }

@@ -86,9 +86,11 @@ flowchart LR
 ```
 
 - **Rust bridge** (`src-tauri/src/pi_bridge.rs`) — spawns `pi --mode rpc`, forwards each stdout JSONL line to the frontend as a `pi://line` event (`pi_send` writes back to stdin).
-- **Transport layer** (`src/lib/pi/client.ts`) — `TauriTransport` (real process) / `MockTransport` (browser) are selected at runtime via `isTauri()`.
+- **Backend capability layer** (`src/lib/backend/`) — explicit desktop and browser composition roots inject process, filesystem, session, runtime, window, notification, and updater ports before the UI mounts.
 - **Protocol** (`src/lib/pi/protocol.ts`) — every RPC command and event, strict JSONL (one JSON object per LF-delimited line).
 - **State** — zustand stores (`usePi` / `chat` / `useUI`); `agent-bridge.ts` maps pi tool events into UI agent-task state.
+
+The platform boundary and mobile-sharing rules are documented in [docs/backend-architecture.md](docs/backend-architecture.md).
 
 The frontend is a Next.js App Router static export (`output: "export"`) — all pages are client-rendered, and the borderless window chrome is drawn by the app itself.
 
@@ -111,6 +113,7 @@ pnpm tauri:dev      # full desktop app: starts pnpm dev + the Tauri window (real
 pnpm build          # Next.js static export to out/
 pnpm tauri:build    # production desktop bundle (runs pnpm build first)
 pnpm lint           # next lint
+pnpm test:backend   # focused backend ports/composition/boundary tests
 ```
 
 Rust check:

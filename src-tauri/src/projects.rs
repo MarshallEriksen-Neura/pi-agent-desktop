@@ -145,11 +145,9 @@ pub fn projects_recent() -> Vec<RecentProject> {
         .collect()
 }
 
-/// Make `path` the current project: validate, canonicalize, persist as
-/// `lastProject` and move to the front of the recents list. Returns the
-/// normalized root the frontend should use from now on.
+/// Validate and canonicalize a prospective project without persisting it.
 #[tauri::command]
-pub fn project_open(path: String) -> Result<String, String> {
+pub fn project_resolve(path: String) -> Result<String, String> {
     let dir = Path::new(&path);
     if !dir.is_dir() {
         return Err(format!("not a directory: {path}"));
@@ -157,6 +155,15 @@ pub fn project_open(path: String) -> Result<String, String> {
     let canon = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let root = normalize(&canon);
     crate::wsl::validate_project_path(&runtime_config(), &root)?;
+    Ok(root)
+}
+
+/// Persist a project only after the frontend has activated its Pi/session
+/// runtime. Revalidation closes the gap between resolve and commit.
+#[tauri::command]
+pub fn project_open(path: String) -> Result<String, String> {
+    let root = project_resolve(path)?;
+    let canon = PathBuf::from(&root);
     let name = canon
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

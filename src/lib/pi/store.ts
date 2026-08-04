@@ -1,11 +1,12 @@
 "use client";
 
 import { create } from "zustand";
-import { getPiClient, isTauri } from "./client";
+import { getPiClient } from "./client";
 import type { PiModel, PiState, ThinkingLevel } from "./protocol";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
 import { piRequestErrorText } from "./request-error";
+import { getBackendKind } from "../backend/composition/container";
 
 // Re-export so `usePiSettings` resolves whether imported from here or from
 // "@/lib/pi/settings" — guards against stale bundler graphs.
@@ -60,9 +61,14 @@ const RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 20_000];
 
 /** `client.on("session")` must be attached once, before the first start() */
 let sessionHooked = false;
+let activityHooked = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let modelChangeSeq = 0;
 let thinkingChangeSeq = 0;
+
+function isMockBackend() {
+  return getBackendKind() === "browser-preview";
+}
 
 function surfaceSettingFailure(key: string, error: string) {
   useExtUi.getState().pushToast(t(key, { error }), "error", 6000);
@@ -90,7 +96,7 @@ function scheduleRetry(get: () => PiStore, attempt: number) {
 
 export const usePi = create<PiStore>((set, get) => ({
   status: "disconnected",
-  mock: !isTauri(),
+  mock: isMockBackend(),
   models: [],
   currentModel: null,
   thinkingLevel: "medium",
@@ -112,14 +118,18 @@ export const usePi = create<PiStore>((set, get) => ({
 
       await client.start({ cwd: opts?.cwd, resumePath: opts?.resumePath });
 
-      // agent activity → status
-      client.on("agent_start", () => set({ status: "running" }));
-      client.on("agent_settled", () => set({ status: "ready" }));
-      client.on("agent_end", () => {
-        if (get().status === "running") set({ status: "ready" });
-      });
+      // The client survives process restarts, so these hooks must be installed
+      // once or every project/session switch would multiply status updates.
+      if (!activityHooked) {
+        activityHooked = true;
+        client.on("agent_start", () => set({ status: "running" }));
+        client.on("agent_settled", () => set({ status: "ready" }));
+        client.on("agent_end", () => {
+          if (get().status === "running") set({ status: "ready" });
+        });
+      }
 
-      set({ status: "ready", mock: client.transport.kind === "mock" });
+      set({ status: "ready", mock: isMockBackend() });
       await get().refresh();
       scheduleRetry(get, 0); // catch up if pi was still booting
     } catch (e) {
@@ -251,3 +261,22 @@ export const usePi = create<PiStore>((set, get) => ({
     await setModel(models[(idx + 1) % models.length]);
   },
 }));
+
+export function resetPiStoreForTests(): void {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  sessionHooked = false;
+  modelChangeSeq = 0;
+  thinkingChangeSeq = 0;
+  usePi.setState({
+    status: "disconnected",
+    mock: isMockBackend(),
+    models: [],
+    currentModel: null,
+    thinkingLevel: "medium",
+    commands: [],
+    lastError: null,
+  });
+}
