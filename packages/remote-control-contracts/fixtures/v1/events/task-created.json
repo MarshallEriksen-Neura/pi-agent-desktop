@@ -1,0 +1,17 @@
+{
+  "kind": "task.created",
+  "eventId": "event-01",
+  "emittedAt": "2026-08-07T11:00:00Z",
+  "sequence": 1,
+  "deviceId": "mobile-01",
+  "task": {
+    "taskId": "task-01",
+    "requestId": "request-01",
+    "ownerDeviceId": "mobile-01",
+    "projectId": "project-01",
+    "state": "queued",
+    "createdAt": "2026-08-07T11:00:00Z",
+    "updatedAt": "2026-08-07T11:00:00Z",
+    "contextFiles": []
+  }
+}

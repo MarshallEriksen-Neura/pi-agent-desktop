@@ -77,9 +77,7 @@ pub async fn pi_fetch_models(
             })
             .collect()
     } else {
-        return Err(
-            "no model list in response (expected a `data` or `models` array)".into(),
-        );
+        return Err("no model list in response (expected a `data` or `models` array)".into());
     };
 
     if ids.is_empty() {

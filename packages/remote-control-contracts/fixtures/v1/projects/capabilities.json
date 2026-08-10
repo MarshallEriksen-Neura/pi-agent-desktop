@@ -1,0 +1,6 @@
+{
+  "maxTreeEntriesPerPage": 200,
+  "maxContextFiles": 32,
+  "maxRelativePathBytes": 512,
+  "fileBodyAvailable": false
+}

@@ -5,6 +5,7 @@ import { desktopPetWindowPort } from "../desktop/pet-window";
 import { createDesktopPiConfigurationPort } from "../desktop/pi-configuration";
 import { createDesktopPiProcessPort } from "../desktop/pi-process";
 import { desktopProjectCatalogPort } from "../desktop/project-catalog";
+import { desktopRemoteControlPort } from "../desktop/remote-control";
 import { createDesktopRuntimeConfigPort } from "../desktop/runtime-config";
 import { desktopSessionRepositoryPort } from "../desktop/session-repository";
 import { desktopUpdaterPort } from "../desktop/updater";
@@ -21,6 +22,7 @@ export function createDesktopBackendPorts(): BackendPorts {
     sessionRepository: desktopSessionRepositoryPort,
     workspaceFs: desktopWorkspaceFsPort,
     projectCatalog: desktopProjectCatalogPort,
+    remoteControl: desktopRemoteControlPort,
     runtimeConfig: createDesktopRuntimeConfigPort(),
     piConfiguration: createDesktopPiConfigurationPort(),
     window: desktopWindowPort,

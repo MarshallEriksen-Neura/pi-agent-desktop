@@ -1,0 +1,20 @@
+{
+  "projectId": "project-01",
+  "directory": "src",
+  "entries": [
+    {
+      "name": "app",
+      "relativePath": "src/app",
+      "kind": "directory",
+      "modifiedAt": "2026-08-07T10:00:00Z"
+    },
+    {
+      "name": "lib.ts",
+      "relativePath": "src/lib.ts",
+      "kind": "file",
+      "sizeBytes": 128,
+      "modifiedAt": "2026-08-07T10:00:00Z"
+    }
+  ],
+  "nextCursor": "cursor-02"
+}

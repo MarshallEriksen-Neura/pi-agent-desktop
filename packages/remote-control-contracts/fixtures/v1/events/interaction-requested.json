@@ -1,0 +1,12 @@
+{
+  "kind": "interaction.requested",
+  "eventId": "event-03",
+  "emittedAt": "2026-08-07T11:01:00Z",
+  "sequence": 3,
+  "deviceId": "mobile-01",
+  "interactionId": "interaction-01",
+  "taskId": "task-01",
+  "interactionKind": "select",
+  "prompt": "Choose the validation scope.",
+  "expiresAt": "2026-08-07T11:02:00Z"
+}

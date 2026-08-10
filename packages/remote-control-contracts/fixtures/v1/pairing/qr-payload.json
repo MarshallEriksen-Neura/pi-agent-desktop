@@ -1,0 +1,27 @@
+{
+  "protocol": "pi.remote-control",
+  "version": 1,
+  "desktop": {
+    "desktopId": "desktop-01",
+    "displayName": "Pi Desktop"
+  },
+  "endpoints": [
+    {
+      "scheme": "https",
+      "host": "192.168.31.132",
+      "port": 443
+    },
+    {
+      "scheme": "wss",
+      "host": "192.168.31.132",
+      "port": 443
+    }
+  ],
+  "pairingId": "pairing-01",
+  "secret": "ticket-secret-01",
+  "certificatePin": {
+    "algorithm": "spki-sha256",
+    "value": "sha256/fixture-pin"
+  },
+  "expiresAt": "2026-08-07T12:00:00Z"
+}

@@ -1,0 +1,10 @@
+{
+  "requestId": "request-01",
+  "projectId": "project-01",
+  "prompt": "Run the focused backend checks and summarize failures.",
+  "contextFiles": [
+    {
+      "relativePath": "src/lib/pi/protocol.ts"
+    }
+  ]
+}

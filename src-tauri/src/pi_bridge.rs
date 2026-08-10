@@ -5,24 +5,68 @@
 //! `pi://stderr`, and process exit as `pi://exit`. Commands come back in
 //! through `pi_send` and are written to the child's stdin.
 
+use pi_backend_core::pi_process::{
+    LaunchSpec, PiProcess, ProcessEvent, ProcessLimits, ProcessPhase, ProcessSnapshot,
+};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
-pub struct PiProc(pub Mutex<Option<PiHandle>>);
+const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub struct PiHandle {
-    child: Arc<Mutex<Child>>,
-    stdin: ChildStdin,
+pub struct PiProc(pub Mutex<PiRuntime>);
+
+pub struct PiRuntime {
+    next_generation: u64,
+    process: Option<Arc<PiProcess>>,
 }
 
 impl Default for PiProc {
     fn default() -> Self {
-        Self(Mutex::new(None))
+        Self(Mutex::new(PiRuntime {
+            next_generation: 1,
+            process: None,
+        }))
+    }
+}
+
+impl PiProc {
+    pub fn shutdown(&self, timeout: Duration) -> Result<(), String> {
+        let process = self
+            .0
+            .lock()
+            .map_err(|_| "Pi runtime lock is poisoned".to_owned())?
+            .process
+            .clone();
+        if let Some(process) = process {
+            process.stop(timeout).map_err(|error| error.to_string())?;
+            self.clear_if_current(&process)?;
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> Option<ProcessSnapshot> {
+        let process = self.0.lock().ok()?.process.clone()?;
+        process.snapshot().ok()
+    }
+
+    fn clear_if_current(&self, observed: &Arc<PiProcess>) -> Result<(), String> {
+        let mut runtime = self
+            .0
+            .lock()
+            .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
+        if runtime
+            .process
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, observed))
+        {
+            runtime.process = None;
+        }
+        Ok(())
     }
 }
 
@@ -37,9 +81,19 @@ pub fn pi_start(
     // Repair/migrate the WSL custom-shell override before the new Pi process
     // reads settings.json. Native mode is a no-op.
     crate::wsl::sync_shell_bridge_settings(cwd.as_deref())?;
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        return Ok(()); // already running
+    let mut runtime = state
+        .0
+        .lock()
+        .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
+    if let Some(process) = runtime.process.as_ref() {
+        let snapshot = process.snapshot().map_err(|error| error.to_string())?;
+        if matches!(
+            snapshot.phase,
+            ProcessPhase::Running | ProcessPhase::Stopping
+        ) {
+            return Ok(());
+        }
+        runtime.process.take();
     }
 
     let bin = binary.as_deref().unwrap_or("pi");
@@ -56,86 +110,64 @@ pub fn pi_start(
             cmd.args(["--session", path]);
         }
     }
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-
-    // no console flash on Windows
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to spawn Pi CLI `{bin}`: {e}"))?;
-
-    let stdin = child.stdin.take().ok_or("no stdin handle")?;
-    let stdout = child.stdout.take().ok_or("no stdout handle")?;
-    let stderr = child.stderr.take().ok_or("no stderr handle")?;
-
-    // child is shared so the stdout waiter thread can read the real exit code
-    let child = Arc::new(Mutex::new(child));
-
-    // stdout reader → pi://line (one event per JSONL line)
-    {
-        let app = app.clone();
-        let child = Arc::clone(&child);
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                if !line.trim().is_empty() {
+    let generation = runtime.next_generation;
+    runtime.next_generation = runtime.next_generation.saturating_add(1);
+    let spec = LaunchSpec::from_command(&cmd);
+    let process =
+        PiProcess::spawn(
+            generation,
+            &spec,
+            ProcessLimits::default(),
+            move |event| match event {
+                ProcessEvent::Stdout(line) => {
                     let _ = app.emit("pi://line", line);
                 }
-            }
-            // stdout closed → process exited; capture the exit code (if any)
-            let code = child
-                .lock()
-                .ok()
-                .and_then(|mut c| c.wait().ok())
-                .and_then(|status| status.code());
-            let _ = app.emit("pi://exit", code);
-        });
-    }
-
-    // stderr reader → pi://stderr (diagnostics only)
-    {
-        let app = app.clone();
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                let _ = app.emit("pi://stderr", line);
-            }
-        });
-    }
-
-    *guard = Some(PiHandle { child, stdin });
+                ProcessEvent::Stderr(line) => {
+                    let _ = app.emit("pi://stderr", line);
+                }
+                ProcessEvent::Exit(exit) => {
+                    let _ = app.emit("pi://exit", exit.code);
+                }
+                ProcessEvent::Diagnostic(diagnostic) => {
+                    eprintln!("[pi-process] {}", diagnostic.code);
+                }
+            },
+        )
+        .map_err(|error| format!("failed to spawn Pi CLI `{bin}`: {error}"))?;
+    runtime.process = Some(Arc::new(process));
     Ok(())
 }
 
 #[tauri::command]
 pub fn pi_send(state: State<'_, PiProc>, line: String) -> Result<(), String> {
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    let handle = guard.as_mut().ok_or("pi is not running")?;
-    handle
-        .stdin
-        .write_all(line.as_bytes())
-        .and_then(|_| handle.stdin.write_all(b"\n"))
-        .and_then(|_| handle.stdin.flush())
-        .map_err(|e| format!("write to pi failed: {e}"))
+    let process = state
+        .0
+        .lock()
+        .map_err(|_| "Pi runtime lock is poisoned".to_owned())?
+        .process
+        .clone()
+        .ok_or("pi is not running")?;
+    process
+        .send_json_line(&line)
+        .map_err(|error| format!("write to pi failed: {error}"))
 }
 
 #[tauri::command]
 pub fn pi_stop(state: State<'_, PiProc>) -> Result<(), String> {
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(handle) = guard.take() {
-        let _ = handle.child.lock().ok().and_then(|mut c| c.kill().ok());
-        let _ = handle.child.lock().ok().and_then(|mut c| c.wait().ok());
+    let process = state
+        .0
+        .lock()
+        .map_err(|_| "Pi runtime lock is poisoned".to_owned())?
+        .process
+        .clone();
+    if let Some(process) = process {
+        process
+            .stop(PROCESS_STOP_TIMEOUT)
+            .map_err(|error| error.to_string())?;
+        state.clear_if_current(&process)?;
     }
     Ok(())
 }

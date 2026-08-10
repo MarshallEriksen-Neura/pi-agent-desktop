@@ -1,0 +1,5 @@
+{
+  "code": "project_revoked",
+  "message": "The selected project is no longer available.",
+  "retryable": false
+}

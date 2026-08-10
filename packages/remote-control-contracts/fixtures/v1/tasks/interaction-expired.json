@@ -1,0 +1,9 @@
+{
+  "interactionId": "interaction-02",
+  "taskId": "task-01",
+  "kind": "confirm",
+  "status": "expired",
+  "prompt": "Continue?",
+  "createdAt": "2026-08-07T11:01:00Z",
+  "expiresAt": "2026-08-07T11:01:01Z"
+}

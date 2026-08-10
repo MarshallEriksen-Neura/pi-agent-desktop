@@ -1,0 +1,9 @@
+{
+  "kind": "event_backpressure",
+  "eventId": "event-05",
+  "emittedAt": "2026-08-07T11:04:00Z",
+  "sequence": 5,
+  "deviceId": "mobile-01",
+  "taskId": "task-01",
+  "reason": "control_lane_saturated"
+}

@@ -6,16 +6,75 @@ mod pi_command;
 mod pi_models;
 mod pi_settings;
 mod projects;
+mod remote_control;
 mod updater;
 mod wsl;
 
+use pi_backend_core::backend_health::{BackendHealthSnapshot, ComponentStatus};
+use pi_backend_core::backend_lifecycle::{ShutdownCoordinator, ShutdownStage};
+use pi_backend_core::pi_process::ProcessPhase;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    App, Manager,
+    App, Manager, RunEvent,
 };
 
 use pi_bridge::PiProc;
+use remote_control::RemoteControlState;
+
+#[cfg(feature = "remote-control-smoke")]
+pub fn run_remote_control_command_smoke() {
+    remote_control::run_command_smoke();
+}
+
+#[derive(Default)]
+struct BackendLifecycle {
+    shutting_down: AtomicBool,
+}
+
+fn shutdown_backend(app: &tauri::AppHandle) {
+    let lifecycle = app.state::<BackendLifecycle>();
+    if lifecycle.shutting_down.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    let pi = app.state::<PiProc>();
+    let mut health = backend_health_snapshot(&pi);
+    health.shutdown_in_progress = true;
+    if let Ok(json) = serde_json::to_string(&health) {
+        eprintln!("[backend-health] {json}");
+    }
+    // Stop the remote listener and cancel remote runtimes before the desktop
+    // Pi process is terminated by the coordinator below.
+    app.state::<RemoteControlState>().shutdown();
+    let mut coordinator = ShutdownCoordinator::new();
+    coordinator.push(ShutdownStage::StopAccepting, |_| Ok(()));
+    coordinator.push(ShutdownStage::CloseInputs, |_| Ok(()));
+    coordinator.push(ShutdownStage::CancelWork, |_| Ok(()));
+    coordinator.push(ShutdownStage::TerminateProcesses, |remaining| {
+        pi.shutdown(remaining.min(Duration::from_secs(5)))
+    });
+    coordinator.push(ShutdownStage::FlushDiagnostics, |_| Ok(()));
+    coordinator.push(ShutdownStage::JoinWorkers, |_| Ok(()));
+    if let Err(error) = coordinator.run(Duration::from_secs(6)) {
+        eprintln!("[backend-shutdown] {error}");
+    }
+}
+
+fn backend_health_snapshot(pi: &PiProc) -> BackendHealthSnapshot {
+    let process = pi.snapshot();
+    let status = match process.as_ref().map(|snapshot| snapshot.phase) {
+        Some(ProcessPhase::Running) => ComponentStatus::Healthy,
+        Some(ProcessPhase::Stopping) => ComponentStatus::Degraded,
+        Some(ProcessPhase::Failed) => ComponentStatus::Failed,
+        Some(ProcessPhase::Exited) | None => ComponentStatus::Stopped,
+    };
+    // Storage owners are still lazy and independent; without probing both the
+    // SQLite and durable JSON stores, reporting healthy would be misleading.
+    BackendHealthSnapshot::new(status, process, ComponentStatus::Unknown)
+}
 
 /// Intercept the executable's `-c <command>` form before Tauri starts. Pi uses
 /// this entry point as its WSL-compatible custom shell.
@@ -73,6 +132,7 @@ fn create_tray(app: &App) -> tauri::Result<()> {
                 }
             }
             "quit" => {
+                shutdown_backend(app);
                 app.exit(0);
             }
             _ => {}
@@ -136,12 +196,14 @@ fn create_tray(app: &App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PiProc::default())
+        .manage(BackendLifecycle::default())
+        .manage(RemoteControlState::default())
         .manage(chat_store::ChatDb::default())
         .invoke_handler(tauri::generate_handler![
             chat_store::chat_sessions_list,
@@ -184,7 +246,15 @@ pub fn run() {
             pet_window::pet_window_set_position,
             pet_window::list_custom_pets,
             open_external,
-            pi_models::pi_fetch_models
+            pi_models::pi_fetch_models,
+            remote_control::remote_control_status,
+            remote_control::remote_control_enable,
+            remote_control::remote_control_disable,
+            remote_control::remote_control_pairing_payload,
+            remote_control::remote_control_allow_project,
+            remote_control::remote_control_remove_project,
+            remote_control::remote_control_revoke_device,
+            remote_control::remote_control_reset_identity
         ])
         .setup(|app| {
             if let Err(e) = pet_window::create_pet_window(app.handle()) {
@@ -195,6 +265,11 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Pi desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building Pi desktop");
+    app.run(|app, event| {
+        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            shutdown_backend(app);
+        }
+    });
 }

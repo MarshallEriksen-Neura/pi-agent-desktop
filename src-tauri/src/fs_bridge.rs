@@ -34,7 +34,7 @@ pub struct FsEntry {
 /// "launch from a project directory" dev workflow working.
 #[tauri::command]
 pub fn workspace_root() -> Result<String, String> {
-    if let Some(project) = crate::projects::last_project() {
+    if let Some(project) = crate::projects::last_project()? {
         return Ok(project);
     }
     std::env::current_dir()
@@ -118,14 +118,15 @@ pub fn fs_create_file(path: String) -> Result<(), String> {
     if p.exists() {
         return Err(format!("already exists: {path}"));
     }
-    fs::File::create(p).map(|_| ()).map_err(|e| format!("cannot create {path}: {e}"))
+    fs::File::create(p)
+        .map(|_| ())
+        .map_err(|e| format!("cannot create {path}: {e}"))
 }
 
 /// Create a directory (and any missing parents).
 #[tauri::command]
 pub fn fs_create_dir(path: String) -> Result<(), String> {
-    fs::create_dir_all(Path::new(&path))
-        .map_err(|e| format!("cannot create directory {path}: {e}"))
+    fs::create_dir_all(Path::new(&path)).map_err(|e| format!("cannot create directory {path}: {e}"))
 }
 
 /// Delete a file or an entire directory tree.

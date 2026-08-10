@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "pairingId": "pairing-01",
+  "secret": "ticket-secret-01",
+  "device": {
+    "deviceId": "mobile-01",
+    "displayName": "Test iPhone",
+    "platform": "ios",
+    "appVersion": "0.1.0"
+  }
+}

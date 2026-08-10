@@ -58,7 +58,11 @@ pub fn pi_settings_read(scope: String, root: Option<String>) -> Result<SettingsF
 }
 
 #[tauri::command]
-pub fn pi_settings_write(scope: String, content: String, root: Option<String>) -> Result<(), String> {
+pub fn pi_settings_write(
+    scope: String,
+    content: String,
+    root: Option<String>,
+) -> Result<(), String> {
     serde_json::from_str::<serde_json::Value>(&content)
         .map_err(|e| format!("refusing to write invalid JSON: {e}"))?;
 
@@ -104,9 +108,7 @@ pub fn pi_cli(args: Vec<String>, cwd: Option<String>) -> Result<CliResult, Strin
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let out = cmd
-        .output()
-        .map_err(|e| format!("failed to run pi: {e}"))?;
+    let out = cmd.output().map_err(|e| format!("failed to run pi: {e}"))?;
     Ok(CliResult {
         code: out.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

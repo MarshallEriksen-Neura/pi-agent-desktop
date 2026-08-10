@@ -3,11 +3,13 @@ import type { ProjectId, RelativeProjectPath } from "./projects";
 
 export type RequestId = string;
 export type RemoteTaskId = string;
+export type InteractionId = string;
 
 export type RemoteTaskState =
   | "queued"
   | "starting"
   | "running"
+  | "awaiting_input"
   | "succeeded"
   | "failed"
   | "cancelled";
@@ -16,6 +18,7 @@ export const REMOTE_TASK_STATES: readonly RemoteTaskState[] = [
   "queued",
   "starting",
   "running",
+  "awaiting_input",
   "succeeded",
   "failed",
   "cancelled",
@@ -31,22 +34,32 @@ export interface RemoteTaskContextFile {
   readonly relativePath: RelativeProjectPath;
 }
 
+/**
+ * Optional execution profile for a remote task. v1 defines two presets;
+ * the gateway enforces the 60-minute default deadline unless `extended` is
+ * explicitly allowed by desktop policy.
+ */
+export type RemoteTaskExecutionProfile = "default" | "extended";
+
 export interface RemoteTaskCreateRequest {
   readonly requestId: RequestId;
   readonly projectId: ProjectId;
   readonly prompt: string;
   readonly contextFiles: readonly RemoteTaskContextFile[];
+  readonly executionProfile?: RemoteTaskExecutionProfile;
 }
 
 export type RemoteTaskFailureCode =
   | "authentication_failed"
   | "project_unavailable"
+  | "project_revoked"
   | "invalid_context"
   | "queue_full"
   | "process_failed"
   | "timeout"
   | "cancelled"
   | "desktop_restarted"
+  | "event_backpressure"
   | "internal_error";
 
 export interface RemoteTaskError {
@@ -55,10 +68,15 @@ export interface RemoteTaskError {
   readonly retryable: boolean;
 }
 
+/**
+ * Owner-scoped task snapshot. `ownerDeviceId` is the principal that created
+ * the task; every list/detail/cancel/interaction/event authorization MUST be
+ * owner-filtered before existence is disclosed (AC15).
+ */
 export interface RemoteTaskSnapshot {
   readonly taskId: RemoteTaskId;
   readonly requestId: RequestId;
-  readonly deviceId: DeviceId;
+  readonly ownerDeviceId: DeviceId;
   readonly projectId: ProjectId;
   readonly state: RemoteTaskState;
   readonly createdAt: IsoTimestamp;
@@ -77,7 +95,8 @@ export interface RemoteTaskTransition {
 const ALLOWED_TASK_TRANSITIONS: Readonly<Record<RemoteTaskState, readonly RemoteTaskState[]>> = {
   queued: ["starting", "cancelled", "failed"],
   starting: ["running", "cancelled", "failed"],
-  running: ["succeeded", "failed", "cancelled"],
+  running: ["awaiting_input", "succeeded", "failed", "cancelled"],
+  awaiting_input: ["running", "cancelled", "failed"],
   succeeded: [],
   failed: [],
   cancelled: [],
@@ -115,4 +134,53 @@ export function transitionRemoteTask(
     finishedAt: isRemoteTaskTerminalState(nextState) ? updatedAt : snapshot.finishedAt,
     error,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Interactions (Stage 1: awaiting_input lifecycle)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bounded interaction kinds. Unknown kinds are rejected by the gateway rather
+ * than exposed as arbitrary extension UI (plan Stage 1).
+ */
+export type RemoteInteractionKind = "confirm" | "select" | "input";
+
+export interface RemoteInteractionOption {
+  readonly label: string;
+  readonly value: string;
+}
+
+export interface RemoteInteractionRequest {
+  readonly interactionId: InteractionId;
+  readonly taskId: RemoteTaskId;
+  readonly kind: RemoteInteractionKind;
+  readonly prompt: string;
+  readonly options?: readonly RemoteInteractionOption[];
+  readonly createdAt: IsoTimestamp;
+  readonly expiresAt: IsoTimestamp;
+}
+
+export type RemoteInteractionResponseValue = boolean | string;
+
+export interface RemoteInteractionResponse {
+  readonly interactionId: InteractionId;
+  readonly kind: RemoteInteractionKind;
+  readonly value: RemoteInteractionResponseValue;
+  readonly submittedAt: IsoTimestamp;
+}
+
+export type RemoteInteractionStatus = "pending" | "resolved" | "expired";
+
+export interface RemoteInteractionSnapshot {
+  readonly interactionId: InteractionId;
+  readonly taskId: RemoteTaskId;
+  readonly kind: RemoteInteractionKind;
+  readonly status: RemoteInteractionStatus;
+  readonly prompt: string;
+  readonly options?: readonly RemoteInteractionOption[];
+  readonly createdAt: IsoTimestamp;
+  readonly expiresAt: IsoTimestamp;
+  readonly resolvedAt?: IsoTimestamp;
+  readonly response?: RemoteInteractionResponse;
 }

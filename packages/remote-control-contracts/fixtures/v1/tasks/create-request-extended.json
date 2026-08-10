@@ -1,0 +1,7 @@
+{
+  "requestId": "request-02",
+  "projectId": "project-01",
+  "prompt": "Inspect the Rust boundary and report the next safe implementation step.",
+  "contextFiles": [],
+  "executionProfile": "extended"
+}

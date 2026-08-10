@@ -1,0 +1,8 @@
+{
+  "kind": "snapshot_required",
+  "eventId": "event-04",
+  "emittedAt": "2026-08-07T11:03:00Z",
+  "sequence": 4,
+  "deviceId": "mobile-01",
+  "projectId": "project-01"
+}

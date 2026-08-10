@@ -6,6 +6,7 @@ import type {
   PiConfigurationPort,
   PiProcessPort,
   ProjectCatalogPort,
+  RemoteControlPort,
   RuntimeConfigPort,
   SessionRepositoryPort,
   UpdaterPort,
@@ -20,6 +21,7 @@ export interface BackendPorts {
   sessionRepository: SessionRepositoryPort;
   workspaceFs: WorkspaceFsPort;
   projectCatalog: ProjectCatalogPort;
+  remoteControl: RemoteControlPort;
   runtimeConfig: RuntimeConfigPort;
   piConfiguration: PiConfigurationPort;
   window: WindowPort;

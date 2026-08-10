@@ -1,0 +1,15 @@
+{
+  "taskId": "task-01",
+  "requestId": "request-01",
+  "ownerDeviceId": "mobile-01",
+  "projectId": "project-01",
+  "state": "awaiting_input",
+  "createdAt": "2026-08-07T11:00:00Z",
+  "updatedAt": "2026-08-07T11:01:00Z",
+  "startedAt": "2026-08-07T11:00:10Z",
+  "contextFiles": [
+    {
+      "relativePath": "src/lib/pi/protocol.ts"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "interactionId": "interaction-01",
+  "taskId": "task-01",
+  "kind": "select",
+  "prompt": "Choose the validation scope.",
+  "options": [
+    {
+      "label": "Focused",
+      "value": "focused"
+    },
+    {
+      "label": "Full",
+      "value": "full"
+    }
+  ],
+  "createdAt": "2026-08-07T11:01:00Z",
+  "expiresAt": "2026-08-07T11:02:00Z"
+}

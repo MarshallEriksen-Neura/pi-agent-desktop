@@ -21,6 +21,12 @@ export type {
   PiProcessStartOptions,
 } from "./pi-process";
 export type { ProjectCatalogPort } from "./project-catalog";
+export type {
+  RemoteControlAllowProjectInput,
+  RemoteControlEnableInput,
+  RemoteControlPort,
+  RemoteControlStatusDto,
+} from "./remote-control";
 export type { RuntimeConfigPort, WslValidationInput, WslValidationResult } from "./runtime-config";
 export type { GenerateTitleInput, SessionRepositoryPort, SessionSaveInput } from "./session-repository";
 export type { UpdaterPort } from "./updater";

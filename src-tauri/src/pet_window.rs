@@ -47,7 +47,10 @@ pub fn create_pet_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Erro
 #[tauri::command]
 pub fn pet_window_show(app: AppHandle) -> Result<(), String> {
     let existing = app.get_webview_window(PET_WINDOW_LABEL).is_some();
-    eprintln!("[pet-window] pet_window_show called; existing_window={}", existing);
+    eprintln!(
+        "[pet-window] pet_window_show called; existing_window={}",
+        existing
+    );
     if app.get_webview_window(PET_WINDOW_LABEL).is_none() {
         create_pet_window(&app).map_err(|e| e.to_string())?;
     }
@@ -86,11 +89,7 @@ pub fn pet_window_toggle(app: AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn pet_window_set_position(
-    app: AppHandle,
-    x: i32,
-    y: i32,
-) -> Result<(), String> {
+pub fn pet_window_set_position(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
         use tauri::Position;
         window
@@ -119,10 +118,7 @@ pub struct CustomPetEntry {
 /// without a separate round-trip per pet.
 #[tauri::command]
 pub fn list_custom_pets(app: AppHandle) -> Result<Vec<CustomPetEntry>, String> {
-    let data_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| e.to_string())?;
+    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let pets_dir = data_dir.join("pets").join("custom");
 
     if !pets_dir.exists() {

@@ -635,4 +635,98 @@ export const zh: Record<keyof typeof en, string> = {
   "pet.notif.taskComplete": "Pi 任务完成，等待查看",
   "pet.notif.needsInput": "Pi 需要你的输入",
   "pet.notif.taskFailed": "Pi 任务出错",
+
+  // 远程控制 — 总览
+  "settings.remoteControl.title": "远程控制",
+  "settings.remoteControl.overview": "远程控制",
+  "settings.remoteControl.overviewFooter": "让已配对的移动设备在私有局域网内查看授权项目。",
+  "settings.remoteControl.status": "网关状态",
+  "settings.remoteControl.listenAddress": "监听地址",
+  "settings.remoteControl.notListening": "未在监听",
+  "settings.remoteControl.port": "端口",
+  "settings.remoteControl.pairedDevices": "已配对设备",
+  "settings.remoteControl.deviceCount": "已配对 {n} 台",
+  "settings.remoteControl.authorizedProjects": "授权项目",
+  "settings.remoteControl.projectCount": "已授权 {n} 个",
+  "settings.remoteControl.recentError": "最近错误",
+
+  // 远程控制 — 状态徽章
+  "settings.remoteControl.phase.normal": "在线",
+  "settings.remoteControl.phase.starting": "启动中",
+  "settings.remoteControl.phase.degraded": "降级",
+  "settings.remoteControl.phase.fault": "故障",
+  "settings.remoteControl.phase.disabled": "已关闭",
+
+  // 远程控制 — 网络配置
+  "settings.remoteControl.networkConfig": "网络",
+  "settings.remoteControl.networkFooter":
+    "仅绑定到私有局域网地址，公网接口不会被暴露。更改在下次启用时生效。",
+  "settings.remoteControl.privateInterface": "私有接口",
+  "settings.remoteControl.detecting": "正在探测接口…",
+  "settings.remoteControl.noInterface": "未选择私有接口",
+  "settings.remoteControl.starting": "启动中…",
+  "settings.remoteControl.enable": "启用网关",
+  "settings.remoteControl.publicBlocked": "没有可用的私有地址",
+  "settings.remoteControl.publicBlockedDetail": "请连接到私有 Wi-Fi 或局域网，或手动添加一个私有地址。",
+  "settings.remoteControl.addAddressPlaceholder": "手动添加地址，如 192.168.1.10",
+
+  // 远程控制 — 添加设备
+  "settings.remoteControl.addDevice": "添加移动设备",
+  "settings.remoteControl.addDeviceFooter": "生成一次性配对二维码，移动端扫码后在局域网内完成配对。",
+  "settings.remoteControl.addDeviceDisabled": "请先启用网关，再生成配对二维码。",
+  "settings.remoteControl.generateQr": "扫码配对",
+  "settings.remoteControl.generateQrDetail": "打开配对向导",
+
+  // 远程控制 — 已配对设备
+  "settings.remoteControl.pairedDevicesFooter": "撤销设备会立即失效其令牌，需重新配对才能再次连接。",
+  "settings.remoteControl.emptyDevices": "暂无已配对设备",
+  "settings.remoteControl.emptyDevicesDetail": "生成二维码以配对你的第一台移动设备。",
+  "settings.remoteControl.deviceRevoke": "撤销设备",
+  "settings.remoteControl.platform.ios": "iOS",
+  "settings.remoteControl.platform.android": "Android",
+  "settings.remoteControl.platform.desktop": "桌面端",
+  "settings.remoteControl.platform.unknown": "未知",
+
+  // 远程控制 — 授权项目
+  "settings.remoteControl.authorizedProjectsFooter": "移动设备只能打开你在此处明确授权的项目。",
+  "settings.remoteControl.emptyProjects": "暂无授权项目",
+  "settings.remoteControl.emptyProjectsDetail": "添加一个本地项目，配对设备才能浏览其文件树。",
+  "settings.remoteControl.projectRemove": "移除",
+  "settings.remoteControl.addProject": "添加项目文件夹",
+  "settings.remoteControl.projectPathPlaceholder": "/项目的/绝对/路径",
+
+  // 远程控制 — 危险操作
+  "settings.remoteControl.dangerZone": "危险区",
+  "settings.remoteControl.dangerZoneFooter": "重置会轮换桌面身份与证书，所有已配对设备都将被撤销。",
+  "settings.remoteControl.resetIdentity": "重置远程控制身份",
+  "settings.remoteControl.resetIdentityDetail": "轮换身份、证书并撤销所有设备",
+
+  // 远程控制 — 二维码弹窗
+  "settings.remoteControl.qrModal.title": "配对移动设备",
+  "settings.remoteControl.qrModal.subtitle": "用 Pi 移动端 App 扫描下方二维码，在私有局域网内完成配对。",
+  "settings.remoteControl.qrModal.generating": "正在生成配对凭证…",
+  "settings.remoteControl.qrModal.scanInstruction": "在 Pi 移动端 App 中选择「扫码配对」",
+  "settings.remoteControl.qrModal.countdown": "{s} 秒",
+  "settings.remoteControl.qrModal.expired": "二维码已过期",
+  "settings.remoteControl.qrModal.expiredDetail": "请重新生成二维码继续配对。",
+  "settings.remoteControl.qrModal.regenerate": "重新生成",
+  "settings.remoteControl.qrModal.paired": "配对成功",
+  "settings.remoteControl.qrModal.pairedDetail": "设备已加入已配对列表。",
+  "settings.remoteControl.qrModal.failed": "二维码生成失败",
+  "settings.remoteControl.qrModal.retry": "重试",
+  "settings.remoteControl.qrModal.securityHint": "此凭证包含一次性密钥与 TLS 证书指纹，仅在你的局域网内有效。",
+  "settings.remoteControl.qrModal.waiting": "等待移动设备扫码…",
+
+  // 远程控制 — 撤销设备弹窗
+  "settings.remoteControl.revoke.title": "撤销此设备？",
+  "settings.remoteControl.revoke.message": "「{name}」将立即失去访问权限，需重新配对才能再次连接。",
+  "settings.remoteControl.revoke.confirm": "撤销设备",
+
+  // 远程控制 — 重置身份弹窗
+  "settings.remoteControl.reset.title": "重置远程控制身份",
+  "settings.remoteControl.reset.warning":
+    "此操作将轮换桌面身份与 TLS 证书、撤销所有已配对设备、清空所有授权项目。已绑定的移动设备会立即掉线，必须重新配对。此操作不可撤销。",
+  "settings.remoteControl.reset.typeHint": "输入「{phrase}」以确认",
+  "settings.remoteControl.reset.confirmPhrase": "重置",
+  "settings.remoteControl.reset.confirm": "重置身份",
 };

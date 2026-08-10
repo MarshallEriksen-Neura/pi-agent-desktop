@@ -3,6 +3,7 @@
 //! the pi CLI). Message payloads are stored as an opaque JSON string so the
 //! frontend owns the schema; Rust only indexes metadata for the session list.
 
+use pi_backend_core::chat_store::{configure_and_migrate, validate_session_payload};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -32,57 +33,16 @@ fn open_db() -> Result<Connection, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
-    let _ = conn.pragma_update(None, "journal_mode", "WAL");
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS chat_sessions (
-           id TEXT PRIMARY KEY,
-           name TEXT NOT NULL DEFAULT '',
-           session_path TEXT NOT NULL DEFAULT '',
-           preview TEXT NOT NULL DEFAULT '',
-           messages TEXT NOT NULL DEFAULT '[]',
-           project_root TEXT NOT NULL DEFAULT '',
-           created_at INTEGER NOT NULL,
-           updated_at INTEGER NOT NULL
-         );",
-    )
-    .map_err(|e| e.to_string())?;
-    migrate_project_root(&conn)?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_project
-           ON chat_sessions (project_root, updated_at DESC);",
-    )
-    .map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    // Legacy backfill is best-effort. A corrupt desktop.json must not make the
+    // independent chat database unavailable.
+    let legacy_project_root = crate::projects::last_project()
+        .ok()
+        .flatten()
+        .map(|root| crate::projects::project_key(&root));
+    configure_and_migrate(&mut conn, legacy_project_root.as_deref())
+        .map_err(|error| error.to_string())?;
     Ok(conn)
-}
-
-/// Databases written before sessions were scoped per project have no
-/// `project_root` column. Add it, then backfill every existing row with the
-/// last-opened project — those transcripts were, in practice, produced there,
-/// and an empty key would hide them from every project's list.
-fn migrate_project_root(conn: &Connection) -> Result<(), String> {
-    let present: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name = 'project_root'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if present > 0 {
-        return Ok(());
-    }
-    conn.execute_batch(
-        "ALTER TABLE chat_sessions ADD COLUMN project_root TEXT NOT NULL DEFAULT '';",
-    )
-    .map_err(|e| e.to_string())?;
-    if let Some(root) = crate::projects::last_project() {
-        conn.execute(
-            "UPDATE chat_sessions SET project_root = ?1 WHERE project_root = ''",
-            params![crate::projects::project_key(&root)],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
 }
 
 /// Run `f` with the (lazily opened) connection.
@@ -155,7 +115,8 @@ pub fn chat_sessions_list(
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     })
 }
 
@@ -177,6 +138,8 @@ pub fn chat_session_load(db: State<'_, ChatDb>, id: String) -> Result<Option<Str
 /// weirdness in the webview.
 #[tauri::command]
 pub fn chat_session_save(db: State<'_, ChatDb>, session: ChatSessionSave) -> Result<(), String> {
+    validate_session_payload(&session.name, &session.preview, &session.messages)
+        .map_err(|error| error.to_string())?;
     let key = crate::projects::project_key(&session.project_root);
     with_db(&db, |conn| {
         conn.execute(

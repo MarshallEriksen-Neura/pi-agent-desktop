@@ -28,7 +28,11 @@ pub struct UpdateInfo {
 
 /// "v1.2.3-beta" → [1, 2, 3]; None when the tag isn't version-shaped.
 fn semver(tag: &str) -> Option<Vec<u64>> {
-    let core = tag.trim().trim_start_matches('v').split(['-', '+']).next()?;
+    let core = tag
+        .trim()
+        .trim_start_matches('v')
+        .split(['-', '+'])
+        .next()?;
     let parts = core
         .split('.')
         .map(|p| p.parse::<u64>().ok())
@@ -136,9 +140,9 @@ pub async fn update_check(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
 }
 
 /* ── pi CLI update check ─────────────────────────────────────────────────
-   The desktop app is a GUI over the `pi` CLI; the CLI updates itself with
-   `pi update` (invoked from the frontend through the existing `pi_cli`
-   command). This check only answers "is a newer pi available?". */
+The desktop app is a GUI over the `pi` CLI; the CLI updates itself with
+`pi update` (invoked from the frontend through the existing `pi_cli`
+command). This check only answers "is a newer pi available?". */
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]

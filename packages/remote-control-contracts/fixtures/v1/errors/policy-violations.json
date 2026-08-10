@@ -1,0 +1,29 @@
+{
+  "schema": "pi.remote-control.fixture-policy-v1",
+  "cases": [
+    {
+      "name": "oversized_prompt",
+      "dto": "RemoteTaskCreateRequest",
+      "violation": "prompt_bytes_gt_16384",
+      "sample": "prompt-size-boundary"
+    },
+    {
+      "name": "too_many_context_files",
+      "dto": "RemoteTaskCreateRequest",
+      "violation": "context_files_gt_32",
+      "sample": "33-context-files"
+    },
+    {
+      "name": "unc_path",
+      "dto": "RemoteTaskContextFile",
+      "violation": "absolute_or_unc_path",
+      "sample": "\\\\server\\share\\secret.txt"
+    },
+    {
+      "name": "wildcard_bind",
+      "dto": "RemoteEndpoint",
+      "violation": "wildcard_or_global_bind",
+      "sample": "0.0.0.0"
+    }
+  ]
+}

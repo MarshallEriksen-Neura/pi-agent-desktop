@@ -660,4 +660,108 @@ export const en = {
   "pet.notif.taskComplete": "Pi finished — ready for review",
   "pet.notif.needsInput": "Pi needs your input",
   "pet.notif.taskFailed": "Pi task failed",
+
+  // remote control — overview group
+  "settings.remoteControl.title": "Remote Control",
+  "settings.remoteControl.overview": "Remote Control",
+  "settings.remoteControl.overviewFooter":
+    "Let a paired mobile device view authorized projects over your private LAN.",
+  "settings.remoteControl.status": "Gateway status",
+  "settings.remoteControl.listenAddress": "Listen address",
+  "settings.remoteControl.notListening": "Not listening",
+  "settings.remoteControl.port": "Port",
+  "settings.remoteControl.pairedDevices": "Paired devices",
+  "settings.remoteControl.deviceCount": "{n} paired",
+  "settings.remoteControl.authorizedProjects": "Authorized projects",
+  "settings.remoteControl.projectCount": "{n} authorized",
+  "settings.remoteControl.recentError": "Recent error",
+
+  // remote control — phase badges
+  "settings.remoteControl.phase.normal": "Online",
+  "settings.remoteControl.phase.starting": "Starting",
+  "settings.remoteControl.phase.degraded": "Degraded",
+  "settings.remoteControl.phase.fault": "Fault",
+  "settings.remoteControl.phase.disabled": "Off",
+
+  // remote control — network config
+  "settings.remoteControl.networkConfig": "Network",
+  "settings.remoteControl.networkFooter":
+    "Bind to a private LAN address only. Public interfaces are never exposed. Changes apply on next enable.",
+  "settings.remoteControl.privateInterface": "Private interface",
+  "settings.remoteControl.detecting": "Detecting interfaces…",
+  "settings.remoteControl.noInterface": "No private interface selected",
+  "settings.remoteControl.starting": "Starting…",
+  "settings.remoteControl.enable": "Enable gateway",
+  "settings.remoteControl.publicBlocked": "No private address available",
+  "settings.remoteControl.publicBlockedDetail":
+    "Connect to a private Wi-Fi or LAN, or add a private address manually.",
+  "settings.remoteControl.addAddressPlaceholder": "Add address manually, e.g. 192.168.1.10",
+
+  // remote control — add device
+  "settings.remoteControl.addDevice": "Add mobile device",
+  "settings.remoteControl.addDeviceFooter":
+    "Generate a one-time QR ticket. The mobile app scans it to pair over the LAN.",
+  "settings.remoteControl.addDeviceDisabled": "Enable the gateway first to generate a pairing QR.",
+  "settings.remoteControl.generateQr": "Pair via QR code",
+  "settings.remoteControl.generateQrDetail": "Open the pairing wizard",
+
+  // remote control — paired devices
+  "settings.remoteControl.pairedDevicesFooter":
+    "Revoking a device drops its token immediately — it must re-pair to reconnect.",
+  "settings.remoteControl.emptyDevices": "No paired devices",
+  "settings.remoteControl.emptyDevicesDetail": "Generate a QR to pair your first mobile device.",
+  "settings.remoteControl.deviceRevoke": "Revoke device",
+  "settings.remoteControl.platform.ios": "iOS",
+  "settings.remoteControl.platform.android": "Android",
+  "settings.remoteControl.platform.desktop": "Desktop",
+  "settings.remoteControl.platform.unknown": "Unknown",
+
+  // remote control — authorized projects
+  "settings.remoteControl.authorizedProjectsFooter":
+    "Mobile devices can only open projects you explicitly authorize here.",
+  "settings.remoteControl.emptyProjects": "No authorized projects",
+  "settings.remoteControl.emptyProjectsDetail":
+    "Add a local project so paired devices can browse its file tree.",
+  "settings.remoteControl.projectRemove": "Remove",
+  "settings.remoteControl.addProject": "Add project folder",
+  "settings.remoteControl.projectPathPlaceholder": "/absolute/path/to/project",
+
+  // remote control — danger zone
+  "settings.remoteControl.dangerZone": "Danger zone",
+  "settings.remoteControl.dangerZoneFooter":
+    "Resetting rotates the desktop identity and certificate. Every paired device is revoked.",
+  "settings.remoteControl.resetIdentity": "Reset remote-control identity",
+  "settings.remoteControl.resetIdentityDetail": "Rotate identity, certificate, and revoke all devices",
+
+  // remote control — QR modal
+  "settings.remoteControl.qrModal.title": "Pair a mobile device",
+  "settings.remoteControl.qrModal.subtitle":
+    "Scan this code with the Pi mobile app to pair over your private LAN.",
+  "settings.remoteControl.qrModal.generating": "Generating pairing ticket…",
+  "settings.remoteControl.qrModal.scanInstruction": "In the Pi mobile app, choose “Scan to pair”",
+  "settings.remoteControl.qrModal.countdown": "{s}s",
+  "settings.remoteControl.qrModal.expired": "QR expired",
+  "settings.remoteControl.qrModal.expiredDetail": "Generate a fresh ticket to continue pairing.",
+  "settings.remoteControl.qrModal.regenerate": "Regenerate",
+  "settings.remoteControl.qrModal.paired": "Paired successfully",
+  "settings.remoteControl.qrModal.pairedDetail": "The device has been added to your paired list.",
+  "settings.remoteControl.qrModal.failed": "Could not generate QR",
+  "settings.remoteControl.qrModal.retry": "Retry",
+  "settings.remoteControl.qrModal.securityHint":
+    "This ticket carries a one-time secret and TLS certificate pin. It only works inside your LAN.",
+  "settings.remoteControl.qrModal.waiting": "Waiting for a device to scan…",
+
+  // remote control — revoke dialog
+  "settings.remoteControl.revoke.title": "Revoke this device?",
+  "settings.remoteControl.revoke.message":
+    "“{name}” will lose access immediately. It must pair again to reconnect.",
+  "settings.remoteControl.revoke.confirm": "Revoke device",
+
+  // remote control — reset identity dialog
+  "settings.remoteControl.reset.title": "Reset remote-control identity",
+  "settings.remoteControl.reset.warning":
+    "This rotates the desktop identity and TLS certificate, revokes every paired device, and clears all authorized projects. Paired devices will go offline instantly and must re-pair. This cannot be undone.",
+  "settings.remoteControl.reset.typeHint": "Type “{phrase}” to confirm",
+  "settings.remoteControl.reset.confirmPhrase": "reset",
+  "settings.remoteControl.reset.confirm": "Reset identity",
 } as const;

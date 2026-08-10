@@ -59,6 +59,7 @@ import {
   CodeArea,
 } from "@/components/settings-ui";
 import { PetSettings } from "@/components/PetSettings";
+import { RemoteControlSection } from "@/components/remote-control/RemoteControlSection";
 
 const TRUST_OPTIONS = ["ask", "always", "never"] as const;
 const BUILTIN_THEMES = ["dark", "light"] as const;
@@ -851,6 +852,9 @@ export default function PiSettingsPage() {
               }
             />
           </InsetGroup>
+
+          {/* remote control — app-local LAN gateway for mobile clients */}
+          <RemoteControlSection />
 
           {/* images sent to the LLM */}
           <InsetGroup header={t("settings.images")} footer={t("settings.imagesFooter")}>

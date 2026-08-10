@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+static WSL_SETTINGS_SYNC: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -223,30 +226,24 @@ fn is_legacy_wsl_override(path: Option<&str>, prefix: Option<&serde_json::Value>
     path_is_wsl && prefix_is_legacy
 }
 
-fn read_settings(path: &std::path::Path) -> Result<serde_json::Value, String> {
-    let settings = if path.is_file() {
-        let content = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
-        serde_json::from_str::<serde_json::Value>(&content)
-            .map_err(|error| format!("cannot update {}: {error}", path.display()))?
-    } else {
-        serde_json::json!({})
-    };
-    if settings.is_object() {
-        Ok(settings)
-    } else {
-        Err(format!(
-            "cannot update {}: root must be a JSON object",
-            path.display()
-        ))
-    }
-}
-
-fn write_settings(path: &std::path::Path, settings: &serde_json::Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let content = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
-    std::fs::write(path, format!("{content}\n")).map_err(|error| error.to_string())
+fn update_settings<R>(
+    path: &std::path::Path,
+    update: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<R, String>,
+) -> Result<R, String> {
+    pi_backend_core::projects::DurableJsonStore::new(path)
+        .update_locked(|current| {
+            let mut settings = current.unwrap_or_else(|| serde_json::json!({}));
+            let object = settings.as_object_mut().ok_or_else(|| {
+                pi_backend_core::projects::StateStoreError::UpdateRejected(format!(
+                    "{} root must be a JSON object",
+                    path.display()
+                ))
+            })?;
+            let result = update(object)
+                .map_err(pi_backend_core::projects::StateStoreError::UpdateRejected)?;
+            Ok((settings, result))
+        })
+        .map_err(|error| format!("cannot update {}: {error}", path.display()))
 }
 
 fn restore_setting(
@@ -292,96 +289,114 @@ fn sync_project_shell_settings(
     bridge_path: &str,
 ) -> Result<(), String> {
     let path = PathBuf::from(root).join(".pi").join("settings.json");
-    let backup = crate::projects::project_shell_backup(root);
+    let backup = crate::projects::project_shell_backup(root)?;
 
     if config.mode == RuntimeMode::Native {
         let Some(backup) = backup else {
             return Ok(());
         };
-        let mut settings = read_settings(&path)?;
-        let object = settings.as_object_mut().expect("validated settings object");
-        restore_setting(object, "shellPath", &backup.shell_path);
-        restore_setting(object, "shellCommandPrefix", &backup.shell_command_prefix);
-        write_settings(&path, &settings)?;
+        update_settings(&path, |object| {
+            restore_setting(object, "shellPath", &backup.shell_path);
+            restore_setting(object, "shellCommandPrefix", &backup.shell_command_prefix);
+            Ok(())
+        })?;
         return crate::projects::project_shell_backup_remove(root);
     }
 
     if !path.is_file() {
         return Ok(());
     }
-    let mut settings = read_settings(&path)?;
-    let object = settings.as_object_mut().expect("validated settings object");
-    let has_override =
-        object.contains_key("shellPath") || object.contains_key("shellCommandPrefix");
-    if !has_override && backup.is_none() {
-        return Ok(());
-    }
+    update_settings(&path, |object| {
+        let has_override =
+            object.contains_key("shellPath") || object.contains_key("shellCommandPrefix");
+        if !has_override && backup.is_none() {
+            return Ok(());
+        }
 
-    if backup.is_none() {
-        let backup = install_project_bridge(object, bridge_path);
-        crate::projects::project_shell_backup_write(root, backup)?;
-    } else {
-        object.insert(
-            "shellPath".into(),
-            serde_json::Value::String(bridge_path.into()),
-        );
-        object.remove("shellCommandPrefix");
-    }
-    write_settings(&path, &settings)
+        if backup.is_none() {
+            let backup = install_project_bridge(object, bridge_path);
+            crate::projects::project_shell_backup_write(root, backup)?;
+        } else {
+            object.insert(
+                "shellPath".into(),
+                serde_json::Value::String(bridge_path.into()),
+            );
+            object.remove("shellCommandPrefix");
+        }
+        Ok(())
+    })
 }
 
 /// Synchronize global and current-project shell overrides before Pi reads its
 /// settings. This migrates the old direct-wsl.exe shape and restores both
 /// scopes when the runtime returns to native mode.
 pub fn sync_shell_bridge_settings(cwd: Option<&str>) -> Result<(), String> {
-    let mut config = crate::projects::runtime_config();
+    let _guard = WSL_SETTINGS_SYNC
+        .lock()
+        .map_err(|_| "WSL settings sync lock is poisoned".to_owned())?;
+    let process_lock_path = crate::pi_settings::home_dir()?
+        .join(".pi")
+        .join("agent")
+        .join(".wsl-settings-sync.lock");
+    let _process_guard = pi_backend_core::projects::CrossProcessFileLock::acquire(
+        &process_lock_path,
+        Duration::from_secs(5),
+    )
+    .map_err(|error| format!("WSL settings sync unavailable: {error}"))?;
+    sync_shell_bridge_settings_unlocked(cwd)
+}
+
+fn sync_shell_bridge_settings_unlocked(cwd: Option<&str>) -> Result<(), String> {
+    let mut config = crate::projects::runtime_config()?;
     let path = crate::pi_settings::home_dir()?
         .join(".pi")
         .join("agent")
         .join("settings.json");
-    let mut settings = read_settings(&path)?;
-    let object = settings.as_object_mut().expect("validated settings object");
-    let current_path = object.get("shellPath").and_then(serde_json::Value::as_str);
-    let current_prefix = object.get("shellCommandPrefix");
     let bridge_path = wsl_shell_bridge_path()?;
 
     if config.mode == RuntimeMode::Wsl {
-        if !config.native_shell_saved {
-            if !is_legacy_wsl_override(current_path, current_prefix)
-                && current_path != Some(bridge_path.as_str())
-            {
-                config.native_shell_path = current_path.map(str::to_string);
-                config.native_shell_command_prefix = current_prefix
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+        update_settings(&path, |object| {
+            let current_path = object.get("shellPath").and_then(serde_json::Value::as_str);
+            let current_prefix = object.get("shellCommandPrefix");
+            if !config.native_shell_saved {
+                if !is_legacy_wsl_override(current_path, current_prefix)
+                    && current_path != Some(bridge_path.as_str())
+                {
+                    config.native_shell_path = current_path.map(str::to_string);
+                    config.native_shell_command_prefix = current_prefix
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                }
+                config.native_shell_saved = true;
+                crate::projects::runtime_config_write(config.clone())?;
             }
-            config.native_shell_saved = true;
-            crate::projects::runtime_config_write(config.clone())?;
-        }
-        object.insert(
-            "shellPath".into(),
-            serde_json::Value::String(bridge_path.clone()),
-        );
-        object.remove("shellCommandPrefix");
-        write_settings(&path, &settings)?;
+            object.insert(
+                "shellPath".into(),
+                serde_json::Value::String(bridge_path.clone()),
+            );
+            object.remove("shellCommandPrefix");
+            Ok(())
+        })?;
     } else if config.native_shell_saved {
-        restore_setting(
-            object,
-            "shellPath",
-            &config
-                .native_shell_path
-                .as_ref()
-                .map(|value| serde_json::Value::String(value.clone())),
-        );
-        restore_setting(
-            object,
-            "shellCommandPrefix",
-            &config
-                .native_shell_command_prefix
-                .as_ref()
-                .map(|value| serde_json::Value::String(value.clone())),
-        );
-        write_settings(&path, &settings)?;
+        update_settings(&path, |object| {
+            restore_setting(
+                object,
+                "shellPath",
+                &config
+                    .native_shell_path
+                    .as_ref()
+                    .map(|value| serde_json::Value::String(value.clone())),
+            );
+            restore_setting(
+                object,
+                "shellCommandPrefix",
+                &config
+                    .native_shell_command_prefix
+                    .as_ref()
+                    .map(|value| serde_json::Value::String(value.clone())),
+            );
+            Ok(())
+        })?;
         config.native_shell_path = None;
         config.native_shell_command_prefix = None;
         config.native_shell_saved = false;
@@ -457,7 +472,13 @@ pub fn run_shell_bridge_if_requested() -> Option<i32> {
         }
     };
 
-    let config = crate::projects::runtime_config();
+    let config = match crate::projects::runtime_config() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("Pi WSL shell bridge could not read runtime state: {error}");
+            return Some(2);
+        }
+    };
     if config.mode != RuntimeMode::Wsl {
         eprintln!("Pi WSL shell bridge was invoked while the runtime is native");
         return Some(2);

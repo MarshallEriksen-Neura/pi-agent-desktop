@@ -1,0 +1,10 @@
+{
+  "kind": "task.state_changed",
+  "eventId": "event-02",
+  "emittedAt": "2026-08-07T11:01:00Z",
+  "sequence": 2,
+  "deviceId": "mobile-01",
+  "taskId": "task-01",
+  "from": "running",
+  "to": "awaiting_input"
+}

@@ -1,5 +1,7 @@
 # dependencies
 /node_modules
+apps/*/node_modules
+packages/*/node_modules
 /.pnp
 .pnp.js
 
@@ -14,10 +16,18 @@ next-env.d.ts
 /build
 /.tmp/
 /packages/*/dist/
+apps/*/dist
 
-# tauri
+# mobile app (Capacitor) — native projects are regenerated via `cap add`
+apps/*/android
+apps/*/ios
+apps/*/.vite
+
+# tauri / rust
 /src-tauri/target
 /src-tauri/gen
+# defensive: any crate-level cargo build output
+target/
 
 # typescript
 *.tsbuildinfo
@@ -27,6 +37,9 @@ next-env.d.ts.timestamp
 .env
 .env*.local
 *.pem
+
+# pi CLI local state (sessions, cache)
+.pi/
 
 # updater signing keys (local only; pubkey lives in tauri.conf.json)
 src-tauri/.tauri-keys/
@@ -51,4 +64,6 @@ yarn-error.log*
 .omx/
 .claude/
 .comate/
+.agents/
 skills-lock.json
+.trae/

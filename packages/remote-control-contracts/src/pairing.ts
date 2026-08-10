@@ -59,10 +59,15 @@ export interface PairingSuccess {
   readonly serverTime: IsoTimestamp;
 }
 
+/**
+ * Safe pairing failure codes exposed on the wire. The gateway collapses the
+ * ticket-state triple (expired / invalid / already redeemed) into a single
+ * `invalid_ticket` so the pairing endpoint is not a ticket-state oracle
+ * (plan Stage 4). `rate_limited` and `identity_unavailable` remain distinct
+ * because they are not ticket-state-derived.
+ */
 export type PairingFailureCode =
-  | "expired"
   | "invalid_ticket"
-  | "already_redeemed"
   | "rate_limited"
   | "identity_unavailable";
 
