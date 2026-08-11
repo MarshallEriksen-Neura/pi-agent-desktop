@@ -49,4 +49,7 @@ export interface SecureNetPort {
     pinValue: string;
   }): Promise<void>;
   clearCertPin(opts: { host: string; port: number }): Promise<void>;
+  wakeOnLan(opts: {
+    targets: readonly { macAddress: string; broadcastAddress: string }[];
+  }): Promise<{ packetsSent: number; targetCount: number }>;
 }

@@ -84,6 +84,18 @@ body {
   overflow: hidden;
 }
 
+/*
+ * @capacitor-mlkit/barcode-scanning renders CameraX behind the WebView. Its
+ * native layer clears the WebView color, but our app-level html/body fill would
+ * otherwise remain opaque and turn the scan viewport into a fake placeholder.
+ */
+html.pi-barcode-scanner-active,
+html.pi-barcode-scanner-active body,
+body.pi-barcode-scanner-active,
+body.pi-barcode-scanner-active #root {
+  background: transparent !important;
+}
+
 /* Inputs allow text selection */
 input,
 textarea {

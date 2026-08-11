@@ -96,6 +96,7 @@ impl PairingManager {
             secret,
             certificate_pin,
             expires_at: format_timestamp(now_ms.saturating_add(PAIRING_TICKET_TTL_MS)),
+            wake_on_lan: None,
         })
     }
 

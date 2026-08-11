@@ -7,27 +7,41 @@ import { RemoteControlClient } from "@/net/client";
 import { EventStreamClient, type EventStreamPhase } from "@/net/event-stream";
 import { getTransport } from "@/net/transport";
 import { NetError } from "@/net/errors";
-import { registerPin, clearPin } from "@/security/cert-pin";
+import { registerPin, clearPin, isValidHexPin, PinCodecError } from "@/security/cert-pin";
+import { assertValidHexPin } from "@/security/pin-codec";
 import {
   tokenVault,
   buildStoredConnection,
   type StoredConnection,
 } from "@/security/token-vault";
+import { eventDispatcher } from "./event-dispatcher";
 
 /**
  * Connection store — the single source of truth for the desktop connection
  * lifecycle. Owns:
  *
- *  - **Pairing**: QR scan → POST /pair → register pin → persist token
- *  - **Connection**: load token → GET /me verify → open EventStream
+ *  - **Pairing** (P0-secured ordering):
+ *      validate QR → validate pin hex → register pin on native
+ *      → POST /pair over pinned transport → save token → GET /me verify
+ *      → open WSS.
+ *    The certificate pin is registered with the native network stack BEFORE
+ *    the first HTTP request, so `/pair` itself is protected by pinning. A
+ *    missing or malformed pin fails closed — no request is sent.
+ *  - **Connection**: load token → register pin → GET /me verify → open stream
  *  - **Phase**: `online | reconnecting | offline | identity_failed`
  *  - **Forget**: clear pin + token + storage (local-only, does not revoke)
  *
  * The store is deliberately framework-agnostic — hooks subscribe to it, but
- * the store itself has no React dependencies.
+ * the store itself has no React dependencies. Live events are forwarded to
+ * the task/interaction stores via {@link eventDispatcher}.
  */
 
-export type ConnectionPhase = "idle" | "pairing" | "online" | "reconnecting" | "offline" | "identity_failed";
+export type ConnectionPhase = "idle" | "pairing" | "waking" | "online" | "reconnecting" | "offline" | "identity_failed";
+
+const WAKE_RECONNECT_TIMEOUT_MS = 45_000;
+const WAKE_RECONNECT_INTERVAL_MS = 2_500;
+let wakeGeneration = 0;
+let connectionGeneration = 0;
 
 interface ConnectionState {
   // Persisted pairing data
@@ -44,6 +58,7 @@ interface ConnectionState {
   // Actions
   pair: (payload: PairingQrPayload, deviceName: string, platform: string) => Promise<boolean>;
   connect: () => Promise<boolean>;
+  wake: () => Promise<boolean>;
   disconnect: () => void;
   forget: () => Promise<void>;
   loadStored: () => Promise<boolean>;
@@ -66,22 +81,45 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   },
 
   pair: async (payload, deviceName, platform) => {
+    connectionGeneration += 1;
     set({ phase: "pairing", lastError: null });
     try {
-      // 1. Build the base URL from the first endpoint
+      // 1. Select an HTTPS endpoint (fail closed if none — never fall back to HTTP).
       const endpoint = selectEndpoint(payload.endpoints);
       if (!endpoint) {
         set({ phase: "offline", lastError: "no_endpoint" });
         return false;
       }
-      const baseUrl = buildBaseUrl(endpoint);
 
-      // 2. Create a client (no auth yet — /pair doesn't need it)
+      // 2. Validate the pin hex BEFORE any network call. A malformed pin must
+      //    never reach the transport — the request would otherwise go out
+      //    unpinned.
+      try {
+        assertValidHexPin(payload.certificatePin.value);
+      } catch (e) {
+        const code = e instanceof PinCodecError ? e.code : "invalid_pin";
+        set({ phase: "identity_failed", lastError: code });
+        return false;
+      }
+
+      // 3. Register the pin with the native network stack. From this point on,
+      //    every request to `endpoint` MUST match the pinned SPKI or the native
+      //    layer rejects with `pin_mismatch`. No pin registered ⇒ the native
+      //    layer rejects with `pin_not_registered`. Both fail closed.
+      await registerPin({
+        host: endpoint.host,
+        port: endpoint.port,
+        pinHex: payload.certificatePin.value,
+      });
+
+      // 4. Build the client over the now-pinned transport. `/pair` is the only
+      //    unauthenticated endpoint — it still goes through the pinned TLS
+      //    connection, which is the whole point of the QR carrying the pin.
+      const baseUrl = buildBaseUrl(endpoint);
       const transport = getTransport();
       const client = new RemoteControlClient(transport, baseUrl, () => null);
 
-      // 3. POST /pair — generate a local device ID before pairing (the server
-      //    may accept or reassign it; PairingSuccess returns the final deviceId)
+      // 5. POST /pair over the pinned transport.
       const localDeviceId = generateLocalDeviceId();
       const pairResult = await client.pair({
         version: payload.version,
@@ -96,35 +134,59 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       });
 
       if (!("token" in pairResult)) {
-        // PairingFailure
+        // PairingFailure — do not persist; let the UI map the error.
         const failure = pairResult as { error: string };
+        set({ phase: "offline", lastError: failure.error });
+        return false;
+      }
+
+      // 6. Persist the connection (token goes into secure storage).
+      const stored = buildStoredConnection(payload, pairResult);
+      await tokenVault.save(stored);
+
+      // 7. Verify identity via GET /me over the pinned transport.
+      const authedClient = new RemoteControlClient(transport, baseUrl, () => ({
+        deviceId: pairResult.deviceId,
+        token: pairResult.token,
+      }));
+      let me: { deviceId: string; identityEpoch: number; scopes: string[] };
+      try {
+        me = await authedClient.getMe();
+      } catch (e) {
+        // Token saved but /me failed — surface as offline so the user can
+        // retry connect() later. Token is retained.
+        const message = e instanceof NetError ? e.message : "verify_failed";
+        const kind = e instanceof NetError ? e.kind : "unknown";
         set({
-          phase: "offline",
-          lastError: failure.error,
+          stored,
+          phase: kind === "identity_rotated" || kind === "pin_mismatch" ? "identity_failed" : "offline",
+          lastError: message,
+          client: authedClient,
         });
         return false;
       }
 
-      // 4. Register the certificate pin BEFORE any authenticated request
-      await registerPin({
-        host: endpoint.host,
-        port: endpoint.port,
-        pinValue: payload.certificatePin.value,
-      });
-
-      // 5. Persist the connection
-      const stored = buildStoredConnection(payload, pairResult);
-      await tokenVault.save(stored);
+      // 8. Identity epoch check — rotation invalidates the token.
+      const finalStored: StoredConnection = {
+        ...stored,
+        identityEpoch: me.identityEpoch,
+      };
+      await tokenVault.save(finalStored);
 
       set({
-        stored,
+        stored: finalStored,
         phase: "online",
         lastError: null,
+        client: authedClient,
       });
       return true;
     } catch (e) {
       const message = e instanceof NetError ? e.message : (e as Error)?.message ?? "pairing_failed";
-      set({ phase: "offline", lastError: message });
+      const kind = e instanceof NetError ? e.kind : "unknown";
+      set({
+        phase: kind === "pin_mismatch" || kind === "identity_rotated" ? "identity_failed" : "offline",
+        lastError: message,
+      });
       return false;
     }
   },
@@ -135,6 +197,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       set({ phase: "offline", lastError: "not_paired" });
       return false;
     }
+    const generation = ++connectionGeneration;
 
     try {
       const endpoint = selectEndpoint(stored.endpoints);
@@ -143,11 +206,11 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         return false;
       }
 
-      // Ensure pin is registered (in case app was reinstalled but storage kept)
+      // Re-register pin (app may have been reinstalled; pin is in-memory on native).
       await registerPin({
         host: endpoint.host,
         port: endpoint.port,
-        pinValue: stored.certificatePin.value,
+        pinHex: stored.certificatePin.value,
       });
 
       const baseUrl = buildBaseUrl(endpoint);
@@ -159,8 +222,9 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
       // Verify token via GET /me
       const me = await client.getMe();
+      if (generation !== connectionGeneration) return false;
 
-      // Check identity epoch — if rotated, the token is invalid
+      // Check identity epoch — if rotated, the token is invalid.
       if (stored.identityEpoch > 0 && me.identityEpoch !== stored.identityEpoch) {
         set({ phase: "identity_failed", lastError: "identity_rotated" });
         return false;
@@ -170,7 +234,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       const updated = { ...stored, identityEpoch: me.identityEpoch };
       await tokenVault.save(updated);
 
-      // Open the event stream
+      // Open the event stream. Events are forwarded to the task/interaction
+      // stores via the eventDispatcher; snapshot_required triggers a refetch.
       const stream = new EventStreamClient(
         transport,
         (after) => client.getEventStreamUrl(after),
@@ -179,12 +244,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
           Authorization: `Bearer ${stored.token}`,
         }),
         {
-          onEvent: () => {
-            // Events are consumed by task/interaction stores (later Phase)
-          },
-          onSnapshotRequired: () => {
-            // Trigger full re-fetch of tasks (later Phase)
-          },
+          onEvent: (event) => eventDispatcher.dispatch(event),
+          onSnapshotRequired: () => eventDispatcher.dispatchSnapshotRequired(),
           onPhaseChange: (p: EventStreamPhase) => {
             const phaseMap: Record<EventStreamPhase, ConnectionPhase> = {
               connecting: "reconnecting",
@@ -195,6 +256,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
             set({ phase: phaseMap[p] });
           },
           onTerminalError: (message) => {
+            eventDispatcher.dispatchTerminalError(message);
             if (message.includes("identity") || message.includes("pin_mismatch")) {
               set({ phase: "identity_failed", lastError: message });
             } else {
@@ -205,6 +267,10 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       );
 
       await stream.connect();
+      if (generation !== connectionGeneration) {
+        await stream.stop();
+        return false;
+      }
 
       set({
         client,
@@ -226,13 +292,53 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     }
   },
 
+  wake: async () => {
+    const { stored, phase } = get();
+    if (!stored?.wakeOnLan?.targets.length) {
+      set({ phase: "offline", lastError: "wake_unavailable" });
+      return false;
+    }
+    if (phase === "waking") return false;
+
+    const generation = ++wakeGeneration;
+    set({ phase: "waking", lastError: null });
+    try {
+      await getTransport().wakeOnLan({ targets: stored.wakeOnLan.targets });
+    } catch (error) {
+      if (generation !== wakeGeneration) return false;
+      const code = (error as { code?: string; message?: string }).code
+        ?? (error as { message?: string }).message
+        ?? "wake_failed";
+      set({ phase: "offline", lastError: code });
+      return false;
+    }
+
+    const deadline = Date.now() + WAKE_RECONNECT_TIMEOUT_MS;
+    while (Date.now() < deadline && generation === wakeGeneration) {
+      await delay(WAKE_RECONNECT_INTERVAL_MS);
+      if (generation !== wakeGeneration) return false;
+      if (await get().connect()) return true;
+      if (get().phase === "identity_failed") return false;
+      set({ phase: "waking", lastError: null });
+    }
+
+    if (generation === wakeGeneration) {
+      set({ phase: "offline", lastError: "wake_timeout" });
+    }
+    return false;
+  },
+
   disconnect: () => {
+    wakeGeneration += 1;
+    connectionGeneration += 1;
     const { stream } = get();
     void stream?.stop();
     set({ phase: "offline", stream: null, client: null });
   },
 
   forget: async () => {
+    wakeGeneration += 1;
+    connectionGeneration += 1;
     const { stored, stream } = get();
     if (stream) await stream.stop();
     if (stored) {
@@ -242,6 +348,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       }
     }
     await tokenVault.clear();
+    eventDispatcher.reset();
     set({
       stored: null,
       phase: "idle",
@@ -257,8 +364,9 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 // ----------------------------------------------------------------
 
 function selectEndpoint(endpoints: readonly RemoteEndpoint[]): RemoteEndpoint | null {
-  // Prefer the first HTTPS endpoint; fall back to first available.
-  return endpoints.find((e) => e.scheme === "https") ?? endpoints[0] ?? null;
+  // Prefer the first HTTPS endpoint; never fall back to a non-HTTPS endpoint
+  // (cleartext is rejected by the manifest and the native layer).
+  return endpoints.find((e) => e.scheme === "https") ?? null;
 }
 
 function buildBaseUrl(endpoint: RemoteEndpoint): string {
@@ -274,10 +382,16 @@ function generateLocalDeviceId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
-  // Fallback (older browsers)
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
     const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
+}
+
+// Exported for tests that need to validate pin shape without the store.
+export { isValidHexPin };
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

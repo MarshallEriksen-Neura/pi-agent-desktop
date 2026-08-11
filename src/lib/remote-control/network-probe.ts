@@ -1,21 +1,31 @@
 import { PRIVATE_RANGES } from "./constants";
+import { getPort } from "@/lib/backend/composition/container";
 
 /**
- * Discover candidate private LAN addresses for the network-config picker
- * (design §13-1 — there is no `list_private_interfaces` Tauri command).
+ * Discover candidate private LAN addresses for the network-config picker.
  *
- * Uses WebRTC ICE candidate gathering, which works in both the Tauri WebView
- * and the browser mock transport. The backend still validates and re-binds to
- * private addresses on `enable`, so this is purely a UX hint — never trusted
- * as authoritative.
+ * The desktop backend derives addresses from the host routing table. WebRTC ICE
+ * gathering remains as a browser-compatible supplement. The backend still
+ * validates and re-binds to private addresses on `enable`, so these candidates
+ * are purely a UX hint — never trusted as authoritative.
  *
  * Returns an empty array when WebRTC is unavailable (e.g. a hardened context),
  * in which case the picker falls back to a manual text input.
  */
 export async function detectPrivateAddresses(): Promise<string[]> {
-  if (typeof RTCPeerConnection === "undefined") return [];
-
   const seen = new Set<string>();
+  try {
+    const native = await getPort("remoteControl").privateAddresses();
+    for (const ip of native) {
+      if (isPrivateIp(ip)) seen.add(ip);
+    }
+  } catch {
+    // Browser previews or older desktop binaries may not expose the command.
+    // Continue with WebRTC so the UI remains usable during rolling upgrades.
+  }
+
+  if (typeof RTCPeerConnection === "undefined") return [...seen];
+
   return new Promise<string[]>((resolve) => {
     const collect = () => {
       pc.close();

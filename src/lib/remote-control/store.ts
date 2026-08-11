@@ -61,6 +61,7 @@ interface RemoteControlState {
   resetIdentity: () => Promise<boolean>;
   setDraftAddresses: (addresses: string[]) => void;
   setDraftPort: (port: number) => void;
+  reportError: (message: string) => void;
   clearError: () => void;
 }
 
@@ -218,5 +219,6 @@ export const useRemoteControl = create<RemoteControlState>()((set, get) => ({
 
   setDraftAddresses: (addresses) => set({ draftAddresses: addresses }),
   setDraftPort: (port) => set({ draftPort: port }),
+  reportError: (message) => set({ lastError: message }),
   clearError: () => set({ lastError: null }),
 }));

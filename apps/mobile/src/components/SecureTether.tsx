@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { motion } from "motion/react";
-import { ShieldCheck, RefreshCw, WifiOff, ShieldAlert } from "lucide-react";
+import { ShieldCheck, RefreshCw, WifiOff, ShieldAlert, Power } from "lucide-react";
 import type { ConnectionPhase } from "@/stores/connection.store";
 import { t } from "@/i18n";
 
@@ -36,6 +36,14 @@ const PHASE_CONFIG: Record<
     label: "connection.reconnecting",
     pulse: false,
     spin: true,
+  },
+  waking: {
+    color: "var(--color-accent)",
+    bg: "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+    icon: <Power size={24} />,
+    label: "connection.waking",
+    pulse: true,
+    spin: false,
   },
   offline: {
     color: "var(--color-text-tertiary)",

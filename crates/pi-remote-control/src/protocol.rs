@@ -145,6 +145,19 @@ pub struct CertificatePin {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WakeOnLanTarget {
+    #[serde(rename = "macAddress")]
+    pub mac_address: String,
+    #[serde(rename = "broadcastAddress")]
+    pub broadcast_address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WakeOnLanConfig {
+    pub targets: Vec<WakeOnLanTarget>,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PairingQrPayload {
     pub protocol: String,
@@ -158,6 +171,8 @@ pub struct PairingQrPayload {
     pub certificate_pin: CertificatePin,
     #[serde(rename = "expiresAt")]
     pub expires_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "wakeOnLan")]
+    pub wake_on_lan: Option<WakeOnLanConfig>,
 }
 
 impl fmt::Debug for PairingQrPayload {
@@ -171,6 +186,7 @@ impl fmt::Debug for PairingQrPayload {
             .field("secret", &"<redacted>")
             .field("certificate_pin", &self.certificate_pin)
             .field("expires_at", &self.expires_at)
+            .field("wake_on_lan", &self.wake_on_lan)
             .finish()
     }
 }

@@ -4,6 +4,8 @@
 //! itself remains Tauri-free in `pi-remote-control`, so mobile requests never
 //! reach desktop commands, the desktop Pi session, or the React stores.
 
+mod wake_on_lan;
+
 use pi_remote_control::config::RemoteControlConfig;
 use pi_remote_control::device_store::DeviceRegistry;
 use pi_remote_control::gateway::{build_router, build_server_config, GatewayServer, GatewayState};
@@ -15,13 +17,13 @@ use pi_remote_control::pairing::PairingError;
 use pi_remote_control::project_catalog::PersistedProject;
 use pi_remote_control::protocol::{
     PairingDesktopIdentity, PairingQrPayload, RemoteEndpoint, RemoteEndpointScheme,
-    RemoteProjectSummary,
+    RemoteProjectSummary, WakeOnLanConfig, WakeOnLanTarget,
 };
 use pi_remote_control::storage::StorageError;
 use pi_remote_control::task_runtime::RemoteTaskRuntimeConfig;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
@@ -491,11 +493,61 @@ fn selected_addresses_available(config: &RemoteControlConfig) -> bool {
         .all(|address| std::net::TcpListener::bind(std::net::SocketAddr::new(*address, 0)).is_ok())
 }
 
+fn is_private_lan_address(address: IpAddr) -> bool {
+    let IpAddr::V4(address) = address else {
+        return false;
+    };
+    let octets = address.octets();
+    octets[0] == 10
+        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 168)
+}
+
+fn discover_private_addresses() -> Vec<String> {
+    // UDP connect selects a route without sending traffic. Probing distinct
+    // private ranges plus the default internet route covers ordinary LAN, VPN,
+    // and offline-private-network setups without platform-specific APIs.
+    const ROUTE_PROBES: [Ipv4Addr; 4] = [
+        Ipv4Addr::new(192, 168, 0, 1),
+        Ipv4Addr::new(10, 0, 0, 1),
+        Ipv4Addr::new(172, 16, 0, 1),
+        Ipv4Addr::new(1, 1, 1, 1),
+    ];
+
+    let mut addresses = Vec::new();
+    for probe in ROUTE_PROBES {
+        let Ok(socket) = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+        else {
+            continue;
+        };
+        if socket
+            .connect(SocketAddr::new(IpAddr::V4(probe), 9))
+            .is_err()
+        {
+            continue;
+        }
+        let Ok(local) = socket.local_addr() else {
+            continue;
+        };
+        if is_private_lan_address(local.ip()) {
+            addresses.push(local.ip().to_string());
+        }
+    }
+    addresses.sort();
+    addresses.dedup();
+    addresses
+}
+
 #[tauri::command]
 pub fn remote_control_status(
     state: State<'_, RemoteControlState>,
 ) -> Result<RemoteControlStatus, String> {
     state.status()
+}
+
+#[tauri::command]
+pub fn remote_control_private_addresses() -> Vec<String> {
+    discover_private_addresses()
 }
 
 #[tauri::command]
@@ -520,6 +572,16 @@ pub fn remote_control_pairing_payload(
     state: State<'_, RemoteControlState>,
 ) -> Result<PairingQrPayload, String> {
     state.with_running(|running| {
+        let wake_targets = wake_on_lan::discover_targets(running.config.selected_addresses());
+        let wake_on_lan = (!wake_targets.is_empty()).then(|| WakeOnLanConfig {
+            targets: wake_targets
+                .into_iter()
+                .map(|target| WakeOnLanTarget {
+                    mac_address: target.mac_address,
+                    broadcast_address: target.broadcast_address,
+                })
+                .collect(),
+        });
         let endpoints = running
             .config
             .selected_socket_addresses()
@@ -532,7 +594,7 @@ pub fn remote_control_pairing_payload(
                 port: address.port(),
             })
             .collect::<Vec<_>>();
-        running
+        let mut payload = running
             .gateway
             .pairing
             .issue_ticket(
@@ -544,7 +606,9 @@ pub fn remote_control_pairing_payload(
                 running.gateway.identity.certificate_pin().clone(),
                 now_ms(),
             )
-            .map_err(pairing_error)
+            .map_err(pairing_error)?;
+        payload.wake_on_lan = wake_on_lan;
+        Ok(payload)
     })
 }
 
@@ -781,6 +845,7 @@ mod command_smoke {
             .manage(RemoteControlState::default())
             .invoke_handler(tauri::generate_handler![
                 remote_control_status,
+                remote_control_private_addresses,
                 remote_control_enable,
                 remote_control_disable,
                 remote_control_pairing_payload,
@@ -870,6 +935,19 @@ mod command_smoke {
         assert!(pairing["pairingId"].as_str().is_some());
         assert!(pairing["secret"].as_str().is_some());
         assert_eq!(pairing["certificatePin"]["algorithm"], "spki-sha256");
+        #[cfg(target_os = "windows")]
+        {
+            let targets = pairing["wakeOnLan"]["targets"]
+                .as_array()
+                .expect("selected Windows adapter should expose Wake-on-LAN metadata");
+            assert!(!targets.is_empty());
+            assert!(targets.iter().all(|target| {
+                target["macAddress"]
+                    .as_str()
+                    .is_some_and(|mac| mac.len() == 17)
+                    && target["broadcastAddress"].as_str().is_some()
+            }));
+        }
         let first_epoch = enabled["identityEpoch"].as_u64().expect("identity epoch");
 
         let reset = invoke(&webview, "remote_control_reset_identity", json!({}));
@@ -884,6 +962,31 @@ mod command_smoke {
 
 #[cfg(test)]
 mod tests {
+    use super::{discover_private_addresses, is_private_lan_address};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn private_address_discovery_returns_only_rfc1918_ipv4() {
+        assert!(is_private_lan_address(IpAddr::V4(Ipv4Addr::new(
+            10, 1, 2, 3
+        ))));
+        assert!(is_private_lan_address(IpAddr::V4(Ipv4Addr::new(
+            172, 16, 0, 1
+        ))));
+        assert!(is_private_lan_address(IpAddr::V4(Ipv4Addr::new(
+            192, 168, 31, 199
+        ))));
+        assert!(!is_private_lan_address(IpAddr::V4(Ipv4Addr::new(
+            172, 32, 0, 1
+        ))));
+        assert!(!is_private_lan_address(IpAddr::V4(Ipv4Addr::new(
+            1, 1, 1, 1
+        ))));
+        assert!(discover_private_addresses()
+            .into_iter()
+            .all(|address| address.parse().is_ok_and(is_private_lan_address)));
+    }
+
     #[test]
     fn tauri_commands_cover_enable_pairing_reset_disable_lifecycle() {
         super::command_smoke::run();

@@ -1,6 +1,6 @@
 "use client";
 
-import { Radio, Globe, Smartphone, Folder, TriangleAlert } from "lucide-react";
+import { Activity, Radio, Globe, Smartphone, Folder, TriangleAlert } from "lucide-react";
 import { InsetGroup, GroupRow, IOSSwitch } from "@/components/settings-ui";
 import { useT } from "@/lib/i18n";
 import { useRemoteControl } from "@/lib/remote-control/store";
@@ -13,12 +13,13 @@ export function OverviewGroup() {
   const phase = useRemoteControlPhase();
   const { enabled, enabling, toggle } = useRemoteControlToggle();
   const status = useRemoteControl((s) => s.status);
+  const operationError = useRemoteControl((s) => s.lastError);
 
   const addresses = status?.selectedAddresses ?? [];
   const port = status?.port;
   const deviceCount = status?.pairedDevices.length ?? 0;
   const projectCount = status?.projects.length ?? 0;
-  const lastError = status?.lastError;
+  const lastError = operationError ?? status?.lastError;
 
   return (
     <InsetGroup header={t("settings.remoteControl.overview")}>
@@ -33,9 +34,9 @@ export function OverviewGroup() {
         }
       />
       <GroupRow
-        icon={<StatusBadge phase={phase} />}
-        iconBg="transparent"
+        icon={<Activity size={15} />}
         title={t("settings.remoteControl.status")}
+        trailing={<StatusBadge phase={phase} />}
       />
       <GroupRow
         icon={<Globe size={15} />}

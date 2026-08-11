@@ -69,14 +69,20 @@ export const StatusBadge = memo(function StatusBadge({
   const s = PHASE_BADGE[phase];
   return (
     <span
+      role="status"
       style={{
         display: "inline-flex",
         alignItems: "center",
         gap: 6,
+        flex: "0 0 auto",
+        minHeight: 24,
         fontSize: 12,
         fontWeight: 600,
-        padding: "3px 9px",
+        lineHeight: "16px",
+        whiteSpace: "nowrap",
+        padding: "3px 9px 3px 8px",
         borderRadius: 999,
+        border: `1px solid color-mix(in srgb, ${s.color} 18%, transparent)`,
         background: s.bg,
         color: s.color,
       }}
@@ -85,6 +91,7 @@ export const StatusBadge = memo(function StatusBadge({
         style={{
           width: 7,
           height: 7,
+          flex: "0 0 7px",
           borderRadius: "50%",
           background: s.dot,
           animation: s.pulse ? "pi-rc-pulse 1.2s infinite" : undefined,

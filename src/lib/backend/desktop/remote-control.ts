@@ -22,6 +22,9 @@ import { desktopInvoke } from "./invoke";
 export const desktopRemoteControlPort: RemoteControlPort = {
   status: () => desktopInvoke<RemoteControlStatusDto>("remote_control_status"),
 
+  privateAddresses: () =>
+    desktopInvoke<string[]>("remote_control_private_addresses"),
+
   enable: (input: RemoteControlEnableInput) =>
     desktopInvoke<RemoteControlStatusDto>("remote_control_enable", {
       request: {

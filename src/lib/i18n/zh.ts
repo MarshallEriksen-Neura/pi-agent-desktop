@@ -235,6 +235,19 @@ export const zh: Record<keyof typeof en, string> = {
 
   // settings page
   "settings.title": "设置",
+  "settings.categoryNavigation": "设置分类",
+  "settings.category.general": "常规",
+  "settings.category.generalDetail": "语言、通知、更新与窗口行为。",
+  "settings.category.appearance": "外观",
+  "settings.category.appearanceDetail": "主题、颜色、字体、自定义 CSS 与桌面宠物。",
+  "settings.category.agent": "Agent",
+  "settings.category.agentDetail": "模型、思考、重试、消息投递与上下文行为。",
+  "settings.category.runtime": "运行环境",
+  "settings.category.runtimeDetail": "WSL、Shell、会话、代理与传输环境。",
+  "settings.category.remote": "远程控制",
+  "settings.category.remoteDetail": "局域网网关、已配对设备与授权项目。",
+  "settings.category.advanced": "高级",
+  "settings.category.advancedDetail": "项目信任与设置文件诊断。",
   "settings.subtitleMock": "浏览器预览 — 编辑仅保存在内存中。",
   "settings.subtitleLive": "编辑会直接写入 pi 的 settings.json · 重启 pi 后生效",
   "settings.saved": "设置已保存。重启 pi 后更改生效。",
@@ -664,6 +677,8 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.remoteControl.privateInterface": "私有接口",
   "settings.remoteControl.detecting": "正在探测接口…",
   "settings.remoteControl.noInterface": "未选择私有接口",
+  "settings.remoteControl.selectInterfaceFirst":
+    "未检测到可用的私有局域网地址。请在下方“网络”中选择或手动添加地址后重试。",
   "settings.remoteControl.starting": "启动中…",
   "settings.remoteControl.enable": "启用网关",
   "settings.remoteControl.publicBlocked": "没有可用的私有地址",

@@ -13,10 +13,12 @@ export function SettingsPage({
   title,
   subtitle,
   children,
+  maxWidth = 640,
 }: {
   title: string;
   subtitle?: string;
   children: React.ReactNode;
+  maxWidth?: number | string;
 }) {
   return (
     <div
@@ -40,7 +42,7 @@ export function SettingsPage({
       >
         <WindowControls />
       </div>
-      <div style={{ maxWidth: 640, margin: "0 auto", padding: "0 24px 64px" }}>
+      <div style={{ maxWidth, margin: "0 auto", padding: "0 24px 64px" }}>
         <motion.h1
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}

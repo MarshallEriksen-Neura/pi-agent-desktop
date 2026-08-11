@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import { ShieldCheck, Monitor, Info, Trash2 } from "lucide-react";
+import { ShieldCheck, Monitor, Info, Trash2, Power } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
@@ -64,6 +64,28 @@ export const SettingsPage = memo(function SettingsPage() {
           title={stored?.desktopName ?? t("connection.offline")}
           detail={t("settings.connectionDetail")}
           trailing={<SecureTetherBadge phase={phase} />}
+        />
+        <Row
+          icon={<Power size={16} />}
+          title={t("settings.wakeOnLan")}
+          detail={stored?.wakeOnLan?.targets.length
+            ? t("settings.wakeOnLanDetail")
+            : t("settings.wakeOnLanUnavailableDetail")}
+          trailing={
+            <span
+              style={{
+                fontSize: 13,
+                color: stored?.wakeOnLan?.targets.length
+                  ? "var(--color-success)"
+                  : "var(--color-text-tertiary)",
+                fontWeight: 500,
+              }}
+            >
+              {stored?.wakeOnLan?.targets.length
+                ? t("settings.wakeOnLanAvailable")
+                : t("settings.wakeOnLanUnavailable")}
+            </span>
+          }
         />
       </Card>
 

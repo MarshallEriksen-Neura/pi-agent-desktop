@@ -23,6 +23,10 @@ import {
   ArrowDownToLine,
   ChevronRight,
   Bell,
+  SlidersHorizontal,
+  Palette,
+  Bot,
+  SquareTerminal,
 } from "lucide-react";
 import { APP_VERSION } from "@/lib/update";
 import { usePiSettings, type SettingsScope, type PiSettings } from "@/lib/pi/settings";
@@ -88,6 +92,79 @@ function getPath(obj: PiSettings, path: string): unknown {
 /** display labels for the UI text-scale steps (locale-neutral) */
 const FONT_SCALE_LABELS = FONT_SCALES.map((s) => `${Math.round(s * 100)}%`);
 
+type SettingsCategory =
+  | "general"
+  | "appearance"
+  | "agent"
+  | "runtime"
+  | "remote"
+  | "advanced";
+
+interface SettingsCategoryItem {
+  id: SettingsCategory;
+  title: string;
+  detail: string;
+  icon: React.ReactNode;
+}
+
+function SettingsCategoryNav({
+  items,
+  value,
+  onChange,
+  label,
+}: {
+  items: SettingsCategoryItem[];
+  value: SettingsCategory;
+  onChange: (category: SettingsCategory) => void;
+  label: string;
+}) {
+  return (
+    <nav className="settings-category-nav" aria-label={label}>
+      {items.map((item, index) => {
+        const active = item.id === value;
+        return (
+          <motion.button
+            key={item.id}
+            type="button"
+            className="settings-category-button"
+            aria-current={active ? "page" : undefined}
+            onClick={() => onChange(item.id)}
+            whileTap={{ scale: 0.98 }}
+            style={{
+              borderTop: index === 0 ? "none" : "1px solid var(--separator)",
+              background: active ? "var(--accent-muted)" : "transparent",
+            }}
+          >
+            <span
+              className="settings-category-icon"
+              style={{
+                color: active ? "#fff" : "var(--text-secondary)",
+                background: active ? "var(--accent)" : "var(--bg-sunken)",
+              }}
+            >
+              {item.icon}
+            </span>
+            <span className="settings-category-copy">
+              <span
+                className="settings-category-title"
+                style={{ color: active ? "var(--text-primary)" : "var(--text-secondary)" }}
+              >
+                {item.title}
+              </span>
+              <span className="settings-category-detail">{item.detail}</span>
+            </span>
+            <ChevronRight
+              className="settings-category-chevron"
+              size={14}
+              color={active ? "var(--accent)" : "var(--text-tertiary)"}
+            />
+          </motion.button>
+        );
+      })}
+    </nav>
+  );
+}
+
 export default function PiSettingsPage() {
   const s = usePiSettings();
   const { currentModel } = usePi();
@@ -100,6 +177,47 @@ export default function PiSettingsPage() {
     useUI();
   const [notifPermission, setNotifPermission] =
     useState<NotificationPermissionState>("default");
+  const [category, setCategory] = useState<SettingsCategory>("general");
+
+  const categories: SettingsCategoryItem[] = [
+    {
+      id: "general",
+      title: t("settings.category.general"),
+      detail: t("settings.category.generalDetail"),
+      icon: <SlidersHorizontal size={15} />,
+    },
+    {
+      id: "appearance",
+      title: t("settings.category.appearance"),
+      detail: t("settings.category.appearanceDetail"),
+      icon: <Palette size={15} />,
+    },
+    {
+      id: "agent",
+      title: t("settings.category.agent"),
+      detail: t("settings.category.agentDetail"),
+      icon: <Bot size={15} />,
+    },
+    {
+      id: "runtime",
+      title: t("settings.category.runtime"),
+      detail: t("settings.category.runtimeDetail"),
+      icon: <SquareTerminal size={15} />,
+    },
+    {
+      id: "remote",
+      title: t("settings.category.remote"),
+      detail: t("settings.category.remoteDetail"),
+      icon: <Radio size={15} />,
+    },
+    {
+      id: "advanced",
+      title: t("settings.category.advanced"),
+      detail: t("settings.category.advancedDetail"),
+      icon: <Braces size={15} />,
+    },
+  ];
+  const activeCategory = categories.find((item) => item.id === category) ?? categories[0];
 
   useEffect(() => {
     s.load();
@@ -160,6 +278,7 @@ export default function PiSettingsPage() {
     <SettingsPage
       title={t("settings.title")}
       subtitle={s.mock ? t("settings.subtitleMock") : t("settings.subtitleLive")}
+      maxWidth={980}
     >
       {/* restart-needed banner */}
       <AnimatePresence>
@@ -199,25 +318,49 @@ export default function PiSettingsPage() {
         )}
       </AnimatePresence>
 
+      <div className="settings-split-layout">
+        <SettingsCategoryNav
+          items={categories}
+          value={category}
+          onChange={setCategory}
+          label={t("settings.categoryNavigation")}
+        />
+
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={category}
+            className="settings-category-content"
+            initial={{ opacity: 0, x: 8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -6 }}
+            transition={{ type: "spring", stiffness: 340, damping: 30 }}
+          >
+            <header className="settings-category-heading">
+              <h2>{activeCategory.title}</h2>
+              <p>{activeCategory.detail}</p>
+            </header>
+
       {/* UI language — app-local, not part of pi's settings.json */}
-      <InsetGroup
-        header={t("settings.language")}
-        footer={t("settings.languageFooter")}
-      >
-        <div style={{ padding: "12px 14px" }}>
-          <Segmented
-            options={["English", "中文"] as const}
-            value={locale === "zh" ? "中文" : "English"}
-            onChange={(v) => setLocale(v === "中文" ? "zh" : "en")}
-          />
-        </div>
-      </InsetGroup>
+      {category === "general" && (
+        <InsetGroup
+          header={t("settings.language")}
+          footer={t("settings.languageFooter")}
+        >
+          <div style={{ padding: "12px 14px" }}>
+            <Segmented
+              options={["English", "中文"] as const}
+              value={locale === "zh" ? "中文" : "English"}
+              onChange={(v) => setLocale(v === "中文" ? "zh" : "en")}
+            />
+          </div>
+        </InsetGroup>
+      )}
 
       {/* command environment — Windows only: route Pi's Bash through WSL */}
-      <RuntimeSection />
+      {category === "runtime" && <RuntimeSection />}
 
       {/* user-customizable UI — app-local, not part of pi's settings.json */}
-      <InsetGroup
+      {category === "appearance" && <InsetGroup
         header={t("settings.customUi")}
         footer={t("settings.customUiFooter")}
       >
@@ -376,10 +519,10 @@ export default function PiSettingsPage() {
             onClick={() => ap.reset()}
           />
         )}
-      </InsetGroup>
+      </InsetGroup>}
 
       {/* custom CSS — pasted styles injected live into the app */}
-      <InsetGroup
+      {category === "appearance" && <InsetGroup
         header={t("settings.customCss")}
         footer={t("settings.customCssFooter")}
       >
@@ -390,10 +533,10 @@ export default function PiSettingsPage() {
             placeholder={t("settings.customCssPlaceholder")}
           />
         </div>
-      </InsetGroup>
+      </InsetGroup>}
 
       {/* scope switch — mirrors `pi config` (Tab toggles global/project) */}
-      <InsetGroup
+      {category !== "remote" && <InsetGroup
         header={t("settings.scope")}
         footer={
           scope === "global"
@@ -412,9 +555,11 @@ export default function PiSettingsPage() {
             onChange={setScope}
           />
         </div>
-      </InsetGroup>
+      </InsetGroup>}
 
-      {file.parseError ? (
+      {category === "remote" ? (
+        <RemoteControlSection />
+      ) : file.parseError ? (
         <InsetGroup header={t("settings.problem")}>
           <GroupRow
             first
@@ -427,6 +572,7 @@ export default function PiSettingsPage() {
       ) : (
         <>
           {/* model defaults — pointer to Models page for the picker */}
+          {category === "agent" && <>
           <InsetGroup
             header={t("settings.modelDefaults")}
             footer={t("settings.modelDefaultsFooter")}
@@ -514,9 +660,10 @@ export default function PiSettingsPage() {
               />
             ))}
           </InsetGroup>
+          </>}
 
           {/* appearance & startup */}
-          <InsetGroup header={t("settings.appearance")}>
+          {category === "appearance" && <InsetGroup header={t("settings.appearance")}>
             <div style={dim("theme")}>
               <GroupRow
                 first
@@ -586,9 +733,10 @@ export default function PiSettingsPage() {
                 }
               />
             </div>
-          </InsetGroup>
+          </InsetGroup>}
 
           {/* behavior */}
+          {category === "agent" && <>
           <InsetGroup
             header={t("settings.agentBehavior")}
             footer={t("settings.agentBehaviorFooter")}
@@ -764,9 +912,10 @@ export default function PiSettingsPage() {
               onCommit={(v) => s.setKey(scope, "websocketConnectTimeoutMs", v)}
             />
           </InsetGroup>
+          </>}
 
           {/* network — global only, like project trust */}
-          {scope === "global" && (
+          {category === "runtime" && scope === "global" && (
             <InsetGroup
               header={t("settings.network")}
               footer={t("settings.networkFooter")}
@@ -783,13 +932,14 @@ export default function PiSettingsPage() {
           )}
 
           {/* desktop pet */}
-          <InsetGroup header="Desktop Pet" footer="A companion that shows your agent's status">
+          {category === "appearance" && <InsetGroup header="Desktop Pet" footer="A companion that shows your agent's status">
             <div style={{ padding: "14px" }}>
               <PetSettings />
             </div>
-          </InsetGroup>
+          </InsetGroup>}
 
           {/* desktop notifications */}
+          {category === "general" && <>
           <InsetGroup
             header={t("settings.notifications")}
             footer={t("settings.notificationsDetail")}
@@ -852,11 +1002,12 @@ export default function PiSettingsPage() {
               }
             />
           </InsetGroup>
+          </>}
 
           {/* remote control — app-local LAN gateway for mobile clients */}
-          <RemoteControlSection />
 
           {/* images sent to the LLM */}
+          {category === "agent" && <>
           <InsetGroup header={t("settings.images")} footer={t("settings.imagesFooter")}>
             <div style={dim("images.autoResize")}>
               <GroupRow
@@ -915,9 +1066,10 @@ export default function PiSettingsPage() {
               onCommit={(v) => s.setPath(scope, "branchSummary.reserveTokens", v)}
             />
           </InsetGroup>
+          </>}
 
           {/* shell & sessions */}
-          <InsetGroup
+          {category === "runtime" && <InsetGroup
             header={t("settings.shellSessions")}
             footer={t("settings.shellSessionsFooter")}
           >
@@ -962,10 +1114,10 @@ export default function PiSettingsPage() {
               dimmed={inherited("sessionDir")}
               onCommit={(v) => s.setKey(scope, "sessionDir", v)}
             />
-          </InsetGroup>
+          </InsetGroup>}
 
           {/* privacy & updates */}
-          <InsetGroup
+          {category === "general" && <InsetGroup
             header={t("settings.privacy")}
             footer={t("settings.privacyFooter")}
           >
@@ -1017,10 +1169,10 @@ export default function PiSettingsPage() {
                 }
               />
             </div>
-          </InsetGroup>
+          </InsetGroup>}
 
           {/* trust — global only, per pi docs */}
-          {scope === "global" && (
+          {category === "advanced" && scope === "global" && (
             <InsetGroup
               header={t("settings.projectTrust")}
               footer={t("settings.projectTrustFooter")}
@@ -1039,7 +1191,7 @@ export default function PiSettingsPage() {
           )}
 
           {/* raw file escape hatch */}
-          <InsetGroup
+          {category === "advanced" && <InsetGroup
             header={t("settings.advanced")}
             footer={t("settings.advancedFooter")}
           >
@@ -1054,7 +1206,7 @@ export default function PiSettingsPage() {
                   : t("settings.fileWillBeCreated", { path: file.path })
               }
             />
-          </InsetGroup>
+          </InsetGroup>}
         </>
       )}
 
@@ -1063,6 +1215,106 @@ export default function PiSettingsPage() {
           {s.lastError}
         </p>
       )}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+
+      <style>{`
+        .settings-split-layout {
+          display: grid;
+          grid-template-columns: 214px minmax(0, 1fr);
+          gap: 24px;
+          align-items: start;
+          margin-top: 18px;
+        }
+        .settings-category-nav {
+          position: sticky;
+          top: 58px;
+          overflow: hidden;
+          border: 1px solid var(--separator);
+          border-radius: var(--radius-lg);
+          background: var(--bg-base);
+          box-shadow: var(--shadow-sm);
+        }
+        .settings-category-button {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          width: 100%;
+          padding: 10px 11px;
+          border-right: none;
+          border-bottom: none;
+          border-left: none;
+          text-align: left;
+          cursor: pointer;
+          font-family: var(--font-ui);
+          transition: background-color 160ms ease, color 160ms ease;
+        }
+        .settings-category-icon {
+          display: grid;
+          place-items: center;
+          width: 29px;
+          height: 29px;
+          flex: 0 0 29px;
+          border-radius: 8px;
+          transition: background-color 160ms ease, color 160ms ease;
+        }
+        .settings-category-copy { min-width: 0; flex: 1; }
+        .settings-category-title {
+          display: block;
+          font-size: 13.5px;
+          font-weight: 600;
+          line-height: 1.2;
+        }
+        .settings-category-detail {
+          display: block;
+          margin-top: 2px;
+          overflow: hidden;
+          color: var(--text-tertiary);
+          font-size: 11px;
+          line-height: 1.25;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .settings-category-chevron { flex: 0 0 auto; }
+        .settings-category-content { min-width: 0; }
+        .settings-category-heading { padding: 0 3px 2px; }
+        .settings-category-heading h2 {
+          margin: 0;
+          color: var(--text-primary);
+          font-size: 20px;
+          font-weight: 680;
+          letter-spacing: -0.02em;
+        }
+        .settings-category-heading p {
+          max-width: 58ch;
+          margin: 4px 0 0;
+          color: var(--text-tertiary);
+          font-size: 12.5px;
+          line-height: 1.5;
+        }
+        @media (max-width: 760px) {
+          .settings-split-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+          .settings-category-nav {
+            position: static;
+            display: flex;
+            gap: 5px;
+            overflow-x: auto;
+            padding: 5px;
+            scrollbar-width: none;
+          }
+          .settings-category-nav::-webkit-scrollbar { display: none; }
+          .settings-category-button {
+            width: auto;
+            min-width: max-content;
+            padding: 7px 9px;
+            border: none !important;
+            border-radius: 9px;
+          }
+          .settings-category-icon { width: 25px; height: 25px; flex-basis: 25px; }
+          .settings-category-detail, .settings-category-chevron { display: none; }
+        }
+      `}</style>
     </SettingsPage>
   );
 }

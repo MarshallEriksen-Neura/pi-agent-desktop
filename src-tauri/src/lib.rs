@@ -248,6 +248,7 @@ pub fn run() {
             open_external,
             pi_models::pi_fetch_models,
             remote_control::remote_control_status,
+            remote_control::remote_control_private_addresses,
             remote_control::remote_control_enable,
             remote_control::remote_control_disable,
             remote_control::remote_control_pairing_payload,

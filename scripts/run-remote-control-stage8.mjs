@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const cargoManifest = fs.readFileSync(path.join(root, "src-tauri", "Cargo.toml"), "utf8");
 const lib = fs.readFileSync(path.join(root, "src-tauri", "src", "lib.rs"), "utf8");
 const composition = fs.readFileSync(
   path.join(root, "src-tauri", "src", "remote_control", "mod.rs"),
@@ -14,11 +15,14 @@ const composition = fs.readFileSync(
 const targetDir = path.join(root, ".tmp", "remote-control", "stage8-target");
 fs.mkdirSync(targetDir, { recursive: true });
 
+assertMarker(cargoManifest, 'default-run = "pi-desktop"');
+
 const requiredLibMarkers = [
   "mod remote_control;",
   ".manage(RemoteControlState::default())",
   "app.state::<RemoteControlState>().shutdown();",
   "remote_control::remote_control_enable",
+  "remote_control::remote_control_private_addresses",
   "remote_control::remote_control_reset_identity",
 ];
 const requiredCompositionMarkers = [
@@ -26,6 +30,7 @@ const requiredCompositionMarkers = [
   "GatewayState::with_runtime_config_and_storage",
   "GatewayServer::start",
   "remote_control_pairing_payload",
+  "remote_control_private_addresses",
   "remote_control_allow_project",
   "remote_control_revoke_device",
   "remote_control_reset_identity",

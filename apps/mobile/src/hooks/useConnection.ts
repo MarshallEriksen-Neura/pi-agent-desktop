@@ -12,6 +12,7 @@ export function useConnection() {
   const lastError = useConnectionStore((s) => s.lastError);
   const connect = useConnectionStore((s) => s.connect);
   const disconnect = useConnectionStore((s) => s.disconnect);
+  const wake = useConnectionStore((s) => s.wake);
   const forget = useConnectionStore((s) => s.forget);
   const loadStored = useConnectionStore((s) => s.loadStored);
 
@@ -28,6 +29,7 @@ export function useConnection() {
 
   const isOnline = phase === "online";
   const isReconnecting = phase === "reconnecting";
+  const isWaking = phase === "waking";
   const isIdentityFailed = phase === "identity_failed";
 
   return useMemo(
@@ -37,12 +39,14 @@ export function useConnection() {
       lastError,
       isOnline,
       isReconnecting,
+      isWaking,
       isIdentityFailed,
       connect: () => void connect(),
+      wake: () => void wake(),
       disconnect,
       forget: () => void forget(),
     }),
-    [stored, phase, lastError, isOnline, isReconnecting, isIdentityFailed, connect, disconnect, forget],
+    [stored, phase, lastError, isOnline, isReconnecting, isWaking, isIdentityFailed, connect, wake, disconnect, forget],
   );
 }
 

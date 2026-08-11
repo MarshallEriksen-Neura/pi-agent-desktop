@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
-import { FolderTree, ListChecks, Monitor, ChevronRight } from "lucide-react";
+import { FolderTree, ListChecks, Monitor, ChevronRight, Power } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { SecureTetherHero } from "@/components/SecureTether";
@@ -19,7 +19,21 @@ import { Card, Row, StateView, FullScreenSpinner, PrimaryButton, SecondaryButton
  */
 export const HomePage = memo(function HomePage() {
   const navigate = useNavigate();
-  const { stored, phase, isOnline, isReconnecting, isIdentityFailed, connect } = useConnection();
+  const {
+    stored,
+    phase,
+    lastError,
+    isOnline,
+    isReconnecting,
+    isWaking,
+    isIdentityFailed,
+    connect,
+    wake,
+  } = useConnection();
+
+  if (isWaking) {
+    return <FullScreenSpinner label={t("wake.waking")} />;
+  }
 
   // Reconnecting state
   if (isReconnecting) {
@@ -49,12 +63,22 @@ export const HomePage = memo(function HomePage() {
 
   // Offline — offer reconnect
   if (phase === "offline") {
+    const canWake = Boolean(stored?.wakeOnLan?.targets.length);
     return (
       <StateView
-        icon={<Monitor size={28} style={{ color: "var(--color-text-tertiary)" }} />}
+        icon={canWake
+          ? <Power size={28} style={{ color: "var(--color-accent)" }} />
+          : <Monitor size={28} style={{ color: "var(--color-text-tertiary)" }} />}
         title={t("error.unreachable")}
-        detail={t("error.unreachableDetail")}
-        action={<PrimaryButton onClick={connect}>{t("connection.reconnect")}</PrimaryButton>}
+        detail={lastError === "wake_timeout" ? t("wake.timeoutDetail") : t("error.unreachableDetail")}
+        action={
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 260 }}>
+            {canWake && <PrimaryButton onClick={wake}>{t("wake.action")}</PrimaryButton>}
+            {canWake
+              ? <SecondaryButton onClick={connect}>{t("connection.reconnect")}</SecondaryButton>
+              : <PrimaryButton onClick={connect}>{t("connection.reconnect")}</PrimaryButton>}
+          </div>
+        }
       />
     );
   }

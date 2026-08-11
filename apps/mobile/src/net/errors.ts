@@ -15,6 +15,11 @@ export type NetErrorKind =
   | "not_found"
   | "timeout"
   | "server_error"
+  | "queue_full"
+  | "project_unavailable"
+  | "project_revoked"
+  | "invalid_context"
+  | "prompt_too_long"
   | "unknown";
 
 export class NetError extends Error {
@@ -35,6 +40,14 @@ export class NetError extends Error {
  */
 export function classifyError(status: number | string, rawMessage?: string): NetError {
   const message = rawMessage ?? `request failed (${status})`;
+
+  // Domain-specific error codes returned by the gateway in the response body
+  // (e.g. `{ "error": "queue_full" }`). These take precedence over the generic
+  // HTTP status mapping because they carry the precise failure reason.
+  const domainCode = mapDomainErrorCode(rawMessage);
+  if (domainCode) {
+    return new NetError(domainCode, domainMessage(domainCode), typeof status === "number" ? status : undefined);
+  }
 
   // Native plugin error codes (string)
   if (typeof status === "string") {
@@ -78,5 +91,44 @@ export function classifyError(status: number | string, rawMessage?: string): Net
       return new NetError("server_error", "桌面端服务暂时不可用，请稍后重试。", status);
     default:
       return new NetError("unknown", message, status);
+  }
+}
+
+// ----------------------------------------------------------------
+// Domain error code helpers
+// ----------------------------------------------------------------
+
+const DOMAIN_ERROR_CODES: ReadonlySet<string> = new Set([
+  "queue_full",
+  "project_unavailable",
+  "project_revoked",
+  "invalid_context",
+  "prompt_too_long",
+]);
+
+/**
+ * If the raw message is a known domain error code (returned by the gateway in
+ * the JSON error body), return it as a NetErrorKind. Otherwise return null.
+ */
+function mapDomainErrorCode(rawMessage?: string): NetErrorKind | null {
+  if (!rawMessage) return null;
+  if (DOMAIN_ERROR_CODES.has(rawMessage)) return rawMessage as NetErrorKind;
+  return null;
+}
+
+function domainMessage(kind: NetErrorKind): string {
+  switch (kind) {
+    case "queue_full":
+      return "任务队列已满，请等待现有任务完成后再试。";
+    case "project_unavailable":
+      return "项目暂不可用，可能已被移除。";
+    case "project_revoked":
+      return "项目授权已被撤销，无法继续操作。";
+    case "invalid_context":
+      return "部分上下文文件无效或不存在。";
+    case "prompt_too_long":
+      return "任务提示过长，超出服务器限制。";
+    default:
+      return "操作失败。";
   }
 }

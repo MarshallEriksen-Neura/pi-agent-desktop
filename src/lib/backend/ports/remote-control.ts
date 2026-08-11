@@ -49,6 +49,8 @@ export interface RemoteControlAllowProjectInput {
 export interface RemoteControlPort {
   /** Current gateway status (enabled/addresses/port/devices/projects/error). */
   status(): Promise<RemoteControlStatusDto>;
+  /** Discover private LAN addresses available to the desktop host. */
+  privateAddresses(): Promise<string[]>;
   /** Start the gateway bound to the given private addresses + port. */
   enable(input: RemoteControlEnableInput): Promise<RemoteControlStatusDto>;
   /** Stop the gateway and drop the listener. */

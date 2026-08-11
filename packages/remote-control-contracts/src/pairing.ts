@@ -27,6 +27,17 @@ export interface PairingDesktopIdentity {
   readonly displayName: string;
 }
 
+export interface WakeOnLanTarget {
+  /** Six-byte network adapter MAC address using colon separators. */
+  readonly macAddress: string;
+  /** RFC1918 directed-broadcast address for the paired desktop adapter. */
+  readonly broadcastAddress: string;
+}
+
+export interface WakeOnLanConfig {
+  readonly targets: readonly WakeOnLanTarget[];
+}
+
 export interface PairingQrPayload {
   readonly protocol: RemoteControlProtocol;
   readonly version: RemoteControlVersion;
@@ -36,6 +47,8 @@ export interface PairingQrPayload {
   readonly secret: PairingSecret;
   readonly certificatePin: CertificatePin;
   readonly expiresAt: IsoTimestamp;
+  /** Optional because older desktops and adapters without WoL remain pairable. */
+  readonly wakeOnLan?: WakeOnLanConfig;
 }
 
 export interface PairingDeviceMetadata {

@@ -18,8 +18,10 @@ next-env.d.ts
 /packages/*/dist/
 apps/*/dist
 
-# mobile app (Capacitor) — native projects are regenerated via `cap add`
-apps/*/android
+# mobile app (Capacitor)
+# Android project source IS committed (MainActivity, Manifest, Gradle config).
+# Build artifacts + local SDK paths are excluded by apps/mobile/android/.gitignore.
+# iOS is deferred to macOS — not committed yet.
 apps/*/ios
 apps/*/.vite
 

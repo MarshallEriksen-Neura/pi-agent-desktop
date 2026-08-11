@@ -23,5 +23,13 @@
     "algorithm": "spki-sha256",
     "value": "sha256/fixture-pin"
   },
-  "expiresAt": "2026-08-07T12:00:00Z"
+  "expiresAt": "2026-08-07T12:00:00Z",
+  "wakeOnLan": {
+    "targets": [
+      {
+        "macAddress": "02:42:AC:11:00:02",
+        "broadcastAddress": "192.168.31.255"
+      }
+    ]
+  }
 }

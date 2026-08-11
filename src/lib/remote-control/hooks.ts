@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useT } from "@/lib/i18n";
 import { useRemoteControl } from "./store";
 import { derivePhase } from "./status";
 import { detectPrivateAddresses } from "./network-probe";
@@ -23,22 +24,56 @@ export function useRemoteControlPhase(): RemoteControlPhase {
 
 /** Enable/disable toggle backed by the shared network-config draft. */
 export function useRemoteControlToggle() {
+  const t = useT();
   const enabled = useRemoteControl((s) => s.status?.enabled ?? false);
   const enabling = useRemoteControl((s) => s.enabling);
   const enable = useRemoteControl((s) => s.enable);
   const disable = useRemoteControl((s) => s.disable);
   const addresses = useRemoteControl((s) => s.draftAddresses);
   const port = useRemoteControl((s) => s.draftPort);
+  const setAddresses = useRemoteControl((s) => s.setDraftAddresses);
+  const reportError = useRemoteControl((s) => s.reportError);
+  const [detecting, setDetecting] = useState(false);
 
   const toggle = useCallback(async () => {
     if (enabled) {
       await disable();
-    } else if (addresses.length > 0) {
-      await enable({ selectedAddresses: addresses, port });
+      return;
     }
-  }, [enabled, enable, disable, addresses, port]);
 
-  return { enabled, enabling, toggle };
+    let selectedAddresses = addresses;
+    if (selectedAddresses.length === 0) {
+      setDetecting(true);
+      try {
+        const detected = await detectPrivateAddresses();
+        // The network group may have completed its own probe while this one was
+        // running. Prefer that newer selection before falling back to our result.
+        const current = useRemoteControl.getState().draftAddresses;
+        selectedAddresses = current.length > 0 ? current : detected;
+        if (current.length === 0 && detected.length > 0) setAddresses(detected);
+      } finally {
+        setDetecting(false);
+      }
+    }
+
+    if (selectedAddresses.length === 0) {
+      reportError(t("settings.remoteControl.selectInterfaceFirst"));
+      return;
+    }
+
+    await enable({ selectedAddresses, port });
+  }, [
+    enabled,
+    enable,
+    disable,
+    addresses,
+    port,
+    reportError,
+    setAddresses,
+    t,
+  ]);
+
+  return { enabled, enabling: enabling || detecting, toggle };
 }
 
 /** Network-config draft + private-address auto-detection (design §13-1). */

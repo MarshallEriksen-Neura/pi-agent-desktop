@@ -1,18 +1,18 @@
 import type { SecureNetPort, EventStreamHandle } from "./port";
-import { SecureNet } from "@/plugins/secure-net";
-import type { SecureNetPlugin } from "@/plugins/secure-net/definitions";
+import { SecureNet, type SecureNetPlugin } from "@pi/secure-net-plugin";
 
 /**
  * Runtime transport selection.
  *
  * A single {@link SecureNetPort} implementation wraps the {@link SecureNet}
- * plugin. The plugin's `registerPlugin` call (in `plugins/secure-net/index.ts`)
- * already handles the platform split:
+ * plugin (provided by the local `@pi/secure-net-plugin` workspace package,
+ * auto-discovered by `cap sync`). The plugin's `registerPlugin` call handles
+ * the platform split:
  *
  *  - **Native (Android/iOS)**: proxies to the Kotlin/Swift implementation
- *    with TLS Certificate Pinning.
- *  - **Browser (dev)**: uses the `web-impl.ts` fallback (fetch + WebSocket,
- *    no pinning).
+ *    with TLS Certificate Pinning (fail closed — no pin = no request).
+ *  - **Browser (dev)**: uses the `web.ts` fallback (fetch + WebSocket,
+ *    no pinning — dev preview only, never the production stack).
  *
  * This module just adapts the plugin's event-listener API into the
  * {@link EventStreamHandle} callback API that the rest of the net layer
@@ -107,6 +107,10 @@ function createPluginTransport(plugin: SecureNetPlugin): SecureNetPort {
 
     async clearCertPin(opts) {
       await plugin.clearCertPin(opts);
+    },
+
+    async wakeOnLan(opts) {
+      return plugin.wakeOnLan(opts);
     },
   };
 }

@@ -9,24 +9,12 @@ const OnboardingPage = lazy(() => import("@/pages/OnboardingPage").then((m) => (
 const PairingPage = lazy(() => import("@/pages/PairingPage").then((m) => ({ default: m.PairingPage })));
 const HomePage = lazy(() => import("@/pages/HomePage").then((m) => ({ default: m.HomePage })));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
-
-// Placeholder pages for Projects/Tasks (Phase 6)
-const ProjectsPlaceholder = () => (
-  <div style={{ padding: 16 }}>
-    <h1 style={{ fontSize: 28, fontWeight: 700, margin: "8px 0" }}>{t("home.projects")}</h1>
-    <p style={{ color: "var(--color-text-tertiary)", fontSize: 14 }}>
-      项目列表将在下一阶段实现。
-    </p>
-  </div>
-);
-const TasksPlaceholder = () => (
-  <div style={{ padding: 16 }}>
-    <h1 style={{ fontSize: 28, fontWeight: 700, margin: "8px 0" }}>{t("home.tasks")}</h1>
-    <p style={{ color: "var(--color-text-tertiary)", fontSize: 14 }}>
-      任务列表将在下一阶段实现。
-    </p>
-  </div>
-);
+const ProjectsPage = lazy(() => import("@/pages/ProjectsPage").then((m) => ({ default: m.ProjectsPage })));
+const ProjectTreePage = lazy(() => import("@/pages/ProjectTreePage").then((m) => ({ default: m.ProjectTreePage })));
+const TaskComposerPage = lazy(() => import("@/pages/TaskComposerPage").then((m) => ({ default: m.TaskComposerPage })));
+const TasksPage = lazy(() => import("@/pages/TasksPage").then((m) => ({ default: m.TasksPage })));
+const TaskDetailPage = lazy(() => import("@/pages/TaskDetailPage").then((m) => ({ default: m.TaskDetailPage })));
+const InteractionsPage = lazy(() => import("@/pages/InteractionsPage").then((m) => ({ default: m.InteractionsPage })));
 
 const withSuspense = (el: React.ReactNode) => (
   <Suspense fallback={<FullScreenSpinner label={t("common.loading")} />}>{el}</Suspense>
@@ -50,11 +38,27 @@ export const router = createBrowserRouter([
       },
       {
         path: "/projects",
-        element: <ProjectsPlaceholder />,
+        element: withSuspense(<ProjectsPage />),
+      },
+      {
+        path: "/projects/:projectId/tree",
+        element: withSuspense(<ProjectTreePage />),
+      },
+      {
+        path: "/projects/:projectId/compose",
+        element: withSuspense(<TaskComposerPage />),
       },
       {
         path: "/tasks",
-        element: <TasksPlaceholder />,
+        element: withSuspense(<TasksPage />),
+      },
+      {
+        path: "/tasks/:taskId",
+        element: withSuspense(<TaskDetailPage />),
+      },
+      {
+        path: "/interactions",
+        element: withSuspense(<InteractionsPage />),
       },
       {
         path: "/settings",

@@ -234,6 +234,19 @@ export const en = {
 
   // settings page
   "settings.title": "Settings",
+  "settings.categoryNavigation": "Settings categories",
+  "settings.category.general": "General",
+  "settings.category.generalDetail": "Language, notifications, updates, and window behavior.",
+  "settings.category.appearance": "Appearance",
+  "settings.category.appearanceDetail": "Theme, colors, typography, CSS, and desktop pet.",
+  "settings.category.agent": "Agent",
+  "settings.category.agentDetail": "Models, thinking, retries, delivery, and context behavior.",
+  "settings.category.runtime": "Runtime",
+  "settings.category.runtimeDetail": "WSL, shell, sessions, proxy, and transport environment.",
+  "settings.category.remote": "Remote Control",
+  "settings.category.remoteDetail": "LAN gateway, paired devices, and authorized projects.",
+  "settings.category.advanced": "Advanced",
+  "settings.category.advancedDetail": "Project trust and direct settings-file diagnostics.",
   "settings.subtitleMock": "Browser preview — edits are in-memory only.",
   "settings.subtitleLive":
     "Edits write straight to pi's settings.json · restart pi to apply",
@@ -690,6 +703,8 @@ export const en = {
   "settings.remoteControl.privateInterface": "Private interface",
   "settings.remoteControl.detecting": "Detecting interfaces…",
   "settings.remoteControl.noInterface": "No private interface selected",
+  "settings.remoteControl.selectInterfaceFirst":
+    "No private LAN address was detected. Select or add one in Network below, then try again.",
   "settings.remoteControl.starting": "Starting…",
   "settings.remoteControl.enable": "Enable gateway",
   "settings.remoteControl.publicBlocked": "No private address available",

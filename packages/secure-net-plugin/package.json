@@ -1,0 +1,37 @@
+{
+  "name": "@pi/secure-net-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Capacitor plugin routing all HTTP/WSS through a native stack with TLS Certificate Pinning (SPKI SHA256).",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "android",
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    }
+  },
+  "sideEffects": false,
+  "dependencies": {
+    "@capacitor/core": "^8.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

@@ -132,6 +132,11 @@ export function createMockRemoteControlPort(): RemoteControlPort {
       return snapshot(state);
     },
 
+    privateAddresses: async () => {
+      await delay(80);
+      return [MOCK_HOST];
+    },
+
     enable: async (input: RemoteControlEnableInput) => {
       await delay(220);
       state = {
