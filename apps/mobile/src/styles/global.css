@@ -1,27 +1,53 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------ */
-/* Design Tokens — synced from desktop (src/app/globals.css)           */
+/* Design Tokens — 对齐 Pi Desktop 体系 + LAN Mobile Control 高保真 demo */
+/* 颜色 token 放 @theme(可用 Tailwind 类如 bg-status-online);        */
+/* 非颜色 token(阴影/材质/曲线/几何)放 :root 作语义变量。            */
 /* ------------------------------------------------------------------ */
 @theme {
+  /* 背景层 */
   --color-bg-base: #1c1c1e;
   --color-bg-elevated: #2c2c2e;
   --color-bg-sunken: #0a0a0a;
+
+  /* 文本 */
   --color-text-primary: #ffffff;
   --color-text-secondary: #aeaeb2;
   --color-text-tertiary: #636366;
+
+  /* 分隔线 */
   --color-separator: rgba(84, 84, 88, 0.6);
+  --color-separator-strong: rgba(84, 84, 88, 0.85);
+
+  /* 主题色 */
   --color-accent: #0a84ff;
   --color-accent-muted: rgba(10, 132, 255, 0.15);
+
+  /* 语义色 */
   --color-success: #30d158;
   --color-danger: #ff453a;
   --color-warning: #ffd60a;
+  --color-gray-1: #48484a;
 
+  /* 连接/任务状态色(Secure Tether 四态 + 任务状态点) */
+  --color-status-online: #30d158;
+  --color-status-reconnecting: #0a84ff;
+  --color-status-offline: #636366;
+  --color-status-degraded: #e8a33d;
+  --color-status-awaiting: #5e5ce6;
+
+  /* Secure Tether 标志视觉色 */
+  --color-tether: #0a84ff;
+  --color-tether-dim: #636366;
+
+  /* 圆角 */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-xl: 22px;
 
+  /* 字体 */
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: "SF Mono", "Fira Code", "Cascadia Code", "JetBrains Mono",
@@ -31,15 +57,29 @@
 :root {
   color-scheme: dark light;
 
-  /* iOS-inspired dynamic type scale */
+  /* 触控尺寸(iOS HIG) */
   --tap-min: 44px;
   --tap-comfort: 48px;
 
-  /* Safe-area insets (populated by env() at runtime) */
+  /* Safe-area insets(populated by env() at runtime) */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
+
+  /* 阴影层次 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  /* 材质(玻璃/卡片叠层背景) */
+  --material-regular: rgba(255, 255, 255, 0.07);
+
+  /* 弹簧曲线(对齐 demo --spring-smooth) */
+  --spring-smooth: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* Secure Tether 几何参数 */
+  --tether-stroke: 2px;
+  --tether-lock-size: 14px;
 }
 
 /* Light theme overrides */
@@ -52,11 +92,25 @@
     --color-text-secondary: #3c3c43;
     --color-text-tertiary: #8e8e93;
     --color-separator: rgba(60, 60, 67, 0.29);
+    --color-separator-strong: rgba(60, 60, 67, 0.45);
     --color-accent: #007aff;
     --color-accent-muted: rgba(0, 122, 255, 0.12);
     --color-success: #34c759;
     --color-danger: #ff3b30;
     --color-warning: #ffcc00;
+    --color-gray-1: #c7c7cc;
+    --color-status-online: #34c759;
+    --color-status-reconnecting: #007aff;
+    --color-status-offline: #8e8e93;
+    --color-status-degraded: #e8a33d;
+    --color-status-awaiting: #5e5ce6;
+    --color-tether: #007aff;
+    --color-tether-dim: #8e8e93;
+  }
+  :root {
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.16);
+    --material-regular: rgba(0, 0, 0, 0.05);
   }
 }
 
@@ -73,7 +127,11 @@ body {
   overflow: hidden;
   overscroll-behavior: none;
   font-family: var(--font-ui);
-  background: var(--color-bg-base);
+  /* 氛围背景:accent 光晕 + awaiting 紫晕,叠在基础底色上(对齐 demo body) */
+  background:
+    radial-gradient(1200px 600px at 12% -8%, var(--color-accent-muted), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(94, 92, 230, 0.1), transparent 55%),
+    var(--color-bg-base);
   color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
   user-select: none;
@@ -113,7 +171,11 @@ textarea {
   }
 }
 
-/* Spinner keyframes */
+/* ------------------------------------------------------------------ */
+/* Keyframes — 动画系统基础(供 Secure Tether / scanline / cd-ring 等用) */
+/* ------------------------------------------------------------------ */
+
+/* 通用旋转(spinner) */
 @keyframes pi-spin {
   to {
     transform: rotate(360deg);
@@ -123,13 +185,56 @@ textarea {
   animation: pi-spin 0.8s linear infinite;
 }
 
-/* Secure Tether pulse */
-@keyframes pi-tether-pulse {
+/* 状态点脉冲(任务运行态 / 连接在线) */
+@keyframes pi-pulse {
   0%,
   100% {
     opacity: 1;
   }
   50% {
     opacity: 0.35;
+  }
+}
+
+/* Secure Tether 链路流光(online 态) */
+@keyframes pi-tether-flow {
+  to {
+    stroke-dashoffset: -14;
+  }
+}
+
+/* Secure Tether 重连脉冲(reconnecting 态) */
+@keyframes pi-tether-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Secure Tether 身份失效抖动(identity_failed 态) */
+@keyframes pi-tether-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-2px);
+  }
+  75% {
+    transform: translateX(2px);
+  }
+}
+
+/* 扫码取景框扫描线 */
+@keyframes pi-scan {
+  0%,
+  100% {
+    top: 20px;
+  }
+  50% {
+    top: calc(100% - 30px);
   }
 }

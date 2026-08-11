@@ -206,6 +206,49 @@ fn project_removal_invalidates_id_and_revokes_queued_and_active_tasks() {
     fs::remove_dir_all(root).expect("remove fixture");
 }
 
+#[test]
+fn desktop_project_replacement_is_single_project_and_rollback_safe() {
+    let first = temp_project("desktop-current-first");
+    let second = temp_project("desktop-current-second");
+    let replacement = temp_project("desktop-current-replacement");
+    fs::create_dir_all(&first).expect("first project");
+    fs::create_dir_all(&second).expect("second project");
+    fs::create_dir_all(&replacement).expect("replacement project");
+    let catalog = ProjectCatalog::new(ProjectCatalogConfig::default());
+    let first_summary = catalog
+        .allow_project(&first, "first", None)
+        .expect("allow first");
+    let second_summary = catalog
+        .allow_project(&second, "second", None)
+        .expect("allow second");
+
+    let (current, previous) = catalog
+        .replace_with_single_project(&replacement, "replacement", None)
+        .expect("replace with desktop project");
+    assert_eq!(catalog.list_projects(), vec![current]);
+    assert_eq!(previous.len(), 2);
+    assert_eq!(
+        catalog.project_summary(&first_summary.project_id),
+        Err(ProjectCatalogError::ProjectNotFound)
+    );
+
+    catalog
+        .replace_with_persisted_projects(previous)
+        .expect("restore prior catalog");
+    let restored = catalog.list_projects();
+    assert_eq!(restored.len(), 2);
+    assert!(restored
+        .iter()
+        .any(|project| project.project_id == first_summary.project_id));
+    assert!(restored
+        .iter()
+        .any(|project| project.project_id == second_summary.project_id));
+
+    fs::remove_dir_all(first).expect("remove first");
+    fs::remove_dir_all(second).expect("remove second");
+    fs::remove_dir_all(replacement).expect("remove replacement");
+}
+
 #[cfg(any(unix, windows))]
 #[test]
 fn symlink_escape_is_not_a_context_file() {

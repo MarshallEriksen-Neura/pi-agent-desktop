@@ -41,6 +41,8 @@ export const en: Record<string, string> = {
   "scanner.deniedDetail": "Pairing needs the camera to scan the desktop QR code.",
   "scanner.permanentlyDenied": "Camera permission permanently denied",
   "scanner.permanentlyDeniedDetail": "Enable camera permission in system settings to scan pairing QR codes.",
+  "scanner.error": "Scanner error",
+  "scanner.errorDetail": "The camera scanner could not start or stopped unexpectedly. Review the error below and retry.",
   "scanner.openSettings": "Open system settings",
   "scanner.unsupported": "Camera scanner unavailable",
   "scanner.unsupportedDetail": "This device does not support camera QR scanning. Use a different device or the dev manual entry.",
@@ -149,6 +151,7 @@ export const en: Record<string, string> = {
   "tasks.state.cancelled": "Cancelled",
 
   // Task detail
+  "detail.pageTitle": "Task detail",
   "detail.taskId": "Task",
   "detail.timeline": "Timeline",
   "detail.contextFiles": "Context files",

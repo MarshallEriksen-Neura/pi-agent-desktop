@@ -1,13 +1,13 @@
 "use client";
 
-import { Activity, Radio, Globe, Smartphone, Folder, TriangleAlert } from "lucide-react";
+import { Activity, Radio, Globe, Smartphone, TriangleAlert } from "lucide-react";
 import { InsetGroup, GroupRow, IOSSwitch } from "@/components/settings-ui";
 import { useT } from "@/lib/i18n";
 import { useRemoteControl } from "@/lib/remote-control/store";
 import { useRemoteControlPhase, useRemoteControlToggle } from "@/lib/remote-control/hooks";
 import { StatusBadge } from "./primitives";
 
-/** D-1 — gateway overview: phase, listen address, port, device/project counts, toggle. */
+/** D-1 — gateway overview: phase, listen address, port, device count, toggle. */
 export function OverviewGroup() {
   const t = useT();
   const phase = useRemoteControlPhase();
@@ -18,7 +18,6 @@ export function OverviewGroup() {
   const addresses = status?.selectedAddresses ?? [];
   const port = status?.port;
   const deviceCount = status?.pairedDevices.length ?? 0;
-  const projectCount = status?.projects.length ?? 0;
   const lastError = operationError ?? status?.lastError;
 
   return (
@@ -56,11 +55,6 @@ export function OverviewGroup() {
         icon={<Smartphone size={15} />}
         title={t("settings.remoteControl.pairedDevices")}
         detail={t("settings.remoteControl.deviceCount", { n: deviceCount })}
-      />
-      <GroupRow
-        icon={<Folder size={15} />}
-        title={t("settings.remoteControl.authorizedProjects")}
-        detail={t("settings.remoteControl.projectCount", { n: projectCount })}
       />
       {lastError && (
         <GroupRow

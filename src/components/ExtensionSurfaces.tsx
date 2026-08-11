@@ -40,7 +40,15 @@ export function ExtStatusLine() {
               <span
                 key={key}
                 title={key}
-                style={{ display: "flex", alignItems: "center", gap: 5 }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                  // a status string is arbitrary text from an extension: let the
+                  // row shrink and break so it wraps inside the panel
+                  minWidth: 0,
+                  maxWidth: "100%",
+                }}
               >
                 <span
                   style={{
@@ -51,7 +59,7 @@ export function ExtStatusLine() {
                     flexShrink: 0,
                   }}
                 />
-                {text}
+                <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{text}</span>
               </span>
             ))}
           </div>

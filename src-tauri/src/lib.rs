@@ -252,12 +252,16 @@ pub fn run() {
             remote_control::remote_control_enable,
             remote_control::remote_control_disable,
             remote_control::remote_control_pairing_payload,
-            remote_control::remote_control_allow_project,
-            remote_control::remote_control_remove_project,
             remote_control::remote_control_revoke_device,
             remote_control::remote_control_reset_identity
         ])
         .setup(|app| {
+            if let Err(e) = app
+                .state::<RemoteControlState>()
+                .restore_on_startup(app.handle())
+            {
+                eprintln!("[remote-control] startup restore failed: {e}");
+            }
             if let Err(e) = pet_window::create_pet_window(app.handle()) {
                 eprintln!("[pet-window] failed to pre-create pet window: {e}");
             }

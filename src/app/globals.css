@@ -523,7 +523,13 @@ body {
   color: var(--text-primary);
   font-size: 13px;
   line-height: 1.6;
-  word-break: break-word;
+  /* The panel is narrow and its width is not ours to grow. `anywhere` (not the
+     legacy `break-word`) is deliberate: it shrinks the block's min-content size,
+     which is what lets a flex/table ancestor size us down instead of letting one
+     long URL or path decide how wide the transcript is. */
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
 }
 .sd-bridge > :first-child { margin-top: 0; }
 .sd-bridge > :last-child { margin-bottom: 0; }
@@ -569,12 +575,15 @@ body {
   border-radius: 5px;
 }
 
+/* Code keeps its own horizontal scroll — `max-width` stops a long line from
+   widening the transcript instead of scrolling inside the block. */
 .sd-bridge pre {
   margin: 8px 0;
   padding: 12px 14px;
   border-radius: 10px;
   border: 1px solid var(--separator);
   overflow-x: auto;
+  max-width: 100%;
   font-size: 12.5px;
   line-height: 1.55;
   background: var(--bg-sunken) !important;
@@ -583,11 +592,15 @@ body {
   background: transparent !important;
 }
 
+/* Cells wrap to the panel rather than widening it. Streamdown already wraps
+   tables in a scroll container, so `max-width` only decides who gives first —
+   in a 320px rail, wrapped text beats a sideways scroll. */
 .sd-bridge table {
   border-collapse: collapse;
   margin: 8px 0;
   font-size: 12.5px;
   width: 100%;
+  max-width: 100%;
 }
 .sd-bridge th,
 .sd-bridge td {

@@ -47,8 +47,6 @@ export interface PairingQrPayload {
   readonly secret: PairingSecret;
   readonly certificatePin: CertificatePin;
   readonly expiresAt: IsoTimestamp;
-  /** Optional because older desktops and adapters without WoL remain pairable. */
-  readonly wakeOnLan?: WakeOnLanConfig;
 }
 
 export interface PairingDeviceMetadata {
@@ -70,6 +68,8 @@ export interface PairingSuccess {
   readonly deviceId: DeviceId;
   readonly token: DeviceToken;
   readonly serverTime: IsoTimestamp;
+  /** Optional because older desktops and adapters without WoL remain pairable. */
+  readonly wakeOnLan?: WakeOnLanConfig;
 }
 
 /**

@@ -1,8 +1,10 @@
 import type {
   PairingQrPayload,
+  PairingSuccess,
   RemoteEndpoint,
   WakeOnLanConfig,
 } from "@pi/remote-control-contracts";
+import type { SecureStoragePlugin } from "@aparajita/capacitor-secure-storage";
 import { assertValidHexPin } from "./pin-codec";
 import { isValidWakeOnLanConfig } from "./wake-on-lan";
 
@@ -48,6 +50,11 @@ interface SecureStorageLike {
   remove(opts: { key: string }): Promise<{ value: string } | null>;
 }
 
+type NativeSecureStorageLike = Pick<
+  SecureStoragePlugin,
+  "getItem" | "setItem" | "removeItem"
+>;
+
 const isNative = typeof window !== "undefined" && "Capacitor" in window;
 const isDevBrowser = !isNative && Boolean(import.meta.env?.DEV);
 
@@ -58,9 +65,7 @@ async function getStorage(): Promise<SecureStorageLike> {
   storagePromise = (async () => {
     if (isNative) {
       const mod = await import("@aparajita/capacitor-secure-storage");
-      const SecureStorage = (mod as unknown as { SecureStorage: SecureStorageLike })
-        .SecureStorage;
-      return wrapSecureStorage(SecureStorage);
+      return wrapSecureStorage(mod.SecureStorage);
     }
     if (isDevBrowser) {
       // Dev preview only. localStorage is unencrypted — flagged so it cannot be
@@ -74,18 +79,21 @@ async function getStorage(): Promise<SecureStorageLike> {
   return storagePromise;
 }
 
-function wrapSecureStorage(impl: SecureStorageLike): SecureStorageLike {
+/** Adapt the plugin's scalar string-storage API to the vault's internal shape. */
+export function wrapSecureStorage(impl: NativeSecureStorageLike): SecureStorageLike {
   return {
     async get(opts) {
-      return impl.get({ key: opts.key });
+      const value = await impl.getItem(opts.key);
+      return value == null ? null : { value };
     },
     async set(opts) {
-      await impl.set({ key: opts.key, value: opts.value });
+      await impl.setItem(opts.key, opts.value);
       return { value: opts.value };
     },
     async remove(opts) {
       try {
-        return await impl.remove({ key: opts.key });
+        await impl.removeItem(opts.key);
+        return null;
       } catch {
         return null;
       }
@@ -204,7 +212,7 @@ export const tokenVault = {
  */
 export function buildStoredConnection(
   payload: PairingQrPayload,
-  pairResult: { deviceId: string; token: string; serverTime?: string },
+  pairResult: PairingSuccess,
 ): StoredConnection {
   return {
     desktopName: payload.desktop.displayName,
@@ -214,6 +222,8 @@ export function buildStoredConnection(
     certificatePin: payload.certificatePin,
     identityEpoch: 0, // Updated on first GET /me
     pairedAt: pairResult.serverTime ?? new Date().toISOString(),
-    wakeOnLan: payload.wakeOnLan,
+    wakeOnLan: isValidWakeOnLanConfig(pairResult.wakeOnLan)
+      ? pairResult.wakeOnLan
+      : undefined,
   };
 }

@@ -2,7 +2,6 @@
 
 import { create } from "zustand";
 import type {
-  RemoteControlAllowProjectInput,
   RemoteControlEnableInput,
   RemoteControlStatusDto,
 } from "@/lib/backend/ports";
@@ -53,10 +52,9 @@ interface RemoteControlState {
   enable: (input: RemoteControlEnableInput) => Promise<boolean>;
   disable: () => Promise<boolean>;
   generateQr: () => Promise<void>;
+  dismissPairing: () => void;
   startPairingPoll: () => void;
   stopPairingPoll: () => void;
-  allowProject: (input: RemoteControlAllowProjectInput) => Promise<boolean>;
-  removeProject: (projectId: string) => Promise<boolean>;
   revokeDevice: (deviceId: string) => Promise<boolean>;
   resetIdentity: () => Promise<boolean>;
   setDraftAddresses: (addresses: string[]) => void;
@@ -127,8 +125,15 @@ export const useRemoteControl = create<RemoteControlState>()((set, get) => ({
   },
 
   generateQr: async () => {
-    set({ qrState: "generating", lastError: null });
+    // A modal may be reopened after a successful or expired ticket. Stop the
+    // previous poll and remove its payload before issuing a fresh one so the
+    // UI can never fall back to the prior terminal state.
+    get().stopPairingPoll();
+    set({ qrPayload: null, qrState: "generating", lastError: null });
     try {
+      // Pairing success is detected relative to the latest device snapshot.
+      // Refresh first so a recent revoke/add cannot leave a stale baseline.
+      await get().refresh();
       const payload = await port().pairingPayload();
       set({ qrPayload: payload, qrState: "ready" });
     } catch (e) {
@@ -136,9 +141,16 @@ export const useRemoteControl = create<RemoteControlState>()((set, get) => ({
     }
   },
 
+  dismissPairing: () => {
+    get().stopPairingPoll();
+    set({ qrPayload: null, qrState: "idle" });
+  },
+
   startPairingPoll: () => {
     if (pairPollTimer) return;
-    const baseline = get().status?.pairedDevices.length ?? 0;
+    const baselineDeviceIds = new Set(
+      get().status?.pairedDevices.map((device) => device.deviceId) ?? [],
+    );
     set({ pairingPolling: true });
     pairPollTimer = setInterval(async () => {
       const s = get();
@@ -152,8 +164,8 @@ export const useRemoteControl = create<RemoteControlState>()((set, get) => ({
         return;
       }
       await s.refresh();
-      const count = get().status?.pairedDevices.length ?? 0;
-      if (count > baseline) {
+      const devices = get().status?.pairedDevices ?? [];
+      if (devices.some((device) => !baselineDeviceIds.has(device.deviceId))) {
         set({ qrState: "paired" });
         get().stopPairingPoll();
       }
@@ -168,34 +180,13 @@ export const useRemoteControl = create<RemoteControlState>()((set, get) => ({
     set({ pairingPolling: false });
   },
 
-  allowProject: async (input) => {
-    set({ lastError: null });
-    try {
-      await port().allowProject(input);
-      await get().refresh();
-      return true;
-    } catch (e) {
-      set({ lastError: errorMessage(e) });
-      return false;
-    }
-  },
-
-  removeProject: async (projectId) => {
-    set({ lastError: null });
-    try {
-      const next = await port().removeProject(projectId);
-      set({ status: next });
-      return true;
-    } catch (e) {
-      set({ lastError: errorMessage(e) });
-      return false;
-    }
-  },
-
   revokeDevice: async (deviceId) => {
     set({ lastError: null });
     try {
       const next = await port().revokeDevice(deviceId);
+      if (next.pairedDevices.some((device) => device.deviceId === deviceId)) {
+        throw new Error("remote-control revoke returned stale device state");
+      }
       set({ status: next });
       return true;
     } catch (e) {

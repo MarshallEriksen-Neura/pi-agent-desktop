@@ -31,30 +31,35 @@ export const PairingQrModal = memo(function PairingQrModal({
   const t = useT();
   const { payload, state, countdown, regenerate, polling } = usePairingQr();
   const generateQr = useRemoteControl((s) => s.generateQr);
+  const dismissPairing = useRemoteControl((s) => s.dismissPairing);
 
-  // Trigger generation when the modal opens without a live ticket.
+  const closeModal = useCallback(() => {
+    dismissPairing();
+    onClose();
+  }, [dismissPairing, onClose]);
+
+  // Every open starts a new one-time ticket. A previous success/expiry is a
+  // terminal state for that ticket and must never leak into the next session.
   useEffect(() => {
-    if (open && !payload && state === "idle") {
-      void generateQr();
-    }
-  }, [open, payload, state, generateQr]);
+    if (open) void generateQr();
+  }, [open, generateQr]);
 
   // Esc-to-close + auto-dismiss on paired success.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && state !== "generating") onClose();
+      if (e.key === "Escape" && state !== "generating") closeModal();
     };
     window.addEventListener("keydown", onKey);
     let dismiss: ReturnType<typeof setTimeout> | undefined;
     if (state === "paired") {
-      dismiss = setTimeout(onClose, 1600);
+      dismiss = setTimeout(closeModal, 1600);
     }
     return () => {
       window.removeEventListener("keydown", onKey);
       if (dismiss) clearTimeout(dismiss);
     };
-  }, [open, state, onClose]);
+  }, [open, state, closeModal]);
 
   const qrString = payload ? serializeQrPayload(payload) : "";
 
@@ -65,7 +70,7 @@ export const PairingQrModal = memo(function PairingQrModal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={() => state !== "generating" && onClose()}
+          onClick={() => state !== "generating" && closeModal()}
           style={OVERLAY}
           role="dialog"
           aria-modal="true"
@@ -84,7 +89,7 @@ export const PairingQrModal = memo(function PairingQrModal({
               <h2 style={TITLE}>{t("settings.remoteControl.qrModal.title")}</h2>
               <button
                 aria-label={t("common.close")}
-                onClick={onClose}
+                onClick={closeModal}
                 disabled={state === "generating"}
                 style={CLOSE_BTN}
               >
@@ -221,11 +226,11 @@ const QrMatrix = memo(function QrMatrix({ qrString }: { qrString: string }) {
   return (
     <QRCodeSVG
       value={qrString || " "}
-      size={196}
-      level="M"
-      marginSize={0}
-      bgColor="transparent"
-      fgColor="var(--text-primary)"
+      size={320}
+      level="L"
+      marginSize={4}
+      bgColor="#ffffff"
+      fgColor="#111111"
       // The QR is the Secure Tether visual mark — render it large and crisp.
       style={{ display: "block" }}
     />
@@ -247,14 +252,14 @@ const QrFrame = memo(function QrFrame({
     <div style={{ position: "relative", opacity: dimmed ? 0.35 : 1 }}>
       <div
         style={{
-          width: 224,
-          height: 224,
+          width: 344,
+          height: 344,
           display: "grid",
           placeItems: "center",
-          background: "var(--bg-sunken)",
+          background: "#ffffff",
           borderRadius: "var(--radius-lg)",
           border: "1px solid var(--separator)",
-          padding: 14,
+          padding: 12,
         }}
       >
         {children}
@@ -272,7 +277,7 @@ function Center({ children }: { children: React.ReactNode }) {
         alignItems: "center",
         gap: 10,
         padding: "18px 0 14px",
-        minHeight: 260,
+        minHeight: 400,
         justifyContent: "center",
       }}
     >
@@ -320,7 +325,7 @@ const OVERLAY: React.CSSProperties = {
 };
 
 const CARD: React.CSSProperties = {
-  width: 380,
+  width: 420,
   maxWidth: "calc(100vw - 32px)",
   background: "var(--bg-base)",
   borderRadius: "var(--radius-lg)",

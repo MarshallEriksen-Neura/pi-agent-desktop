@@ -20,16 +20,20 @@ export const RevokeDeviceConfirm = memo(function RevokeDeviceConfirm({
   onCancel,
 }: {
   device: PairingDeviceMetadata | null;
-  onConfirm: (deviceId: string) => Promise<void>;
+  onConfirm: (deviceId: string) => Promise<boolean>;
   onCancel: () => void;
 }) {
   const t = useT();
   const open = device !== null;
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   // Reset busy if the dialog is dismissed mid-flight by the parent.
   useEffect(() => {
-    if (!open) setBusy(false);
+    if (!open) {
+      setBusy(false);
+      setFailed(false);
+    }
   }, [open]);
 
   // Esc-to-cancel (disabled while in flight).
@@ -45,8 +49,10 @@ export const RevokeDeviceConfirm = memo(function RevokeDeviceConfirm({
   const confirm = async () => {
     if (!device || busy) return;
     setBusy(true);
+    setFailed(false);
     try {
-      await onConfirm(device.deviceId);
+      const ok = await onConfirm(device.deviceId);
+      if (!ok) setFailed(true);
     } finally {
       setBusy(false);
     }
@@ -91,6 +97,12 @@ export const RevokeDeviceConfirm = memo(function RevokeDeviceConfirm({
                 {device.appVersion ? ` · v${device.appVersion}` : ""}
               </span>
             </div>
+
+            {failed && (
+              <p role="alert" style={ERROR_TEXT}>
+                {t("settings.remoteControl.revoke.failed")}
+              </p>
+            )}
 
             <div style={ACTIONS}>
               <Button variant="ghost" onClick={onCancel} disabled={busy}>
@@ -182,6 +194,12 @@ const ACTIONS: React.CSSProperties = {
   display: "flex",
   gap: 8,
   justifyContent: "center",
+};
+
+const ERROR_TEXT: React.CSSProperties = {
+  margin: "-6px 0 12px",
+  fontSize: 12.5,
+  color: "var(--danger)",
 };
 
 const DANGER_BTN: React.CSSProperties = {

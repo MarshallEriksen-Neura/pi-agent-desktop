@@ -244,7 +244,7 @@ export const en = {
   "settings.category.runtime": "Runtime",
   "settings.category.runtimeDetail": "WSL, shell, sessions, proxy, and transport environment.",
   "settings.category.remote": "Remote Control",
-  "settings.category.remoteDetail": "LAN gateway, paired devices, and authorized projects.",
+  "settings.category.remoteDetail": "LAN gateway, paired devices, and the current desktop project.",
   "settings.category.advanced": "Advanced",
   "settings.category.advancedDetail": "Project trust and direct settings-file diagnostics.",
   "settings.subtitleMock": "Browser preview — edits are in-memory only.",
@@ -678,15 +678,13 @@ export const en = {
   "settings.remoteControl.title": "Remote Control",
   "settings.remoteControl.overview": "Remote Control",
   "settings.remoteControl.overviewFooter":
-    "Let a paired mobile device view authorized projects over your private LAN.",
+    "Let paired mobile devices access the current desktop project over your private LAN.",
   "settings.remoteControl.status": "Gateway status",
   "settings.remoteControl.listenAddress": "Listen address",
   "settings.remoteControl.notListening": "Not listening",
   "settings.remoteControl.port": "Port",
   "settings.remoteControl.pairedDevices": "Paired devices",
   "settings.remoteControl.deviceCount": "{n} paired",
-  "settings.remoteControl.authorizedProjects": "Authorized projects",
-  "settings.remoteControl.projectCount": "{n} authorized",
   "settings.remoteControl.recentError": "Recent error",
 
   // remote control — phase badges
@@ -731,16 +729,6 @@ export const en = {
   "settings.remoteControl.platform.desktop": "Desktop",
   "settings.remoteControl.platform.unknown": "Unknown",
 
-  // remote control — authorized projects
-  "settings.remoteControl.authorizedProjectsFooter":
-    "Mobile devices can only open projects you explicitly authorize here.",
-  "settings.remoteControl.emptyProjects": "No authorized projects",
-  "settings.remoteControl.emptyProjectsDetail":
-    "Add a local project so paired devices can browse its file tree.",
-  "settings.remoteControl.projectRemove": "Remove",
-  "settings.remoteControl.addProject": "Add project folder",
-  "settings.remoteControl.projectPathPlaceholder": "/absolute/path/to/project",
-
   // remote control — danger zone
   "settings.remoteControl.dangerZone": "Danger zone",
   "settings.remoteControl.dangerZoneFooter":
@@ -771,11 +759,12 @@ export const en = {
   "settings.remoteControl.revoke.message":
     "“{name}” will lose access immediately. It must pair again to reconnect.",
   "settings.remoteControl.revoke.confirm": "Revoke device",
+  "settings.remoteControl.revoke.failed": "Could not revoke the device. Its status was not changed. Try again.",
 
   // remote control — reset identity dialog
   "settings.remoteControl.reset.title": "Reset remote-control identity",
   "settings.remoteControl.reset.warning":
-    "This rotates the desktop identity and TLS certificate, revokes every paired device, and clears all authorized projects. Paired devices will go offline instantly and must re-pair. This cannot be undone.",
+    "This rotates the desktop identity and TLS certificate and revokes every paired device. The current desktop project remains available after re-pairing. Paired devices will go offline instantly and must re-pair. This cannot be undone.",
   "settings.remoteControl.reset.typeHint": "Type “{phrase}” to confirm",
   "settings.remoteControl.reset.confirmPhrase": "reset",
   "settings.remoteControl.reset.confirm": "Reset identity",

@@ -245,7 +245,7 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.category.runtime": "运行环境",
   "settings.category.runtimeDetail": "WSL、Shell、会话、代理与传输环境。",
   "settings.category.remote": "远程控制",
-  "settings.category.remoteDetail": "局域网网关、已配对设备与授权项目。",
+  "settings.category.remoteDetail": "局域网网关、已配对设备与桌面当前项目。",
   "settings.category.advanced": "高级",
   "settings.category.advancedDetail": "项目信任与设置文件诊断。",
   "settings.subtitleMock": "浏览器预览 — 编辑仅保存在内存中。",
@@ -652,15 +652,13 @@ export const zh: Record<keyof typeof en, string> = {
   // 远程控制 — 总览
   "settings.remoteControl.title": "远程控制",
   "settings.remoteControl.overview": "远程控制",
-  "settings.remoteControl.overviewFooter": "让已配对的移动设备在私有局域网内查看授权项目。",
+  "settings.remoteControl.overviewFooter": "让已配对的移动设备在私有局域网内访问桌面当前项目。",
   "settings.remoteControl.status": "网关状态",
   "settings.remoteControl.listenAddress": "监听地址",
   "settings.remoteControl.notListening": "未在监听",
   "settings.remoteControl.port": "端口",
   "settings.remoteControl.pairedDevices": "已配对设备",
   "settings.remoteControl.deviceCount": "已配对 {n} 台",
-  "settings.remoteControl.authorizedProjects": "授权项目",
-  "settings.remoteControl.projectCount": "已授权 {n} 个",
   "settings.remoteControl.recentError": "最近错误",
 
   // 远程控制 — 状态徽章
@@ -702,14 +700,6 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.remoteControl.platform.desktop": "桌面端",
   "settings.remoteControl.platform.unknown": "未知",
 
-  // 远程控制 — 授权项目
-  "settings.remoteControl.authorizedProjectsFooter": "移动设备只能打开你在此处明确授权的项目。",
-  "settings.remoteControl.emptyProjects": "暂无授权项目",
-  "settings.remoteControl.emptyProjectsDetail": "添加一个本地项目，配对设备才能浏览其文件树。",
-  "settings.remoteControl.projectRemove": "移除",
-  "settings.remoteControl.addProject": "添加项目文件夹",
-  "settings.remoteControl.projectPathPlaceholder": "/项目的/绝对/路径",
-
   // 远程控制 — 危险操作
   "settings.remoteControl.dangerZone": "危险区",
   "settings.remoteControl.dangerZoneFooter": "重置会轮换桌面身份与证书，所有已配对设备都将被撤销。",
@@ -736,11 +726,12 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.remoteControl.revoke.title": "撤销此设备？",
   "settings.remoteControl.revoke.message": "「{name}」将立即失去访问权限，需重新配对才能再次连接。",
   "settings.remoteControl.revoke.confirm": "撤销设备",
+  "settings.remoteControl.revoke.failed": "撤销失败，设备状态未改变，请重试。",
 
   // 远程控制 — 重置身份弹窗
   "settings.remoteControl.reset.title": "重置远程控制身份",
   "settings.remoteControl.reset.warning":
-    "此操作将轮换桌面身份与 TLS 证书、撤销所有已配对设备、清空所有授权项目。已绑定的移动设备会立即掉线，必须重新配对。此操作不可撤销。",
+    "此操作将轮换桌面身份与 TLS 证书，并撤销所有已配对设备；重新配对后仍可访问桌面当前项目。已绑定的移动设备会立即掉线，必须重新配对。此操作不可撤销。",
   "settings.remoteControl.reset.typeHint": "输入「{phrase}」以确认",
   "settings.remoteControl.reset.confirmPhrase": "重置",
   "settings.remoteControl.reset.confirm": "重置身份",

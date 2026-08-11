@@ -146,6 +146,7 @@ export function ActivityLine({
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
+          minWidth: 0,
         }}
       >
         {title}

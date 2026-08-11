@@ -2,7 +2,7 @@ use crate::device_store::{DeviceRegistry, DeviceStoreError};
 use crate::identity::{CertificateIdentity, IdentityStore};
 use crate::protocol::{
     CertificatePin, PairingDesktopIdentity, PairingFailure, PairingFailureCode, PairingQrPayload,
-    PairingRequest, PairingSuccess, RemoteEndpoint,
+    PairingRequest, PairingSuccess, RemoteEndpoint, WakeOnLanConfig,
 };
 use ring::digest::{digest, SHA256};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -37,6 +37,7 @@ struct TicketRecord {
     expires_at_ms: u64,
     identity_epoch: u64,
     invalid_attempts: u8,
+    wake_on_lan: Option<WakeOnLanConfig>,
 }
 
 pub struct PairingManager {
@@ -59,6 +60,7 @@ impl PairingManager {
         desktop: PairingDesktopIdentity,
         endpoints: Vec<RemoteEndpoint>,
         certificate_pin: CertificatePin,
+        wake_on_lan: Option<WakeOnLanConfig>,
         now_ms: u64,
     ) -> Result<PairingQrPayload, PairingError> {
         if endpoints.is_empty() || endpoints.len() > 8 {
@@ -85,6 +87,7 @@ impl PairingManager {
                 expires_at_ms: now_ms.saturating_add(PAIRING_TICKET_TTL_MS),
                 identity_epoch,
                 invalid_attempts: 0,
+                wake_on_lan,
             },
         );
         Ok(PairingQrPayload {
@@ -96,7 +99,6 @@ impl PairingManager {
             secret,
             certificate_pin,
             expires_at: format_timestamp(now_ms.saturating_add(PAIRING_TICKET_TTL_MS)),
-            wake_on_lan: None,
         })
     }
 
@@ -156,6 +158,7 @@ impl PairingManager {
             device_id: registered.device_id,
             token: registered.token,
             server_time: format_timestamp(now_ms),
+            wake_on_lan: ticket.wake_on_lan,
         })
     }
 

@@ -7,7 +7,6 @@ import { OverviewGroup } from "./OverviewGroup";
 import { NetworkConfigGroup } from "./NetworkConfigGroup";
 import { AddDeviceGroup } from "./AddDeviceGroup";
 import { PairedDevicesGroup } from "./PairedDevicesGroup";
-import { AuthorizedProjectsGroup } from "./AuthorizedProjectsGroup";
 import { DangerZoneGroup } from "./DangerZoneGroup";
 import { PairingQrModal } from "./PairingQrModal";
 import { RevokeDeviceConfirm } from "./RevokeDeviceConfirm";
@@ -45,8 +44,9 @@ export const RemoteControlSection = memo(function RemoteControlSection() {
 
   const onRevokeConfirm = useCallback(
     async (deviceId: string) => {
-      await revokeDevice(deviceId);
-      setRevokeTarget(null);
+      const ok = await revokeDevice(deviceId);
+      if (ok) setRevokeTarget(null);
+      return ok;
     },
     [revokeDevice],
   );
@@ -62,7 +62,6 @@ export const RemoteControlSection = memo(function RemoteControlSection() {
       <NetworkConfigGroup />
       <AddDeviceGroup onOpenQr={() => setQrOpen(true)} />
       <PairedDevicesGroup onRevoke={setRevokeTarget} />
-      <AuthorizedProjectsGroup />
       <DangerZoneGroup onReset={() => setResetOpen(true)} />
 
       <PairingQrModal open={qrOpen} onClose={() => setQrOpen(false)} />

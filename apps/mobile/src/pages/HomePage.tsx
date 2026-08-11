@@ -1,21 +1,32 @@
 import { memo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
-import { FolderTree, ListChecks, Monitor, ChevronRight, Power } from "lucide-react";
+import { FolderTree, ListChecks, Monitor, Power } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { SecureTetherHero } from "@/components/SecureTether";
-import { Card, Row, StateView, FullScreenSpinner, PrimaryButton, SecondaryButton } from "@/components/primitives";
+import { StateView, FullScreenSpinner } from "@/components/primitives";
+import {
+  SectionLabel,
+  MobileCard,
+  MobileRow,
+  BlockButton,
+} from "@/components/visual";
 
 /**
- * HomePage (P-3) — the connection landing page. Shows the Secure Tether hero
- * mark, desktop info, and quick-action links to Projects / Tasks.
+ * HomePage (P-3) — connection landing page.
+ *
+ * Visual layers(对齐 demo):
+ *  1. SecureTetherHero — SVG 标志视觉(桌面—链路—锁—手机)
+ *  2. mhero — 桌面名 + 状态点 + 状态文案
+ *  3. 快捷操作 mcard — 项目 / 任务
  *
  * State matrix:
- *  - online: hero + desktop card + quick actions
- *  - reconnecting: hero (amber) + "reconnecting" message
- *  - offline: error state view with reconnect action
- *  - identity_failed: identity-failed state view with re-pair guidance
+ *  - online:          full page(上方三层)
+ *  - reconnecting:    hero + spinner
+ *  - offline:         StateView + reconnect / wake
+ *  - identity_failed: StateView + re-pair
+ *  - waking/loading:  FullScreenSpinner
  */
 export const HomePage = memo(function HomePage() {
   const navigate = useNavigate();
@@ -35,10 +46,10 @@ export const HomePage = memo(function HomePage() {
     return <FullScreenSpinner label={t("wake.waking")} />;
   }
 
-  // Reconnecting state
+  // Reconnecting — hero (amber pulse) + spinner
   if (isReconnecting) {
     return (
-      <div style={{ padding: "16px" }}>
+      <div>
         <SecureTetherHero phase={phase} />
         <FullScreenSpinner label={t("connection.reconnecting")} />
       </div>
@@ -53,30 +64,53 @@ export const HomePage = memo(function HomePage() {
         title={t("error.identityRotated")}
         detail={t("error.identityRotatedDetail")}
         action={
-          <SecondaryButton onClick={() => navigate("/pair")}>
+          <BlockButton variant="outline" onClick={() => navigate("/pair")}>
             {t("onboarding.start")}
-          </SecondaryButton>
+          </BlockButton>
         }
       />
     );
   }
 
-  // Offline — offer reconnect
+  // Offline — offer reconnect (and wake if WoL targets exist)
   if (phase === "offline") {
     const canWake = Boolean(stored?.wakeOnLan?.targets.length);
     return (
       <StateView
-        icon={canWake
-          ? <Power size={28} style={{ color: "var(--color-accent)" }} />
-          : <Monitor size={28} style={{ color: "var(--color-text-tertiary)" }} />}
+        icon={
+          canWake ? (
+            <Power size={28} style={{ color: "var(--color-accent)" }} />
+          ) : (
+            <Monitor size={28} style={{ color: "var(--color-text-tertiary)" }} />
+          )
+        }
         title={t("error.unreachable")}
-        detail={lastError === "wake_timeout" ? t("wake.timeoutDetail") : t("error.unreachableDetail")}
+        detail={
+          lastError === "wake_timeout"
+            ? t("wake.timeoutDetail")
+            : t("error.unreachableDetail")
+        }
         action={
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%", maxWidth: 260 }}>
-            {canWake && <PrimaryButton onClick={wake}>{t("wake.action")}</PrimaryButton>}
-            {canWake
-              ? <SecondaryButton onClick={connect}>{t("connection.reconnect")}</SecondaryButton>
-              : <PrimaryButton onClick={connect}>{t("connection.reconnect")}</PrimaryButton>}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              width: "100%",
+              maxWidth: 260,
+            }}
+          >
+            {canWake && (
+              <BlockButton variant="primary" onClick={wake}>
+                {t("wake.action")}
+              </BlockButton>
+            )}
+            <BlockButton
+              variant={canWake ? "outline" : "primary"}
+              onClick={connect}
+            >
+              {t("connection.reconnect")}
+            </BlockButton>
           </div>
         }
       />
@@ -90,55 +124,45 @@ export const HomePage = memo(function HomePage() {
 
   // Online — full home page
   return (
-    <div style={{ padding: "16px" }}>
-      {/* Secure Tether hero */}
+    <div>
+      {/* 1. Secure Tether hero — SVG 标志视觉 */}
       <SecureTetherHero phase={phase} />
 
-      {/* Desktop info card */}
+      {/* 2. mhero — desktop name + status dot + status text */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.1 }}
+        className="mhero"
+        data-st="online"
       >
-        <Card style={{ marginBottom: 16 }}>
-          <Row
-            icon={<Monitor size={16} />}
-            title={stored.desktopName}
-            detail={t("home.desktop")}
-          />
-        </Card>
+        <div className="desk-name">{stored.desktopName}</div>
+        <div className="status-line">
+          <span className="sdot" />
+          <span>{t("connection.online")}</span>
+        </div>
       </motion.div>
 
-      {/* Quick actions */}
+      {/* 3. Quick actions */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.15 }}
+        transition={{ delay: 0.2 }}
+        style={{ padding: "0 16px" }}
       >
-        <div
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            color: "var(--color-text-tertiary)",
-            padding: "0 4px 8px",
-          }}
-        >
-          {t("home.quickActions")}
-        </div>
-        <Card>
-          <Row
+        <SectionLabel>{t("home.quickActions")}</SectionLabel>
+        <MobileCard>
+          <MobileRow
             icon={<FolderTree size={16} />}
             title={t("home.projects")}
-            trailing={<ChevronRight size={18} style={{ color: "var(--color-text-tertiary)" }} />}
             onClick={() => navigate("/projects")}
           />
-          <Row
+          <MobileRow
             icon={<ListChecks size={16} />}
             title={t("home.tasks")}
-            trailing={<ChevronRight size={18} style={{ color: "var(--color-text-tertiary)" }} />}
             onClick={() => navigate("/tasks")}
           />
-        </Card>
+        </MobileCard>
       </motion.div>
     </div>
   );

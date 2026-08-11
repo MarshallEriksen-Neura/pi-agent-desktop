@@ -29,13 +29,6 @@ export interface RemoteControlEnableInput {
   port: number;
 }
 
-/** Project allowlist entry submitted via `remote_control_allow_project`. */
-export interface RemoteControlAllowProjectInput {
-  path: string;
-  /** Optional display name; when omitted the gateway derives one from the path. */
-  name?: string;
-}
-
 /**
  * Local administration port for the opt-in LAN remote-control gateway.
  *
@@ -57,10 +50,6 @@ export interface RemoteControlPort {
   disable(): Promise<RemoteControlStatusDto>;
   /** Issue a short-lived pairing ticket encoded as a QR payload. */
   pairingPayload(): Promise<PairingQrPayload>;
-  /** Authorize a local project for mobile access. */
-  allowProject(input: RemoteControlAllowProjectInput): Promise<RemoteProjectSummary>;
-  /** Revoke a project's authorization; queued tasks for it will fail. */
-  removeProject(projectId: string): Promise<RemoteControlStatusDto>;
   /** Revoke a paired device and disconnect it immediately. */
   revokeDevice(deviceId: string): Promise<RemoteControlStatusDto>;
   /** Rotate the TLS identity, clear all devices, and require re-pairing. */

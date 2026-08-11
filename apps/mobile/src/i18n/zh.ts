@@ -40,6 +40,8 @@ export const zh: Record<string, string> = {
   "scanner.deniedDetail": "配对需要使用相机扫描桌面端二维码。",
   "scanner.permanentlyDenied": "相机权限被永久拒绝",
   "scanner.permanentlyDeniedDetail": "请在系统设置中开启相机权限以扫描配对二维码。",
+  "scanner.error": "扫码器发生错误",
+  "scanner.errorDetail": "相机扫码未能启动或运行中断，请查看下方错误详情后重试。",
   "scanner.openSettings": "打开系统设置",
   "scanner.unsupported": "无法使用相机扫码",
   "scanner.unsupportedDetail": "当前设备不支持相机二维码扫描，请更换设备或使用开发模式手动输入。",
@@ -148,6 +150,7 @@ export const zh: Record<string, string> = {
   "tasks.state.cancelled": "已取消",
 
   // Task detail
+  "detail.pageTitle": "任务详情",
   "detail.taskId": "任务",
   "detail.timeline": "时间线",
   "detail.contextFiles": "上下文文件",

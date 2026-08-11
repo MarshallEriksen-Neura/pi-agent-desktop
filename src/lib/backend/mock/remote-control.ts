@@ -1,5 +1,4 @@
 import type {
-  RemoteControlAllowProjectInput,
   RemoteControlEnableInput,
   RemoteControlPort,
   RemoteControlStatusDto,
@@ -15,9 +14,9 @@ import type {
  *
  * `pnpm dev` runs without Tauri, so this port keeps an in-memory gateway state
  * that lets the Settings page be fully navigable: the overview starts in a
- * healthy "enabled" state with one paired device and one authorized project so
- * every group has content to render. Toggling, adding, removing, and resetting
- * mutate that state so flows can be exercised end-to-end in the browser.
+ * healthy "enabled" state with one paired device and the current desktop
+ * project. Toggling, revoking, and resetting mutate that state so flows can be
+ * exercised end-to-end in the browser.
  *
  * Delays are intentionally small (120–320 ms) to surface loading states
  * without making the UI feel sluggish. To preview the "paired success" QR
@@ -50,15 +49,6 @@ function delay(ms: number): Promise<void> {
 
 function iso(offsetMs = 0): string {
   return new Date(Date.now() + offsetMs).toISOString();
-}
-
-function deriveName(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
-
-function makeProjectId(path: string): string {
-  const slug = deriveName(path).toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  return `proj_${slug}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function initialState(): MockState {
@@ -163,29 +153,6 @@ export function createMockRemoteControlPort(): RemoteControlPort {
     pairingPayload: async () => {
       await delay(150);
       return makeQrPayload(state);
-    },
-
-    allowProject: async (input: RemoteControlAllowProjectInput) => {
-      await delay(180);
-      const summary: RemoteProjectSummary = {
-        projectId: makeProjectId(input.path),
-        name: input.name ?? deriveName(input.path),
-        lastOpenedAt: iso(),
-      };
-      state = {
-        ...state,
-        projects: [...state.projects, summary],
-      };
-      return summary;
-    },
-
-    removeProject: async (projectId: string) => {
-      await delay(180);
-      state = {
-        ...state,
-        projects: state.projects.filter((p) => p.projectId !== projectId),
-      };
-      return snapshot(state);
     },
 
     revokeDevice: async (deviceId: string) => {

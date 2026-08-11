@@ -35,6 +35,7 @@ export type ScannerPhase =
   | "scanning"
   | "denied"
   | "permanently_denied"
+  | "error"
   | "unsupported";
 
 export interface UseQrScannerOptions {
@@ -57,9 +58,11 @@ export function useQrScanner(opts: UseQrScannerOptions) {
   );
 
   const listenerRef = useRef<PluginListenerHandle | null>(null);
+  const errorListenerRef = useRef<PluginListenerHandle | null>(null);
   const lastScanRef = useRef<{ value: string; time: number } | null>(null);
   const scanningRef = useRef(false);
   const onResultRef = useRef(onResult);
+  const [error, setError] = useState<string | null>(null);
 
   // Keep the callback ref current without re-triggering the scan effect.
   useEffect(() => {
@@ -77,6 +80,14 @@ export function useQrScanner(opts: UseQrScannerOptions) {
       }
       listenerRef.current = null;
     }
+    if (errorListenerRef.current) {
+      try {
+        await errorListenerRef.current.remove();
+      } catch {
+        // listener may already be removed
+      }
+      errorListenerRef.current = null;
+    }
     try {
       await BarcodeScanner.stopScan();
     } catch {
@@ -91,6 +102,7 @@ export function useQrScanner(opts: UseQrScannerOptions) {
     // canvas transparent before starting CameraX so the preview is visible.
     setScannerPresentationActive(true);
     setPhase("scanning");
+    setError(null);
 
     try {
       // Register the barcodesScanned listener BEFORE startScan so no event
@@ -124,14 +136,22 @@ export function useQrScanner(opts: UseQrScannerOptions) {
           }
         },
       );
+      errorListenerRef.current = await BarcodeScanner.addListener(
+        "scanError",
+        (event) => {
+          setError(event.message || "scan_error");
+          setPhase("error");
+          void stop();
+        },
+      );
 
       await BarcodeScanner.startScan({
         formats: [BarcodeFormat.QrCode],
       });
-    } catch {
-      scanningRef.current = false;
-      setScannerPresentationActive(false);
-      setPhase("idle");
+    } catch (scanError) {
+      await stop();
+      setError(scannerErrorMessage(scanError));
+      setPhase("error");
     }
   }, [stop]);
 
@@ -141,6 +161,7 @@ export function useQrScanner(opts: UseQrScannerOptions) {
       return;
     }
     setPhase("requesting_permission");
+    setError(null);
 
     try {
       const status = await BarcodeScanner.checkPermissions();
@@ -169,8 +190,9 @@ export function useQrScanner(opts: UseQrScannerOptions) {
         // the UI offers "open settings" for the permanently-denied path.
         setPhase("denied");
       }
-    } catch {
-      setPhase("idle");
+    } catch (permissionError) {
+      setError(scannerErrorMessage(permissionError));
+      setPhase("error");
     }
   }, [startScan]);
 
@@ -211,10 +233,21 @@ export function useQrScanner(opts: UseQrScannerOptions) {
 
   return {
     phase,
+    error,
     isNative,
     startScan,
     stop,
     requestPermission,
     openSettings,
   };
+}
+
+export function scannerErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return "scan_error";
 }

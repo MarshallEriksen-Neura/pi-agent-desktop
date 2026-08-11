@@ -1,11 +1,17 @@
 import { memo, useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
-import { Folder, ChevronRight, RefreshCw, FolderPlus, AlertCircle } from "lucide-react";
+import { Folder, RefreshCw, FolderPlus, AlertCircle } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { useConnectionStore } from "@/stores/connection.store";
-import { Card, Row, StateView, FullScreenSpinner, PrimaryButton } from "@/components/primitives";
+import { StateView, FullScreenSpinner } from "@/components/primitives";
+import {
+  MobileCard,
+  MobileRow,
+  BlockButton,
+  EmptyState,
+} from "@/components/visual";
 import { NetError } from "@/net/errors";
 import type { RemoteProjectSummary } from "@pi/remote-control-contracts";
 
@@ -15,14 +21,14 @@ function useClient() {
 }
 
 /**
- * ProjectsPage — lists explicitly authorized desktop projects. Never displays
- * absolute paths (design constraint: only name + opaque projectId).
+ * ProjectsPage — 列出已授权的桌面项目。只展示 name + opaque projectId,
+ * 不显示绝对路径(设计约束)。
  *
  * State matrix:
  *  - loading: spinner
- *  - empty: empty state with hint
- *  - offline: offline state
- *  - 401/auth_failed: auth-failed state → re-pair
+ *  - empty: EmptyState
+ *  - offline: offline StateView
+ *  - auth_failed: re-pair StateView
  *  - success: project list, tap → /projects/:id/tree
  */
 export const ProjectsPage = memo(function ProjectsPage() {
@@ -61,14 +67,17 @@ export const ProjectsPage = memo(function ProjectsPage() {
     void load();
   }, [load]);
 
-  // Identity failed — needs re-pair
   if (isIdentityFailed) {
     return (
       <StateView
         icon={<AlertCircle size={28} style={{ color: "var(--color-danger)" }} />}
         title={t("error.identityRotated")}
         detail={t("error.identityRotatedDetail")}
-        action={<PrimaryButton onClick={() => navigate("/pair")}>{t("onboarding.start")}</PrimaryButton>}
+        action={
+          <BlockButton variant="outline" onClick={() => navigate("/pair")}>
+            {t("onboarding.start")}
+          </BlockButton>
+        }
       />
     );
   }
@@ -93,7 +102,11 @@ export const ProjectsPage = memo(function ProjectsPage() {
         icon={<AlertCircle size={28} style={{ color: "var(--color-danger)" }} />}
         title={t("error.authFailed")}
         detail={t("error.authFailedDetail")}
-        action={<PrimaryButton onClick={() => navigate("/pair")}>{t("onboarding.start")}</PrimaryButton>}
+        action={
+          <BlockButton variant="outline" onClick={() => navigate("/pair")}>
+            {t("onboarding.start")}
+          </BlockButton>
+        }
       />
     );
   }
@@ -104,62 +117,91 @@ export const ProjectsPage = memo(function ProjectsPage() {
         icon={<AlertCircle size={28} style={{ color: "var(--color-text-tertiary)" }} />}
         title={t("error.unknown")}
         detail={error}
-        action={<PrimaryButton onClick={load}>{t("common.retry")}</PrimaryButton>}
+        action={
+          <BlockButton variant="primary" onClick={load}>
+            {t("common.retry")}
+          </BlockButton>
+        }
       />
     );
   }
 
   if (projects && projects.length === 0) {
     return (
-      <StateView
-        icon={<FolderPlus size={28} style={{ color: "var(--color-text-tertiary)" }} />}
-        title={t("projects.empty")}
-        detail={t("projects.emptyDetail")}
-      />
+      <EmptyState icon={<FolderPlus size={28} />}>
+        {t("projects.emptyDetail")}
+      </EmptyState>
     );
   }
 
   return (
-    <div style={{ padding: "16px", overflowY: "auto", height: "100%" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.02em", margin: "8px 0" }}>
-          {t("projects.title")}
-        </h1>
-        <motion.button
-          whileTap={{ scale: 0.92 }}
-          onClick={load}
-          disabled={refreshing}
-          style={{
-            background: "transparent",
-            border: "none",
-            cursor: refreshing ? "default" : "pointer",
-            color: "var(--color-accent)",
-            display: "grid",
-            placeItems: "center",
-            padding: 8,
-          }}
-        >
-          <RefreshCw size={20} className={refreshing ? "pi-spin" : ""} />
-        </motion.button>
-      </div>
+    <div className="page-scroll">
+      <Header refreshing={refreshing} onRefresh={load} />
 
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-        <Card>
+        <MobileCard>
           {projects!.map((p) => (
-            <Row
+            <MobileRow
               key={p.projectId}
               icon={<Folder size={16} />}
               title={p.name}
               detail={p.lastOpenedAt ? formatRelative(p.lastOpenedAt) : undefined}
-              trailing={<ChevronRight size={18} style={{ color: "var(--color-text-tertiary)" }} />}
-              onClick={() => navigate(`/projects/${encodeURIComponent(p.projectId)}/tree`)}
+              onClick={() =>
+                navigate(`/projects/${encodeURIComponent(p.projectId)}/tree`)
+              }
             />
           ))}
-        </Card>
+        </MobileCard>
       </motion.div>
     </div>
   );
 });
+
+function Header({
+  refreshing,
+  onRefresh,
+}: {
+  refreshing: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 16,
+      }}
+    >
+      <h1
+        style={{
+          fontSize: 28,
+          fontWeight: 700,
+          letterSpacing: "-0.02em",
+          margin: "8px 0",
+        }}
+      >
+        {t("projects.title")}
+      </h1>
+      <motion.button
+        whileTap={{ scale: 0.92 }}
+        onClick={onRefresh}
+        disabled={refreshing}
+        style={{
+          background: "transparent",
+          border: "none",
+          cursor: refreshing ? "default" : "pointer",
+          color: "var(--color-accent)",
+          display: "grid",
+          placeItems: "center",
+          padding: 8,
+        }}
+      >
+        <RefreshCw size={20} className={refreshing ? "pi-spin" : ""} />
+      </motion.button>
+    </div>
+  );
+}
 
 function formatRelative(iso: string): string {
   const now = Date.now();

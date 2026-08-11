@@ -11,7 +11,12 @@ import {
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { useConnectionStore } from "@/stores/connection.store";
-import { Card, Row, StateView, FullScreenSpinner, PrimaryButton } from "@/components/primitives";
+import { StateView, FullScreenSpinner } from "@/components/primitives";
+import {
+  MobileCard,
+  MobileRow,
+  BlockButton,
+} from "@/components/visual";
 import { NetError } from "@/net/errors";
 import type {
   RemoteTreeEntry,
@@ -20,14 +25,11 @@ import type {
 } from "@pi/remote-control-contracts";
 
 /**
- * ProjectTreePage — a bounded, read-only file picker. Lets the user browse a
- * project tree (directories only navigable; files selectable as context) and
- * forward the selection to the TaskComposerPage.
+ * ProjectTreePage — 受限只读文件选择器。浏览项目树(目录可导航,文件可选为
+ * context),转发选择到 TaskComposerPage。
  *
- * Safety (design §4):
- *  - Only metadata is shown — file content is never fetched or previewed.
- *  - Selection is capped by the server's `maxContextFiles` capability.
- *  - Navigation uses relative paths only; the server canonicalizes.
+ * 安全(设计 §4):只展示元数据,不获取文件正文;选择数受服务端
+ * maxContextFiles 限制;只使用相对路径。
  */
 export const ProjectTreePage = memo(function ProjectTreePage() {
   const { projectId = "" } = useParams();
@@ -41,9 +43,9 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [capabilities, setCapabilities] = useState<RemoteProjectCapabilities | null>(null);
+  const [capabilities, setCapabilities] =
+    useState<RemoteProjectCapabilities | null>(null);
 
-  // Load capabilities once to know maxContextFiles.
   useEffect(() => {
     if (!client) return;
     void (async () => {
@@ -70,10 +72,13 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
       else setLoadingMore(true);
       setError(null);
       try {
-        const result = await client.getProjectTree(projectId, targetDir || undefined, targetCursor);
+        const result = await client.getProjectTree(
+          projectId,
+          targetDir || undefined,
+          targetCursor,
+        );
         setDir(result.directory);
         if (targetCursor && page) {
-          // Append for pagination.
           setPage({
             ...result,
             entries: [...page.entries, ...result.entries],
@@ -146,7 +151,9 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
         title={t("error.unknown")}
         detail={error}
         action={
-          <PrimaryButton onClick={() => load("")}>{t("common.retry")}</PrimaryButton>
+          <BlockButton variant="primary" onClick={() => load("")}>
+            {t("common.retry")}
+          </BlockButton>
         }
       />
     );
@@ -156,9 +163,9 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
   const hasMore = Boolean(page?.nextCursor);
 
   return (
-    <div style={{ padding: "16px", overflowY: "auto", height: "100%", paddingBottom: 80 }}>
+    <div className="page-scroll" style={{ paddingBottom: 80 }}>
       {/* Breadcrumb */}
-      <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 16, flexWrap: "wrap" }}>
+      <div className="breadcrumb">
         <BreadcrumbCrumb
           label={t("tree.root")}
           onClick={() => {
@@ -167,8 +174,14 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
         />
         {dir &&
           dir.split("/").map((part, i, arr) => (
-            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <ChevronRight size={14} style={{ color: "var(--color-text-tertiary)" }} />
+            <span
+              key={i}
+              style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
+              <ChevronRight
+                size={14}
+                style={{ color: "var(--color-text-tertiary)" }}
+              />
               <BreadcrumbCrumb
                 label={part}
                 onClick={() => {
@@ -181,31 +194,26 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
       </div>
 
       {/* Selection counter */}
-      <div
-        style={{
-          fontSize: 13,
-          color: "var(--color-text-tertiary)",
-          marginBottom: 12,
-          fontWeight: 500,
-        }}
-      >
+      <div className="sel-counter">
         {t("tree.selected", { count: selected.size, max: maxFiles })}
       </div>
 
       {/* Entries */}
-      <Card>
+      <MobileCard>
         {entries.length === 0 ? (
-          <div style={{ padding: "24px 16px", textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 14 }}>
-            {t("tree.empty")}
-          </div>
+          <div className="hint">{t("tree.empty")}</div>
         ) : (
           entries.map((entry) => {
             const isSelected = selected.has(entry.relativePath);
             return (
-              <Row
+              <MobileRow
                 key={entry.relativePath}
                 icon={
-                  entry.kind === "directory" ? <Folder size={16} /> : <FileIcon size={16} />
+                  entry.kind === "directory" ? (
+                    <Folder size={16} />
+                  ) : (
+                    <FileIcon size={16} />
+                  )
                 }
                 title={entry.name}
                 detail={
@@ -217,7 +225,10 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
                 }
                 trailing={
                   entry.kind === "directory" ? (
-                    <ChevronRight size={18} style={{ color: "var(--color-text-tertiary)" }} />
+                    <ChevronRight
+                      size={18}
+                      style={{ color: "var(--color-text-tertiary)" }}
+                    />
                   ) : isSelected ? (
                     <span
                       style={{
@@ -252,14 +263,18 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
             );
           })
         )}
-      </Card>
+      </MobileCard>
 
       {/* Load more */}
       {hasMore && (
         <div style={{ textAlign: "center", marginTop: 16 }}>
-          <PrimaryButton onClick={() => load(dir, page!.nextCursor)} disabled={loadingMore}>
+          <BlockButton
+            variant="outline"
+            onClick={() => load(dir, page!.nextCursor)}
+            disabled={loadingMore}
+          >
             {loadingMore ? t("common.loading") : t("tree.loadMore")}
-          </PrimaryButton>
+          </BlockButton>
         </div>
       )}
 
@@ -268,27 +283,34 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
         <motion.div
           initial={{ y: 80, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          style={{
-            position: "fixed",
-            bottom: "calc(var(--safe-bottom) + 16px)",
-            left: 16,
-            right: 16,
-            zIndex: 50,
-          }}
+          className="sticky-bar"
         >
-          <PrimaryButton onClick={handleCompose} disabled={false} danger={false}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <BlockButton variant="primary" onClick={handleCompose}>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                justifyContent: "center",
+              }}
+            >
               {t("tree.composeWith", { count: selected.size })}
               <ChevronRight size={18} />
             </span>
-          </PrimaryButton>
+          </BlockButton>
         </motion.div>
       )}
     </div>
   );
 });
 
-function BreadcrumbCrumb({ label, onClick }: { label: string; onClick: () => void }) {
+function BreadcrumbCrumb({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
   return (
     <motion.button
       whileTap={{ scale: 0.96 }}

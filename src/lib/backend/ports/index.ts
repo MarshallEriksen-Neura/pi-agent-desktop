@@ -22,7 +22,6 @@ export type {
 } from "./pi-process";
 export type { ProjectCatalogPort } from "./project-catalog";
 export type {
-  RemoteControlAllowProjectInput,
   RemoteControlEnableInput,
   RemoteControlPort,
   RemoteControlStatusDto,

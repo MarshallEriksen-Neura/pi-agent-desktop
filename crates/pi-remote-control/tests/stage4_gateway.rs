@@ -118,6 +118,7 @@ async fn gateway_rejects_unauthenticated_requests_and_authenticates_pairing_resu
                 algorithm: "spki-sha256".to_owned(),
                 value: "a".repeat(64),
             },
+            None,
             now_ms(),
         )
         .expect("issue ticket");

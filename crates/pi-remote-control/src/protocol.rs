@@ -171,8 +171,6 @@ pub struct PairingQrPayload {
     pub certificate_pin: CertificatePin,
     #[serde(rename = "expiresAt")]
     pub expires_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "wakeOnLan")]
-    pub wake_on_lan: Option<WakeOnLanConfig>,
 }
 
 impl fmt::Debug for PairingQrPayload {
@@ -186,7 +184,6 @@ impl fmt::Debug for PairingQrPayload {
             .field("secret", &"<redacted>")
             .field("certificate_pin", &self.certificate_pin)
             .field("expires_at", &self.expires_at)
-            .field("wake_on_lan", &self.wake_on_lan)
             .finish()
     }
 }
@@ -243,6 +240,8 @@ pub struct PairingSuccess {
     pub token: String,
     #[serde(rename = "serverTime")]
     pub server_time: String,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "wakeOnLan")]
+    pub wake_on_lan: Option<WakeOnLanConfig>,
 }
 
 impl fmt::Debug for PairingSuccess {
@@ -252,6 +251,7 @@ impl fmt::Debug for PairingSuccess {
             .field("device_id", &self.device_id)
             .field("token", &"<redacted>")
             .field("server_time", &self.server_time)
+            .field("wake_on_lan", &self.wake_on_lan)
             .finish()
     }
 }

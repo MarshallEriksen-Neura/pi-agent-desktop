@@ -6,6 +6,7 @@
 
 mod wake_on_lan;
 
+use pi_backend_core::projects::{canonical_project_root, DurableJsonStore};
 use pi_remote_control::config::RemoteControlConfig;
 use pi_remote_control::device_store::DeviceRegistry;
 use pi_remote_control::gateway::{build_router, build_server_config, GatewayServer, GatewayState};
@@ -34,6 +35,9 @@ use tauri::{AppHandle, Manager, Runtime, State};
 
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
 const REMOTE_TASK_DRAIN_WAIT: Duration = Duration::from_secs(6);
+const REMOTE_CONTROL_CONFIG_FILE: &str = "remote-control-config.json";
+const REMOTE_CONTROL_CONFIG_SCHEMA_VERSION: u32 = 1;
+const REMOTE_CONTROL_CONFIG_MAX_BYTES: usize = 16 * 1024;
 
 #[derive(Default)]
 pub struct RemoteControlState {
@@ -43,6 +47,7 @@ pub struct RemoteControlState {
 
 struct RemoteControlInner {
     running: Option<RunningGateway>,
+    saved_config: Option<PersistedRemoteControlConfig>,
     last_error: Option<String>,
 }
 
@@ -50,6 +55,7 @@ impl Default for RemoteControlInner {
     fn default() -> Self {
         Self {
             running: None,
+            saved_config: None,
             last_error: None,
         }
     }
@@ -88,11 +94,108 @@ pub struct RemoteControlEnableRequest {
     pub port: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedRemoteControlConfig {
+    schema_version: u32,
+    enabled: bool,
+    selected_addresses: Vec<String>,
+    port: u16,
+}
+
+impl PersistedRemoteControlConfig {
+    fn from_request(request: &RemoteControlEnableRequest, enabled: bool) -> Result<Self, String> {
+        let config = Self {
+            schema_version: REMOTE_CONTROL_CONFIG_SCHEMA_VERSION,
+            enabled,
+            selected_addresses: request.selected_addresses.clone(),
+            port: request.port,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn from_runtime(config: &RemoteControlConfig, enabled: bool) -> Self {
+        Self {
+            schema_version: REMOTE_CONTROL_CONFIG_SCHEMA_VERSION,
+            enabled,
+            selected_addresses: config
+                .selected_addresses()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            port: config.port(),
+        }
+    }
+
+    fn enable_request(&self) -> RemoteControlEnableRequest {
+        RemoteControlEnableRequest {
+            selected_addresses: self.selected_addresses.clone(),
+            port: self.port,
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.schema_version != REMOTE_CONTROL_CONFIG_SCHEMA_VERSION {
+            return Err("remote-control config schema version is unsupported".to_owned());
+        }
+        let addresses = self
+            .selected_addresses
+            .iter()
+            .map(|value| value.parse::<IpAddr>().map_err(|_| "invalid bind address"))
+            .collect::<Result<Vec<_>, _>>()?;
+        RemoteControlConfig::try_new(true, addresses, self.port)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl RemoteControlState {
     pub fn shutdown(&self) {
-        if let Err(error) = self.disable() {
+        let _operation = match self.operation.lock() {
+            Ok(operation) => operation,
+            Err(_) => {
+                eprintln!("[remote-control] shutdown lock unavailable");
+                return;
+            }
+        };
+        // Application shutdown stops the live listener but deliberately keeps
+        // the persisted `enabled` preference so the next launch can restore it.
+        if let Err(error) = self.disable_inner() {
             eprintln!("[remote-control] shutdown failed: {error}");
         }
+    }
+
+    pub fn restore_on_startup<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "remote control operation unavailable".to_owned())?;
+        let result = self.restore_on_startup_inner(app);
+        if let Err(error) = &result {
+            self.record_error(error.clone());
+        }
+        result
+    }
+
+    fn restore_on_startup_inner<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
+        let path = remote_control_config_path(app)?;
+        let Some(saved) = load_remote_control_config(&path)? else {
+            return Ok(());
+        };
+        saved.validate()?;
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| "remote control state unavailable".to_owned())?;
+            inner.saved_config = Some(saved.clone());
+            inner.last_error = None;
+        }
+        if saved.enabled {
+            self.enable_inner(app, saved.enable_request())?;
+        }
+        Ok(())
     }
 
     fn enable<R: Runtime>(
@@ -104,7 +207,21 @@ impl RemoteControlState {
             .operation
             .lock()
             .map_err(|_| "remote control operation unavailable")?;
-        self.enable_inner(app, request)
+        let saved = PersistedRemoteControlConfig::from_request(&request, true)?;
+        self.enable_inner(app, request)?;
+        if let Err(error) = persist_remote_control_config(app, &saved) {
+            let rollback_error = self.disable_inner().err();
+            let error = match rollback_error {
+                Some(rollback) => {
+                    format!("{error}; remote-control startup rollback also failed: {rollback}")
+                }
+                None => error,
+            };
+            self.record_error(error.clone());
+            return Err(error);
+        }
+        self.set_saved_config(saved)?;
+        self.status()
     }
 
     fn enable_inner<R: Runtime>(
@@ -142,12 +259,41 @@ impl RemoteControlState {
         self.status()
     }
 
-    fn disable(&self) -> Result<(), String> {
+    fn disable<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
         let _operation = self
             .operation
             .lock()
             .map_err(|_| "remote control operation unavailable")?;
-        self.disable_inner()
+        let saved = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| "remote control state unavailable".to_owned())?;
+            if let Some(running) = &inner.running {
+                Some(PersistedRemoteControlConfig::from_runtime(
+                    &running.config,
+                    false,
+                ))
+            } else {
+                inner.saved_config.clone().map(|mut saved| {
+                    saved.enabled = false;
+                    saved
+                })
+            }
+        };
+        if let Some(saved) = saved {
+            if let Err(error) = persist_remote_control_config(app, &saved) {
+                self.record_error(error.clone());
+                return Err(error);
+            }
+            self.set_saved_config(saved)?;
+        }
+        if let Err(error) = self.disable_inner() {
+            self.record_error(error.clone());
+            return Err(error);
+        }
+        self.clear_error()?;
+        Ok(())
     }
 
     fn disable_inner(&self) -> Result<(), String> {
@@ -196,11 +342,14 @@ impl RemoteControlState {
             .lock()
             .map_err(|_| "remote control state unavailable")?;
         let Some(running) = &inner.running else {
+            let saved = inner.saved_config.as_ref();
             return Ok(RemoteControlStatus {
-                enabled: false,
+                enabled: saved.is_some_and(|config| config.enabled),
                 degraded: false,
-                selected_addresses: Vec::new(),
-                port: None,
+                selected_addresses: saved
+                    .map(|config| config.selected_addresses.clone())
+                    .unwrap_or_default(),
+                port: saved.map(|config| config.port),
                 identity_epoch: None,
                 projects: Vec::new(),
                 paired_devices: Vec::new(),
@@ -222,6 +371,45 @@ impl RemoteControlState {
             paired_devices: running.gateway.devices.list_devices().unwrap_or_default(),
             last_error: inner.last_error.clone(),
         })
+    }
+
+    fn set_saved_config(&self, saved: PersistedRemoteControlConfig) -> Result<(), String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "remote control state unavailable".to_owned())?;
+        inner.saved_config = Some(saved);
+        Ok(())
+    }
+
+    fn record_error(&self, error: String) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.last_error = Some(error);
+        }
+    }
+
+    fn clear_error(&self) -> Result<(), String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "remote control state unavailable".to_owned())?;
+        inner.last_error = None;
+        Ok(())
+    }
+
+    pub(crate) fn sync_selected_project(&self, root: &Path) -> Result<(), String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "remote control operation unavailable".to_owned())?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "remote control state unavailable".to_owned())?;
+        let Some(running) = &inner.running else {
+            return Ok(());
+        };
+        sync_gateway_project(running, root).map(|_| ())
     }
 
     fn reset_identity<R: Runtime>(
@@ -264,10 +452,7 @@ impl RemoteControlState {
         // material so no connection can continue under the old certificate.
         self.disable_inner()?;
 
-        let app_data_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|error| format!("cannot resolve remote-control data directory: {error}"))?;
+        let app_data_dir = remote_control_data_dir(app)?;
         let identity_store =
             JsonIdentityStore::new(app_data_dir.join("remote-control-identity.json"));
         let current = load_identity(&identity_store).map_err(|error| error.to_string())?;
@@ -336,10 +521,7 @@ fn build_running_gateway<R: Runtime>(
     app: &AppHandle<R>,
     config: RemoteControlConfig,
 ) -> Result<RunningGateway, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("cannot resolve remote-control data directory: {error}"))?;
+    let app_data_dir = remote_control_data_dir(app)?;
     fs::create_dir_all(&app_data_dir)
         .map_err(|error| format!("cannot create remote-control data directory: {error}"))?;
     let identity_store = JsonIdentityStore::new(app_data_dir.join("remote-control-identity.json"));
@@ -376,9 +558,22 @@ fn build_running_gateway<R: Runtime>(
         gateway.supervisor.stop();
         return Err("remote-control identity and authorization epochs differ".to_owned());
     }
-    if let Err(error) = restore_projects(&project_store_path, &gateway) {
-        gateway.supervisor.stop();
-        return Err(error);
+    match crate::projects::last_project()? {
+        Some(root) => {
+            let root = Path::new(&root);
+            if let Err(error) = restore_selected_project(&project_store_path, &gateway, root)
+                .and_then(|_| sync_gateway_project_parts(&project_store_path, &gateway, root))
+            {
+                gateway.supervisor.stop();
+                return Err(error);
+            }
+        }
+        None => {
+            if let Err(error) = persist_project_records(&project_store_path, &[]) {
+                gateway.supervisor.stop();
+                return Err(error);
+            }
+        }
     }
     let tls = build_server_config(&identity).map_err(|error| error.to_string())?;
     let router = build_router(gateway.clone());
@@ -422,6 +617,39 @@ fn build_running_gateway<R: Runtime>(
             Err("remote-control gateway startup timed out".to_owned())
         }
     }
+}
+
+fn remote_control_data_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    #[cfg(any(test, feature = "remote-control-smoke"))]
+    if let Some(path) = std::env::var_os("RAGCODE_REMOTE_CONTROL_DATA_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+    app.path()
+        .app_data_dir()
+        .map_err(|error| format!("cannot resolve remote-control data directory: {error}"))
+}
+
+fn remote_control_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    Ok(remote_control_data_dir(app)?.join(REMOTE_CONTROL_CONFIG_FILE))
+}
+
+fn load_remote_control_config(path: &Path) -> Result<Option<PersistedRemoteControlConfig>, String> {
+    DurableJsonStore::new(path)
+        .with_max_bytes(REMOTE_CONTROL_CONFIG_MAX_BYTES)
+        .load()
+        .map_err(|error| format!("remote-control config unavailable: {error}"))
+}
+
+fn persist_remote_control_config<R: Runtime>(
+    app: &AppHandle<R>,
+    config: &PersistedRemoteControlConfig,
+) -> Result<(), String> {
+    config.validate()?;
+    let path = remote_control_config_path(app)?;
+    DurableJsonStore::new(path)
+        .with_max_bytes(REMOTE_CONTROL_CONFIG_MAX_BYTES)
+        .store(config)
+        .map_err(|error| format!("cannot persist remote-control config: {error}"))
 }
 
 fn run_gateway_thread(
@@ -560,10 +788,11 @@ pub fn remote_control_enable<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn remote_control_disable(
+pub fn remote_control_disable<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, RemoteControlState>,
 ) -> Result<RemoteControlStatus, String> {
-    state.disable()?;
+    state.disable(&app)?;
     state.status()
 }
 
@@ -594,7 +823,7 @@ pub fn remote_control_pairing_payload(
                 port: address.port(),
             })
             .collect::<Vec<_>>();
-        let mut payload = running
+        running
             .gateway
             .pairing
             .issue_ticket(
@@ -604,70 +833,11 @@ pub fn remote_control_pairing_payload(
                 },
                 endpoints,
                 running.gateway.identity.certificate_pin().clone(),
+                wake_on_lan,
                 now_ms(),
             )
-            .map_err(pairing_error)?;
-        payload.wake_on_lan = wake_on_lan;
-        Ok(payload)
+            .map_err(pairing_error)
     })
-}
-
-#[tauri::command]
-pub fn remote_control_allow_project(
-    state: State<'_, RemoteControlState>,
-    path: String,
-    name: Option<String>,
-) -> Result<RemoteProjectSummary, String> {
-    state.with_running(|running| {
-        let summary = {
-            let gateway = &running.gateway;
-            if let Some(name) = name {
-                gateway
-                    .projects
-                    .allow_project(Path::new(&path), name, None)
-                    .map_err(|error| error.to_string())?
-            } else {
-                gateway
-                    .projects
-                    .allow_project_with_derived_name(Path::new(&path))
-                    .map_err(|error| error.to_string())?
-            }
-        };
-        if let Err(error) = persist_projects(&running.project_store_path, &running.gateway) {
-            let _ = running.gateway.projects.remove_project(&summary.project_id);
-            return Err(error);
-        }
-        Ok(summary)
-    })
-}
-
-#[tauri::command]
-pub fn remote_control_remove_project(
-    state: State<'_, RemoteControlState>,
-    project_id: String,
-) -> Result<RemoteControlStatus, String> {
-    state.with_running(|running| {
-        let previous = running
-            .gateway
-            .projects
-            .persisted_projects()
-            .into_iter()
-            .find(|project| project.project_id == project_id);
-        running.gateway.supervisor.cancel_project(&project_id);
-        running
-            .gateway
-            .projects
-            .remove_project_and_revoke(&project_id, &running.gateway.tasks)
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = persist_projects(&running.project_store_path, &running.gateway) {
-            if let Some(previous) = previous {
-                let _ = running.gateway.projects.restore_project(previous);
-            }
-            return Err(error);
-        }
-        Ok(())
-    })?;
-    state.status()
 }
 
 #[tauri::command]
@@ -715,7 +885,11 @@ struct PersistedProjectFile {
     last_opened_at: Option<String>,
 }
 
-fn restore_projects(path: &Path, gateway: &GatewayState) -> Result<(), String> {
+fn restore_selected_project(
+    path: &Path,
+    gateway: &GatewayState,
+    selected_root: &Path,
+) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
@@ -723,7 +897,14 @@ fn restore_projects(path: &Path, gateway: &GatewayState) -> Result<(), String> {
         fs::read(path).map_err(|error| format!("cannot read project allowlist: {error}"))?;
     let projects: Vec<PersistedProjectFile> =
         serde_json::from_slice(&bytes).map_err(|_| "project allowlist is corrupt".to_owned())?;
+    let selected_root = canonical_project_root(selected_root).map_err(|error| error.to_string())?;
     for project in projects {
+        let Ok(project_root) = canonical_project_root(&project.root) else {
+            continue;
+        };
+        if project_root != selected_root {
+            continue;
+        }
         gateway
             .projects
             .restore_project(PersistedProject {
@@ -733,15 +914,59 @@ fn restore_projects(path: &Path, gateway: &GatewayState) -> Result<(), String> {
                 last_opened_at: project.last_opened_at,
             })
             .map_err(|error| error.to_string())?;
+        break;
     }
     Ok(())
 }
 
-fn persist_projects(path: &Path, gateway: &GatewayState) -> Result<(), String> {
-    let projects = gateway
+fn sync_gateway_project(
+    running: &RunningGateway,
+    root: &Path,
+) -> Result<RemoteProjectSummary, String> {
+    sync_gateway_project_parts(&running.project_store_path, &running.gateway, root)
+}
+
+fn sync_gateway_project_parts(
+    project_store_path: &Path,
+    gateway: &GatewayState,
+    root: &Path,
+) -> Result<RemoteProjectSummary, String> {
+    let name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("project")
+        .to_owned();
+    let (summary, previous) = gateway
         .projects
-        .persisted_projects()
-        .into_iter()
+        .replace_with_single_project(root, name, None)
+        .map_err(|error| error.to_string())?;
+    let desired = gateway.projects.persisted_projects();
+    if let Err(error) = persist_project_records(project_store_path, &desired) {
+        let rollback = gateway
+            .projects
+            .replace_with_persisted_projects(previous.clone())
+            .map_err(|rollback| rollback.to_string());
+        return match rollback {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!(
+                "{error}; remote project rollback also failed: {rollback}"
+            )),
+        };
+    }
+    for project in previous {
+        if project.project_id == summary.project_id {
+            continue;
+        }
+        gateway.supervisor.cancel_project(&project.project_id);
+        gateway.tasks.revoke_project(&project.project_id);
+    }
+    Ok(summary)
+}
+
+fn persist_project_records(path: &Path, projects: &[PersistedProject]) -> Result<(), String> {
+    let projects = projects
+        .iter()
+        .cloned()
         .map(|project| PersistedProjectFile {
             project_id: project.project_id,
             root: project.root,
@@ -849,7 +1074,8 @@ mod command_smoke {
                 remote_control_enable,
                 remote_control_disable,
                 remote_control_pairing_payload,
-                remote_control_reset_identity
+                remote_control_reset_identity,
+                crate::projects::project_open
             ])
             .build(mock_context(noop_assets()))
             .expect("mock Tauri app should build")
@@ -908,7 +1134,50 @@ mod command_smoke {
     }
 
     pub fn run() {
+        if std::env::var_os("RAGCODE_REMOTE_CONTROL_DATA_DIR").is_none() {
+            let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("src-tauri should have a workspace parent");
+            std::env::set_var(
+                "RAGCODE_REMOTE_CONTROL_DATA_DIR",
+                workspace
+                    .join(".tmp")
+                    .join("remote-control")
+                    .join(format!("command-smoke-data-{}", std::process::id())),
+            );
+        }
+        let data_dir = PathBuf::from(
+            std::env::var_os("RAGCODE_REMOTE_CONTROL_DATA_DIR")
+                .expect("remote-control smoke data directory should be configured"),
+        );
+        if std::env::var_os("RAGCODE_DESKTOP_STATE_PATH").is_none() {
+            std::env::set_var("RAGCODE_DESKTOP_STATE_PATH", data_dir.join("desktop.json"));
+        }
+        let project_a = data_dir.join("projects").join("current-project-a");
+        let project_b = data_dir.join("projects").join("current-project-b");
+        fs::create_dir_all(&project_a).expect("first desktop project fixture");
+        fs::create_dir_all(&project_b).expect("second desktop project fixture");
+        let safe_config = PersistedRemoteControlConfig {
+            schema_version: REMOTE_CONTROL_CONFIG_SCHEMA_VERSION,
+            enabled: true,
+            selected_addresses: vec!["192.168.31.199".to_owned()],
+            port: 8443,
+        };
+        assert!(safe_config.validate().is_ok());
+        let mut unsupported = safe_config.clone();
+        unsupported.schema_version += 1;
+        assert!(unsupported.validate().is_err());
+        let mut wildcard = safe_config.clone();
+        wildcard.selected_addresses = vec!["0.0.0.0".to_owned()];
+        assert!(wildcard.validate().is_err());
+        let mut invalid_port = safe_config;
+        invalid_port.port = 0;
+        assert!(invalid_port.validate().is_err());
+
         let app = test_app();
+        app.state::<RemoteControlState>()
+            .restore_on_startup(app.handle())
+            .expect("missing config should keep the gateway disabled");
         let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .expect("mock webview should build");
@@ -917,6 +1186,12 @@ mod command_smoke {
 
         let disabled = invoke(&webview, "remote_control_status", json!({}));
         assert_eq!(disabled["enabled"], false);
+        let opened = invoke(
+            &webview,
+            "project_open",
+            json!({ "path": project_a.to_string_lossy() }),
+        );
+        assert!(opened.as_str().is_some());
 
         let enabled = invoke(
             &webview,
@@ -930,33 +1205,122 @@ mod command_smoke {
         );
         assert_eq!(enabled["enabled"], true);
         assert_eq!(enabled["selectedAddresses"], json!([address.to_string()]));
+        let projects = enabled["projects"]
+            .as_array()
+            .expect("enabled status should include the desktop project");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0]["name"], "current-project-a");
+        let config_path = remote_control_config_path(app.handle()).expect("config path");
+        let saved = load_remote_control_config(&config_path)
+            .expect("saved config should be readable")
+            .expect("enable should persist config");
+        assert!(saved.enabled);
+        assert_eq!(saved.selected_addresses, vec![address.to_string()]);
+        assert_eq!(saved.port, port);
 
         let pairing = invoke(&webview, "remote_control_pairing_payload", json!({}));
         assert!(pairing["pairingId"].as_str().is_some());
         assert!(pairing["secret"].as_str().is_some());
         assert_eq!(pairing["certificatePin"]["algorithm"], "spki-sha256");
-        #[cfg(target_os = "windows")]
-        {
-            let targets = pairing["wakeOnLan"]["targets"]
-                .as_array()
-                .expect("selected Windows adapter should expose Wake-on-LAN metadata");
-            assert!(!targets.is_empty());
-            assert!(targets.iter().all(|target| {
-                target["macAddress"]
-                    .as_str()
-                    .is_some_and(|mac| mac.len() == 17)
-                    && target["broadcastAddress"].as_str().is_some()
-            }));
-        }
+        assert!(pairing.get("wakeOnLan").is_none());
         let first_epoch = enabled["identityEpoch"].as_u64().expect("identity epoch");
 
         let reset = invoke(&webview, "remote_control_reset_identity", json!({}));
         assert_eq!(reset["enabled"], true);
         assert!(reset["identityEpoch"].as_u64().unwrap() > first_epoch);
         assert_eq!(reset["pairedDevices"], json!([]));
+        assert_eq!(reset["projects"].as_array().map(Vec::len), Some(1));
+
+        let opened = invoke(
+            &webview,
+            "project_open",
+            json!({ "path": project_b.to_string_lossy() }),
+        );
+        assert!(opened.as_str().is_some());
+        let switched = invoke(&webview, "remote_control_status", json!({}));
+        let projects = switched["projects"]
+            .as_array()
+            .expect("switched status should include the desktop project");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0]["name"], "current-project-b");
+        let second_project_id = projects[0]["projectId"]
+            .as_str()
+            .expect("current project should have an opaque id")
+            .to_owned();
+
+        // A normal application exit stops only the listener. The durable
+        // preference remains enabled and a fresh state restores it on launch.
+        app.state::<RemoteControlState>().shutdown();
+        let saved = load_remote_control_config(&config_path)
+            .expect("saved config should remain readable")
+            .expect("shutdown must retain config");
+        assert!(saved.enabled);
+        drop(webview);
+        drop(app);
+
+        let app = test_app();
+        app.state::<RemoteControlState>()
+            .restore_on_startup(app.handle())
+            .expect("enabled config should restore the listener");
+        let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("restored mock webview should build");
+        let restored = invoke(&webview, "remote_control_status", json!({}));
+        assert_eq!(restored["enabled"], true);
+        assert_eq!(restored["selectedAddresses"], json!([address.to_string()]));
+        assert_eq!(restored["port"], port);
+        let projects = restored["projects"]
+            .as_array()
+            .expect("restored status should include the desktop project");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0]["name"], "current-project-b");
+        assert_eq!(projects[0]["projectId"], second_project_id);
 
         let disabled = invoke(&webview, "remote_control_disable", json!({}));
         assert_eq!(disabled["enabled"], false);
+        assert_eq!(disabled["selectedAddresses"], json!([address.to_string()]));
+        assert_eq!(disabled["port"], port);
+        let saved = load_remote_control_config(&config_path)
+            .expect("disabled config should be readable")
+            .expect("disable should retain network config");
+        assert!(!saved.enabled);
+        assert_eq!(saved.selected_addresses, vec![address.to_string()]);
+        assert_eq!(saved.port, port);
+
+        drop(webview);
+        drop(app);
+        let app = test_app();
+        app.state::<RemoteControlState>()
+            .restore_on_startup(app.handle())
+            .expect("disabled config should restore without starting a listener");
+        let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("disabled-state mock webview should build");
+        let disabled = invoke(&webview, "remote_control_status", json!({}));
+        assert_eq!(disabled["enabled"], false);
+        assert_eq!(disabled["selectedAddresses"], json!([address.to_string()]));
+        assert_eq!(disabled["port"], port);
+
+        // Corrupt startup state is never overwritten or used to bind a
+        // listener; the diagnostic remains available through status.
+        drop(webview);
+        drop(app);
+        fs::write(&config_path, b"{not-json").expect("corrupt config fixture");
+        let app = test_app();
+        let error = app
+            .state::<RemoteControlState>()
+            .restore_on_startup(app.handle())
+            .expect_err("corrupt config must fail closed");
+        assert!(error.contains("config unavailable"));
+        let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("failure-state mock webview should build");
+        let failed = invoke(&webview, "remote_control_status", json!({}));
+        assert_eq!(failed["enabled"], false);
+        assert!(failed["lastError"]
+            .as_str()
+            .is_some_and(|message| message.contains("config unavailable")));
+        assert_eq!(fs::read(&config_path).unwrap(), b"{not-json");
     }
 }
 

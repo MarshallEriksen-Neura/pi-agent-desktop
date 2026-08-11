@@ -148,40 +148,6 @@ export function usePairedDevices() {
   return { devices, count: devices.length, revokeDevice, revokingId };
 }
 
-/** Authorized-project list + add/remove with a single busy guard. */
-export function useAuthorizedProjects() {
-  const projects = useRemoteControl((s) => s.status?.projects ?? EMPTY);
-  const allow = useRemoteControl((s) => s.allowProject);
-  const remove = useRemoteControl((s) => s.removeProject);
-  const [busy, setBusy] = useState(false);
-
-  const allowProject = useCallback(
-    async (path: string, name?: string) => {
-      setBusy(true);
-      try {
-        return await allow({ path, name });
-      } finally {
-        setBusy(false);
-      }
-    },
-    [allow],
-  );
-
-  const removeProject = useCallback(
-    async (projectId: string) => {
-      setBusy(true);
-      try {
-        return await remove(projectId);
-      } finally {
-        setBusy(false);
-      }
-    },
-    [remove],
-  );
-
-  return { projects, count: projects.length, allowProject, removeProject, busy };
-}
-
 /**
  * Pairing QR lifecycle: payload, countdown, auto-poll for success.
  * The countdown ticks every second from the payload's `expiresAt`.

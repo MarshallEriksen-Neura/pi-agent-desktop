@@ -243,6 +243,96 @@ impl ProjectCatalog {
             .collect()
     }
 
+    /// Atomically replaces the remotely visible catalog with one desktop-selected
+    /// project. The previous records are returned so a composition-layer
+    /// persistence failure can restore the exact opaque ids without exposing two
+    /// projects at the same time.
+    pub fn replace_with_single_project(
+        &self,
+        root: impl AsRef<Path>,
+        name: impl Into<String>,
+        last_opened_at: Option<String>,
+    ) -> Result<(RemoteProjectSummary, Vec<PersistedProject>), ProjectCatalogError> {
+        let canonical_root = canonical_project_root(root.as_ref()).map_err(map_path_error)?;
+        let name = name.into();
+        validate_project_name(&name)?;
+        let mut projects = self.lock_projects();
+        let previous = persisted_projects_from_records(&projects);
+        let project_id = projects
+            .iter()
+            .find(|(_, existing)| existing.canonical_root == canonical_root)
+            .map(|(project_id, _)| project_id.clone())
+            .or_else(|| {
+                (0..8).find_map(|_| {
+                    let candidate = random_project_id(&self.rng).ok()?;
+                    (!projects.contains_key(&candidate)).then_some(candidate)
+                })
+            })
+            .ok_or(ProjectCatalogError::ProjectIdCollision)?;
+        let summary = RemoteProjectSummary {
+            project_id: project_id.clone(),
+            name,
+            last_opened_at,
+        };
+        projects.clear();
+        projects.insert(
+            project_id.clone(),
+            ProjectRecord {
+                summary: summary.clone(),
+                canonical_root,
+            },
+        );
+        drop(projects);
+        self.lock_cursors()
+            .retain(|_, cursor| cursor.project_id == project_id);
+        Ok((summary, previous))
+    }
+
+    /// Restores a complete trusted snapshot in one map replacement. This is
+    /// used only to roll back a failed desktop-current-project persistence step.
+    pub fn replace_with_persisted_projects(
+        &self,
+        persisted: Vec<PersistedProject>,
+    ) -> Result<(), ProjectCatalogError> {
+        if persisted.len() > self.config.max_projects {
+            return Err(ProjectCatalogError::ProjectLimit);
+        }
+        let mut replacement = HashMap::with_capacity(persisted.len());
+        for project in persisted {
+            if project.project_id.is_empty()
+                || project.project_id.len() > 128
+                || !project.project_id.starts_with("project-")
+                || project.project_id.chars().any(char::is_control)
+            {
+                return Err(ProjectCatalogError::InvalidProjectId);
+            }
+            validate_project_name(&project.name)?;
+            let canonical_root = canonical_project_root(&project.root).map_err(map_path_error)?;
+            if replacement.contains_key(&project.project_id)
+                || replacement
+                    .values()
+                    .any(|existing: &ProjectRecord| existing.canonical_root == canonical_root)
+            {
+                return Err(ProjectCatalogError::ProjectIdCollision);
+            }
+            let summary = RemoteProjectSummary {
+                project_id: project.project_id.clone(),
+                name: project.name,
+                last_opened_at: project.last_opened_at,
+            };
+            replacement.insert(
+                project.project_id,
+                ProjectRecord {
+                    summary,
+                    canonical_root,
+                },
+            );
+        }
+        *self.lock_projects() = replacement;
+        self.lock_cursors().clear();
+        Ok(())
+    }
+
     pub fn restore_project(
         &self,
         persisted: PersistedProject,
@@ -589,6 +679,20 @@ impl ProjectCatalog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+fn persisted_projects_from_records(
+    projects: &HashMap<String, ProjectRecord>,
+) -> Vec<PersistedProject> {
+    projects
+        .values()
+        .map(|record| PersistedProject {
+            project_id: record.summary.project_id.clone(),
+            root: record.canonical_root.clone(),
+            name: record.summary.name.clone(),
+            last_opened_at: record.summary.last_opened_at.clone(),
+        })
+        .collect()
 }
 
 fn sanitize_config(mut config: ProjectCatalogConfig) -> ProjectCatalogConfig {

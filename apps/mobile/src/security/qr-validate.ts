@@ -1,5 +1,4 @@
 import type { PairingQrPayload } from "@pi/remote-control-contracts";
-import { isValidWakeOnLanConfig } from "./wake-on-lan";
 
 /**
  * QR payload validation — extracted from the pairing hook so it is unit-testable
@@ -17,7 +16,6 @@ export type QrValidationCode =
   | "missing_certificatePin"
   | "missing_endpoints"
   | "no_https_endpoint"
-  | "invalid_wake_on_lan"
   | "expired"
   | "unsupported_version";
 
@@ -58,9 +56,6 @@ export function validatePairingPayload(payload: unknown, now: number = Date.now(
   // Version check
   if (p.version !== 1) {
     return { code: "unsupported_version", payload: null };
-  }
-  if (p.wakeOnLan !== undefined && !isValidWakeOnLanConfig(p.wakeOnLan)) {
-    return { code: "invalid_wake_on_lan", payload: null };
   }
   // Expiry check — a past expiresAt means the ticket is stale.
   if (p.expiresAt && new Date(p.expiresAt).getTime() < now) {

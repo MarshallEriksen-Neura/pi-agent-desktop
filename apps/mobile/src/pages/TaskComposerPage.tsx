@@ -1,16 +1,18 @@
 import { memo, useState, useCallback, useMemo } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { motion } from "motion/react";
-import { Send, FileText, AlertCircle, ArrowLeft } from "lucide-react";
+import { Send, FileText, AlertCircle } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { useConnectionStore } from "@/stores/connection.store";
+import { StateView } from "@/components/primitives";
 import {
-  Card,
-  Row,
-  PrimaryButton,
-  StateView,
-} from "@/components/primitives";
+  SectionLabel,
+  MobileCard,
+  MobileRow,
+  BlockButton,
+  DetailHeader,
+} from "@/components/visual";
 import { NetError } from "@/net/errors";
 import type { RemoteTaskExecutionProfile } from "@pi/remote-control-contracts";
 
@@ -53,7 +55,12 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
   const promptBytes = useMemo(() => new Blob([prompt]).size, [prompt]);
   const overLimit = promptBytes > MAX_PROMPT_BYTES;
   const trimmedPrompt = prompt.trim();
-  const canSubmit = isOnline && client !== null && !submitting && !overLimit && trimmedPrompt.length > 0;
+  const canSubmit =
+    isOnline &&
+    client !== null &&
+    !submitting &&
+    !overLimit &&
+    trimmedPrompt.length > 0;
 
   const handleSubmit = useCallback(async () => {
     if (!client || !canSubmit) return;
@@ -73,7 +80,10 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
       if (e instanceof NetError) {
         if (e.kind === "queue_full") {
           setError("queue_full");
-        } else if (e.kind === "project_revoked" || e.kind === "project_unavailable") {
+        } else if (
+          e.kind === "project_revoked" ||
+          e.kind === "project_unavailable"
+        ) {
           setError("project_revoked");
         } else if (e.kind === "invalid_context") {
           setError("invalid_context");
@@ -86,7 +96,15 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
     } finally {
       setSubmitting(false);
     }
-  }, [client, canSubmit, requestId, projectId, trimmedPrompt, contextFiles, navigate]);
+  }, [
+    client,
+    canSubmit,
+    requestId,
+    projectId,
+    trimmedPrompt,
+    contextFiles,
+    navigate,
+  ]);
 
   if (!isOnline) {
     return (
@@ -99,80 +117,43 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
   }
 
   return (
-    <div style={{ padding: "16px", overflowY: "auto", height: "100%", paddingBottom: 100 }}>
-      {/* Header with back */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-        <motion.button
-          whileTap={{ scale: 0.92 }}
-          onClick={() => navigate(-1)}
-          style={{
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            color: "var(--color-accent)",
-            display: "grid",
-            placeItems: "center",
-            padding: 4,
-          }}
-        >
-          <ArrowLeft size={22} />
-        </motion.button>
-        <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.02em", margin: 0 }}>
-          {t("compose.title")}
-        </h1>
-      </div>
+    <div className="page-scroll" style={{ paddingBottom: 100 }}>
+      <DetailHeader title={t("compose.title")} onBack={() => navigate(-1)} />
 
       {/* Context files summary */}
       {contextFiles.length > 0 && (
         <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-tertiary)", padding: "0 4px 8px" }}>
+          <SectionLabel>
             {t("compose.contextFiles", { count: contextFiles.length })}
-          </div>
-          <Card>
+          </SectionLabel>
+          <MobileCard>
             {contextFiles.slice(0, 5).map((f) => (
-              <Row key={f} icon={<FileText size={16} />} title={f.split("/").pop() ?? f} detail={f} />
+              <MobileRow
+                key={f}
+                icon={<FileText size={16} />}
+                title={f.split("/").pop() ?? f}
+                detail={f}
+              />
             ))}
             {contextFiles.length > 5 && (
-              <div style={{ padding: "8px 16px", fontSize: 13, color: "var(--color-text-tertiary)" }}>
+              <div className="more-hint">
                 {t("compose.moreFiles", { count: contextFiles.length - 5 })}
               </div>
             )}
-          </Card>
+          </MobileCard>
         </div>
       )}
 
       {/* Prompt input */}
-      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-tertiary)", padding: "0 4px 8px" }}>
-        {t("compose.prompt")}
-      </div>
+      <SectionLabel>{t("compose.prompt")}</SectionLabel>
       <textarea
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
         rows={6}
         placeholder={t("compose.promptPlaceholder")}
-        style={{
-          width: "100%",
-          minHeight: 140,
-          padding: 14,
-          border: `1px solid ${overLimit ? "var(--color-danger)" : "var(--color-separator)"}`,
-          borderRadius: "var(--radius-lg)",
-          background: "var(--color-bg-elevated)",
-          color: "var(--color-text-primary)",
-          fontSize: 16,
-          fontFamily: "var(--font-ui)",
-          resize: "none",
-          outline: "none",
-        }}
+        className={`prompt-input${overLimit ? " over" : ""}`}
       />
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          fontSize: 12,
-          color: overLimit ? "var(--color-danger)" : "var(--color-text-tertiary)",
-          padding: "4px 4px 0",
-        }}
-      >
+      <div className={`prompt-meter${overLimit ? " over" : ""}`}>
         <span>{overLimit ? t("compose.tooLong") : ""}</span>
         <span>
           {promptBytes} / {MAX_PROMPT_BYTES} B
@@ -184,15 +165,7 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          style={{
-            marginTop: 16,
-            padding: "12px 14px",
-            borderRadius: "var(--radius-md)",
-            background: "var(--color-danger)",
-            color: "#fff",
-            fontSize: 14,
-            fontWeight: 500,
-          }}
+          className="error-banner"
         >
           {error === "queue_full"
             ? t("compose.queueFull")
@@ -205,21 +178,20 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
       )}
 
       {/* Submit bar */}
-      <div
-        style={{
-          position: "fixed",
-          bottom: "calc(var(--safe-bottom) + 16px)",
-          left: 16,
-          right: 16,
-          zIndex: 50,
-        }}
-      >
-        <PrimaryButton onClick={handleSubmit} disabled={!canSubmit}>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      <div className="sticky-bar">
+        <BlockButton variant="primary" onClick={handleSubmit} disabled={!canSubmit}>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              justifyContent: "center",
+            }}
+          >
             {submitting ? t("common.loading") : t("compose.submit")}
             <Send size={16} />
           </span>
-        </PrimaryButton>
+        </BlockButton>
       </div>
     </div>
   );

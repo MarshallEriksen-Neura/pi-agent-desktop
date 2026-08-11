@@ -9,10 +9,10 @@ import { useT } from "@/lib/i18n";
 /**
  * Identity-reset confirmation (design §D-6). This is the single most
  * destructive remote-control action: it invalidates every paired device,
- * drops all authorized projects, and rotates the desktop identity +
- * certificate. To prevent muscle-memory clicks, the confirm button stays
- * disabled until the user types the localized confirm phrase verbatim
- * (design §11 — typed confirmation for irreversible actions).
+ * rotates the desktop identity and certificate, and forces re-pairing. To
+ * prevent muscle-memory clicks, the confirm button stays disabled until the
+ * user types the localized confirm phrase verbatim (design §11 — typed
+ * confirmation for irreversible actions).
  *
  * The dialog is controlled by the parent: `open` + `onClose` + `onConfirm`
  * (which returns a promise so the spinner is visible until the backend

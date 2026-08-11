@@ -117,7 +117,7 @@ export function MessageBubble({ m, animateIn = true }: MessageBubbleProps) {
               fontSize: 13,
               lineHeight: 1.5,
               whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
+              overflowWrap: "anywhere",
             }}
           >
             {m.text}
@@ -175,8 +175,12 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
       ))}
 
       {(m.text || m.streaming) && (
-        <div style={{ position: "relative", display: "flex", gap: 4, alignItems: "flex-start" }}>
-          <div className="sd-bridge" style={{ flex: 1, padding: "2px 2px 0" }}>
+        <div style={{ position: "relative", display: "flex", gap: 4, alignItems: "flex-start", minWidth: 0 }}>
+          {/* minWidth:0 — a flex item defaults to min-width:auto, which refuses to
+              shrink under its content's intrinsic width. Without it a long URL or
+              code line sets the row's width and the reply runs past the panel
+              edge instead of wrapping to it. */}
+          <div className="sd-bridge" style={{ flex: 1, minWidth: 0, padding: "2px 2px 0" }}>
             <StreamdownRenderer text={m.text} animating={m.streaming} />
           </div>
 
@@ -343,7 +347,7 @@ function ErrorNotice({ m }: { m: ChatMessage }) {
     lineHeight: 1.5,
     color: "var(--text-secondary)",
     whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
+    overflowWrap: "anywhere",
   };
 
   return (
@@ -365,7 +369,7 @@ function ErrorNotice({ m }: { m: ChatMessage }) {
           style={{ color: "var(--danger)", flexShrink: 0, marginTop: 3 }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ wordBreak: "break-word" }}>{summary}</div>
+          <div style={{ overflowWrap: "anywhere" }}>{summary}</div>
 
           {inlineDetail && <div style={{ ...detailStyle, marginTop: 3 }}>{detail}</div>}
 

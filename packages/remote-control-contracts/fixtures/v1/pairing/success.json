@@ -2,5 +2,13 @@
   "version": 1,
   "deviceId": "mobile-01",
   "token": "device-token-never-logged",
-  "serverTime": "2026-08-07T11:59:00Z"
+  "serverTime": "2026-08-07T11:59:00Z",
+  "wakeOnLan": {
+    "targets": [
+      {
+        "macAddress": "02:42:AC:11:00:02",
+        "broadcastAddress": "192.168.31.255"
+      }
+    ]
+  }
 }

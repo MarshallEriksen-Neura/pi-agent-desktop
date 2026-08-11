@@ -17,6 +17,7 @@ use pi_remote_control::pairing::PairingManager;
 use pi_remote_control::protocol::{
     CertificatePin, PairingDesktopIdentity, PairingDeviceMetadata, PairingDevicePlatform,
     PairingFailureCode, PairingRequest, PairingSuccess, RemoteEndpoint, RemoteEndpointScheme,
+    WakeOnLanConfig, WakeOnLanTarget,
 };
 use rcgen::KeyPair;
 use rustls::pki_types::PrivatePkcs8KeyDer;
@@ -46,9 +47,57 @@ fn issue(manager: &PairingManager, now_ms: u64) -> pi_remote_control::protocol::
                 algorithm: "spki-sha256".to_owned(),
                 value: "a".repeat(64),
             },
+            None,
             now_ms,
         )
         .expect("issue ticket")
+}
+
+#[test]
+fn wake_on_lan_metadata_is_returned_after_redeem_not_embedded_in_qr() {
+    let devices = Arc::new(DeviceRegistry::new());
+    let manager = PairingManager::new(devices);
+    let wake_on_lan = WakeOnLanConfig {
+        targets: vec![WakeOnLanTarget {
+            mac_address: "02:42:AC:11:00:02".to_owned(),
+            broadcast_address: "192.168.1.255".to_owned(),
+        }],
+    };
+    let payload = manager
+        .issue_ticket(
+            PairingDesktopIdentity {
+                desktop_id: "desktop-1".to_owned(),
+                display_name: "Test desktop".to_owned(),
+            },
+            vec![RemoteEndpoint {
+                scheme: RemoteEndpointScheme::Https,
+                host: "192.168.1.20".to_owned(),
+                port: 44321,
+            }],
+            CertificatePin {
+                algorithm: "spki-sha256".to_owned(),
+                value: "a".repeat(64),
+            },
+            Some(wake_on_lan.clone()),
+            1_000,
+        )
+        .expect("issue ticket");
+
+    let qr_json = serde_json::to_value(&payload).expect("serialize QR payload");
+    assert!(qr_json.get("wakeOnLan").is_none());
+
+    let success = manager
+        .redeem(
+            PairingRequest {
+                version: 1,
+                pairing_id: payload.pairing_id,
+                secret: payload.secret,
+                device: device_metadata(),
+            },
+            1_001,
+        )
+        .expect("redeem ticket");
+    assert_eq!(success.wake_on_lan, Some(wake_on_lan));
 }
 
 #[test]
@@ -411,6 +460,7 @@ fn credential_bearing_debug_output_is_redacted() {
         device_id: "device-opaque".to_owned(),
         token: "token-secret".to_owned(),
         server_time: "2026-01-01T00:00:00.000Z".to_owned(),
+        wake_on_lan: None,
     };
     let success_debug = format!("{success:?}");
     assert!(!success_debug.contains(&success.token));

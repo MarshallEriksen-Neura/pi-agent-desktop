@@ -12,11 +12,6 @@ function makeValidPayload(overrides: Partial<PairingQrPayload> = {}): PairingQrP
     secret: "secret-xyz",
     certificatePin: { algorithm: "spki-sha256", value: "0".repeat(64) },
     expiresAt: new Date(Date.now() + 120_000).toISOString(),
-    wakeOnLan: {
-      targets: [
-        { macAddress: "02:42:AC:11:00:02", broadcastAddress: "192.168.1.255" },
-      ],
-    },
     ...overrides,
   };
 }
@@ -77,33 +72,6 @@ describe("QR payload validation", () => {
     expect(result.code).toBe("unsupported_version");
   });
 
-  it("rejects malformed or public-network wake targets", () => {
-    const malformed = validatePairingPayload(
-      makeValidPayload({
-        wakeOnLan: {
-          targets: [
-            { macAddress: "not-a-mac", broadcastAddress: "192.168.1.255" },
-          ],
-        },
-      }),
-    );
-    expect(malformed.code).toBe("invalid_wake_on_lan");
-
-    const publicTarget = validatePairingPayload(
-      makeValidPayload({
-        wakeOnLan: {
-          targets: [
-            { macAddress: "02:42:AC:11:00:02", broadcastAddress: "8.8.8.8" },
-          ],
-        },
-      }),
-    );
-    expect(publicTarget.code).toBe("invalid_wake_on_lan");
-  });
-
-  it("keeps wake-on-LAN optional for older desktops", () => {
-    expect(validatePairingPayload(makeValidPayload({ wakeOnLan: undefined })).code).toBe("ok");
-  });
 });
 
 describe("QR envelope parsing (parseAndValidateQr)", () => {

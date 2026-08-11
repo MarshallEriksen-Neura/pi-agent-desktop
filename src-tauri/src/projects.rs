@@ -16,6 +16,10 @@ const MAX_RECENTS: usize = 10;
 static DESKTOP_STATE_IO: Mutex<()> = Mutex::new(());
 
 fn desktop_json_path() -> Result<PathBuf, String> {
+    #[cfg(any(test, feature = "remote-control-smoke"))]
+    if let Some(path) = std::env::var_os("RAGCODE_DESKTOP_STATE_PATH") {
+        return Ok(PathBuf::from(path));
+    }
     Ok(crate::pi_settings::home_dir()?
         .join(".pi")
         .join("agent")
@@ -169,13 +173,19 @@ pub fn project_resolve(path: String) -> Result<String, String> {
 /// Persist a project only after the frontend has activated its Pi/session
 /// runtime. Revalidation closes the gap between resolve and commit.
 #[tauri::command]
-pub fn project_open(path: String) -> Result<String, String> {
+pub fn project_open(
+    path: String,
+    remote_control: tauri::State<'_, crate::remote_control::RemoteControlState>,
+) -> Result<String, String> {
     let root = project_resolve(path)?;
     let canon = PathBuf::from(&root);
     let name = canon
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| root.clone());
+    let previous = read_state()?;
+    let previous_last_project = previous.last_project;
+    let previous_recent_projects = previous.recent_projects;
 
     update_state(|state| {
         state.last_project = Some(root.clone());
@@ -190,6 +200,18 @@ pub fn project_open(path: String) -> Result<String, String> {
         );
         state.recent_projects.truncate(MAX_RECENTS);
     })?;
+    if let Err(error) = remote_control.sync_selected_project(Path::new(&root)) {
+        let rollback = update_state(|state| {
+            state.last_project = previous_last_project;
+            state.recent_projects = previous_recent_projects;
+        });
+        return match rollback {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!(
+                "{error}; desktop project rollback also failed: {rollback}"
+            )),
+        };
+    }
     Ok(root)
 }
 

@@ -1,26 +1,36 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { tokenVault } from "@/security/token-vault";
+import {
+  buildStoredConnection,
+  tokenVault,
+  wrapSecureStorage,
+} from "@/security/token-vault";
 import type { StoredConnection } from "@/security/token-vault";
 
-// Mock the secure storage layer so tests don't touch the real keystore.
-function createMockStorage() {
-  const store = new Map<string, string>();
-  return {
-    get: vi.fn(async ({ key }: { key: string }) => {
-      const value = store.get(key);
-      return value ? { value } : null;
-    }),
-    set: vi.fn(async ({ key, value }: { key: string; value: string }) => {
-      store.set(key, value);
-      return { value };
-    }),
-    remove: vi.fn(async ({ key }: { key: string }) => {
-      const value = store.get(key);
-      store.delete(key);
-      return value ? { value } : null;
-    }),
-  };
-}
+describe("Token Vault — native secure-storage adapter", () => {
+  it("passes scalar keys and values to the Capacitor v8 plugin API", async () => {
+    const native = {
+      getItem: vi.fn(async (_key: string) => "stored-value"),
+      setItem: vi.fn(async (_key: string, _value: string) => undefined),
+      removeItem: vi.fn(async (_key: string) => undefined),
+    };
+    const storage = wrapSecureStorage(native);
+
+    await expect(storage.get({ key: "pi.remote.connection" })).resolves.toEqual({
+      value: "stored-value",
+    });
+    await expect(
+      storage.set({ key: "pi.remote.connection", value: "serialized" }),
+    ).resolves.toEqual({ value: "serialized" });
+    await expect(storage.remove({ key: "pi.remote.connection" })).resolves.toBeNull();
+
+    expect(native.getItem).toHaveBeenCalledWith("pi.remote.connection");
+    expect(native.setItem).toHaveBeenCalledWith(
+      "pi.remote.connection",
+      "serialized",
+    );
+    expect(native.removeItem).toHaveBeenCalledWith("pi.remote.connection");
+  });
+});
 
 describe("Token Vault — storage corruption handling", () => {
   beforeEach(() => {
@@ -76,5 +86,61 @@ describe("StoredConnection type guard", () => {
     expect(valid.token).toBe("token-abc");
     expect(valid.endpoints).toHaveLength(1);
     expect(valid.certificatePin.value).toHaveLength(64);
+  });
+
+  it("stores wake-on-LAN metadata from the authenticated pairing response", () => {
+    const stored = buildStoredConnection(
+      {
+        protocol: "pi.remote-control",
+        version: 1,
+        desktop: { desktopId: "desktop-1", displayName: "My Pi" },
+        endpoints: [{ scheme: "https", host: "192.168.1.10", port: 8443 }],
+        pairingId: "pairing-1",
+        secret: "secret",
+        certificatePin: { algorithm: "spki-sha256", value: "0".repeat(64) },
+        expiresAt: "2026-08-11T12:00:00Z",
+      },
+      {
+        version: 1,
+        deviceId: "device-1",
+        token: "token-abc",
+        serverTime: "2026-08-11T11:59:00Z",
+        wakeOnLan: {
+          targets: [
+            { macAddress: "02:42:AC:11:00:02", broadcastAddress: "192.168.1.255" },
+          ],
+        },
+      },
+    );
+
+    expect(stored.wakeOnLan?.targets).toHaveLength(1);
+  });
+
+  it("drops malformed wake-on-LAN metadata from the pairing response", () => {
+    const stored = buildStoredConnection(
+      {
+        protocol: "pi.remote-control",
+        version: 1,
+        desktop: { desktopId: "desktop-1", displayName: "My Pi" },
+        endpoints: [{ scheme: "https", host: "192.168.1.10", port: 8443 }],
+        pairingId: "pairing-1",
+        secret: "secret",
+        certificatePin: { algorithm: "spki-sha256", value: "0".repeat(64) },
+        expiresAt: "2026-08-11T12:00:00Z",
+      },
+      {
+        version: 1,
+        deviceId: "device-1",
+        token: "token-abc",
+        serverTime: "2026-08-11T11:59:00Z",
+        wakeOnLan: {
+          targets: [
+            { macAddress: "not-a-mac", broadcastAddress: "8.8.8.8" },
+          ],
+        },
+      },
+    );
+
+    expect(stored.wakeOnLan).toBeUndefined();
   });
 });

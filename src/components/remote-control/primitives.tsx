@@ -6,16 +6,12 @@ import {
   Smartphone,
   Tablet,
   Monitor,
-  Folder,
   Trash2,
   ShieldCheck,
   TriangleAlert,
   Wifi,
 } from "lucide-react";
-import type {
-  PairingDeviceMetadata,
-  RemoteProjectSummary,
-} from "@pi/remote-control-contracts";
+import type { PairingDeviceMetadata } from "@pi/remote-control-contracts";
 import { GroupRow } from "@/components/settings-ui";
 import { useT } from "@/lib/i18n";
 import type { RemoteControlPhase } from "@/lib/remote-control/types";
@@ -140,52 +136,6 @@ export const DeviceRow = memo(function DeviceRow({
           whileTap={{ scale: 0.9 }}
           aria-label={t("settings.remoteControl.deviceRevoke")}
           onClick={() => onRevoke(device.deviceId)}
-          style={{
-            display: "grid",
-            placeItems: "center",
-            width: 28,
-            height: 28,
-            border: "none",
-            borderRadius: 7,
-            background: "transparent",
-            color: "var(--danger)",
-            cursor: "pointer",
-            flexShrink: 0,
-          }}
-        >
-          <Trash2 size={14} />
-        </motion.button>
-      }
-    />
-  );
-});
-
-/* ------------------------------------------------------------------ */
-/* ProjectRow — authorized project entry with remove                   */
-/* ------------------------------------------------------------------ */
-
-export const ProjectRow = memo(function ProjectRow({
-  project,
-  first = false,
-  onRemove,
-}: {
-  project: RemoteProjectSummary;
-  first?: boolean;
-  onRemove: (projectId: string) => void;
-}) {
-  const t = useT();
-  return (
-    <GroupRow
-      first={first}
-      icon={<Folder size={15} />}
-      iconBg="var(--gray-1)"
-      title={project.name}
-      detail={shortId(project.projectId)}
-      trailing={
-        <motion.button
-          whileTap={{ scale: 0.9 }}
-          aria-label={t("settings.remoteControl.projectRemove")}
-          onClick={() => onRemove(project.projectId)}
           style={{
             display: "grid",
             placeItems: "center",
