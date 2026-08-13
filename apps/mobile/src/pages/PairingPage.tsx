@@ -1,4 +1,4 @@
-import { memo, useState, useCallback } from "react";
+import { memo, useState, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -13,8 +13,11 @@ import {
 import type { PairingQrPayload } from "@pi/remote-control-contracts";
 import { t } from "@/i18n";
 import { usePairing, type PairingState } from "@/hooks/usePairing";
+import { useQrScanner, type ScannerPhase } from "@/hooks/useQrScanner";
 import { BlockButton } from "@/components/visual";
 import { ScanFrame } from "@/components/task-visual";
+import { parseAndValidateQr } from "@/security/qr-validate";
+import { shouldEnablePairingScanner } from "@/security/pairing-flow";
 
 /**
  * PairingPage (P-2) — the 8-state pairing flow.
@@ -113,8 +116,20 @@ const TRANSITIONAL: PairingState[] = ["scanning", "validating", "connecting"];
 
 export const PairingPage = memo(function PairingPage() {
   const navigate = useNavigate();
-  const { state, pair, reset } = usePairing();
+  const { state, pair, reset, setState, errorDetail } = usePairing();
   const [manualJson, setManualJson] = useState("");
+
+  const scanner = useQrScanner({
+    enabled: shouldEnablePairingScanner(state),
+    onResult: (rawValue) => {
+      const result = parseAndValidateQr(rawValue);
+      if (result.code !== "ok" || !result.payload) {
+        setState(result.code === "expired" ? "expired" : "unsupported");
+        return;
+      }
+      void pair(result.payload);
+    },
+  });
 
   const handlePair = useCallback(
     (json: string) => {
@@ -132,11 +147,15 @@ export const PairingPage = memo(function PairingPage() {
   const isTransitional = TRANSITIONAL.includes(state);
   const isError = !isTransitional && state !== "idle" && state !== "success";
   const isSuccess = state === "success";
+  const scannerMessage = scannerStatusMessage(scanner.phase);
 
-  // Auto-redirect on success (after the success animation plays)
-  if (isSuccess) {
-    setTimeout(() => navigate("/home", { replace: true }), 1500);
-  }
+  // Auto-redirect on success (after the success animation plays). This must be
+  // an effect: scheduling work during render can repeat on every re-render.
+  useEffect(() => {
+    if (!isSuccess) return;
+    const timer = window.setTimeout(() => navigate("/home", { replace: true }), 1500);
+    return () => window.clearTimeout(timer);
+  }, [isSuccess, navigate]);
 
   return (
     <div
@@ -238,8 +257,56 @@ export const PairingPage = memo(function PairingPage() {
           </p>
         </div>
 
+        {state === "idle" && scannerMessage && (
+          <div style={{ textAlign: "center", maxWidth: 300 }}>
+            <p
+              style={{
+                fontSize: 13,
+                color:
+                  scanner.phase === "error" ||
+                  scanner.phase === "denied" ||
+                  scanner.phase === "permanently_denied"
+                    ? "var(--color-danger)"
+                    : "var(--color-text-tertiary)",
+                lineHeight: 1.5,
+                margin: 0,
+              }}
+            >
+              {scannerMessage}
+            </p>
+            {scanner.error && (
+              <p
+                style={{
+                  fontSize: 11,
+                  color: "var(--color-text-tertiary)",
+                  lineHeight: 1.4,
+                  margin: "5px 0 0",
+                  wordBreak: "break-word",
+                }}
+              >
+                {scanner.error}
+              </p>
+            )}
+          </div>
+        )}
+
+        {state === "idle" && scanner.phase === "permanently_denied" && (
+          <BlockButton variant="outline" onClick={() => void scanner.openSettings()}>
+            {t("scanner.openSettings")}
+          </BlockButton>
+        )}
+
+        {state === "idle" &&
+          (scanner.phase === "denied" ||
+            scanner.phase === "error" ||
+            scanner.phase === "unsupported") && (
+            <BlockButton variant="outline" onClick={() => void scanner.requestPermission()}>
+              {t("scanner.retry")}
+            </BlockButton>
+          )}
+
         {/* Manual entry (dev preview) */}
-        {state === "idle" && (
+        {state === "idle" && !scanner.isNative && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -294,6 +361,20 @@ export const PairingPage = memo(function PairingPage() {
             animate={{ opacity: 1, y: 0 }}
             style={{ width: "100%", maxWidth: 260 }}
           >
+            {errorDetail && (
+              <p
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  color: "var(--color-text-tertiary)",
+                  textAlign: "center",
+                  wordBreak: "break-word",
+                  margin: "0 0 10px",
+                }}
+              >
+                {errorDetail}
+              </p>
+            )}
             <BlockButton variant="outline" onClick={reset}>
               <span
                 style={{
@@ -313,3 +394,20 @@ export const PairingPage = memo(function PairingPage() {
     </div>
   );
 });
+
+function scannerStatusMessage(phase: ScannerPhase): string | null {
+  switch (phase) {
+    case "requesting_permission":
+      return t("scanner.requestingPermission");
+    case "denied":
+      return t("scanner.deniedDetail");
+    case "permanently_denied":
+      return t("scanner.permanentlyDeniedDetail");
+    case "error":
+      return t("scanner.errorDetail");
+    case "unsupported":
+      return t("scanner.unsupportedDetail");
+    default:
+      return null;
+  }
+}

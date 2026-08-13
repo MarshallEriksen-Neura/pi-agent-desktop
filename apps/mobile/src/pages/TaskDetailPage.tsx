@@ -1,8 +1,6 @@
-import { memo, useEffect, useState, useCallback } from "react";
+import { memo, useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { motion } from "motion/react";
 import {
-  FileText,
   AlertCircle,
   MessageSquare,
   Loader2,
@@ -10,40 +8,73 @@ import {
   XCircle,
   Clock,
   Ban,
+  FileText,
+  Send,
+  Archive,
 } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { useConnectionStore } from "@/stores/connection.store";
 import { useTaskStore } from "@/stores/task-store";
 import { useInteractionStore } from "@/stores/interaction-store";
+import { usePromptCache } from "@/stores/prompt-cache";
+import { useConversationStore } from "@/stores/conversation-store";
+import { useExpiryCountdown } from "@/hooks/useExpiryCountdown";
 import { StateView } from "@/components/primitives";
+import { BlockButton, DetailHeader, MobileCard } from "@/components/visual";
+import { Timeline, TimelineNode, OptionRow, PromptBox } from "@/components/task-visual";
 import {
-  SectionLabel,
-  MobileCard,
-  MobileRow,
-  BlockButton,
-  DetailHeader,
-} from "@/components/visual";
-import {
-  Timeline,
-  TimelineNode,
-  OutputStream,
-  StreamBlock,
-} from "@/components/task-visual";
+  MessageBubble,
+  ThinkingDots,
+  ToolCard,
+  WarningBlock,
+  SystemNote,
+  InlineInteraction,
+  ResolvedInteraction,
+} from "@/components/chat";
+import { buildTranscript } from "@/lib/transcript";
 import { NetError } from "@/net/errors";
-import type { RemoteTaskSnapshot, RemoteTaskState } from "@pi/remote-control-contracts";
+import type {
+  RemoteTaskSnapshot,
+  RemoteTaskState,
+  RemoteInteractionSnapshot,
+} from "@pi/remote-control-contracts";
 import { REMOTE_TASK_TERMINAL_STATES } from "@pi/remote-control-contracts";
 
 /**
- * TaskDetailPage — single task view. Streams output from the task-store (fed
- * by the WSS event stream), shows the status timeline, context files, error
- * details, and a cancel action for non-terminal tasks.
+ * TaskDetailPage — the task rendered as a readable conversation.
  *
- * If the task is awaiting_input, a prominent banner links to the
- * InteractionsPage (design §6: awaiting_input must have a clear entry point).
+ * Layout follows iOS "content first": a glass header, the status as a hero
+ * (large glyph + label, no card chrome), the lifecycle timeline sitting directly
+ * on the background, then the transcript. Only a divider separates regions —
+ * nesting cards inside cards (the previous design) buried the content.
+ *
+ * The transcript is built by {@link buildTranscript}, which merges consecutive
+ * stdout deltas into single assistant messages. Pending interactions render
+ * inline so the user answers with the surrounding context visible instead of
+ * being sent to a separate page.
+ *
+ * There is deliberately no message input: the gateway accepts exactly one prompt
+ * per task (`run_worker` sends it once), so a text field here would be a control
+ * that does nothing. Follow-up input happens through interactions.
  */
 export const TaskDetailPage = memo(function TaskDetailPage() {
   const { taskId = "" } = useParams();
+  const v2Available = useConversationStore((s) => s.v2Available);
+  const probeCapabilities = useConversationStore((s) => s.probeCapabilities);
+
+  useEffect(() => {
+    void probeCapabilities();
+  }, [probeCapabilities]);
+
+  if (v2Available === true) {
+    return <ConversationDetail conversationId={taskId} />;
+  }
+
+  return <LegacyTaskDetail taskId={taskId} />;
+});
+
+const LegacyTaskDetail = memo(function LegacyTaskDetail({ taskId }: { taskId: string }) {
   const navigate = useNavigate();
   const { isOnline } = useConnection();
   const client = useConnectionStore((s) => s.client);
@@ -53,6 +84,7 @@ export const TaskDetailPage = memo(function TaskDetailPage() {
   const fetchTask = useTaskStore((s) => s.fetchTask);
   const clearOutput = useTaskStore((s) => s.clearOutput);
   const interactions = useInteractionStore((s) => s.interactions);
+  const cachedPrompt = usePromptCache((s) => s.prompts[taskId] ?? null);
 
   const [localSnapshot, setLocalSnapshot] = useState<RemoteTaskSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,10 +92,18 @@ export const TaskDetailPage = memo(function TaskDetailPage() {
   const [cancelling, setCancelling] = useState(false);
 
   // Prefer the store's task (live); fall back to a local fetch result.
-  const storeTask = tasks.find((t) => t.taskId === taskId);
+  const storeTask = tasks.find((task) => task.taskId === taskId);
   const task = storeTask ?? localSnapshot;
-  const pendingInteractions = Object.values(interactions).filter(
-    (ix) => ix.taskId === taskId && ix.status === "pending",
+
+  const taskInteractions = useMemo(
+    () => Object.values(interactions).filter((ix) => ix.taskId === taskId),
+    [interactions, taskId],
+  );
+  const fragments = output[taskId] ?? [];
+
+  const transcript = useMemo(
+    () => buildTranscript(cachedPrompt, fragments, taskInteractions),
+    [cachedPrompt, fragments, taskInteractions],
   );
 
   const load = useCallback(async () => {
@@ -118,7 +158,14 @@ export const TaskDetailPage = memo(function TaskDetailPage() {
   }
 
   if (loading && !task) {
-    return <TaskDetailSkeleton onBack={() => navigate(-1)} />;
+    return (
+      <div className="page-scroll">
+        <DetailHeader title={t("detail.pageTitle")} onBack={() => navigate(-1)} />
+        <div style={{ display: "grid", placeItems: "center", padding: 40 }}>
+          <Loader2 size={24} className="pi-spin" style={{ color: "var(--color-accent)" }} />
+        </div>
+      </div>
+    );
   }
 
   if (error && !task) {
@@ -143,64 +190,56 @@ export const TaskDetailPage = memo(function TaskDetailPage() {
 
   const isTerminal = REMOTE_TASK_TERMINAL_STATES.includes(task.state);
   const isAwaitingInput = task.state === "awaiting_input";
-  const fragments = output[taskId] ?? [];
+  const visual = STATE_VISUAL[task.state];
+  // Thinking dots only while the task is genuinely working with nothing to show.
+  const showThinking = !isTerminal && !isAwaitingInput && transcript.length === 0;
 
   return (
-    <div className="page-scroll" style={{ paddingBottom: 80 }}>
-      <DetailHeader title={t("detail.pageTitle")} onBack={() => navigate(-1)} />
-
-      {/* Status banner */}
-      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-        <MobileCard style={{ marginBottom: 16 }}>
-          <div className="status-banner">
-            {stateIcon(task.state)}
-            <span className="sb-label">{t(`tasks.state.${task.state}`)}</span>
-          </div>
-          <div className="detail-meta">
-            <span>
-              <b>{t("detail.taskId")}</b> {task.taskId.slice(0, 12)}
-            </span>
-          </div>
-        </MobileCard>
-      </motion.div>
-
-      {/* Awaiting input banner */}
-      {isAwaitingInput && pendingInteractions.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.96 }}
-          animate={{ opacity: 1, scale: 1 }}
-          style={{ marginBottom: 16 }}
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Glass header floats over the transcript */}
+      <div className="detail-head-glass">
+        <button
+          className="back"
+          onClick={() => navigate(-1)}
+          aria-label={t("common.back")}
         >
-          <MobileCard style={{ background: "var(--color-accent-muted)" }}>
-            <MobileRow
-              icon={<MessageSquare size={16} />}
-              title={t("interaction.awaitingInput")}
-              detail={t("interaction.pendingBannerDetail")}
-              trailing={
-                <span style={{ color: "var(--color-accent)", fontWeight: 600 }}>
-                  {t("interaction.respond")}
-                </span>
-              }
-              onClick={() => navigate("/interactions")}
-            />
-          </MobileCard>
-        </motion.div>
-      )}
+          ‹
+        </button>
+        <span className="dh">{cachedPrompt ?? t("detail.pageTitle")}</span>
+      </div>
 
-      {/* Timeline */}
-      <SectionLabel>{t("detail.timeline")}</SectionLabel>
-      <MobileCard style={{ marginBottom: 16 }}>
+      <div style={{ flex: 1, overflowY: "auto", paddingBottom: 24 }}>
+        {/* Status as hero — no card chrome */}
+        <div className="status-hero">
+          <div
+            className="sicon"
+            style={{
+              background: `color-mix(in srgb, ${visual.color} 16%, transparent)`,
+              color: visual.color,
+            }}
+          >
+            {visual.icon}
+          </div>
+          <div className="stitle" style={{ color: visual.color }}>
+            {t(`tasks.state.${task.state}`)}
+          </div>
+          <div className="ssub">{describeTask(task)}</div>
+        </div>
+
+        {/* Lifecycle timeline, directly on the background */}
         <Timeline>
           <TimelineNode
             label={t("detail.stateCreated")}
             time={formatTime(task.createdAt)}
             dot="done"
           />
-          <TimelineNode
-            label={t("detail.stateStarted")}
-            time={task.startedAt ? formatTime(task.startedAt) : undefined}
-            dot={task.startedAt ? "done" : "live"}
-          />
+          {task.startedAt && (
+            <TimelineNode
+              label={t("detail.stateStarted")}
+              time={formatTime(task.startedAt)}
+              dot="done"
+            />
+          )}
           <TimelineNode
             label={
               isTerminal ? t(`tasks.state.${task.state}`) : t("detail.stateRunning")
@@ -209,94 +248,207 @@ export const TaskDetailPage = memo(function TaskDetailPage() {
             dot={isTerminal ? "done" : isAwaitingInput ? "await" : "live"}
           />
         </Timeline>
-      </MobileCard>
 
-      {/* Context files */}
-      {task.contextFiles.length > 0 && (
-        <>
-          <SectionLabel>{t("detail.contextFiles")}</SectionLabel>
-          <MobileCard style={{ marginBottom: 16 }}>
-            {task.contextFiles.map((f) => (
-              <MobileRow
-                key={f.relativePath}
-                icon={<FileText size={16} />}
-                title={f.relativePath.split("/").pop() ?? f.relativePath}
-                detail={f.relativePath}
-              />
-            ))}
-          </MobileCard>
-        </>
-      )}
-
-      {/* Error details */}
-      {task.error && (
-        <>
-          <SectionLabel>{t("detail.error")}</SectionLabel>
-          <MobileCard style={{ marginBottom: 16, borderColor: "var(--color-danger)" }}>
-            <div
-              style={{
-                fontSize: 14,
-                fontWeight: 600,
-                color: "var(--color-danger)",
-                marginBottom: 4,
-              }}
-            >
-              {task.error.code}
-            </div>
-            <div
-              style={{
-                fontSize: 14,
-                color: "var(--color-text-secondary)",
-                lineHeight: 1.4,
-              }}
-            >
-              {task.error.message}
-            </div>
-            {task.error.retryable && (
+        {/* Error detail, when the gateway reported one */}
+        {task.error && (
+          <div style={{ padding: "4px 16px 8px" }}>
+            <MobileCard style={{ borderColor: "var(--color-danger)", padding: 12 }}>
               <div
                 style={{
                   fontSize: 13,
-                  color: "var(--color-text-tertiary)",
-                  marginTop: 8,
+                  fontWeight: 600,
+                  color: "var(--color-danger)",
+                  fontFamily: "var(--font-mono)",
                 }}
               >
-                {t("detail.retryable")}
+                {task.error.code}
               </div>
-            )}
-          </MobileCard>
-        </>
-      )}
+              <div
+                style={{
+                  fontSize: 14,
+                  color: "var(--color-text-secondary)",
+                  lineHeight: 1.45,
+                  marginTop: 4,
+                }}
+              >
+                {task.error.message}
+              </div>
+              {task.error.retryable && (
+                <div
+                  style={{
+                    fontSize: 12.5,
+                    color: "var(--color-text-tertiary)",
+                    marginTop: 6,
+                  }}
+                >
+                  {t("detail.retryable")}
+                </div>
+              )}
+            </MobileCard>
+          </div>
+        )}
 
-      {/* Output */}
-      <SectionLabel>{t("detail.output")}</SectionLabel>
-      {fragments.length === 0 ? (
-        <MobileCard>
-          <div className="hint">{t("detail.noOutput")}</div>
-        </MobileCard>
-      ) : (
-        <OutputStream>
-          {fragments.map((frag, i) => (
-            <StreamBlock key={i} stream={frag.stream}>
-              {frag.fragment}
-            </StreamBlock>
-          ))}
-        </OutputStream>
-      )}
+        <div className="divider-label">{t("detail.output")}</div>
 
-      {/* Cancel bar */}
-      {!isTerminal && (
-        <div className="sticky-bar">
-          <BlockButton variant="outline" onClick={handleCancel} disabled={cancelling}>
-            <span
+        {/* The conversation */}
+        <TranscriptView
+          entries={transcript}
+          showThinking={showThinking}
+          hasPrompt={cachedPrompt !== null}
+          contextCount={task.contextFiles.length}
+        />
+
+        {/* Context files — collapsed by default; large but rarely needed */}
+        {task.contextFiles.length > 0 && (
+          <details style={{ padding: "8px 16px 0" }}>
+            <summary
               style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                justifyContent: "center",
+                fontSize: 12.5,
+                color: "var(--color-text-tertiary)",
+                cursor: "pointer",
+                listStyle: "none",
+                padding: "6px 0",
               }}
             >
-              <Ban size={16} />
-              {cancelling ? t("common.loading") : t("detail.cancel")}
+              {t("detail.contextFiles")} · {task.contextFiles.length}
+            </summary>
+            <MobileCard style={{ marginTop: 6 }}>
+              {task.contextFiles.map((file) => (
+                <div key={file.relativePath} className="mrow" style={{ cursor: "default" }}>
+                  <span className="mic" style={{ background: "var(--color-gray-1)" }}>
+                    <FileText size={15} />
+                  </span>
+                  <div className="mb">
+                    <div className="mt">
+                      {file.relativePath.split("/").pop() ?? file.relativePath}
+                    </div>
+                    <div className="md">{file.relativePath}</div>
+                  </div>
+                </div>
+              ))}
+            </MobileCard>
+          </details>
+        )}
+
+        {/* Cancel, with the consequence stated */}
+        {!isTerminal && (
+          <div className="cancel-zone">
+            <BlockButton variant="outline" onClick={handleCancel} disabled={cancelling}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  justifyContent: "center",
+                  color: "var(--color-danger)",
+                }}
+              >
+                <Ban size={16} />
+                {cancelling ? t("common.loading") : t("detail.cancel")}
+              </span>
+            </BlockButton>
+            <div className="cancel-hint">{t("detail.cancelHint")}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+const ConversationDetail = memo(function ConversationDetail({ conversationId }: { conversationId: string }) {
+  const navigate = useNavigate();
+  const { isOnline } = useConnection();
+  const open = useConversationStore((s) => s.open);
+  const openConversation = useConversationStore((s) => s.openConversation);
+  const appendTurn = useConversationStore((s) => s.appendTurn);
+  const cancelTurn = useConversationStore((s) => s.cancelTurn);
+  const archiveConversation = useConversationStore((s) => s.archiveConversation);
+  const error = useConversationStore((s) => s.error);
+  const [prompt, setPrompt] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    void openConversation(conversationId);
+    return () => {
+      useConversationStore.getState().closeConversation();
+    };
+  }, [conversationId, openConversation]);
+
+  const snapshot = open?.snapshot.conversationId === conversationId ? open.snapshot : null;
+  const messages = open?.snapshot.conversationId === conversationId ? open.messages : [];
+  const activeTurn = snapshot?.activeTurn;
+  const submit = useCallback(async () => {
+    const text = prompt.trim();
+    if (!text || submitting) return;
+    setSubmitting(true);
+    try {
+      const accepted = await appendTurn(conversationId, {
+        requestId: generateRequestId(),
+        prompt: text,
+      });
+      if (accepted) setPrompt("");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [appendTurn, conversationId, prompt, submitting]);
+
+  if (!isOnline && !snapshot) {
+    return <StateView icon={<AlertCircle size={28} style={{ color: "var(--color-text-tertiary)" }} />} title={t("error.offline")} detail={t("error.offlineDetail")} />;
+  }
+  if (!snapshot) {
+    return <div className="page-scroll"><DetailHeader title={t("detail.pageTitle")} onBack={() => navigate(-1)} /><FullScreenLoading error={error} /></div>;
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div className="detail-head-glass">
+        <button className="back" onClick={() => navigate(-1)} aria-label={t("common.back")}>‹</button>
+        <span className="dh">{snapshot.title || t("detail.pageTitle")}</span>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", paddingBottom: 24 }}>
+        <div className="status-hero">
+          <div className="sicon" style={{ color: activeTurn ? "var(--color-accent)" : "var(--color-success)" }}>
+            {activeTurn ? <Loader2 size={24} className="pi-spin" /> : <CheckCircle2 size={24} />}
+          </div>
+          <div className="stitle">{snapshot.status}</div>
+          <div className="ssub">{snapshot.turnCount} · {snapshot.messageCount}</div>
+        </div>
+        <div className="divider-label">{t("detail.output")}</div>
+        <div className="transcript">
+          {messages.length === 0 && <div className="hint">{t("chat.noActivity")}</div>}
+          {messages.map((message) => (
+            <MessageBubble key={message.messageId} role={message.role === "user" ? "user" : "assistant"} text={message.text} time={formatClock(message.createdAt)} />
+          ))}
+          {snapshot.pendingInteraction && <SystemNote text={snapshot.pendingInteraction.prompt} />}
+          {activeTurn && <ThinkingDots />}
+        </div>
+        {activeTurn && (
+          <div className="cancel-zone">
+            <BlockButton variant="outline" onClick={() => void cancelTurn(activeTurn.turnId, generateRequestId())}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-danger)" }}><Ban size={16} />{t("detail.cancel")}</span>
+            </BlockButton>
+          </div>
+        )}
+      </div>
+      {snapshot.status !== "archived" && snapshot.status !== "unavailable" && (
+        <div className="sticky-bar" style={{ display: "flex", gap: 8 }}>
+          <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={2} className="prompt-input" placeholder={t("compose.promptPlaceholder")} style={{ minHeight: 48, flex: 1 }} />
+          <BlockButton variant="primary" onClick={() => void submit()} disabled={submitting || prompt.trim().length === 0}><Send size={16} /></BlockButton>
+        </div>
+      )}
+      {snapshot.status !== "archived" && (
+        <div className="cancel-zone">
+          <BlockButton
+            variant="outline"
+            onClick={() => {
+              if (window.confirm(t("detail.archiveConfirm"))) {
+                void archiveConversation(conversationId, generateRequestId());
+              }
+            }}
+          >
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <Archive size={16} />
+              {t("detail.archive")}
             </span>
           </BlockButton>
         </div>
@@ -305,44 +457,268 @@ export const TaskDetailPage = memo(function TaskDetailPage() {
   );
 });
 
-// ----------------------------------------------------------------
-// Sub-components
-// ----------------------------------------------------------------
-
-function TaskDetailSkeleton({ onBack }: { onBack: () => void }) {
-  return (
-    <div className="page-scroll">
-      <DetailHeader title={t("detail.pageTitle")} onBack={onBack} />
-      <Loader2 size={24} className="pi-spin" style={{ color: "var(--color-accent)" }} />
-    </div>
-  );
+function FullScreenLoading({ error }: { error: string | null }) {
+  return <StateView icon={<Loader2 size={24} className="pi-spin" />} title={error ? t("error.unknown") : t("common.loading")} detail={error ?? undefined} />;
 }
 
-function stateIcon(state: RemoteTaskState): React.ReactNode {
-  const common = { size: 20 };
-  switch (state) {
-    case "queued":
-    case "starting":
-      return <Clock {...common} style={{ color: "var(--color-text-secondary)" }} />;
-    case "running":
-      return (
-        <Loader2 {...common} className="pi-spin" style={{ color: "var(--color-accent)" }} />
-      );
-    case "awaiting_input":
-      return <MessageSquare {...common} style={{ color: "var(--color-warning)" }} />;
-    case "succeeded":
-      return <CheckCircle2 {...common} style={{ color: "var(--color-success)" }} />;
-    case "failed":
-      return <XCircle {...common} style={{ color: "var(--color-danger)" }} />;
-    case "cancelled":
-      return <XCircle {...common} style={{ color: "var(--color-text-tertiary)" }} />;
+function generateRequestId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
   }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+// ----------------------------------------------------------------
+// Transcript rendering
+// ----------------------------------------------------------------
+
+const TranscriptView = memo(function TranscriptView({
+  entries,
+  showThinking,
+  hasPrompt,
+  contextCount,
+}: {
+  entries: ReturnType<typeof buildTranscript>;
+  showThinking: boolean;
+  hasPrompt: boolean;
+  contextCount: number;
+}) {
+  const endRef = useRef<HTMLDivElement>(null);
+
+  // Follow the stream as new entries arrive.
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [entries.length]);
+
+  if (entries.length === 0 && !showThinking) {
+    return <div className="hint">{t("chat.noActivity")}</div>;
+  }
+
+  return (
+    <div className="transcript">
+      {/* The prompt is cached locally, not returned by the gateway — say so
+          rather than fabricating a user bubble. */}
+      {!hasPrompt && contextCount > 0 && (
+        <SystemNote text={t("chat.contextOnly")} />
+      )}
+
+      {entries.map((entry) => {
+        switch (entry.kind) {
+          case "user":
+            return <MessageBubble key={entry.id} role="user" text={entry.text} />;
+          case "assistant":
+            return (
+              <MessageBubble
+                key={entry.id}
+                role="assistant"
+                text={entry.text}
+                time={formatClock(entry.at)}
+              />
+            );
+          case "tool":
+            return <ToolCard key={entry.id} tool={entry.tool} />;
+          case "warning":
+            return <WarningBlock key={entry.id} text={entry.text} />;
+          case "system":
+            return <SystemNote key={entry.id} text={entry.text} />;
+          case "interaction":
+            return (
+              <InteractionEntry key={entry.id} interaction={entry.interaction} />
+            );
+        }
+      })}
+
+      {showThinking && <ThinkingDots />}
+      <div ref={endRef} />
+    </div>
+  );
+});
+
+/**
+ * One interaction inside the transcript. Pending renders an answerable card;
+ * resolved/expired collapses to a one-line summary so history stays traceable
+ * without eating space.
+ */
+const InteractionEntry = memo(function InteractionEntry({
+  interaction,
+}: {
+  interaction: RemoteInteractionSnapshot;
+}) {
+  const respond = useInteractionStore((s) => s.respond);
+  const isResponding = useInteractionStore((s) =>
+    s.responding.has(interaction.interactionId),
+  );
+  const remaining = useExpiryCountdown(interaction.expiresAt);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
+  if (interaction.status !== "pending") {
+    return (
+      <ResolvedInteraction
+        prompt={interaction.prompt}
+        answer={
+          interaction.status === "expired"
+            ? t("chat.expiredAnswer")
+            : formatAnswer(interaction)
+        }
+        expired={interaction.status === "expired"}
+      />
+    );
+  }
+
+  const expired = remaining === 0;
+  const locked = isResponding || expired;
+
+  return (
+    <InlineInteraction countdown={remaining !== null ? formatRemaining(remaining) : undefined}>
+      <PromptBox>{interaction.prompt}</PromptBox>
+
+      {interaction.kind === "confirm" && (
+        <div className="btns2">
+          <BlockButton
+            variant="success"
+            disabled={locked}
+            onClick={() => void respond(interaction.interactionId, "confirm", true)}
+          >
+            {t("interaction.yes")}
+          </BlockButton>
+          <BlockButton
+            variant="outline"
+            disabled={locked}
+            onClick={() => void respond(interaction.interactionId, "confirm", false)}
+          >
+            {t("interaction.no")}
+          </BlockButton>
+        </div>
+      )}
+
+      {interaction.kind === "select" && (
+        <>
+          {(interaction.options ?? []).map((opt) => (
+            <OptionRow
+              key={opt.value}
+              label={opt.label}
+              selected={selected === opt.value}
+              onClick={() => setSelected(opt.value)}
+              disabled={locked}
+            />
+          ))}
+          <BlockButton
+            variant="success"
+            disabled={locked || selected === null}
+            onClick={() => {
+              if (selected !== null) {
+                void respond(interaction.interactionId, "select", selected);
+              }
+            }}
+          >
+            {t("interaction.submit")}
+          </BlockButton>
+        </>
+      )}
+
+      {interaction.kind === "input" && (
+        <>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            disabled={locked}
+            rows={3}
+            placeholder={t("interaction.inputPlaceholder")}
+            className="prompt-input"
+            style={{ minHeight: 72, fontSize: 15 }}
+          />
+          <BlockButton
+            variant="success"
+            disabled={locked || draft.trim().length === 0}
+            onClick={() =>
+              void respond(interaction.interactionId, "input", draft.trim())
+            }
+          >
+            {t("interaction.submit")}
+          </BlockButton>
+        </>
+      )}
+    </InlineInteraction>
+  );
+});
+
+// ----------------------------------------------------------------
+// Presentation helpers
+// ----------------------------------------------------------------
+
+const STATE_VISUAL: Record<
+  RemoteTaskState,
+  { icon: React.ReactNode; color: string }
+> = {
+  queued: { icon: <Clock size={24} />, color: "var(--color-text-secondary)" },
+  starting: { icon: <Clock size={24} />, color: "var(--color-text-secondary)" },
+  running: {
+    icon: <Loader2 size={24} className="pi-spin" />,
+    color: "var(--color-accent)",
+  },
+  awaiting_input: {
+    icon: <MessageSquare size={24} />,
+    color: "var(--color-status-awaiting)",
+  },
+  succeeded: { icon: <CheckCircle2 size={24} />, color: "var(--color-success)" },
+  failed: { icon: <XCircle size={24} />, color: "var(--color-danger)" },
+  cancelled: { icon: <XCircle size={24} />, color: "var(--color-text-tertiary)" },
+};
+
+/** "已运行 2 分 10 秒 · 3 个上下文文件" — duration plus context count. */
+function describeTask(task: RemoteTaskSnapshot): string {
+  const parts: string[] = [];
+  const start = task.startedAt ?? task.createdAt;
+  const end = task.finishedAt ?? new Date().toISOString();
+  const seconds = Math.max(
+    0,
+    Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 1000),
+  );
+  if (Number.isFinite(seconds)) {
+    parts.push(formatDuration(seconds));
+  }
+  if (task.contextFiles.length > 0) {
+    parts.push(`${task.contextFiles.length} ${t("detail.contextFiles")}`);
+  }
+  return parts.join(" · ");
+}
+
+function formatDuration(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
-  const hh = d.getHours().toString().padStart(2, "0");
-  const mm = d.getMinutes().toString().padStart(2, "0");
-  const ss = d.getSeconds().toString().padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatRemaining(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+}
+
+function formatAnswer(interaction: RemoteInteractionSnapshot): string {
+  const value = interaction.response?.value;
+  if (value === undefined) return t("chat.answered");
+  if (typeof value === "boolean") {
+    return value ? t("interaction.yes") : t("interaction.no");
+  }
+  return String(value);
 }

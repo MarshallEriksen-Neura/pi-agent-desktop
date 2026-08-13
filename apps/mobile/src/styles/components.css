@@ -80,7 +80,65 @@
   animation: pi-tether-shake 0.5s var(--spring-smooth);
 }
 
-/* reduced-motion:流光/脉冲/抖动退化为静态;断口语义保留 */
+/* ------------------------------------------------------------------ */
+/* crashed:非对称断裂 — 手机外壳崩溃,但桌面端仍在跑任务。            */
+/* 与 offline 的区别是语义级的:offline 是「链路中断,两端都不可用」,  */
+/* crashed 是「这一端塌了,那一端还活着」。所以 live 半链保持 online   */
+/* 绿并缓慢呼吸,断口落在手机侧,只有锁与断口用 danger 色。            */
+/* 链路 path 全长约 58 单位,锁节点在 apex(≈中点),故 live 段取 30。  */
+/* ------------------------------------------------------------------ */
+/*
+ * stale:与 crashed 刻意区分——版本过期时链路、证书锁都好着,坏的只是已
+ * 加载的那份 JS。把它画成断裂是在说谎,所以这里链路保持 online 绿流光、
+ * 锁保持绿,只有手机端标成 accent(需要处理的是这一端),全程不出现红色。
+ */
+.tether[data-state="stale"] .link {
+  stroke: var(--color-status-online);
+  stroke-dasharray: 8 6;
+  animation: pi-tether-flow 1.6s linear infinite;
+}
+.tether[data-state="stale"] .phone-glyph {
+  stroke: var(--color-accent);
+}
+.tether[data-state="stale"] .refresh-mark {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.tether[data-state="crashed"] .link {
+  stroke: var(--color-status-online);
+  stroke-dasharray: 30 100;
+  animation: pi-tether-alive 2.4s ease-in-out infinite;
+}
+.tether[data-state="crashed"] .link-dead {
+  fill: none;
+  stroke: var(--color-tether-dim);
+  stroke-width: var(--tether-stroke);
+  stroke-linecap: round;
+  stroke-dasharray: 2 4;
+  opacity: 0.55;
+}
+.tether[data-state="crashed"] .fracture {
+  stroke: var(--color-danger);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  fill: none;
+}
+.tether[data-state="crashed"] .lock {
+  fill: var(--color-danger);
+  animation: pi-tether-shake 0.5s var(--spring-smooth);
+}
+/* 手机端熄灭;桌面端保持正常描边 = 「那一端没事」 */
+.tether[data-state="crashed"] .phone-glyph {
+  stroke: var(--color-tether-dim);
+  opacity: 0.35;
+}
+
+/* reduced-motion:流光/脉冲/抖动退化为静态;断口语义保留。
+ * 状态覆写必须同样带 !important——上面的 `.tether .link` 用了
+ * !important,而 !important 优先于特异性,不加的话断口会被重置成实线,
+ * 断裂语义(本该保留的那部分)反而丢失。 */
 @media (prefers-reduced-motion: reduce) {
   .tether .link {
     animation: none !important;
@@ -90,8 +148,12 @@
   }
   .tether[data-state="offline"] .link,
   .tether[data-state="identity_failed"] .link {
-    stroke-dasharray: 60 14;
-    stroke-dashoffset: -44;
+    stroke-dasharray: 60 14 !important;
+    stroke-dashoffset: -44 !important;
+  }
+  /* crashed:去掉呼吸,但保留「半链存活 + 半链断裂」的静态对比 */
+  .tether[data-state="crashed"] .link {
+    stroke-dasharray: 30 100 !important;
   }
 }
 
@@ -448,9 +510,9 @@
 
 /* ===== countdown ring ===== */
 .cd-ring {
-  width: 74px;
-  height: 74px;
-  margin: 6px auto 10px;
+  width: 64px;
+  height: 64px;
+  margin: 4px auto 10px;
   position: relative;
 }
 .cd-ring svg {
@@ -461,7 +523,7 @@
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 700;
   font-family: var(--font-mono);
   color: var(--color-status-awaiting);
@@ -787,6 +849,529 @@
   font-weight: 500;
 }
 
+/* ------------------------------------------------------------------ */
+/* 首页 — 概览 + 直达。数字是用户关心的状态,不是技术参数。            */
+/* ------------------------------------------------------------------ */
+
+/* Stat 三连:进行中 / 待响应 / 项目数 */
+.stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.stat {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-separator);
+  border-radius: var(--radius-md);
+  padding: 12px 8px;
+  text-align: center;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  min-height: var(--tap-comfort);
+}
+.stat .sv {
+  font-size: 22px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  line-height: 1.1;
+  color: var(--color-text-primary);
+}
+.stat .sl {
+  font-size: 10.5px;
+  color: var(--color-text-tertiary);
+  margin-top: 4px;
+}
+.stat.accent .sv {
+  color: var(--color-accent);
+}
+.stat.awaiting .sv {
+  color: var(--color-status-awaiting);
+}
+
+/* 主 CTA — 新建任务是最高频操作,视觉权重最高 */
+.cta-primary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 15px 18px;
+  margin-bottom: 20px;
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--color-accent);
+  color: #fff;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-ui);
+  box-shadow: 0 8px 20px rgba(10, 132, 255, 0.32);
+}
+.cta-primary .ci {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.18);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.cta-primary .ct {
+  font-size: 15.5px;
+  font-weight: 600;
+}
+.cta-primary .cs {
+  font-size: 12px;
+  opacity: 0.85;
+  margin-top: 1px;
+}
+
+/* awaiting 常驻置顶横幅 — 等待回答的事永远最先看到 */
+.awaiting-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--color-status-awaiting);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(
+    135deg,
+    rgba(94, 92, 230, 0.16),
+    rgba(94, 92, 230, 0.06)
+  );
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-ui);
+  color: var(--color-text-primary);
+}
+.awaiting-banner .ai {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--color-status-awaiting);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.awaiting-banner .at {
+  font-size: 14px;
+  font-weight: 600;
+}
+.awaiting-banner .as {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: 1px;
+}
+
+/* section 头带「全部」链接 */
+.msec-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0 4px 6px;
+}
+.msec-row h4 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+.msec-row .see-all {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-accent);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-family: var(--font-ui);
+}
+
+/* ------------------------------------------------------------------ */
+/* 任务列表 — 可折叠分组,列表永远短                                   */
+/* ------------------------------------------------------------------ */
+.grp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 4px 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  min-height: var(--tap-min);
+}
+.grp-head .gt {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.grp-head .gc {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-elevated);
+  border-radius: 999px;
+  padding: 1px 7px;
+  min-width: 18px;
+  text-align: center;
+}
+.grp-head .gchev {
+  margin-left: auto;
+  color: var(--color-text-tertiary);
+  transition: transform 0.25s var(--spring-smooth);
+}
+.grp-head[aria-expanded="true"] .gchev {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .grp-head .gchev {
+    transition: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 任务详情布局 — 内容优先:玻璃 header + 状态 hero,区块间只用分隔线, */
+/* 不做卡片套卡片(旧设计把正文挤在层层边框中间)。                     */
+/* ------------------------------------------------------------------ */
+
+/* 顶栏悬浮在转录之上 */
+.detail-head-glass {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  backdrop-filter: blur(20px);
+  background: color-mix(in srgb, var(--color-bg-base) 78%, transparent);
+  border-bottom: 1px solid var(--color-separator);
+  flex-shrink: 0;
+}
+.detail-head-glass .back {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--color-accent);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  padding: 0 4px 0 0;
+  min-width: 28px;
+  text-align: left;
+}
+.detail-head-glass .dh {
+  font-size: 15px;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+/* 状态是主角:大图标 + 大字 + 摘要,无卡片 */
+.status-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 22px 16px 18px;
+  text-align: center;
+}
+.status-hero .sicon {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+.status-hero .stitle {
+  font-size: 17px;
+  font-weight: 700;
+}
+.status-hero .ssub {
+  font-size: 12.5px;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* 区块分隔:一条线 + 小标题,替代卡片边框 */
+.divider-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  padding: 14px 20px 4px;
+  border-top: 1px solid var(--color-separator);
+  margin-top: 8px;
+}
+
+/* 取消区:按钮 + 后果说明 */
+.cancel-zone {
+  padding: 14px 16px 8px;
+  text-align: center;
+}
+.cancel-hint {
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------------ */
+/* 对话转录 — 把 gateway 的输出流渲染成可读对话                        */
+/* stdout 连续片段已在 lib/transcript.ts 合并成一条,这里只管视觉。     */
+/* ------------------------------------------------------------------ */
+
+.transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 12px 8px;
+}
+
+/* 气泡组 — user 右对齐 / assistant 左对齐(iMessage 语义) */
+.msg {
+  max-width: 82%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.msg.user {
+  align-self: flex-end;
+}
+.msg.assistant {
+  align-self: flex-start;
+}
+
+.bubble {
+  padding: 10px 13px;
+  border-radius: 18px;
+  font-size: 15px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 尾角收窄做「说话方向」暗示 */
+.msg.user .bubble {
+  background: var(--color-accent);
+  color: #fff;
+  border-bottom-right-radius: 5px;
+}
+.msg.assistant .bubble {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  border-bottom-left-radius: 5px;
+}
+
+.msg-time {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  padding: 0 6px;
+  align-self: flex-end;
+}
+.msg.assistant .msg-time {
+  align-self: flex-start;
+}
+
+/* thinking 三点 — 仅在无输出且任务活跃时出现 */
+.thinking {
+  align-self: flex-start;
+  background: var(--color-bg-elevated);
+  border-radius: 18px;
+  border-bottom-left-radius: 5px;
+  padding: 13px 16px;
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+.thinking i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+  animation: pi-thinking-bounce 1.4s infinite;
+}
+.thinking i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.thinking i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes pi-thinking-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-6px);
+  }
+}
+/* reduced-motion:退化为静态透明度区分,不做位移 */
+@media (prefers-reduced-motion: reduce) {
+  .thinking i {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* 工具卡 — read/edit/bash 各自配色,一眼看清 Pi 动了什么 */
+.toolcard {
+  align-self: flex-start;
+  max-width: 88%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-separator);
+  border-radius: 12px;
+}
+.toolcard.error {
+  border-color: rgba(255, 69, 58, 0.4);
+}
+.toolcard .ticon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.toolcard .tbody {
+  min-width: 0;
+  flex: 1;
+}
+.toolcard .tlabel {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.toolcard .ttarget {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-text-primary);
+  margin-top: 2px;
+  word-break: break-all;
+}
+.toolcard .tstate {
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  margin-top: 3px;
+  color: var(--color-text-tertiary);
+}
+.toolcard .tstate.err {
+  color: var(--color-danger);
+}
+
+/* stderr 警告块 — 独立于正文,不混进气泡 */
+.warnblock {
+  align-self: stretch;
+  background: rgba(255, 69, 58, 0.08);
+  border: 1px solid rgba(255, 69, 58, 0.24);
+  border-radius: 10px;
+  padding: 9px 11px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--color-danger);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 系统提示(meta / 坏 JSON 降级)— 居中细体,弱化存在感 */
+.sysnote {
+  align-self: center;
+  max-width: 90%;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  word-break: break-word;
+}
+
+/* 内嵌交互卡 — 就在对话流里回答,不跳页 */
+.ix-inline {
+  align-self: stretch;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-status-awaiting);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 0 16px rgba(94, 92, 230, 0.18);
+}
+.ix-inline .ixhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ix-inline .ixicon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--color-status-awaiting);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.ix-inline .ixtitle {
+  font-size: 13px;
+  font-weight: 600;
+  flex: 1;
+  color: var(--color-text-primary);
+}
+.ix-inline .ixcd {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-status-awaiting);
+}
+
+/* 已回答后折叠成一行摘要 */
+.ix-resolved {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-separator);
+  border-radius: 12px;
+  opacity: 0.85;
+}
+.ix-resolved .ricon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.ix-resolved .rprompt {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ix-resolved .ranswer {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-top: 1px;
+}
+
 /* ===== modal / confirm dialog ===== */
 .modal-backdrop {
   position: fixed;
@@ -821,4 +1406,182 @@
 }
 .modal-card .btns2 {
   justify-content: center;
+}
+
+/* ------------------------------------------------------------------ */
+/* ===== 崩溃屏 / 路由错误屏(ErrorStateView) =====                    */
+/* 排版分工:mono = 机器口径(错误名、断口标签、堆栈),                */
+/* ui = 人类口径(标题、正文、按钮)。读者一眼能分清谁在说话。         */
+/* ------------------------------------------------------------------ */
+.crashview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  /* safe-area:layer 1 直接挂在 #root 上,拿不到 AppShell 的内边距 */
+  padding: calc(var(--safe-top) + 32px) 24px calc(var(--safe-bottom) + 32px);
+  box-sizing: border-box;
+  text-align: center;
+  /* #root 是 overflow:hidden。小屏 + 展开诊断时内容会超出视口,不自己开滚动
+   * 的话按钮会被裁掉且无法滚到——崩溃屏上够不到操作按钮等于没有兜底。 */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  /* 有余量时居中、超高时顶对齐并可滚。
+   * 不用 `justify-content: safe center`(Chromium 115+),因为 minSdk 24 的
+   * 系统 WebView 可能很旧;auto-margin 空隙件在所有引擎上都成立。 */
+  justify-content: flex-start;
+}
+.crashview::before,
+.crashview::after {
+  content: "";
+  margin: auto;
+}
+
+/* 断口标签 — crashed 下是全屏视觉里唯一的红色文字。
+ * 颜色随 tone 变:只有真的断了才用 danger,否则红色会贬值。 */
+.crashview .fracture-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  margin-top: 14px;
+  color: var(--color-danger);
+}
+.crashview[data-tone="stale"] .fracture-label {
+  color: var(--color-accent);
+}
+.crashview[data-tone="neutral"] .fracture-label {
+  color: var(--color-text-tertiary);
+}
+
+.crashview h1 {
+  font-family: var(--font-ui);
+  font-size: 19px;
+  font-weight: 650;
+  line-height: 1.35;
+  margin: 10px 0 0;
+  color: var(--color-text-primary);
+}
+
+.crashview p {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  margin: 8px 0 0;
+  max-width: 300px;
+}
+
+/* 「桌面端仍在运行」— 这一行是本屏的论点,给它绿点与自己的行 */
+.crashview .desk-alive {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 18px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-status-online) 12%, transparent);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--color-status-online);
+}
+.crashview .desk-alive .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pi-pulse 2s ease-in-out infinite;
+}
+
+/* 诊断井 — 下沉一层,mono,可选展开 */
+.crashview .diag {
+  width: 100%;
+  max-width: 340px;
+  margin-top: 22px;
+  text-align: left;
+}
+.crashview .diag summary {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 2px;
+  /* 44px 触控目标:summary 默认高度不够 */
+  min-height: var(--tap-min);
+  display: flex;
+  align-items: center;
+}
+.crashview .diag summary::-webkit-details-marker {
+  display: none;
+}
+.crashview .diag summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 7px;
+  transition: transform 0.2s var(--spring-smooth);
+}
+.crashview .diag[open] summary::before {
+  transform: rotate(90deg);
+}
+.crashview .diag pre {
+  margin: 4px 0 0;
+  padding: 12px 13px;
+  background: var(--color-bg-sunken);
+  border: 1px solid var(--color-separator);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 168px;
+  overflow: auto;
+  /* 全局 user-select:none 会让长按复制失效,诊断文本必须可选 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+.crashview .diag .copy {
+  margin-top: 8px;
+  min-height: var(--tap-min);
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--color-separator);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.crashview .actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 300px;
+  margin-top: 26px;
+}
+.crashview .actions .btn-block {
+  margin-top: 0;
+  min-height: var(--tap-comfort);
+}
+
+/* 键盘焦点可见 — 崩溃屏也要能用键盘走完 */
+.crashview button:focus-visible,
+.crashview summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* 路由级变体 — 壳还活着,所以是卡片而非全屏惊恐 */
+.crashview.inline {
+  min-height: auto;
+  padding: 40px 24px;
+}
+.crashview.inline h1 {
+  font-size: 17px;
 }

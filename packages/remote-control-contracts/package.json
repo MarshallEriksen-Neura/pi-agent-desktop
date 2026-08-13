@@ -24,6 +24,14 @@
     "./events": {
       "types": "./dist/events.d.ts",
       "default": "./dist/events.js"
+    },
+    "./conversations": {
+      "types": "./dist/conversations.d.ts",
+      "default": "./dist/conversations.js"
+    },
+    "./conversation-events": {
+      "types": "./dist/conversation-events.d.ts",
+      "default": "./dist/conversation-events.js"
     }
   },
   "files": [
@@ -32,7 +40,8 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test:g002": "tsc -p tsconfig.g002-test.json && node --test tests/g002-conversation-reducer.cjs"
   },
   "sideEffects": false,
   "dependencies": {},

@@ -1,0 +1,90 @@
+{
+  "conversation": {
+    "version": 2,
+    "conversationId": "conv_01jz8example000000000000001",
+    "ownerDeviceId": "device_phone_001",
+    "projectId": "project_mobile_demo",
+    "title": "Checkout status",
+    "status": "queued",
+    "createdAt": "2026-08-12T08:00:00.000Z",
+    "updatedAt": "2026-08-12T08:03:00.000Z",
+    "latestTurn": {
+      "turnId": "turn_01jz8example000000000000003",
+      "conversationId": "conv_01jz8example000000000000001",
+      "requestId": "req_append_001",
+      "ownerDeviceId": "device_phone_001",
+      "state": "queued",
+      "createdAt": "2026-08-12T08:03:00.000Z",
+      "updatedAt": "2026-08-12T08:03:00.000Z",
+      "userMessageId": "msg_user_002",
+      "delivery": {
+        "deliveryId": "delivery_002",
+        "conversationId": "conv_01jz8example000000000000001",
+        "turnId": "turn_01jz8example000000000000003",
+        "status": "accepted",
+        "acceptedAt": "2026-08-12T08:03:00.000Z"
+      }
+    },
+    "latestMessage": {
+      "messageId": "msg_user_002",
+      "conversationId": "conv_01jz8example000000000000001",
+      "turnId": "turn_01jz8example000000000000003",
+      "role": "user",
+      "status": "accepted",
+      "text": "Now explain the modified files.",
+      "createdAt": "2026-08-12T08:03:00.000Z",
+      "updatedAt": "2026-08-12T08:03:00.000Z"
+    },
+    "messageCount": 3,
+    "turnCount": 2,
+    "queuedTurnCount": 1,
+    "capabilities": {
+      "conversationV2": true,
+      "piSessionResume": true,
+      "appendTurns": true,
+      "cancelTurn": true,
+      "interactions": true,
+      "messagePaging": true,
+      "eventReplay": true,
+      "maxQueuedTurns": 8,
+      "maxPromptBytes": 32768,
+      "maxContextFiles": 16,
+      "maxPageSize": 100
+    }
+  },
+  "turn": {
+    "turnId": "turn_01jz8example000000000000003",
+    "conversationId": "conv_01jz8example000000000000001",
+    "requestId": "req_append_001",
+    "ownerDeviceId": "device_phone_001",
+    "state": "queued",
+    "createdAt": "2026-08-12T08:03:00.000Z",
+    "updatedAt": "2026-08-12T08:03:00.000Z",
+    "userMessageId": "msg_user_002",
+    "delivery": {
+      "deliveryId": "delivery_002",
+      "conversationId": "conv_01jz8example000000000000001",
+      "turnId": "turn_01jz8example000000000000003",
+      "status": "accepted",
+      "acceptedAt": "2026-08-12T08:03:00.000Z"
+    }
+  },
+  "userMessage": {
+    "messageId": "msg_user_002",
+    "conversationId": "conv_01jz8example000000000000001",
+    "turnId": "turn_01jz8example000000000000003",
+    "role": "user",
+    "status": "accepted",
+    "text": "Now explain the modified files.",
+    "createdAt": "2026-08-12T08:03:00.000Z",
+    "updatedAt": "2026-08-12T08:03:00.000Z"
+  },
+  "delivery": {
+    "deliveryId": "delivery_002",
+    "conversationId": "conv_01jz8example000000000000001",
+    "turnId": "turn_01jz8example000000000000003",
+    "status": "accepted",
+    "acceptedAt": "2026-08-12T08:03:00.000Z"
+  },
+  "duplicate": false
+}

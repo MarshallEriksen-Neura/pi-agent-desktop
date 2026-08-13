@@ -1,0 +1,76 @@
+{
+  "version": 2,
+  "conversationId": "conv_01jz8example000000000000001",
+  "ownerDeviceId": "device_phone_001",
+  "projectId": "project_mobile_demo",
+  "title": "Checkout status",
+  "status": "running",
+  "createdAt": "2026-08-12T08:00:00.000Z",
+  "updatedAt": "2026-08-12T08:02:00.000Z",
+  "activeTurn": {
+    "turnId": "turn_01jz8example000000000000002",
+    "conversationId": "conv_01jz8example000000000000001",
+    "requestId": "req_create_001",
+    "ownerDeviceId": "device_phone_001",
+    "state": "running",
+    "createdAt": "2026-08-12T08:00:00.000Z",
+    "updatedAt": "2026-08-12T08:01:00.000Z",
+    "startedAt": "2026-08-12T08:01:00.000Z",
+    "userMessageId": "msg_user_001",
+    "assistantMessageId": "msg_assistant_001",
+    "delivery": {
+      "deliveryId": "delivery_001",
+      "conversationId": "conv_01jz8example000000000000001",
+      "turnId": "turn_01jz8example000000000000002",
+      "status": "delivered",
+      "acceptedAt": "2026-08-12T08:00:00.000Z",
+      "deliveredAt": "2026-08-12T08:01:00.000Z"
+    }
+  },
+  "latestTurn": {
+    "turnId": "turn_01jz8example000000000000002",
+    "conversationId": "conv_01jz8example000000000000001",
+    "requestId": "req_create_001",
+    "ownerDeviceId": "device_phone_001",
+    "state": "running",
+    "createdAt": "2026-08-12T08:00:00.000Z",
+    "updatedAt": "2026-08-12T08:01:00.000Z",
+    "startedAt": "2026-08-12T08:01:00.000Z",
+    "userMessageId": "msg_user_001",
+    "assistantMessageId": "msg_assistant_001",
+    "delivery": {
+      "deliveryId": "delivery_001",
+      "conversationId": "conv_01jz8example000000000000001",
+      "turnId": "turn_01jz8example000000000000002",
+      "status": "delivered",
+      "acceptedAt": "2026-08-12T08:00:00.000Z",
+      "deliveredAt": "2026-08-12T08:01:00.000Z"
+    }
+  },
+  "latestMessage": {
+    "messageId": "msg_assistant_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "turnId": "turn_01jz8example000000000000002",
+    "role": "assistant",
+    "status": "streaming",
+    "text": "Working through the repository status.",
+    "createdAt": "2026-08-12T08:01:10.000Z",
+    "updatedAt": "2026-08-12T08:02:00.000Z"
+  },
+  "messageCount": 2,
+  "turnCount": 1,
+  "queuedTurnCount": 0,
+  "capabilities": {
+    "conversationV2": true,
+    "piSessionResume": true,
+    "appendTurns": true,
+    "cancelTurn": true,
+    "interactions": true,
+    "messagePaging": true,
+    "eventReplay": true,
+    "maxQueuedTurns": 8,
+    "maxPromptBytes": 32768,
+    "maxContextFiles": 16,
+    "maxPageSize": 100
+  }
+}

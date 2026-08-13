@@ -73,6 +73,13 @@ export const en: Record<string, string> = {
   "home.noTasks": "No tasks",
   "home.noTasksDetail": "Select a project to create a task",
   "home.quickActions": "Quick actions",
+  "home.inProgress": "Active",
+  "home.awaitingYou": "Awaiting",
+  "home.newTask": "New task",
+  "home.newTaskDetail": "Pick a project and files to start Pi working",
+  "home.recentTasks": "Recent tasks",
+  "home.seeAll": "See all",
+  "home.awaitingBanner": "{count} tasks awaiting your reply",
 
   // Tab bar
   "tab.home": "Home",
@@ -159,6 +166,9 @@ export const en: Record<string, string> = {
   "detail.retryable": "This error is retryable",
   "detail.output": "Live output",
   "detail.cancel": "Cancel task",
+  "detail.cancelHint": "Cancelling terminates the task and its child processes. This cannot be undone.",
+  "detail.archive": "Archive conversation",
+  "detail.archiveConfirm": "Archive this conversation?",
   "detail.noOutput": "No output yet",
   "detail.stateCreated": "Created",
   "detail.stateStarted": "Started",
@@ -182,6 +192,21 @@ export const en: Record<string, string> = {
   "interaction.awaitingInput": "Task awaiting input",
   "interaction.respond": "Respond",
 
+  // Chat transcript
+  "chat.thinking": "Pi is thinking",
+  "chat.toolRead": "Read",
+  "chat.toolEdit": "Edit",
+  "chat.toolBash": "Terminal",
+  "chat.toolSearch": "Search",
+  "chat.toolRunning": "Running…",
+  "chat.toolDone": "Done",
+  "chat.toolFailed": "Failed",
+  "chat.piWantsAction": "Pi wants to run an action",
+  "chat.answered": "You answered",
+  "chat.expiredAnswer": "Timed out without a reply",
+  "chat.noActivity": "No output yet",
+  "chat.contextOnly": "(no prompt recorded — showing context only)",
+
   // Errors
   "error.offline": "Network unavailable",
   "error.offlineDetail": "Please check your Wi-Fi or LAN connection.",
@@ -197,4 +222,26 @@ export const en: Record<string, string> = {
   "error.serverErrorDetail": "Please try again later.",
   "error.unknown": "Unknown error",
   "error.unknownDetail": "Please retry. If the problem persists, re-pair.",
+
+  // Crash / route error screens
+  "crash.tetherAlt": "Connection severed at the phone end; desktop still running",
+  "crash.tetherAltStale": "Connection intact; this phone is running an older version",
+  "crash.deskAlive": "Desktop still running",
+  "crash.diagnostics": "Diagnostics",
+  "crash.copy": "Copy details",
+  "crash.reload": "Reload app",
+  "crash.retry": "Try again",
+  "crash.backToTasks": "Back to tasks",
+  "crash.fatalTitle": "This screen stopped responding",
+  "crash.fatalDetail":
+    "The remote control interface failed. Your desktop keeps running and tasks are unaffected — reload to reconnect.",
+  "crash.routeTitle": "This page stopped responding",
+  "crash.routeDetail":
+    "The rest of the app still works. Switch tabs, or reload if this page keeps failing.",
+  "crash.routeNotFoundTitle": "Page not found",
+  "crash.routeNotFoundDetail": "This address doesn't exist. It may have moved or been removed.",
+  "crash.staleChunkName": "app updated",
+  "crash.staleChunkTitle": "Reload to finish updating",
+  "crash.staleChunkDetail":
+    "This screen belongs to an older version and can no longer load. Reloading picks up the new one. Your desktop and tasks are unaffected.",
 };

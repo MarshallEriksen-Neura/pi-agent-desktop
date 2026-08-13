@@ -1,8 +1,10 @@
 use super::auth::authenticate_headers;
 use super::errors::{request_id, GatewayError, GatewayErrorResponse};
+use crate::conversation_runtime::ConversationRuntimeManager;
 use crate::device_store::DeviceRegistry;
 use crate::event_hub::{EventHub, EventHubConfig, EventHubError, EventSubscription};
 use crate::identity::CertificateIdentity;
+use crate::observability::V2Metrics;
 use crate::interaction::{InteractionError, InteractionManager};
 use crate::pairing::PairingManager;
 use crate::project_catalog::{ProjectCatalog, ProjectCatalogError};
@@ -31,7 +33,7 @@ use tower_http::timeout::TimeoutLayer;
 pub const MAX_REST_BODY_BYTES: usize = 64 * 1024;
 pub const REST_TIMEOUT: Duration = Duration::from_secs(10);
 
-struct BoundedJson<T>(T);
+pub(crate) struct BoundedJson<T>(pub(crate) T);
 
 #[axum::async_trait]
 impl<S, T> FromRequest<S> for BoundedJson<T>
@@ -74,6 +76,8 @@ pub struct GatewayState {
     pub interactions: Arc<InteractionManager>,
     pub supervisor: Arc<TaskSupervisor>,
     pub storage: Option<Arc<RemoteStorage>>,
+    pub conversations: Option<Arc<ConversationRuntimeManager>>,
+    pub metrics: Arc<V2Metrics>,
 }
 
 impl GatewayState {
@@ -131,6 +135,8 @@ impl GatewayState {
         let storage = Arc::new(RemoteStorage::open(path)?);
         let recovery_ms = now_ms();
         storage.recover_non_terminal_tasks(recovery_ms, &format_timestamp(recovery_ms))?;
+        let recovered_conversations = storage
+            .recover_non_terminal_turns(recovery_ms, &format_timestamp(recovery_ms))?;
         let cursors = storage.event_cursors()?;
         let stored_tasks = storage.load_tasks()?;
         let stored_idempotency = storage.load_idempotency(recovery_ms)?;
@@ -151,7 +157,7 @@ impl GatewayState {
                 .restore_device(device)
                 .map_err(|_| StorageError::Corrupt)?;
         }
-        Self::build_with_restore(
+        let state = Self::build_with_restore(
             identity,
             devices,
             server_version,
@@ -160,7 +166,11 @@ impl GatewayState {
             cursors,
             stored_tasks,
             stored_idempotency,
-        )
+        )?;
+        state
+            .metrics
+            .inc_host_interrupted_turns(recovered_conversations.len() as u64);
+        Ok(state)
     }
 
     fn build(
@@ -239,7 +249,18 @@ impl GatewayState {
             supervisor,
             storage,
             event_hub,
+            conversations: None,
+            metrics: Arc::new(V2Metrics::default()),
         })
+    }
+
+    /// Wires the conversation runtime. V2 routes stay fail-closed (503)
+    /// until both storage (schema v3) and the runtime (probe-proven
+    /// adapter) are present.
+    pub fn with_conversation_runtime(mut self, manager: Arc<ConversationRuntimeManager>) -> Self {
+        self.metrics = manager.metrics();
+        self.conversations = Some(manager);
+        self
     }
 }
 
@@ -264,6 +285,7 @@ pub fn build_router(state: GatewayState) -> Router {
             post(respond_interaction),
         )
         .route("/api/v1/events", get(events))
+        .merge(super::conversation_routes::v2_router())
         .layer(RequestBodyLimitLayer::new(MAX_REST_BODY_BYTES))
         .layer(TimeoutLayer::new(REST_TIMEOUT))
         .with_state(Arc::new(state))
@@ -751,7 +773,7 @@ fn map_interaction_error(
     gateway_error.with_request_id(request_id)
 }
 
-fn map_connection_error(
+pub(crate) fn map_connection_error(
     error: crate::device_store::DeviceStoreError,
     request_id: Option<String>,
 ) -> GatewayErrorResponse {

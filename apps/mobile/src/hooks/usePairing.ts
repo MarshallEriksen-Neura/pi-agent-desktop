@@ -64,17 +64,21 @@ export function usePairing() {
       } else {
         // Map store errors to pairing states
         const store = useConnectionStore.getState();
-        const err = store.lastError ?? "failed";
+        const err = store.lastErrorKind ?? store.lastError ?? "failed";
         const stateMap: Record<string, PairingState> = {
           invalid_ticket: "expired",
           rate_limited: "rateLimited",
           identity_unavailable: "unreachable",
           pin_mismatch: "pinMismatch",
+          pin_not_registered: "pinMismatch",
           unreachable: "unreachable",
           offline: "unreachable",
+          timeout: "unreachable",
+          server_error: "failed",
+          auth_failed: "expired",
         };
         setState(stateMap[err] ?? "failed");
-        setErrorDetail(err);
+        setErrorDetail(store.lastError ?? err);
       }
     },
     [pairAction, connectAction],

@@ -8,6 +8,9 @@ mod wake_on_lan;
 
 use pi_backend_core::projects::{canonical_project_root, DurableJsonStore};
 use pi_remote_control::config::RemoteControlConfig;
+use pi_remote_control::conversation_runtime::{
+    ConversationRuntimeConfig, ConversationRuntimeManager,
+};
 use pi_remote_control::device_store::DeviceRegistry;
 use pi_remote_control::gateway::{build_router, build_server_config, GatewayServer, GatewayState};
 use pi_remote_control::identity::{
@@ -15,12 +18,14 @@ use pi_remote_control::identity::{
     StoredIdentity,
 };
 use pi_remote_control::pairing::PairingError;
+use pi_remote_control::pi_session::{PiSessionAdapter, PiSessionConfig, PiSessionContext};
 use pi_remote_control::project_catalog::PersistedProject;
 use pi_remote_control::protocol::{
     PairingDesktopIdentity, PairingQrPayload, RemoteEndpoint, RemoteEndpointScheme,
     RemoteProjectSummary, WakeOnLanConfig, WakeOnLanTarget,
 };
 use pi_remote_control::storage::StorageError;
+use pi_remote_control::task_manager::format_timestamp;
 use pi_remote_control::task_runtime::RemoteTaskRuntimeConfig;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -538,6 +543,7 @@ fn build_running_gateway<R: Runtime>(
         .to_os_string();
     let mut runtime_config = RemoteTaskRuntimeConfig::default();
     runtime_config.pi_binary = pi_binary;
+    let conversation_pi_binary = runtime_config.pi_binary.clone();
     let storage_path = app_data_dir.join("remote-control.sqlite3");
     let project_store_path = app_data_dir.join("remote-control-projects.json");
     let devices = Arc::new(DeviceRegistry::new());
@@ -558,9 +564,9 @@ fn build_running_gateway<R: Runtime>(
         gateway.supervisor.stop();
         return Err("remote-control identity and authorization epochs differ".to_owned());
     }
-    match crate::projects::last_project()? {
+    let selected_project_root = crate::projects::last_project()?.map(PathBuf::from);
+    match selected_project_root.as_deref() {
         Some(root) => {
-            let root = Path::new(&root);
             if let Err(error) = restore_selected_project(&project_store_path, &gateway, root)
                 .and_then(|_| sync_gateway_project_parts(&project_store_path, &gateway, root))
             {
@@ -575,6 +581,58 @@ fn build_running_gateway<R: Runtime>(
             }
         }
     }
+
+    // V2 is an additive capability. The legacy gateway remains available when
+    // the installed Pi cannot pass the private-session compatibility probe;
+    // conversation routes stay fail-closed until a verified runtime exists.
+    let conversation_runtime = match (
+        gateway.projects.list_projects().first(),
+        selected_project_root,
+    ) {
+        (Some(project), Some(project_root)) => {
+            let session_config = PiSessionConfig::new(
+                conversation_pi_binary,
+                app_data_dir.join("remote-control-sessions"),
+            );
+            let probe_context = PiSessionContext {
+                owner_device_id: "remote-control-probe".to_owned(),
+                conversation_id: "probe".to_owned(),
+                project_id: project.project_id.clone(),
+                project_root,
+            };
+            match PiSessionAdapter::probe(session_config.clone(), probe_context) {
+                Ok(probe) => match PiSessionAdapter::new(session_config, probe) {
+                    Ok(adapter) => {
+                        if let Some(storage) = gateway.storage.clone() {
+                            let recovery_ms = now_ms();
+                            let recovery_at = format_timestamp(recovery_ms);
+                            storage
+                                .recover_non_terminal_turns(recovery_ms, &recovery_at)
+                                .map_err(storage_error)?;
+                            let manager = ConversationRuntimeManager::new(
+                                storage,
+                                Arc::clone(&gateway.projects),
+                                Arc::new(adapter),
+                                ConversationRuntimeConfig::default(),
+                            );
+                            manager.start();
+                            Some(manager)
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => None,
+                },
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
+    let gateway = if let Some(manager) = conversation_runtime.clone() {
+        gateway.with_conversation_runtime(manager)
+    } else {
+        gateway
+    };
     let tls = build_server_config(&identity).map_err(|error| error.to_string())?;
     let router = build_router(gateway.clone());
     let (command_tx, command_rx) = mpsc::channel();
@@ -667,6 +725,7 @@ fn run_gateway_thread(
     {
         Ok(runtime) => runtime,
         Err(error) => {
+            stop_conversation_runtime(&gateway);
             gateway.supervisor.stop();
             let _ = ready_tx.send(Err(format!("cannot create gateway runtime: {error}")));
             return;
@@ -675,6 +734,7 @@ fn run_gateway_thread(
     let server = match runtime.block_on(GatewayServer::start(&config, router, tls)) {
         Ok(server) => server,
         Err(error) => {
+            stop_conversation_runtime(&gateway);
             gateway.supervisor.stop();
             let _ = ready_tx.send(Err(error.to_string()));
             return;
@@ -682,6 +742,7 @@ fn run_gateway_thread(
     };
     if ready_tx.send(Ok(())).is_err() {
         let _ = runtime.block_on(server.shutdown());
+        stop_conversation_runtime(&gateway);
         gateway.supervisor.stop();
         return;
     }
@@ -692,6 +753,7 @@ fn run_gateway_thread(
                 if !selected_addresses_available(&config) {
                     degraded.store(true, Ordering::Release);
                     let _ = runtime.block_on(server.shutdown());
+                    stop_conversation_runtime(&gateway);
                     gateway.supervisor.stop();
                     let _ = gateway.supervisor.wait_for_idle(REMOTE_TASK_DRAIN_WAIT);
                     return;
@@ -700,6 +762,7 @@ fn run_gateway_thread(
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = runtime.block_on(server.shutdown());
+                stop_conversation_runtime(&gateway);
                 gateway.supervisor.stop();
                 let _ = gateway.supervisor.wait_for_idle(REMOTE_TASK_DRAIN_WAIT);
                 return;
@@ -709,9 +772,16 @@ fn run_gateway_thread(
     let shutdown_result = runtime
         .block_on(server.shutdown())
         .map_err(|error| error.to_string());
+    stop_conversation_runtime(&gateway);
     gateway.supervisor.stop();
     let _ = gateway.supervisor.wait_for_idle(REMOTE_TASK_DRAIN_WAIT);
     let _ = reply.send(shutdown_result);
+}
+
+fn stop_conversation_runtime(gateway: &GatewayState) {
+    if let Some(manager) = &gateway.conversations {
+        manager.stop();
+    }
 }
 
 fn selected_addresses_available(config: &RemoteControlConfig) -> bool {

@@ -72,11 +72,18 @@ const TetherSvg = memo(function TetherSvg() {
   );
 });
 
-/** Hero 变体 — Home 页全宽标志视觉 + 状态文案。 */
+/**
+ * Hero 变体 — Home 页全宽标志视觉。
+ *
+ * `showLabel=false` 时只渲染图形:Home 页下方的 mhero 已经带了状态文案,两处
+ * 都渲染会让同一句话在屏幕上出现两次。
+ */
 export const SecureTetherHero = memo(function SecureTetherHero({
   phase,
+  showLabel = true,
 }: {
   phase: ConnectionPhase;
+  showLabel?: boolean;
 }) {
   const visual = PHASE_TO_VISUAL[phase];
   const meta = STATE_META[visual];
@@ -101,9 +108,11 @@ export const SecureTetherHero = memo(function SecureTetherHero({
       >
         <TetherSvg />
       </div>
-      <span style={{ fontSize: 17, fontWeight: 600, color: meta.color }}>
-        {t(meta.labelKey)}
-      </span>
+      {showLabel && (
+        <span style={{ fontSize: 17, fontWeight: 600, color: meta.color }}>
+          {t(meta.labelKey)}
+        </span>
+      )}
     </motion.div>
   );
 });

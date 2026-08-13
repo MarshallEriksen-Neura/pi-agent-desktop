@@ -313,6 +313,7 @@ impl TaskSupervisor {
                         stream: match stream {
                             RuntimeOutputStream::Stdout => "stdout".to_owned(),
                             RuntimeOutputStream::Stderr => "stderr".to_owned(),
+                            RuntimeOutputStream::Tool => "tool".to_owned(),
                         },
                     },
                 );

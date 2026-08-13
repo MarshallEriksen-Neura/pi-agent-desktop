@@ -1,0 +1,16 @@
+{
+  "conversations": [
+    {
+      "conversationId": "conv_01jz8example000000000000001",
+      "ownerDeviceId": "device_phone_001",
+      "projectId": "project_mobile_demo",
+      "title": "Checkout status",
+      "status": "running",
+      "updatedAt": "2026-08-12T08:02:00.000Z",
+      "latestTurnState": "running",
+      "latestMessagePreview": "Working through the repository status.",
+      "queuedTurnCount": 0
+    }
+  ],
+  "nextCursor": "cursor_after_conv_001"
+}

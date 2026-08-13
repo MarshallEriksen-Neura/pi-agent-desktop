@@ -146,6 +146,10 @@ pub struct RemoteTaskInput {
 pub enum RuntimeOutputStream {
     Stdout,
     Stderr,
+    /// Structured tool-call metadata (compact JSON, see [`classify_tool_event`]).
+    /// Kept on a distinct stream so the phone can render a tool card instead of
+    /// interleaving the payload into assistant prose.
+    Tool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -258,6 +262,14 @@ impl EventLanes {
             Err(TrySendError::Disconnected(event)) => event,
         };
         self.shared.output_dropped.fetch_add(1, Ordering::Relaxed);
+        // Only stdout coalesces. `coalesced_output` is flushed as a single
+        // `Stdout` event, so folding a structured `Tool` payload (or a stderr
+        // line) into it would both lose the stream tag and splice JSON into
+        // assistant prose. Those streams are dropped instead — the drop is
+        // already counted above and surfaced via `OutputTruncated`.
+        if !matches!(event.stream, RuntimeOutputStream::Stdout) {
+            return;
+        }
         if let Ok(mut coalesced) = self.shared.coalesced_output.try_lock() {
             let remaining = self
                 .shared
@@ -774,7 +786,93 @@ fn classify_stdout(line: String, lanes: &EventLanes) {
             }
         }
     }
+    if let Some(payload) = classify_tool_event(&value) {
+        lanes.offer_output(OutputEvent {
+            stream: RuntimeOutputStream::Tool,
+            text: payload,
+        });
+        return;
+    }
     lanes.offer_control(ControlEvent::Protocol(line));
+}
+
+/// Maximum length of a serialized tool payload. `emit_output` truncates by char
+/// count, which would corrupt JSON mid-object, so the payload is kept well under
+/// `MAX_EVENT_FRAGMENT_BYTES` and the path field is clipped to fit.
+const MAX_TOOL_PAYLOAD_CHARS: usize = 200;
+/// Budget for the clipped path/command field inside a tool payload.
+const MAX_TOOL_TARGET_CHARS: usize = 120;
+
+/// Translate a pi CLI `tool_execution_start` / `tool_execution_end` line into a
+/// compact JSON payload for the phone: `{"n":<tool>,"p":<target>,"e":<0|1>}`.
+///
+/// `tool_execution_update` is deliberately ignored — its `partialResult` is a
+/// full replacement (not a delta), so forwarding it would repeatedly re-send the
+/// whole accumulated result and flood the stream.
+///
+/// Returns `None` for any line that is not a terminal tool event, leaving it on
+/// the control lane so `handle_protocol` keeps its existing semantics.
+fn classify_tool_event(value: &Value) -> Option<String> {
+    let event_type = value.get("type").and_then(Value::as_str)?;
+    let ended = match event_type {
+        "tool_execution_start" => false,
+        "tool_execution_end" => true,
+        _ => return None,
+    };
+
+    let name: String = value
+        .get("toolName")
+        .and_then(Value::as_str)
+        .unwrap_or("tool")
+        .chars()
+        .take(32)
+        .collect();
+
+    // Pull the most human-meaningful identifier out of `args`: a file path for
+    // read/edit-style tools, a command line for shell tools.
+    let target: String = value
+        .get("args")
+        .and_then(|args| {
+            ["path", "file_path", "filePath", "command", "pattern"]
+                .iter()
+                .find_map(|key| args.get(key).and_then(Value::as_str))
+        })
+        .unwrap_or("")
+        .chars()
+        .take(MAX_TOOL_TARGET_CHARS)
+        .collect();
+
+    let is_error = value
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let payload = serde_json::to_string(&ToolEventPayload {
+        name: &name,
+        target: &target,
+        ended,
+        is_error,
+    })
+    .ok()?;
+
+    // Defensive: if the payload still exceeds the cap (unexpected escaping
+    // blow-up), drop it rather than emit JSON that will arrive truncated.
+    if payload.chars().count() > MAX_TOOL_PAYLOAD_CHARS {
+        return None;
+    }
+    Some(payload)
+}
+
+#[derive(Serialize)]
+struct ToolEventPayload<'a> {
+    #[serde(rename = "n")]
+    name: &'a str,
+    #[serde(rename = "p", skip_serializing_if = "str::is_empty")]
+    target: &'a str,
+    #[serde(rename = "d")]
+    ended: bool,
+    #[serde(rename = "e", skip_serializing_if = "std::ops::Not::not")]
+    is_error: bool,
 }
 
 fn emit_output(shared: &RuntimeShared, sink: &impl Fn(RuntimeEvent), output: OutputEvent) {
@@ -948,6 +1046,102 @@ mod tests {
         });
         assert_eq!(shared.output_dropped.load(Ordering::Acquire), 1);
         assert_eq!(shared.coalesced_output.lock().unwrap().as_str(), "second");
+    }
+
+    #[test]
+    fn tool_start_and_end_become_compact_payloads() {
+        let start = serde_json::json!({
+            "type": "tool_execution_start",
+            "toolCallId": "t-1",
+            "toolName": "edit",
+            "args": {"file_path": "src/auth/login.ts"}
+        });
+        let payload = classify_tool_event(&start).expect("start is a tool event");
+        assert_eq!(payload, r#"{"n":"edit","p":"src/auth/login.ts","d":false}"#);
+
+        let end = serde_json::json!({
+            "type": "tool_execution_end",
+            "toolCallId": "t-1",
+            "toolName": "bash",
+            "args": {"command": "pnpm test"},
+            "isError": true
+        });
+        let payload = classify_tool_event(&end).expect("end is a tool event");
+        assert_eq!(payload, r#"{"n":"bash","p":"pnpm test","d":true,"e":true}"#);
+    }
+
+    #[test]
+    fn non_terminal_tool_events_stay_on_control_lane() {
+        // `tool_execution_update` carries a full replacement result, not a
+        // delta — forwarding it would flood the stream.
+        let update = serde_json::json!({
+            "type": "tool_execution_update",
+            "toolCallId": "t-1",
+            "partialResult": "half"
+        });
+        assert!(classify_tool_event(&update).is_none());
+        let unrelated = serde_json::json!({"type": "agent_end"});
+        assert!(classify_tool_event(&unrelated).is_none());
+    }
+
+    #[test]
+    fn tool_payload_target_is_clipped_to_stay_under_fragment_cap() {
+        let long_path = "a/".repeat(400);
+        let start = serde_json::json!({
+            "type": "tool_execution_start",
+            "toolName": "read",
+            "args": {"path": long_path}
+        });
+        let payload = classify_tool_event(&start).expect("still a tool event");
+        assert!(payload.chars().count() <= MAX_TOOL_PAYLOAD_CHARS);
+        assert!(payload.chars().count() < MAX_EVENT_FRAGMENT_BYTES);
+        // Valid JSON survives the clip — the phone must be able to parse it.
+        let parsed: Value = serde_json::from_str(&payload).expect("payload is valid JSON");
+        assert_eq!(parsed.get("n").and_then(Value::as_str), Some("read"));
+    }
+
+    #[test]
+    fn saturated_output_lane_never_coalesces_tool_payloads_into_stdout() {
+        // `coalesced_output` is flushed as a single Stdout event. A dropped Tool
+        // payload must not be spliced into assistant prose.
+        let config = RemoteTaskRuntimeConfig {
+            max_coalesced_output_bytes: 256,
+            ..RemoteTaskRuntimeConfig::default()
+        };
+        let shared = Arc::new(RuntimeShared {
+            cancelled: AtomicBool::new(false),
+            control_saturated: AtomicBool::new(false),
+            output_dropped: AtomicU64::new(0),
+            output_bytes: AtomicU64::new(0),
+            coalesced_output: Mutex::new(String::new()),
+            pending_interactions: Mutex::new(HashMap::new()),
+            process: Mutex::new(None),
+            config,
+        });
+        let (control, _control_rx) = mpsc::sync_channel(1);
+        let (output, output_rx) = mpsc::sync_channel(1);
+        let lanes = EventLanes {
+            control,
+            output,
+            shared: Arc::clone(&shared),
+        };
+        // Fill the single-slot lane so subsequent offers are dropped.
+        lanes.offer_output(OutputEvent {
+            stream: RuntimeOutputStream::Stdout,
+            text: "prose".into(),
+        });
+        let _keep_receiver_alive = output_rx;
+        lanes.offer_output(OutputEvent {
+            stream: RuntimeOutputStream::Tool,
+            text: r#"{"n":"edit","p":"a.ts","d":true}"#.into(),
+        });
+        lanes.offer_output(OutputEvent {
+            stream: RuntimeOutputStream::Stderr,
+            text: "warn: something".into(),
+        });
+        // Both drops are counted, but neither polluted the stdout buffer.
+        assert_eq!(shared.output_dropped.load(Ordering::Acquire), 2);
+        assert_eq!(shared.coalesced_output.lock().unwrap().as_str(), "");
     }
 
     #[test]

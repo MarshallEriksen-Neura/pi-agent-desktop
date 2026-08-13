@@ -1,8 +1,8 @@
 import { memo } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Home, FolderTree, ListChecks, Settings } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
+import { useInteractionStore, selectPendingCount } from "@/stores/interaction-store";
 import { ConnectionBar } from "./ConnectionBar";
 
 /**
@@ -15,17 +15,23 @@ import { ConnectionBar } from "./ConnectionBar";
  * via route configuration.
  */
 
+/**
+ * Tab glyphs are text symbols rather than icon-font components: they render at
+ * the platform's own weight, cost nothing to load, and match the reference
+ * design. `badge` marks the tab that surfaces a pending count.
+ */
 const TABS = [
-  { path: "/home", icon: Home, label: "tab.home" },
-  { path: "/projects", icon: FolderTree, label: "tab.projects" },
-  { path: "/tasks", icon: ListChecks, label: "tab.tasks" },
-  { path: "/settings", icon: Settings, label: "tab.settings" },
+  { path: "/home", glyph: "⌂", label: "tab.home", badge: false },
+  { path: "/projects", glyph: "▤", label: "tab.projects", badge: false },
+  { path: "/tasks", glyph: "✓", label: "tab.tasks", badge: true },
+  { path: "/settings", glyph: "⚙", label: "tab.settings", badge: false },
 ] as const;
 
 export const AppShell = memo(function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const { phase } = useConnection();
+  const pendingCount = useInteractionStore(selectPendingCount);
 
   return (
     <div
@@ -59,9 +65,7 @@ export const AppShell = memo(function AppShell() {
           left: 0,
           right: 0,
           display: "flex",
-          justifyContent: "space-around",
-          alignItems: "center",
-          height: "calc(56px + var(--safe-bottom))",
+          alignItems: "stretch",
           paddingBottom: "var(--safe-bottom)",
           background: "color-mix(in srgb, var(--color-bg-base) 85%, transparent)",
           backdropFilter: "blur(20px)",
@@ -71,17 +75,22 @@ export const AppShell = memo(function AppShell() {
       >
         {TABS.map((tab) => {
           const active = location.pathname.startsWith(tab.path);
-          const Icon = tab.icon;
+          const showBadge = tab.badge && pendingCount > 0;
           return (
             <button
               key={tab.path}
               onClick={() => navigate(tab.path)}
+              aria-current={active ? "page" : undefined}
               style={{
+                flex: 1,
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
-                gap: 2,
-                padding: "8px 16px",
+                justifyContent: "center",
+                gap: 3,
+                // 48px keeps the tap target at the HIG comfort size.
+                minHeight: "var(--tap-comfort)",
+                padding: "6px 0",
                 border: "none",
                 background: "transparent",
                 cursor: "pointer",
@@ -89,8 +98,32 @@ export const AppShell = memo(function AppShell() {
                 color: active ? "var(--color-accent)" : "var(--color-text-tertiary)",
               }}
             >
-              <Icon size={22} />
-              <span style={{ fontSize: 10, fontWeight: 500 }}>{t(tab.label)}</span>
+              <span style={{ position: "relative", fontSize: 21, lineHeight: 1 }}>
+                {tab.glyph}
+                {showBadge && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      position: "absolute",
+                      top: -2,
+                      right: -8,
+                      minWidth: 15,
+                      height: 15,
+                      padding: "0 4px",
+                      borderRadius: 999,
+                      background: "var(--color-status-awaiting)",
+                      color: "#fff",
+                      fontSize: 9.5,
+                      fontWeight: 700,
+                      lineHeight: "15px",
+                      textAlign: "center",
+                    }}
+                  >
+                    {pendingCount > 9 ? "9+" : pendingCount}
+                  </span>
+                )}
+              </span>
+              <span style={{ fontSize: 10.5, fontWeight: 500 }}>{t(tab.label)}</span>
             </button>
           );
         })}

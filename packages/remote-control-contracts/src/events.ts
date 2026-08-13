@@ -46,12 +46,22 @@ export interface RemoteTaskOutputAppendedEvent extends RemoteEventBase {
   readonly kind: "task.output_appended";
   readonly taskId: RemoteTaskId;
   /**
-   * Best-effort output fragment (stdout/stderr/tool output). The gateway
-   * retains at most 2 MiB of output per task; older fragments are dropped
-   * once the envelope is full (plan Stage 5).
+   * Best-effort output fragment. The gateway retains at most 2 MiB of output
+   * per task; older fragments are dropped once the envelope is full
+   * (plan Stage 5).
+   *
+   * Stream semantics:
+   *  - `stdout` — assistant prose (`text_delta` / `thinking_delta`). Consecutive
+   *    fragments are pieces of one message and should be concatenated, not
+   *    rendered as separate blocks.
+   *  - `stderr` — process diagnostics.
+   *  - `tool`   — compact JSON tool metadata: `{"n":name,"p":target,"d":ended,"e":isError}`.
+   *    `p` and `e` are omitted when empty/false. Consumers MUST tolerate an
+   *    unparseable payload (truncation is possible) and fall back to plain text.
+   *  - `meta`   — gateway-generated notice (e.g. output truncation), not task output.
    */
   readonly fragment: string;
-  readonly stream: "stdout" | "stderr" | "tool";
+  readonly stream: "stdout" | "stderr" | "tool" | "meta";
 }
 
 export interface RemoteTaskCompletedEvent extends RemoteEventBase {

@@ -1,10 +1,12 @@
-import { memo, useState, useCallback, useMemo } from "react";
+import { memo, useState, useCallback, useMemo, useEffect } from "react";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import { Send, FileText, AlertCircle } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { useConnectionStore } from "@/stores/connection.store";
+import { usePromptCache } from "@/stores/prompt-cache";
+import { useConversationStore } from "@/stores/conversation-store";
 import { StateView } from "@/components/primitives";
 import {
   SectionLabel,
@@ -40,6 +42,10 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
   const location = useLocation();
   const { isOnline } = useConnection();
   const client = useConnectionStore((s) => s.client);
+  const rememberPrompt = usePromptCache((s) => s.remember);
+  const v2Available = useConversationStore((s) => s.v2Available);
+  const probeCapabilities = useConversationStore((s) => s.probeCapabilities);
+  const createConversation = useConversationStore((s) => s.createConversation);
 
   const routerState = (location.state ?? {}) as ComposerState;
   const contextFiles = useMemo(
@@ -52,21 +58,41 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
   const [error, setError] = useState<string | null>(null);
   const [requestId] = useState(() => generateRequestId());
 
+  useEffect(() => {
+    void probeCapabilities();
+  }, [probeCapabilities]);
+
   const promptBytes = useMemo(() => new Blob([prompt]).size, [prompt]);
   const overLimit = promptBytes > MAX_PROMPT_BYTES;
   const trimmedPrompt = prompt.trim();
   const canSubmit =
     isOnline &&
-    client !== null &&
+    (v2Available === true || client !== null) &&
     !submitting &&
     !overLimit &&
     trimmedPrompt.length > 0;
 
   const handleSubmit = useCallback(async () => {
-    if (!client || !canSubmit) return;
+    if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
     try {
+      if (v2Available === true) {
+        const conversationId = await createConversation({
+          requestId,
+          projectId,
+          prompt: trimmedPrompt,
+          contextFiles: contextFiles.map((relativePath) => ({ relativePath })),
+        });
+        if (conversationId) {
+          navigate(`/tasks/${encodeURIComponent(conversationId)}`, { replace: true });
+        } else {
+          setError("submit_failed");
+        }
+        return;
+      }
+
+      if (!client) return;
       const snap = await client.createTask({
         requestId,
         projectId,
@@ -74,6 +100,9 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
         contextFiles: contextFiles.map((relativePath) => ({ relativePath })),
         executionProfile: "default" as RemoteTaskExecutionProfile,
       });
+      // The snapshot never carries the prompt back, so stash it for the
+      // transcript's user bubble before leaving this page.
+      rememberPrompt(snap.taskId, trimmedPrompt);
       // Success — navigate to the task detail.
       navigate(`/tasks/${encodeURIComponent(snap.taskId)}`, { replace: true });
     } catch (e) {
@@ -98,12 +127,15 @@ export const TaskComposerPage = memo(function TaskComposerPage() {
     }
   }, [
     client,
+    v2Available,
+    createConversation,
     canSubmit,
     requestId,
     projectId,
     trimmedPrompt,
     contextFiles,
     navigate,
+    rememberPrompt,
   ]);
 
   if (!isOnline) {

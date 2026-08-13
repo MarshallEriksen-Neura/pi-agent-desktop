@@ -100,7 +100,8 @@ export const CountdownRing = memo(function CountdownRing({
   remaining: number;
   total: number;
 }) {
-  const r = 32;
+  // 64px ring (see .cd-ring): a lighter presence than the original 74px.
+  const r = 27;
   const circ = 2 * Math.PI * r;
   const ratio = total > 0 ? Math.max(0, Math.min(1, remaining / total)) : 0;
   const offset = circ * (1 - ratio);
@@ -110,22 +111,24 @@ export const CountdownRing = memo(function CountdownRing({
   const ss = (remaining % 60).toString().padStart(2, "0");
   return (
     <div className="cd-ring">
-      <svg width="74" height="74" viewBox="0 0 74 74">
+      <svg width="64" height="64" viewBox="0 0 64 64">
+        {/* Track uses the sunken surface rather than a hairline stroke — less
+            visual weight at this smaller size. */}
         <circle
-          cx="37"
-          cy="37"
+          cx="32"
+          cy="32"
           r={r}
           fill="none"
-          stroke="var(--color-separator)"
-          strokeWidth="6"
+          stroke="var(--color-bg-sunken)"
+          strokeWidth="5"
         />
         <circle
-          cx="37"
-          cy="37"
+          cx="32"
+          cy="32"
           r={r}
           fill="none"
           stroke="var(--color-status-awaiting)"
-          strokeWidth="6"
+          strokeWidth="5"
           strokeLinecap="round"
           strokeDasharray={circ}
           strokeDashoffset={offset}

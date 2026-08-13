@@ -1,0 +1,10 @@
+{
+  "requestId": "req_create_001",
+  "projectId": "project_mobile_demo",
+  "prompt": "Summarize the current checkout status.",
+  "contextFiles": [
+    {
+      "relativePath": "README.md"
+    }
+  ]
+}

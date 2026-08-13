@@ -876,7 +876,10 @@ impl From<AuthorizationError> for TaskManagerError {
     }
 }
 
-fn format_timestamp(unix_ms: u64) -> String {
+/// Crate-wide ISO-8601 rendering for unix-millisecond timestamps
+/// (`YYYY-MM-DDTHH:MM:SS.mmmZ`, UTC). Contract DTOs type every timestamp as
+/// `IsoTimestamp`, so all server-owned snapshots and events must use this.
+pub fn format_timestamp(unix_ms: u64) -> String {
     let seconds = unix_ms / 1000;
     let millis = unix_ms % 1000;
     let days = seconds / 86_400;

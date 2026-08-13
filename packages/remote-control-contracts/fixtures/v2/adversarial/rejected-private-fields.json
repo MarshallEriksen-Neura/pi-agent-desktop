@@ -1,0 +1,24 @@
+{
+  "description": "Runtime validators must reject or redact these fields before treating a payload as a v2 DTO.",
+  "payload": {
+    "conversationId": "conv_private_leak",
+    "ownerDeviceId": "device_phone_001",
+    "projectId": "project_mobile_demo",
+    "sessionPath": "C:\\Users\\timeline\\AppData\\Local\\Pi\\remote-sessions\\secret.json",
+    "piSessionId": "private-session-id",
+    "rawRpc": {
+      "method": "prompt",
+      "providerSettings": {
+        "apiKey": "redacted-example"
+      }
+    },
+    "desktopChatSessionId": "desktop-session-secret"
+  },
+  "forbiddenFields": [
+    "sessionPath",
+    "piSessionId",
+    "rawRpc",
+    "providerSettings",
+    "desktopChatSessionId"
+  ]
+}

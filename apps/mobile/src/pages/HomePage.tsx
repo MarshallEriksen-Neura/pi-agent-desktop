@@ -1,32 +1,35 @@
-import { memo } from "react";
+import { memo, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
-import { FolderTree, ListChecks, Monitor, Power } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
+import { Monitor, Power, Plus, MessageSquare, ChevronRight } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
+import { useTaskStore } from "@/stores/task-store";
+import { useInteractionStore, selectPending } from "@/stores/interaction-store";
+import { usePromptCache } from "@/stores/prompt-cache";
 import { SecureTetherHero } from "@/components/SecureTether";
 import { StateView, FullScreenSpinner } from "@/components/primitives";
-import {
-  SectionLabel,
-  MobileCard,
-  MobileRow,
-  BlockButton,
-} from "@/components/visual";
+import { BlockButton } from "@/components/visual";
+import { TaskCard } from "@/components/task-visual";
+import { taskTitle, formatClock } from "@/lib/task-label";
+import { REMOTE_TASK_TERMINAL_STATES } from "@pi/remote-control-contracts";
+
+/** How many recent tasks the home page surfaces before deferring to /tasks. */
+const RECENT_LIMIT = 3;
 
 /**
- * HomePage (P-3) — connection landing page.
+ * HomePage — an overview, not a navigation menu.
  *
- * Visual layers(对齐 demo):
- *  1. SecureTetherHero — SVG 标志视觉(桌面—链路—锁—手机)
- *  2. mhero — 桌面名 + 状态点 + 状态文案
- *  3. 快捷操作 mcard — 项目 / 任务
+ * The old version offered two link rows, so the user had to drill in before
+ * learning whether anything needed attention. Now the page answers "what's the
+ * state of things?" at a glance: three stat cards, the highest-frequency action
+ * (new task) as the primary CTA, anything awaiting a reply pinned above the
+ * fold, and the most recent tasks tappable straight through to their transcript.
  *
- * State matrix:
- *  - online:          full page(上方三层)
- *  - reconnecting:    hero + spinner
- *  - offline:         StateView + reconnect / wake
- *  - identity_failed: StateView + re-pair
- *  - waking/loading:  FullScreenSpinner
+ * Deliberately absent: the backend capability table (queue ceiling, protocol
+ * version). Those are developer-facing numbers; a phone home screen is not where
+ * they belong.
  */
 export const HomePage = memo(function HomePage() {
   const navigate = useNavigate();
@@ -42,21 +45,35 @@ export const HomePage = memo(function HomePage() {
     wake,
   } = useConnection();
 
+  const tasks = useTaskStore((s) => s.tasks);
+  const refreshTasks = useTaskStore((s) => s.refresh);
+  const pending = useInteractionStore(useShallow(selectPending));
+  const promptCache = usePromptCache((s) => s.prompts);
+
+  // Keep the counters honest when returning to the tab.
+  useEffect(() => {
+    if (isOnline) void refreshTasks();
+  }, [isOnline, refreshTasks]);
+
+  const active = useMemo(
+    () => tasks.filter((task) => !REMOTE_TASK_TERMINAL_STATES.includes(task.state)),
+    [tasks],
+  );
+  const recent = useMemo(() => tasks.slice(0, RECENT_LIMIT), [tasks]);
+
   if (isWaking) {
     return <FullScreenSpinner label={t("wake.waking")} />;
   }
 
-  // Reconnecting — hero (amber pulse) + spinner
   if (isReconnecting) {
     return (
       <div>
-        <SecureTetherHero phase={phase} />
+        <SecureTetherHero phase={phase} showLabel={false} />
         <FullScreenSpinner label={t("connection.reconnecting")} />
       </div>
     );
   }
 
-  // Identity failed — needs re-pair
   if (isIdentityFailed) {
     return (
       <StateView
@@ -72,7 +89,6 @@ export const HomePage = memo(function HomePage() {
     );
   }
 
-  // Offline — offer reconnect (and wake if WoL targets exist)
   if (phase === "offline") {
     const canWake = Boolean(stored?.wakeOnLan?.targets.length);
     return (
@@ -105,10 +121,7 @@ export const HomePage = memo(function HomePage() {
                 {t("wake.action")}
               </BlockButton>
             )}
-            <BlockButton
-              variant={canWake ? "outline" : "primary"}
-              onClick={connect}
-            >
+            <BlockButton variant={canWake ? "outline" : "primary"} onClick={connect}>
               {t("connection.reconnect")}
             </BlockButton>
           </div>
@@ -117,22 +130,22 @@ export const HomePage = memo(function HomePage() {
     );
   }
 
-  // Loading (pairing/connecting)
   if (!stored || !isOnline) {
     return <FullScreenSpinner label={t("common.loading")} />;
   }
 
-  // Online — full home page
+  const awaitingCount = pending.length;
+  const firstPending = pending[0];
+
   return (
     <div>
-      {/* 1. Secure Tether hero — SVG 标志视觉 */}
-      <SecureTetherHero phase={phase} />
+      {/* Tether mark — the label lives in the hero below, not here */}
+      <SecureTetherHero phase={phase} showLabel={false} />
 
-      {/* 2. mhero — desktop name + status dot + status text */}
       <motion.div
-        initial={{ opacity: 0, y: 12 }}
+        initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
+        transition={{ delay: 0.05 }}
         className="mhero"
         data-st="online"
       >
@@ -143,26 +156,101 @@ export const HomePage = memo(function HomePage() {
         </div>
       </motion.div>
 
-      {/* 3. Quick actions */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
+        transition={{ delay: 0.12 }}
         style={{ padding: "0 16px" }}
       >
-        <SectionLabel>{t("home.quickActions")}</SectionLabel>
-        <MobileCard>
-          <MobileRow
-            icon={<FolderTree size={16} />}
-            title={t("home.projects")}
-            onClick={() => navigate("/projects")}
-          />
-          <MobileRow
-            icon={<ListChecks size={16} />}
-            title={t("home.tasks")}
-            onClick={() => navigate("/tasks")}
-          />
-        </MobileCard>
+        {/* Three numbers that answer "anything need me?" */}
+        <div className="stats">
+          <button className="stat accent" onClick={() => navigate("/tasks")}>
+            <div className="sv">{active.length}</div>
+            <div className="sl">{t("home.inProgress")}</div>
+          </button>
+          <button
+            className="stat awaiting"
+            onClick={() => navigate(awaitingCount > 0 ? "/interactions" : "/tasks")}
+          >
+            <div className="sv">{awaitingCount}</div>
+            <div className="sl">{t("home.awaitingYou")}</div>
+          </button>
+          {/* Finished count — distinct from "active", so the three numbers
+              partition the task list instead of overlapping. */}
+          <button className="stat" onClick={() => navigate("/tasks")}>
+            <div className="sv">{tasks.length - active.length}</div>
+            <div className="sl">{t("tasks.history")}</div>
+          </button>
+        </div>
+
+        {/* Primary action — starting a task is why the app exists */}
+        <button className="cta-primary" onClick={() => navigate("/projects")}>
+          <span className="ci">
+            <Plus size={18} />
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span className="ct" style={{ display: "block" }}>
+              {t("home.newTask")}
+            </span>
+            <span className="cs" style={{ display: "block" }}>
+              {t("home.newTaskDetail")}
+            </span>
+          </span>
+          <ChevronRight size={18} style={{ opacity: 0.9, flexShrink: 0 }} />
+        </button>
+
+        {/* Anything awaiting a reply is pinned above the task list */}
+        {firstPending && (
+          <motion.button
+            initial={{ opacity: 0, scale: 0.97 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="awaiting-banner"
+            onClick={() => navigate(`/tasks/${encodeURIComponent(firstPending.taskId)}`)}
+          >
+            <span className="ai">
+              <MessageSquare size={16} />
+            </span>
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span className="at" style={{ display: "block" }}>
+                {t("home.awaitingBanner", { count: awaitingCount })}
+              </span>
+              <span
+                className="as"
+                style={{
+                  display: "block",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {firstPending.prompt}
+              </span>
+            </span>
+            <ChevronRight size={16} className="chev" style={{ flexShrink: 0 }} />
+          </motion.button>
+        )}
+
+        {/* Recent tasks, tappable straight into the transcript */}
+        {recent.length > 0 && (
+          <>
+            <div className="msec-row">
+              <h4>{t("home.recentTasks")}</h4>
+              <button className="see-all" onClick={() => navigate("/tasks")}>
+                {t("home.seeAll")}
+              </button>
+            </div>
+            {recent.map((task) => (
+              <TaskCard
+                key={task.taskId}
+                title={taskTitle(task, promptCache)}
+                meta={`${t(`tasks.state.${task.state}`)} · ${formatClock(task.updatedAt)}`}
+                state={task.state}
+                awaiting={task.state === "awaiting_input"}
+                onClick={() => navigate(`/tasks/${encodeURIComponent(task.taskId)}`)}
+              />
+            ))}
+          </>
+        )}
       </motion.div>
     </div>
   );

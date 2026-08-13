@@ -72,6 +72,13 @@ export const zh: Record<string, string> = {
   "home.noTasks": "暂无任务",
   "home.noTasksDetail": "选择一个项目开始创建任务",
   "home.quickActions": "快捷操作",
+  "home.inProgress": "进行中",
+  "home.awaitingYou": "待响应",
+  "home.newTask": "新建任务",
+  "home.newTaskDetail": "选择项目和文件，让 Pi 开始工作",
+  "home.recentTasks": "最近任务",
+  "home.seeAll": "全部",
+  "home.awaitingBanner": "{count} 个任务等待你回答",
 
   // Tab bar
   "tab.home": "首页",
@@ -158,6 +165,9 @@ export const zh: Record<string, string> = {
   "detail.retryable": "此错误可重试",
   "detail.output": "实时输出",
   "detail.cancel": "取消任务",
+  "detail.cancelHint": "取消将终止任务及其子进程，不可恢复",
+  "detail.archive": "归档对话",
+  "detail.archiveConfirm": "确认归档此对话？",
   "detail.noOutput": "暂无输出",
   "detail.stateCreated": "已创建",
   "detail.stateStarted": "已启动",
@@ -181,6 +191,21 @@ export const zh: Record<string, string> = {
   "interaction.awaitingInput": "任务等待输入",
   "interaction.respond": "去响应",
 
+  // Chat transcript
+  "chat.thinking": "Pi 正在思考",
+  "chat.toolRead": "读取",
+  "chat.toolEdit": "编辑",
+  "chat.toolBash": "终端",
+  "chat.toolSearch": "搜索",
+  "chat.toolRunning": "执行中…",
+  "chat.toolDone": "已完成",
+  "chat.toolFailed": "执行失败",
+  "chat.piWantsAction": "Pi 想执行一个操作",
+  "chat.answered": "你已回答",
+  "chat.expiredAnswer": "已超时未回答",
+  "chat.noActivity": "任务还没有输出",
+  "chat.contextOnly": "（无提示词记录，仅显示上下文）",
+
   // Errors
   "error.offline": "网络不可用",
   "error.offlineDetail": "请检查 Wi-Fi 或局域网连接。",
@@ -196,4 +221,24 @@ export const zh: Record<string, string> = {
   "error.serverErrorDetail": "请稍后重试。",
   "error.unknown": "未知错误",
   "error.unknownDetail": "请重试，如问题持续请重新配对。",
+
+  // 崩溃屏 / 路由错误屏
+  "crash.tetherAlt": "链路在手机侧断裂，桌面端仍在运行",
+  "crash.tetherAltStale": "链路正常，当前手机运行的是旧版本",
+  "crash.deskAlive": "桌面端仍在运行",
+  "crash.diagnostics": "诊断信息",
+  "crash.copy": "复制详情",
+  "crash.reload": "重新加载",
+  "crash.retry": "重试",
+  "crash.backToTasks": "返回任务列表",
+  "crash.fatalTitle": "界面已停止响应",
+  "crash.fatalDetail": "远程控制界面渲染失败。桌面端仍在运行，任务不受影响——重新加载即可恢复连接。",
+  "crash.routeTitle": "此页面已停止响应",
+  "crash.routeDetail": "应用其余部分仍可使用。可切换到其他标签页，或在此页反复失败时重新加载。",
+  "crash.routeNotFoundTitle": "页面不存在",
+  "crash.routeNotFoundDetail": "该地址不存在，可能已移动或被移除。",
+  "crash.staleChunkName": "版本已更新",
+  "crash.staleChunkTitle": "重新加载以完成更新",
+  "crash.staleChunkDetail":
+    "此页面属于旧版本，已无法加载。重新加载即可取到新版本。桌面端与任务不受影响。",
 };

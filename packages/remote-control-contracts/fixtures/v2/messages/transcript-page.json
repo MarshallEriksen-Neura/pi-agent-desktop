@@ -1,0 +1,28 @@
+{
+  "conversationId": "conv_01jz8example000000000000001",
+  "messages": [
+    {
+      "messageId": "msg_user_001",
+      "conversationId": "conv_01jz8example000000000000001",
+      "turnId": "turn_01jz8example000000000000002",
+      "role": "user",
+      "status": "completed",
+      "text": "Summarize the current checkout status.",
+      "createdAt": "2026-08-12T08:00:00.000Z",
+      "updatedAt": "2026-08-12T08:00:00.000Z",
+      "completedAt": "2026-08-12T08:00:00.000Z"
+    },
+    {
+      "messageId": "msg_assistant_001",
+      "conversationId": "conv_01jz8example000000000000001",
+      "turnId": "turn_01jz8example000000000000002",
+      "role": "assistant",
+      "status": "completed",
+      "text": "The checkout has mobile UI edits and remote control runtime changes.",
+      "createdAt": "2026-08-12T08:01:10.000Z",
+      "updatedAt": "2026-08-12T08:02:10.000Z",
+      "completedAt": "2026-08-12T08:02:10.000Z"
+    }
+  ],
+  "nextCursor": "cursor_after_msg_assistant_001"
+}

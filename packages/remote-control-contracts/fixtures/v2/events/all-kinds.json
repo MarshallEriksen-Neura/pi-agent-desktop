@@ -1,0 +1,214 @@
+[
+  {
+    "eventId": "evt_001",
+    "emittedAt": "2026-08-12T08:00:00.000Z",
+    "sequence": 1,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "conversation.created",
+    "conversation": {
+      "version": 2,
+      "conversationId": "conv_01jz8example000000000000001",
+      "ownerDeviceId": "device_phone_001",
+      "projectId": "project_mobile_demo",
+      "status": "queued",
+      "createdAt": "2026-08-12T08:00:00.000Z",
+      "updatedAt": "2026-08-12T08:00:00.000Z",
+      "messageCount": 1,
+      "turnCount": 1,
+      "queuedTurnCount": 1,
+      "capabilities": {
+        "conversationV2": true,
+        "piSessionResume": true,
+        "appendTurns": true,
+        "cancelTurn": true,
+        "interactions": true,
+        "messagePaging": true,
+        "eventReplay": true,
+        "maxQueuedTurns": 8,
+        "maxPromptBytes": 32768,
+        "maxContextFiles": 16,
+        "maxPageSize": 100
+      }
+    }
+  },
+  {
+    "eventId": "evt_002",
+    "emittedAt": "2026-08-12T08:00:00.000Z",
+    "sequence": 2,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "conversation.status_changed",
+    "from": "idle",
+    "to": "queued"
+  },
+  {
+    "eventId": "evt_003",
+    "emittedAt": "2026-08-12T08:00:00.000Z",
+    "sequence": 3,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "turn.created",
+    "turn": {
+      "turnId": "turn_01jz8example000000000000002",
+      "conversationId": "conv_01jz8example000000000000001",
+      "requestId": "req_create_001",
+      "ownerDeviceId": "device_phone_001",
+      "state": "queued",
+      "createdAt": "2026-08-12T08:00:00.000Z",
+      "updatedAt": "2026-08-12T08:00:00.000Z",
+      "userMessageId": "msg_user_001"
+    }
+  },
+  {
+    "eventId": "evt_004",
+    "emittedAt": "2026-08-12T08:00:10.000Z",
+    "sequence": 4,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "turn.state_changed",
+    "turnId": "turn_01jz8example000000000000002",
+    "from": "queued",
+    "to": "starting"
+  },
+  {
+    "eventId": "evt_005",
+    "emittedAt": "2026-08-12T08:00:00.000Z",
+    "sequence": 5,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "message.accepted",
+    "message": {
+      "messageId": "msg_user_001",
+      "conversationId": "conv_01jz8example000000000000001",
+      "turnId": "turn_01jz8example000000000000002",
+      "role": "user",
+      "status": "accepted",
+      "text": "Summarize the current checkout status.",
+      "createdAt": "2026-08-12T08:00:00.000Z",
+      "updatedAt": "2026-08-12T08:00:00.000Z"
+    },
+    "delivery": {
+      "deliveryId": "delivery_001",
+      "conversationId": "conv_01jz8example000000000000001",
+      "turnId": "turn_01jz8example000000000000002",
+      "status": "accepted",
+      "acceptedAt": "2026-08-12T08:00:00.000Z"
+    }
+  },
+  {
+    "eventId": "evt_006",
+    "emittedAt": "2026-08-12T08:01:00.000Z",
+    "sequence": 6,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "message.delta",
+    "turnId": "turn_01jz8example000000000000002",
+    "messageId": "msg_assistant_001",
+    "delta": "Working through"
+  },
+  {
+    "eventId": "evt_007",
+    "emittedAt": "2026-08-12T08:01:05.000Z",
+    "sequence": 7,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "tool.started",
+    "turnId": "turn_01jz8example000000000000002",
+    "toolCallId": "tool_001",
+    "name": "shell",
+    "summary": "git status"
+  },
+  {
+    "eventId": "evt_008",
+    "emittedAt": "2026-08-12T08:01:08.000Z",
+    "sequence": 8,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "tool.completed",
+    "turnId": "turn_01jz8example000000000000002",
+    "toolCallId": "tool_001",
+    "name": "shell",
+    "summary": "status summarized",
+    "isError": false
+  },
+  {
+    "eventId": "evt_009",
+    "emittedAt": "2026-08-12T08:01:20.000Z",
+    "sequence": 9,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "interaction.requested",
+    "interactionId": "interaction_001",
+    "turnId": "turn_01jz8example000000000000002",
+    "interactionKind": "confirm",
+    "prompt": "Continue with a concise summary?",
+    "expiresAt": "2026-08-12T08:06:20.000Z"
+  },
+  {
+    "eventId": "evt_010",
+    "emittedAt": "2026-08-12T08:01:30.000Z",
+    "sequence": 10,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "interaction.resolved",
+    "interactionId": "interaction_001",
+    "turnId": "turn_01jz8example000000000000002",
+    "response": {
+      "interactionId": "interaction_001",
+      "kind": "confirm",
+      "value": true,
+      "submittedAt": "2026-08-12T08:01:30.000Z"
+    }
+  },
+  {
+    "eventId": "evt_011",
+    "emittedAt": "2026-08-12T08:01:40.000Z",
+    "sequence": 11,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "interaction.expired",
+    "interactionId": "interaction_002",
+    "turnId": "turn_01jz8example000000000000002"
+  },
+  {
+    "eventId": "evt_012",
+    "emittedAt": "2026-08-12T08:02:00.000Z",
+    "sequence": 12,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "message.completed",
+    "message": {
+      "messageId": "msg_assistant_001",
+      "conversationId": "conv_01jz8example000000000000001",
+      "turnId": "turn_01jz8example000000000000002",
+      "role": "assistant",
+      "status": "completed",
+      "text": "The checkout has mobile UI edits and remote control runtime changes.",
+      "createdAt": "2026-08-12T08:01:00.000Z",
+      "updatedAt": "2026-08-12T08:02:00.000Z",
+      "completedAt": "2026-08-12T08:02:00.000Z"
+    }
+  },
+  {
+    "eventId": "evt_013",
+    "emittedAt": "2026-08-12T08:02:00.000Z",
+    "sequence": 13,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "turn.completed",
+    "turnId": "turn_01jz8example000000000000002",
+    "state": "succeeded",
+    "assistantMessageId": "msg_assistant_001"
+  },
+  {
+    "eventId": "evt_014",
+    "emittedAt": "2026-08-12T08:03:00.000Z",
+    "sequence": 14,
+    "deviceId": "device_phone_001",
+    "conversationId": "conv_01jz8example000000000000001",
+    "kind": "snapshot_required",
+    "projectId": "project_mobile_demo",
+    "reason": "cursor_expired"
+  }
+]

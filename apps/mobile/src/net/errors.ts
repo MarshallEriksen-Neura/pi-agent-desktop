@@ -54,10 +54,15 @@ export function classifyError(status: number | string, rawMessage?: string): Net
     switch (status) {
       case "pin_mismatch":
         return new NetError("pin_mismatch", "证书指纹不匹配，可能存在中间人攻击或桌面身份已变更。请重新配对。", undefined);
+      case "pin_not_registered":
+        return new NetError("pin_not_registered", "证书锁定尚未建立，请重新扫描桌面端二维码。", undefined);
       case "unreachable":
         return new NetError("unreachable", "无法连接到桌面端，请确认两台设备在同一局域网且桌面端已启用远程控制。");
       case "timeout":
         return new NetError("timeout", "连接超时，请检查网络后重试。");
+      case "invalid_endpoint":
+      case "invalid_url":
+        return new NetError("unknown", "桌面端连接地址无效，请重新生成二维码并配对。");
       default:
         return new NetError("unknown", message);
     }

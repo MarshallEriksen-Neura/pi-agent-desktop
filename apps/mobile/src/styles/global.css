@@ -214,6 +214,18 @@ textarea {
   }
 }
 
+/* Secure Tether 存活呼吸(crashed 态的桌面侧半链路)
+ * 不是 spinner:它表达「那一端还在工作」,而非「正在加载」。 */
+@keyframes pi-tether-alive {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
 /* Secure Tether 身份失效抖动(identity_failed 态) */
 @keyframes pi-tether-shake {
   0%,

@@ -22,6 +22,8 @@ pub enum GatewayError {
     RateLimited,
     ServiceUnavailable,
     Internal,
+    InteractionPending,
+    QueueLimitReached,
 }
 
 impl GatewayError {
@@ -43,6 +45,8 @@ impl GatewayError {
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InteractionPending => StatusCode::CONFLICT,
+            Self::QueueLimitReached => StatusCode::CONFLICT,
         }
     }
 
@@ -57,6 +61,8 @@ impl GatewayError {
             Self::RateLimited => "rate_limited",
             Self::ServiceUnavailable => "service_unavailable",
             Self::Internal => "internal_error",
+            Self::InteractionPending => "interaction_pending",
+            Self::QueueLimitReached => "queue_full",
         }
     }
 
@@ -71,6 +77,8 @@ impl GatewayError {
             Self::RateLimited => "request rate limit exceeded",
             Self::ServiceUnavailable => "remote control is unavailable",
             Self::Internal => "remote control request failed",
+            Self::InteractionPending => "an interaction is awaiting a response",
+            Self::QueueLimitReached => "the conversation turn queue is full",
         }
     }
 }

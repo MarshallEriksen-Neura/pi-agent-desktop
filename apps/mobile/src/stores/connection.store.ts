@@ -5,8 +5,9 @@ import type {
 } from "@pi/remote-control-contracts";
 import { RemoteControlClient } from "@/net/client";
 import { EventStreamClient, type EventStreamPhase } from "@/net/event-stream";
+import { ConversationEventStreamClient } from "@/net/conversation-event-stream";
 import { getTransport } from "@/net/transport";
-import { NetError } from "@/net/errors";
+import { NetError, type NetErrorKind } from "@/net/errors";
 import { registerPin, clearPin, isValidHexPin, PinCodecError } from "@/security/cert-pin";
 import { assertValidHexPin } from "@/security/pin-codec";
 import {
@@ -15,6 +16,7 @@ import {
   type StoredConnection,
 } from "@/security/token-vault";
 import { eventDispatcher } from "./event-dispatcher";
+import { conversationEventDispatcher } from "./conversation-event-dispatcher";
 
 /**
  * Connection store — the single source of truth for the desktop connection
@@ -50,10 +52,12 @@ interface ConnectionState {
   // Runtime state
   phase: ConnectionPhase;
   lastError: string | null;
+  lastErrorKind: NetErrorKind | string | null;
 
   // Lazy-built clients (created on connect)
   client: RemoteControlClient | null;
   stream: EventStreamClient | null;
+  conversationStream: ConversationEventStreamClient | null;
 
   // Actions
   pair: (payload: PairingQrPayload, deviceName: string, platform: string) => Promise<boolean>;
@@ -68,8 +72,10 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   stored: null,
   phase: "idle",
   lastError: null,
+  lastErrorKind: null,
   client: null,
   stream: null,
+  conversationStream: null,
 
   loadStored: async () => {
     const stored = await tokenVault.load();
@@ -82,12 +88,12 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   pair: async (payload, deviceName, platform) => {
     connectionGeneration += 1;
-    set({ phase: "pairing", lastError: null });
+    set({ phase: "pairing", lastError: null, lastErrorKind: null });
     try {
       // 1. Select an HTTPS endpoint (fail closed if none — never fall back to HTTP).
       const endpoint = selectEndpoint(payload.endpoints);
       if (!endpoint) {
-        set({ phase: "offline", lastError: "no_endpoint" });
+        set({ phase: "offline", lastError: "no_endpoint", lastErrorKind: "no_endpoint" });
         return false;
       }
 
@@ -98,7 +104,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         assertValidHexPin(payload.certificatePin.value);
       } catch (e) {
         const code = e instanceof PinCodecError ? e.code : "invalid_pin";
-        set({ phase: "identity_failed", lastError: code });
+        set({ phase: "identity_failed", lastError: code, lastErrorKind: code });
         return false;
       }
 
@@ -136,7 +142,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       if (!("token" in pairResult)) {
         // PairingFailure — do not persist; let the UI map the error.
         const failure = pairResult as { error: string };
-        set({ phase: "offline", lastError: failure.error });
+        set({ phase: "offline", lastError: failure.error, lastErrorKind: failure.error });
         return false;
       }
 
@@ -161,6 +167,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
           stored,
           phase: kind === "identity_rotated" || kind === "pin_mismatch" ? "identity_failed" : "offline",
           lastError: message,
+          lastErrorKind: kind,
           client: authedClient,
         });
         return false;
@@ -186,6 +193,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       set({
         phase: kind === "pin_mismatch" || kind === "identity_rotated" ? "identity_failed" : "offline",
         lastError: message,
+        lastErrorKind: kind,
       });
       return false;
     }
@@ -194,7 +202,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   connect: async () => {
     const { stored } = get();
     if (!stored) {
-      set({ phase: "offline", lastError: "not_paired" });
+      set({ phase: "offline", lastError: "not_paired", lastErrorKind: "not_paired" });
       return false;
     }
     const generation = ++connectionGeneration;
@@ -202,7 +210,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     try {
       const endpoint = selectEndpoint(stored.endpoints);
       if (!endpoint) {
-        set({ phase: "offline", lastError: "no_endpoint" });
+        set({ phase: "offline", lastError: "no_endpoint", lastErrorKind: "no_endpoint" });
         return false;
       }
 
@@ -226,7 +234,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
       // Check identity epoch — if rotated, the token is invalid.
       if (stored.identityEpoch > 0 && me.identityEpoch !== stored.identityEpoch) {
-        set({ phase: "identity_failed", lastError: "identity_rotated" });
+        set({ phase: "identity_failed", lastError: "identity_rotated", lastErrorKind: "identity_rotated" });
         return false;
       }
 
@@ -258,9 +266,9 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
           onTerminalError: (message) => {
             eventDispatcher.dispatchTerminalError(message);
             if (message.includes("identity") || message.includes("pin_mismatch")) {
-              set({ phase: "identity_failed", lastError: message });
+              set({ phase: "identity_failed", lastError: message, lastErrorKind: "identity_failed" });
             } else {
-              set({ phase: "offline", lastError: message });
+              set({ phase: "offline", lastError: message, lastErrorKind: "offline" });
             }
           },
         },
@@ -272,21 +280,47 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         return false;
       }
 
+      let conversationStream: ConversationEventStreamClient | null = null;
+      try {
+        await client.getConversationCapabilities();
+        const { useConversationStore } = await import("./conversation-store");
+        useConversationStore.setState({ v2Available: true });
+        conversationStream = new ConversationEventStreamClient(
+          transport,
+          (after) => client.getConversationEventStreamUrl(after),
+          () => ({
+            "x-pi-device-id": stored.deviceId,
+            Authorization: `Bearer ${stored.token}`,
+          }),
+          {
+            onEvent: (event) => conversationEventDispatcher.dispatch(event),
+            onSnapshotRequired: () => conversationEventDispatcher.dispatchSnapshotRequired(),
+            onTerminalError: (message) => conversationEventDispatcher.dispatchTerminalError(message),
+          },
+        );
+        await conversationStream.connect();
+      } catch {
+        const { useConversationStore } = await import("./conversation-store");
+        useConversationStore.setState({ v2Available: false });
+      }
+
       set({
         client,
         stream,
+        conversationStream,
         stored: updated,
         phase: "online",
         lastError: null,
+        lastErrorKind: null,
       });
       return true;
     } catch (e) {
       const message = e instanceof NetError ? e.message : (e as Error)?.message ?? "connect_failed";
       const kind = e instanceof NetError ? e.kind : "unknown";
       if (kind === "identity_rotated" || kind === "pin_mismatch") {
-        set({ phase: "identity_failed", lastError: message });
+        set({ phase: "identity_failed", lastError: message, lastErrorKind: kind });
       } else {
-        set({ phase: "offline", lastError: message });
+        set({ phase: "offline", lastError: message, lastErrorKind: kind });
       }
       return false;
     }
@@ -295,13 +329,13 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   wake: async () => {
     const { stored, phase } = get();
     if (!stored?.wakeOnLan?.targets.length) {
-      set({ phase: "offline", lastError: "wake_unavailable" });
+      set({ phase: "offline", lastError: "wake_unavailable", lastErrorKind: "wake_unavailable" });
       return false;
     }
     if (phase === "waking") return false;
 
     const generation = ++wakeGeneration;
-    set({ phase: "waking", lastError: null });
+    set({ phase: "waking", lastError: null, lastErrorKind: null });
     try {
       await getTransport().wakeOnLan({ targets: stored.wakeOnLan.targets });
     } catch (error) {
@@ -309,7 +343,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       const code = (error as { code?: string; message?: string }).code
         ?? (error as { message?: string }).message
         ?? "wake_failed";
-      set({ phase: "offline", lastError: code });
+      set({ phase: "offline", lastError: code, lastErrorKind: code });
       return false;
     }
 
@@ -319,11 +353,11 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       if (generation !== wakeGeneration) return false;
       if (await get().connect()) return true;
       if (get().phase === "identity_failed") return false;
-      set({ phase: "waking", lastError: null });
+      set({ phase: "waking", lastError: null, lastErrorKind: null });
     }
 
     if (generation === wakeGeneration) {
-      set({ phase: "offline", lastError: "wake_timeout" });
+      set({ phase: "offline", lastError: "wake_timeout", lastErrorKind: "wake_timeout" });
     }
     return false;
   },
@@ -333,14 +367,16 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     connectionGeneration += 1;
     const { stream } = get();
     void stream?.stop();
-    set({ phase: "offline", stream: null, client: null });
+    void get().conversationStream?.stop();
+    set({ phase: "offline", stream: null, conversationStream: null, client: null });
   },
 
   forget: async () => {
     wakeGeneration += 1;
     connectionGeneration += 1;
-    const { stored, stream } = get();
+    const { stored, stream, conversationStream } = get();
     if (stream) await stream.stop();
+    if (conversationStream) await conversationStream.stop();
     if (stored) {
       const endpoint = selectEndpoint(stored.endpoints);
       if (endpoint) {
@@ -353,8 +389,10 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       stored: null,
       phase: "idle",
       lastError: null,
+      lastErrorKind: null,
       client: null,
       stream: null,
+      conversationStream: null,
     });
   },
 }));

@@ -9,6 +9,16 @@ import type {
   RemoteTaskCreateRequest,
   RemoteInteractionSnapshot,
   RemoteInteractionResponse,
+  RemoteConversationCapabilities,
+  RemoteConversationCreateRequest,
+  RemoteConversationCreateResponse,
+  RemoteConversationListResponse,
+  RemoteConversationSnapshot,
+  RemoteConversationEvent,
+  RemoteMessagePageResponse,
+  RemoteTurnAppendRequest,
+  RemoteTurnAppendResponse,
+  RemoteTurnCancelResponse,
 } from "@pi/remote-control-contracts";
 
 /**
@@ -138,6 +148,79 @@ export class RemoteControlClient {
     return after != null ? `${wsBase}/api/v1/events?after=${after}` : `${wsBase}/api/v1/events`;
   }
 
+  getConversationEventStreamUrl(after?: number): string {
+    const wsBase = this.baseUrl.replace(/^https/, "wss").replace(/^http/, "ws");
+    const query = after != null ? `?after=${after}` : "";
+    return `${wsBase}/api/v2/events/stream${query}`;
+  }
+
+  // ----------------------------------------------------------------
+  // Conversations v2 (auth) — server-authoritative durable transcripts.
+  // The gateway answers 503 on every v2 route until schema v3 storage and
+  // the probe-proven Pi session runtime are both healthy.
+  // ----------------------------------------------------------------
+
+  async getConversationCapabilities(): Promise<RemoteConversationCapabilities> {
+    return this.sendJson("GET", "/api/v2/capabilities");
+  }
+
+  async listConversations(): Promise<RemoteConversationListResponse> {
+    return this.sendJson("GET", "/api/v2/conversations");
+  }
+
+  async createConversation(req: RemoteConversationCreateRequest): Promise<RemoteConversationCreateResponse> {
+    return this.sendJson("POST", "/api/v2/conversations", req);
+  }
+
+  async getConversation(conversationId: string): Promise<RemoteConversationSnapshot> {
+    return this.sendJson("GET", `/api/v2/conversations/${encodeURIComponent(conversationId)}`);
+  }
+
+  async getConversationMessages(
+    conversationId: string,
+    after?: number,
+    limit?: number,
+  ): Promise<RemoteMessagePageResponse> {
+    const params = new URLSearchParams();
+    if (after != null) params.set("after", String(after));
+    if (limit != null) params.set("limit", String(limit));
+    const qs = params.toString();
+    return this.sendJson(
+      "GET",
+      `/api/v2/conversations/${encodeURIComponent(conversationId)}/messages${qs ? `?${qs}` : ""}`,
+    );
+  }
+
+  async appendTurn(conversationId: string, req: RemoteTurnAppendRequest): Promise<RemoteTurnAppendResponse> {
+    return this.sendJson("POST", `/api/v2/conversations/${encodeURIComponent(conversationId)}/turns`, req);
+  }
+
+  async cancelTurn(turnId: string, requestId: string): Promise<RemoteTurnCancelResponse> {
+    return this.sendJson("POST", `/api/v2/turns/${encodeURIComponent(turnId)}/cancel`, { requestId });
+  }
+
+  async archiveConversation(
+    conversationId: string,
+    requestId: string,
+  ): Promise<{ conversation: RemoteConversationSnapshot; duplicate: boolean }> {
+    return this.sendJson(
+      "POST",
+      `/api/v2/conversations/${encodeURIComponent(conversationId)}/archive`,
+      { requestId },
+    );
+  }
+
+  /**
+   * REST replay of v2 semantic events (owner-scoped). `snapshotRequired`
+   * means the cursor is no longer covered by the retained sequence space —
+   * the caller must refetch authoritative snapshots instead of trusting the
+   * partial tail.
+   */
+  async getConversationEvents(after?: number): Promise<ConversationEventsReplay> {
+    const qs = after != null ? `?after=${after}` : "";
+    return this.sendJson("GET", `/api/v2/events${qs}`);
+  }
+
   // ----------------------------------------------------------------
   // Core request helper
   // ----------------------------------------------------------------
@@ -163,13 +246,39 @@ export class RemoteControlClient {
       headers["Authorization"] = `Bearer ${auth.token}`;
     }
 
-    const res = await this.transport.request({
-      url,
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      timeoutMs: 15000,
-    });
+    let res;
+    try {
+      res = await this.transport.request({
+        url,
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        timeoutMs: 15000,
+      });
+    } catch (error) {
+      // Native SecureNet rejects with `{ status, kind, message }`, while
+      // browser transports normally reject with an Error. Normalize both
+      // here so callers never lose pin/network/timeout classification.
+      if (error instanceof NetError) throw error;
+      const nativeError = error as {
+        kind?: unknown;
+        status?: unknown;
+        message?: unknown;
+      };
+      const status =
+        typeof nativeError.status === "string"
+          ? nativeError.status
+          : typeof nativeError.kind === "string"
+            ? nativeError.kind
+            : "unknown";
+      const message =
+        typeof nativeError.message === "string"
+          ? nativeError.message
+          : error instanceof Error
+            ? error.message
+            : undefined;
+      throw classifyError(status, message);
+    }
 
     if (res.status >= 200 && res.status < 300) {
       return res.body ? (JSON.parse(res.body) as T) : (undefined as T);
@@ -185,4 +294,11 @@ export class RemoteControlClient {
     }
     throw classifyError(res.status, rawMessage);
   }
+}
+
+/** Wire shape of `GET /api/v2/events` (see gateway conversation_routes). */
+export interface ConversationEventsReplay {
+  readonly events: readonly RemoteConversationEvent[];
+  readonly snapshotRequired: boolean;
+  readonly nextCursor?: string;
 }

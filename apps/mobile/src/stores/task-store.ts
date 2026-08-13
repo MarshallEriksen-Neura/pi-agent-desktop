@@ -30,7 +30,7 @@ import { NetError } from "@/net/errors";
  */
 
 export interface OutputFragment {
-  readonly stream: "stdout" | "stderr" | "tool";
+  readonly stream: "stdout" | "stderr" | "tool" | "meta";
   readonly fragment: string;
   readonly sequence: number;
   readonly emittedAt: string;
