@@ -11,6 +11,9 @@ import {
   FileText,
   Send,
   Archive,
+  MoreHorizontal,
+  ChevronDown,
+  X,
 } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
@@ -20,9 +23,12 @@ import { useInteractionStore } from "@/stores/interaction-store";
 import { usePromptCache } from "@/stores/prompt-cache";
 import { useConversationStore } from "@/stores/conversation-store";
 import { useExpiryCountdown } from "@/hooks/useExpiryCountdown";
+import { useModelCatalog, selectableModels } from "@/stores/models-store";
 import { StateView } from "@/components/primitives";
-import { BlockButton, DetailHeader, MobileCard } from "@/components/visual";
+import { BlockButton, DetailHeader, MobileCard, MobileRow } from "@/components/visual";
+import { LongPressButton } from "@/components/confirm";
 import { Timeline, TimelineNode, OptionRow, PromptBox } from "@/components/task-visual";
+import { DetailSkeleton, ListSkeleton } from "@/components/skeleton";
 import {
   MessageBubble,
   ThinkingDots,
@@ -60,14 +66,16 @@ import { REMOTE_TASK_TERMINAL_STATES } from "@pi/remote-control-contracts";
  */
 export const TaskDetailPage = memo(function TaskDetailPage() {
   const { taskId = "" } = useParams();
-  const v2Available = useConversationStore((s) => s.v2Available);
   const probeCapabilities = useConversationStore((s) => s.probeCapabilities);
 
   useEffect(() => {
     void probeCapabilities();
   }, [probeCapabilities]);
 
-  if (v2Available === true) {
+  // Resource identity is durable; a transient capability probe must never
+  // reinterpret an existing conversation as a legacy one-shot task (or vice
+  // versa). Gateway-generated v2 IDs use the stable `conv-` prefix.
+  if (taskId.startsWith("conv-")) {
     return <ConversationDetail conversationId={taskId} />;
   }
 
@@ -157,13 +165,12 @@ const LegacyTaskDetail = memo(function LegacyTaskDetail({ taskId }: { taskId: st
     );
   }
 
+  // 骨架而非转圈:标题块 + 段落 + 代码块的形状预告了落地后的内容,不跳版。
   if (loading && !task) {
     return (
       <div className="page-scroll">
         <DetailHeader title={t("detail.pageTitle")} onBack={() => navigate(-1)} />
-        <div style={{ display: "grid", placeItems: "center", padding: 40 }}>
-          <Loader2 size={24} className="pi-spin" style={{ color: "var(--color-accent)" }} />
-        </div>
+        <DetailSkeleton />
       </div>
     );
   }
@@ -224,6 +231,12 @@ const LegacyTaskDetail = memo(function LegacyTaskDetail({ taskId }: { taskId: st
             {t(`tasks.state.${task.state}`)}
           </div>
           <div className="ssub">{describeTask(task)}</div>
+        </div>
+
+        {/* Legacy one-shot task: readable but never appendable. The badge
+            makes the missing composer intentional, not a bug. */}
+        <div className="legacy-badge">
+          {t("detail.legacyReadOnly")}
         </div>
 
         {/* Lifecycle timeline, directly on the background */}
@@ -366,6 +379,16 @@ const ConversationDetail = memo(function ConversationDetail({ conversationId }: 
   const error = useConversationStore((s) => s.error);
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [followUpModelRef, setFollowUpModelRef] = useState<string | null>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+
+  const catalogModels = useModelCatalog((s) => s.models);
+  const catalogAvailable = useModelCatalog((s) => s.available);
+  const catalogRefresh = useModelCatalog((s) => s.refresh);
+  const selectable = useMemo(() => selectableModels(catalogModels), [catalogModels]);
 
   useEffect(() => {
     void openConversation(conversationId);
@@ -374,9 +397,30 @@ const ConversationDetail = memo(function ConversationDetail({ conversationId }: 
     };
   }, [conversationId, openConversation]);
 
+  useEffect(() => {
+    if (catalogAvailable === null) {
+      void catalogRefresh();
+    }
+  }, [catalogAvailable, catalogRefresh]);
+
   const snapshot = open?.snapshot.conversationId === conversationId ? open.snapshot : null;
   const messages = open?.snapshot.conversationId === conversationId ? open.messages : [];
   const activeTurn = snapshot?.activeTurn;
+  const currentModelRef =
+    followUpModelRef ?? activeTurn?.modelRef ?? snapshot?.latestTurn?.modelRef ?? snapshot?.defaultModelRef;
+
+  // Follow the stream: new messages (user submit or assistant delta/complete)
+  // and turn transitions scroll the transcript to the latest line. Only while
+  // the user is near the bottom — reading history is never interrupted.
+  const lastMessageText = messages[messages.length - 1]?.text ?? "";
+  useEffect(() => {
+    const scroller = transcriptScrollRef.current;
+    if (!scroller) return;
+    const nearBottom =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 160;
+    if (!nearBottom) return;
+    transcriptEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [messages.length, lastMessageText, activeTurn?.turnId]);
   const submit = useCallback(async () => {
     const text = prompt.trim();
     if (!text || submitting) return;
@@ -385,12 +429,16 @@ const ConversationDetail = memo(function ConversationDetail({ conversationId }: 
       const accepted = await appendTurn(conversationId, {
         requestId: generateRequestId(),
         prompt: text,
+        modelRef: followUpModelRef ?? undefined,
       });
-      if (accepted) setPrompt("");
+      if (accepted) {
+        setPrompt("");
+        setFollowUpModelRef(null);
+      }
     } finally {
       setSubmitting(false);
     }
-  }, [appendTurn, conversationId, prompt, submitting]);
+  }, [appendTurn, conversationId, prompt, submitting, followUpModelRef]);
 
   if (!isOnline && !snapshot) {
     return <StateView icon={<AlertCircle size={28} style={{ color: "var(--color-text-tertiary)" }} />} title={t("error.offline")} detail={t("error.offlineDetail")} />;
@@ -399,66 +447,179 @@ const ConversationDetail = memo(function ConversationDetail({ conversationId }: 
     return <div className="page-scroll"><DetailHeader title={t("detail.pageTitle")} onBack={() => navigate(-1)} /><FullScreenLoading error={error} /></div>;
   }
 
+  // 连续同角色消息合并为一组:组内气泡贴紧、不重复时间戳,形成阅读节奏。
+  const groupedRoles = messages.map((message) => (message.role === "user" ? "user" : "assistant"));
+  const isGrouped = (index: number) =>
+    index > 0 && groupedRoles[index] === groupedRoles[index - 1];
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative" }}>
+      {/* 顶栏:返回 + 居中标题/副标题 + ⋯ 菜单(归档/取消收进去) */}
       <div className="detail-head-glass">
         <button className="back" onClick={() => navigate(-1)} aria-label={t("common.back")}>‹</button>
-        <span className="dh">{snapshot.title || t("detail.pageTitle")}</span>
-      </div>
-      <div style={{ flex: 1, overflowY: "auto", paddingBottom: 24 }}>
-        <div className="status-hero">
-          <div className="sicon" style={{ color: activeTurn ? "var(--color-accent)" : "var(--color-success)" }}>
-            {activeTurn ? <Loader2 size={24} className="pi-spin" /> : <CheckCircle2 size={24} />}
-          </div>
-          <div className="stitle">{snapshot.status}</div>
-          <div className="ssub">{snapshot.turnCount} · {snapshot.messageCount}</div>
+        <div className="dh-wrap">
+          <span className="dh">{snapshot.title || t("detail.pageTitle")}</span>
+          <span className="dh-sub">
+            {t(`tasks.state.${snapshot.status}`)} · {t("detail.turnsCount", { count: snapshot.turnCount })} · {currentModelRef ?? t("detail.modelDefault")}
+          </span>
         </div>
-        <div className="divider-label">{t("detail.output")}</div>
+        <div className="head-actions">
+          <button
+            type="button"
+            className="head-icon-btn"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-label={t("detail.moreActions")}
+            aria-expanded={menuOpen}
+          >
+            <MoreHorizontal size={20} />
+          </button>
+        </div>
+      </div>
+
+      {/* ⋯ 下拉菜单:纸面卡片 + 发丝线,归档墨色 / 取消朱砂 */}
+      {menuOpen && (
+        <>
+          <div className="menu-scrim" onClick={() => setMenuOpen(false)} />
+          <div className="head-menu">
+            <button
+              type="button"
+              className="head-menu-row"
+              onClick={() => {
+                setMenuOpen(false);
+                if (window.confirm(t("detail.archiveConfirm"))) {
+                  void archiveConversation(conversationId, generateRequestId());
+                }
+              }}
+            >
+              <Archive size={16} />
+              <span>{t("detail.archive")}</span>
+            </button>
+            {activeTurn && (
+              <button
+                type="button"
+                className="head-menu-row danger"
+                onClick={() => {
+                  setMenuOpen(false);
+                  void cancelTurn(activeTurn.turnId, generateRequestId());
+                }}
+              >
+                <Ban size={16} />
+                <span>{t("detail.cancelTurn")}</span>
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      <div style={{ flex: 1, overflowY: "auto", paddingBottom: 24 }} ref={transcriptScrollRef}>
         <div className="transcript">
           {messages.length === 0 && <div className="hint">{t("chat.noActivity")}</div>}
-          {messages.map((message) => (
-            <MessageBubble key={message.messageId} role={message.role === "user" ? "user" : "assistant"} text={message.text} time={formatClock(message.createdAt)} />
+          {messages.map((message, index) => (
+            <MessageBubble
+              key={message.messageId}
+              role={message.role === "user" ? "user" : "assistant"}
+              text={message.text}
+              time={formatClock(message.createdAt)}
+              grouped={isGrouped(index)}
+            />
           ))}
           {snapshot.pendingInteraction && <SystemNote text={snapshot.pendingInteraction.prompt} />}
           {activeTurn && <ThinkingDots />}
+          <div ref={transcriptEndRef} />
         </div>
-        {activeTurn && (
-          <div className="cancel-zone">
-            <BlockButton variant="outline" onClick={() => void cancelTurn(activeTurn.turnId, generateRequestId())}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-danger)" }}><Ban size={16} />{t("detail.cancel")}</span>
-            </BlockButton>
-          </div>
-        )}
       </div>
       {snapshot.status !== "archived" && snapshot.status !== "unavailable" && (
-        <div className="sticky-bar" style={{ display: "flex", gap: 8 }}>
-          <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={2} className="prompt-input" placeholder={t("compose.promptPlaceholder")} style={{ minHeight: 48, flex: 1 }} />
-          <BlockButton variant="primary" onClick={() => void submit()} disabled={submitting || prompt.trim().length === 0}><Send size={16} /></BlockButton>
+        <div className="glass-composer">
+          <textarea
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            rows={2}
+            placeholder={t("chat.inputPlaceholder")}
+            className="composer-input"
+          />
+          <div className="composer-foot">
+            <button
+              type="button"
+              className="model-chip-sm"
+              onClick={() => setModelPickerOpen((open) => !open)}
+              aria-expanded={modelPickerOpen}
+            >
+              {currentModelRef ?? t("detail.modelDefault")}
+              <ChevronDown size={12} />
+            </button>
+            <button
+              type="button"
+              className="composer-send"
+              onClick={() => void submit()}
+              disabled={submitting || prompt.trim().length === 0}
+              aria-label={t("chat.send")}
+            >
+              <Send size={17} />
+            </button>
+          </div>
         </div>
       )}
-      {snapshot.status !== "archived" && (
-        <div className="cancel-zone">
-          <BlockButton
-            variant="outline"
-            onClick={() => {
-              if (window.confirm(t("detail.archiveConfirm"))) {
-                void archiveConversation(conversationId, generateRequestId());
-              }
-            }}
-          >
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <Archive size={16} />
-              {t("detail.archive")}
-            </span>
-          </BlockButton>
-        </div>
+      {/* 模型选择浮层:贴在 composer 上方,不再霸占正文首屏;选中即收起 */}
+      {modelPickerOpen && (
+        <>
+          <div className="menu-scrim" onClick={() => setModelPickerOpen(false)} />
+          <div className="model-sheet">
+            <div className="model-sheet-head">
+              <span>{t("detail.model")}</span>
+              <button
+                type="button"
+                className="head-icon-btn"
+                onClick={() => setModelPickerOpen(false)}
+                aria-label={t("common.back")}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="model-sheet-body">
+              <MobileRow
+                icon={null}
+                title={t("detail.modelDefault")}
+                detail={t("detail.modelFollowUpHint")}
+                onClick={() => {
+                  setFollowUpModelRef(null);
+                  setModelPickerOpen(false);
+                }}
+                trailing={<span>{followUpModelRef === null ? "✓" : ""}</span>}
+              />
+              {selectable.map((model) => (
+                <MobileRow
+                  key={model.ref}
+                  icon={null}
+                  title={model.displayName ?? model.modelId}
+                  detail={model.ref}
+                  onClick={() => {
+                    setFollowUpModelRef(model.ref);
+                    setModelPickerOpen(false);
+                  }}
+                  trailing={<span>{followUpModelRef === model.ref ? "✓" : ""}</span>}
+                />
+              ))}
+              {selectable.length === 0 && (
+                <p style={{ fontSize: 13, color: "var(--color-text-tertiary)", margin: 0, padding: 12 }}>
+                  {t("compose.modelUnavailable")}
+                </p>
+              )}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
 });
 
 function FullScreenLoading({ error }: { error: string | null }) {
-  return <StateView icon={<Loader2 size={24} className="pi-spin" />} title={error ? t("error.unknown") : t("common.loading")} detail={error ?? undefined} />;
+  // ConversationDetail 专属加载态:不是整个详情页的初始骨架(前面已有),是会话
+  // 特定场景——用户展开了 chat 区但流还没准备好。error 态无法预测形状,StateView 合理。
+  if (error) {
+    return <StateView icon={<AlertCircle size={24} />} title={t("error.unknown")} detail={error} />;
+  }
+  // 正常加载用紧凑骨架,不霸占全屏——这时顶部 task 主信息已渲染,只是聊天区还空着。
+  return <ListSkeleton count={2} />;
 }
 
 function generateRequestId(): string {
@@ -577,22 +738,24 @@ const InteractionEntry = memo(function InteractionEntry({
     <InlineInteraction countdown={remaining !== null ? formatRemaining(remaining) : undefined}>
       <PromptBox>{interaction.prompt}</PromptBox>
 
+      {/* confirm 的两个分支不对称:「拒绝」是安全默认,「批准」可能不可逆
+          (合并、推送、删除都走这条路)。所以不做成并列双按钮 —— 拒绝单击可达,
+          批准要长按。旧版把 Yes 放在左边且单击生效,在手机上远程误触代价太高。 */}
       {interaction.kind === "confirm" && (
-        <div className="btns2">
-          <BlockButton
-            variant="success"
-            disabled={locked}
-            onClick={() => void respond(interaction.interactionId, "confirm", true)}
-          >
-            {t("interaction.yes")}
-          </BlockButton>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <BlockButton
             variant="outline"
             disabled={locked}
             onClick={() => void respond(interaction.interactionId, "confirm", false)}
           >
-            {t("interaction.no")}
+            {t("interaction.reject")}
           </BlockButton>
+          <LongPressButton
+            disabled={locked}
+            onConfirm={() => void respond(interaction.interactionId, "confirm", true)}
+          >
+            {t("confirm.longPress")}
+          </LongPressButton>
         </div>
       )}
 
@@ -630,7 +793,7 @@ const InteractionEntry = memo(function InteractionEntry({
             rows={3}
             placeholder={t("interaction.inputPlaceholder")}
             className="prompt-input"
-            style={{ minHeight: 72, fontSize: 15 }}
+            style={{ minHeight: 72, fontSize: 16 }}
           />
           <BlockButton
             variant="success"

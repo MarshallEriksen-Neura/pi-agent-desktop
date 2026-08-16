@@ -1,6 +1,6 @@
 use crate::protocol::{
-    validate_relative_path, RemoteProjectSummary, RemoteTreeEntry, RemoteTreeEntryKind,
-    RemoteTreePage, ValidationError, MAX_RELATIVE_PATH_BYTES,
+    validate_relative_path, RemoteFileBody, RemoteProjectSummary, RemoteTreeEntry,
+    RemoteTreeEntryKind, RemoteTreePage, ValidationError, MAX_RELATIVE_PATH_BYTES,
 };
 use crate::task_manager::TaskManager;
 use pi_backend_core::projects::{
@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -20,6 +21,9 @@ pub const MAX_TREE_ENTRIES_PER_PAGE: usize = 200;
 pub const MAX_PROJECTS: usize = 64;
 pub const MAX_CURSOR_BYTES: usize = 128;
 pub const MAX_CURSORS: usize = 2_048;
+/// Upper bound for a single file-body preview. Oversized files are truncated
+/// to this size instead of rejected; the response carries `truncated: true`.
+pub const MAX_FILE_BODY_BYTES: usize = 256 * 1024;
 const CURSOR_TTL: Duration = Duration::from_secs(10 * 60);
 const MAX_PROJECT_NAME_BYTES: usize = 256;
 
@@ -69,6 +73,7 @@ pub enum ProjectCatalogError {
     PathPolicy,
     NotDirectory,
     NotRegularFile,
+    FileNotText,
     DeniedEntry,
     ReparsePoint,
     InvalidCursor,
@@ -92,6 +97,7 @@ impl fmt::Display for ProjectCatalogError {
             Self::InvalidRelativePath | Self::PathPolicy => "project path is not allowed",
             Self::NotDirectory => "project directory is not available",
             Self::NotRegularFile => "project file is not available",
+            Self::FileNotText => "project file is not previewable as text",
             Self::DeniedEntry => "project entry is not allowed",
             Self::ReparsePoint => "project entry is not allowed",
             Self::CursorStoreFull | Self::ProjectLimit => "project catalog is at capacity",
@@ -535,6 +541,64 @@ impl ProjectCatalog {
         project_id: &str,
         relative_path: &str,
     ) -> Result<RemoteTreeEntry, ProjectCatalogError> {
+        self.resolve_regular_file(project_id, relative_path)
+            .map(|(entry, _)| entry)
+    }
+
+    /// Read-only text preview of one file, reusing the full context-file
+    /// policy (path validation, deny list, symlink rejection, project-root
+    /// containment) before any byte is read.
+    pub fn read_file_body(
+        &self,
+        project_id: &str,
+        relative_path: &str,
+    ) -> Result<RemoteFileBody, ProjectCatalogError> {
+        let (entry, target) = self.resolve_regular_file(project_id, relative_path)?;
+        let file = fs::File::open(&target).map_err(|_| ProjectCatalogError::Io)?;
+        let mut bytes = Vec::new();
+        file.take(MAX_FILE_BODY_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ProjectCatalogError::Io)?;
+        let truncated = bytes.len() > MAX_FILE_BODY_BYTES;
+        if truncated {
+            bytes.truncate(MAX_FILE_BODY_BYTES);
+        }
+        let content = match std::str::from_utf8(&bytes) {
+            Ok(text) => text.to_owned(),
+            Err(error) => {
+                // error_len() == None means the byte string ends inside a
+                // multi-byte sequence. That is expected when the cap cut
+                // mid-character; fall back to the longest valid prefix. In a
+                // non-truncated read it means genuinely broken UTF-8.
+                if truncated && error.error_len().is_none() {
+                    let valid_up_to = error.valid_up_to();
+                    String::from_utf8(bytes[..valid_up_to].to_vec())
+                        .map_err(|_| ProjectCatalogError::FileNotText)?
+                } else {
+                    return Err(ProjectCatalogError::FileNotText);
+                }
+            }
+        };
+        // NUL is valid UTF-8 yet a strong binary signal — same heuristic git
+        // uses to keep binaries out of text diffs.
+        if content.contains('\0') {
+            return Err(ProjectCatalogError::FileNotText);
+        }
+        Ok(RemoteFileBody {
+            relative_path: entry.relative_path,
+            content,
+            size_bytes: entry.size_bytes.unwrap_or(0),
+            truncated,
+        })
+    }
+
+    /// Shared resolution for every file-level operation: returns both the
+    /// metadata entry (for API responses) and the sanitized on-disk target.
+    fn resolve_regular_file(
+        &self,
+        project_id: &str,
+        relative_path: &str,
+    ) -> Result<(RemoteTreeEntry, PathBuf), ProjectCatalogError> {
         validate_relative_path(relative_path).map_err(map_validation_error)?;
         let record = self.project_record(project_id)?;
         if self.is_denied_path(relative_path) {
@@ -553,7 +617,7 @@ impl ProjectCatalog {
         if !metadata.is_file() {
             return Err(ProjectCatalogError::NotRegularFile);
         }
-        Ok(RemoteTreeEntry {
+        let entry = RemoteTreeEntry {
             name: Path::new(relative_path)
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -563,7 +627,8 @@ impl ProjectCatalog {
             kind: RemoteTreeEntryKind::File,
             size_bytes: Some(metadata.len()),
             modified_at: None,
-        })
+        };
+        Ok((entry, target))
     }
 
     fn project_record(&self, project_id: &str) -> Result<ProjectRecord, ProjectCatalogError> {

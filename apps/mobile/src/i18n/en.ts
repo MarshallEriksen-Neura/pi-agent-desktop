@@ -38,14 +38,17 @@ export const en: Record<string, string> = {
   // Scanner — camera permission + UX states
   "scanner.requestingPermission": "Requesting camera permission…",
   "scanner.denied": "Camera permission denied",
-  "scanner.deniedDetail": "Pairing needs the camera to scan the desktop QR code.",
-  "scanner.permanentlyDenied": "Camera permission permanently denied",
-  "scanner.permanentlyDeniedDetail": "Enable camera permission in system settings to scan pairing QR codes.",
+  "scanner.deniedDetail":
+    "Pairing needs the camera to scan the QR code on your desktop. The feed is decoded on-device — nothing is saved or uploaded.",
+  "scanner.permanentlyDenied": "Camera permission is turned off",
+  "scanner.permanentlyDeniedDetail":
+    "Open Settings → Apps → Pi Remote → Permissions → Camera, enable it, then come back and retry.",
   "scanner.error": "Scanner error",
   "scanner.errorDetail": "The camera scanner could not start or stopped unexpectedly. Review the error below and retry.",
   "scanner.openSettings": "Open system settings",
-  "scanner.unsupported": "Camera scanner unavailable",
-  "scanner.unsupportedDetail": "This device does not support camera QR scanning. Use a different device or the dev manual entry.",
+  "scanner.unsupported": "No camera available here",
+  "scanner.unsupportedDetail":
+    "This environment exposes no camera. You can enter the pairing details manually instead.",
   "scanner.retry": "Try again",
 
   // Connection
@@ -81,8 +84,8 @@ export const en: Record<string, string> = {
   "home.seeAll": "See all",
   "home.awaitingBanner": "{count} tasks awaiting your reply",
 
-  // Tab bar
-  "tab.home": "Home",
+  // Tab bar — matches the task-centre segment naming
+  "tab.home": "Overview",
   "tab.projects": "Projects",
   "tab.tasks": "Tasks",
   "tab.settings": "Settings",
@@ -103,6 +106,12 @@ export const en: Record<string, string> = {
   "settings.securityDetail": "Certificate pinning status",
   "settings.about": "About",
   "settings.aboutDetail": "Version & protocol",
+  "settings.hostDiagnostics": "Host diagnostics",
+  "settings.diagnosticV2": "Conversations v2",
+  "settings.diagnosticModels": "Model catalog",
+  "settings.diagnosticOk": "OK",
+  "settings.diagnosticOff": "Unavailable",
+  "settings.diagnosticProbe": "…",
   "settings.forgetDevice": "Forget this desktop",
   "settings.forgetDeviceDetail": "Clear local connection data",
   "settings.certPin": "Certificate pinning",
@@ -113,6 +122,18 @@ export const en: Record<string, string> = {
   "settings.wakeOnLanUnavailableDetail": "This pairing has no wake-capable adapter. Pair again or check the network adapter.",
   "settings.wakeOnLanAvailable": "Available",
   "settings.wakeOnLanUnavailable": "Unavailable",
+  "settings.address": "Address",
+  "settings.fingerprint": "Certificate fingerprint",
+  "settings.fingerprintHint":
+    "Compare segment by segment with the fingerprint shown in the desktop Remote Control panel — they must match exactly.",
+  "settings.repair": "Pair again",
+  "settings.repairDetail": "Switch machines, or reconnect after the desktop reinstalled pi",
+  "settings.pairedAt": "Paired",
+  "settings.diagnostics": "Network diagnostics",
+  "settings.diagnosticsDetail": "View the most recent connection error",
+  "settings.lastError": "Last error",
+  "settings.noError": "None",
+  "settings.version": "Version",
 
   // Projects
   "projects.title": "Projects",
@@ -130,6 +151,19 @@ export const en: Record<string, string> = {
   "tree.folder": "Folder",
   "tree.loadMore": "Load more",
   "tree.composeWith": "Compose with {count} files",
+  "tree.capReached": "Limit of {max} files reached — deselect one to pick another",
+  "tree.backToRoot": "Back to root",
+  "tree.selectFile": "Select {name}",
+
+  // File preview
+  "file.binary": "This file can't be previewed",
+  "file.unavailable": "Preview unavailable",
+  "file.metaPath": "path",
+  "file.metaSize": "size",
+  "file.metaLines": "lines",
+  "file.truncated": "File exceeds the preview limit — showing the beginning only",
+  "file.addContext": "Add as context",
+  "file.inContext": "Selected as context",
 
   // Task composer
   "compose.title": "New task",
@@ -143,6 +177,8 @@ export const en: Record<string, string> = {
   "compose.invalidContext": "Some context files are invalid or missing.",
   "compose.submitFailed": "Submission failed. Please retry.",
   "compose.submit": "Submit task",
+  "compose.conversationUnavailable": "Multi-turn conversations are unavailable on this desktop. Update or restart the desktop service, then retry.",
+  "compose.checkingConversation": "Checking multi-turn conversation support...",
 
   // Tasks list
   "tasks.title": "Tasks",
@@ -153,6 +189,10 @@ export const en: Record<string, string> = {
   "tasks.state.starting": "Starting",
   "tasks.state.running": "Running",
   "tasks.state.awaiting_input": "Awaiting input",
+  "tasks.state.idle": "Idle",
+  "tasks.state.archived": "Archived",
+  "tasks.state.unavailable": "Unavailable",
+  "tasks.state.interrupted": "Interrupted",
   "tasks.state.succeeded": "Succeeded",
   "tasks.state.failed": "Failed",
   "tasks.state.cancelled": "Cancelled",
@@ -166,9 +206,16 @@ export const en: Record<string, string> = {
   "detail.retryable": "This error is retryable",
   "detail.output": "Live output",
   "detail.cancel": "Cancel task",
+  "detail.cancelTurn": "Cancel running turn",
   "detail.cancelHint": "Cancelling terminates the task and its child processes. This cannot be undone.",
   "detail.archive": "Archive conversation",
   "detail.archiveConfirm": "Archive this conversation?",
+  "detail.moreActions": "More actions",
+  "detail.turnsCount": "{count} turns",
+  "detail.model": "Model",
+  "detail.modelDefault": "Desktop default",
+  "detail.modelFollowUpHint": "Applies to the next turn only; earlier turns keep their own model.",
+  "detail.legacyReadOnly": "One-shot task — read-only, not a conversation",
   "detail.noOutput": "No output yet",
   "detail.stateCreated": "Created",
   "detail.stateStarted": "Started",
@@ -206,6 +253,19 @@ export const en: Record<string, string> = {
   "chat.expiredAnswer": "Timed out without a reply",
   "chat.noActivity": "No output yet",
   "chat.contextOnly": "(no prompt recorded — showing context only)",
+  "chat.stderrMore": "Show {count} more lines",
+  "chat.inputPlaceholder": "Message…",
+  "chat.send": "Send",
+  "chat.copyCode": "Copy code",
+
+  // Notifications
+  "notify.channelName": "Pi task alerts",
+  "notify.channelDesc": "Task completion, Pi replies and interaction requests",
+  "notify.taskDone": "Task finished",
+  "notify.taskDoneBody": "Task state: {state}",
+  "notify.conversationDone": "Pi replied",
+  "notify.conversationDoneBody": "View Pi's reply",
+  "notify.interactionWaiting": "Pi is waiting for you",
 
   // Errors
   "error.offline": "Network unavailable",
@@ -244,4 +304,145 @@ export const en: Record<string, string> = {
   "crash.staleChunkTitle": "Reload to finish updating",
   "crash.staleChunkDetail":
     "This screen belongs to an older version and can no longer load. Reloading picks up the new one. Your desktop and tasks are unaffected.",
+
+  // Long-press confirmation — gate for irreversible actions
+  "confirm.longPress": "Hold to approve",
+  "confirm.longPressTrust": "Hold 2s to trust new certificate",
+  "confirm.irreversible": "Cannot be undone",
+
+  // Pairing result — device info and fingerprint comparison
+  "pairing.stepDiscover": "Device found",
+  "pairing.stepChannel": "Secure channel TLS 1.3",
+  "pairing.stepVerify": "Verifying certificate fingerprint",
+  "pairing.deviceAddress": "Address",
+  "pairing.deviceProtocol": "Protocol",
+  "pairing.deviceLatency": "Latency",
+  "pairing.autoReconnectHint": "Reconnects automatically on this network.",
+  "pairing.startUsing": "Get started",
+  "pairing.fpExpected": "Expected fingerprint (on record)",
+  "pairing.fpActual": "Fingerprint received (current)",
+  "pairing.pinMismatchReason":
+    "This device presented a different certificate than last time. Your desktop may have reinstalled pi — or someone may be impersonating it.",
+  "pairing.cancelPairing": "Cancel pairing",
+  "pairing.trustNewCert": "Trust new certificate",
+  "pairing.diagnostics": "Network diagnostics",
+
+  // Connection trouble — four phases
+  "connection.reconnectingTitle": "Connection lost",
+  "connection.reconnectingDetail":
+    "Trying to restore the connection. Tasks you already submitted keep running on the desktop.",
+  "connection.retryIn": "Retrying in {s}s",
+  "connection.retryNow": "Retry now",
+  "connection.offlineTitle": "Not connected to your desktop",
+  "connection.offlineChecklist": "Check the following",
+  "connection.checkPower": "Computer is on and networked",
+  "connection.checkProcess": "pi is running",
+  "connection.checkNetwork": "Phone and computer on the same network",
+  "connection.cachedTasks": "Available offline",
+  "connection.cachedAt": "Cached at {time}",
+  "connection.wakingTitle": "Waking your desktop",
+  "connection.wakingDetail": "Magic Packet sent. Booting usually takes 10–30 seconds.",
+  "connection.waitedFor": "Waited",
+  "connection.identityFailedTitle": "Can't verify device identity",
+  "connection.identityFailedDetail":
+    "The certificate doesn't match the pairing record. The connection was stopped to protect your data.",
+  "connection.errorTrace": "Error details",
+  "connection.repair": "Pair again",
+
+  // Interactions — countdown and the three kinds
+  "interaction.remaining": "Time remaining",
+  "interaction.expiresHint":
+    "Respond before the countdown ends, or Pi continues with its default.",
+  "interaction.approve": "Approve",
+  "interaction.reject": "Reject",
+  "interaction.skip": "Skip — let Pi decide",
+  "interaction.otherValue": "Enter another value",
+  "interaction.keyDiff": "Key changes",
+  "interaction.viewLogs": "Execution log ({count} entries)",
+  "interaction.approveConsequence": "Merges {count} changed files into {branch}",
+  "interaction.irreversibleDetail":
+    "This pushes to the remote repository and can't be undone automatically.",
+  "interaction.taskOwner": "Task",
+  "interaction.viewFullTask": "View full task",
+  "interaction.replyInstead": "You can also reply in text to suggest another approach",
+
+  // Task centre — four segments
+  "tasks.segAwaiting": "Awaiting you",
+  "tasks.segActive": "In progress",
+  "tasks.segDone": "Finished",
+  "tasks.segAll": "All",
+  "tasks.emptyAwaiting": "Nothing awaiting you",
+  "tasks.emptyAwaitingDetail": "Requests from Pi that need a decision land here.",
+  "tasks.emptyActive": "No tasks running",
+  "tasks.emptyDone": "No finished tasks yet",
+  "tasks.emptyAll": "No tasks yet",
+  "tasks.filter": "Filter tasks",
+  "tasks.pause": "Pause",
+  "tasks.viewLogs": "View logs",
+  "tasks.elapsed": "Took {duration}",
+
+  // Project detail
+  "projects.switch": "Switch",
+  "projects.branch": "Branch",
+  "projects.uncommitted": "{count} uncommitted changes",
+  "projects.todayDone": "Done today",
+  "projects.totalTasks": "Total",
+  "projects.recentTasks": "Recent tasks",
+  "projects.context": "Context",
+  "projects.contextSummary": "{files} files selected",
+  "projects.manageContext": "Manage context",
+  "projects.contextEmpty": "No files selected · Pi will search the repo itself",
+  "projects.settings": "Project settings",
+  "projects.defaultModel": "Default model",
+  "projects.allowedDirs": "Allowed directories",
+
+  // Task composer — quick templates and advanced options
+  "compose.quickAnalyze": "Analyse logs",
+  "compose.quickFix": "Fix error",
+  "compose.quickRefactor": "Refactor",
+  "compose.quickTest": "Write tests",
+  "compose.quickExplain": "Explain code",
+  "compose.removeFile": "Remove file",
+  "compose.advanced": "Advanced",
+  "compose.thinkingLevel": "Thinking effort",
+  "compose.thinkingFast": "Fast",
+  "compose.thinkingStandard": "Standard",
+  "compose.thinkingDeep": "Deep",
+  "compose.model": "Model",
+  "compose.modelDefault": "Desktop default",
+  "compose.modelUnavailable": "Model list is unavailable on this desktop.",
+  "compose.modelRefHint": "Selected model is bound to this conversation and verified before delivery.",
+  "compose.autoExec": "Allow running commands automatically",
+  "compose.notifyDone": "Notify me when finished",
+  "compose.needPrompt": "Describe the task first",
+  "compose.charCount": "{used} / {max}",
+
+  // Onboarding — capability copy
+  "onboarding.headline": "Steer your desktop agent",
+  "onboarding.lede":
+    "Watch task progress, answer Pi's questions, approve or stop it — from your phone. Your code never leaves your own machine.",
+  "onboarding.featLiveTitle": "Live view",
+  "onboarding.featLiveDetail": "Task progress and execution logs mirrored to your phone",
+  "onboarding.featDecideTitle": "Decide remotely",
+  "onboarding.featDecideDetail": "Pi pushes confirmations to your phone; answer in one tap",
+  "onboarding.featSecureTitle": "End-to-end encrypted",
+  "onboarding.featSecureDetail":
+    "Certificate-pinned direct connection — no third-party server in between",
+  "onboarding.scanToPair": "Scan to pair",
+  "onboarding.manualPair": "Enter pairing details manually",
+  "onboarding.prereq": "Start pi on your desktop and open the Remote Control panel first.",
+
+  // Empty and error states
+  "state.noResults": "No matching tasks",
+  "state.noResultsDetail": "Try other keywords, or clear the filters.",
+  "state.taskFailed": "Task failed",
+  "state.timeout": "Your desktop didn't respond",
+  "state.timeoutDetail": "The task may still be running.",
+  "state.refetch": "Refetch status",
+  "state.forbidden": "Your desktop refused this operation",
+  "state.forbiddenDetail":
+    "That directory isn't in pi's allowed list. Add it in desktop settings and retry.",
+  "state.interactionExpired": "This request expired",
+  "state.interactionExpiredDetail": "Pi continued with its default. You can see what it did.",
+  "state.viewTask": "View task",
 };

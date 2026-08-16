@@ -41,6 +41,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Task/interaction notifications (Android 13+ runtime prompt) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <!-- ML Kit Barcode Scanning — camera feature optional (scanner degrades gracefully) -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />

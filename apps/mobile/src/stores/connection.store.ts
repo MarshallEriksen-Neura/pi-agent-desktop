@@ -281,27 +281,40 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       }
 
       let conversationStream: ConversationEventStreamClient | null = null;
+      const { useConversationStore } = await import("./conversation-store");
       try {
         await client.getConversationCapabilities();
-        const { useConversationStore } = await import("./conversation-store");
-        useConversationStore.setState({ v2Available: true });
-        conversationStream = new ConversationEventStreamClient(
-          transport,
-          (after) => client.getConversationEventStreamUrl(after),
-          () => ({
-            "x-pi-device-id": stored.deviceId,
-            Authorization: `Bearer ${stored.token}`,
-          }),
-          {
-            onEvent: (event) => conversationEventDispatcher.dispatch(event),
-            onSnapshotRequired: () => conversationEventDispatcher.dispatchSnapshotRequired(),
-            onTerminalError: (message) => conversationEventDispatcher.dispatchTerminalError(message),
-          },
-        );
-        await conversationStream.connect();
-      } catch {
-        const { useConversationStore } = await import("./conversation-store");
-        useConversationStore.setState({ v2Available: false });
+        useConversationStore.setState({ v2Available: true, v2ProbeError: null });
+      } catch (e) {
+        const unavailable = e instanceof NetError && e.status === 503;
+        useConversationStore.setState((state) => ({
+          v2Available: unavailable ? false : state.v2Available,
+          v2ProbeError: e instanceof NetError ? e.message : "conversation_probe_failed",
+        }));
+      }
+
+      if (useConversationStore.getState().v2Available === true) {
+        try {
+          conversationStream = new ConversationEventStreamClient(
+            transport,
+            (after) => client.getConversationEventStreamUrl(after),
+            () => ({
+              "x-pi-device-id": stored.deviceId,
+              Authorization: `Bearer ${stored.token}`,
+            }),
+            {
+              onEvent: (event) => conversationEventDispatcher.dispatch(event),
+              onSnapshotRequired: () => conversationEventDispatcher.dispatchSnapshotRequired(),
+              onTerminalError: (message) => conversationEventDispatcher.dispatchTerminalError(message),
+            },
+          );
+          await conversationStream.connect();
+        } catch {
+          // The REST conversation API remains usable when the live stream is
+          // temporarily unavailable. Screens reconcile from authoritative
+          // snapshots instead of degrading new work to legacy one-shot tasks.
+          conversationStream = null;
+        }
       }
 
       set({

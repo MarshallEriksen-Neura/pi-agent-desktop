@@ -10,6 +10,7 @@ import type {
 import { useConnectionStore } from "@/stores/connection.store";
 import { useConversationDrafts } from "@/stores/conversation-drafts";
 import { useConversationStore } from "@/stores/conversation-store";
+import { NetError } from "@/net/errors";
 
 const capabilities: RemoteConversationCapabilities = {
   conversationV2: true,
@@ -164,5 +165,31 @@ describe("conversation store reconnect authority", () => {
     });
     expect(useConversationStore.getState().open).toBeNull();
     expect(useConversationDrafts.getState().get("req-offline")?.prompt).toBe("draft only");
+  });
+
+  it("does not disable v2 after a transient capability probe failure", async () => {
+    const client = {
+      getConversationCapabilities: vi.fn(async () => {
+        throw new NetError("timeout", "temporary timeout");
+      }),
+    };
+    useConnectionStore.setState({ client: client as never });
+    useConversationStore.setState({ v2Available: true, v2ProbeError: null });
+
+    await expect(useConversationStore.getState().probeCapabilities()).resolves.toBe(false);
+    expect(useConversationStore.getState().v2Available).toBe(true);
+    expect(useConversationStore.getState().v2ProbeError).toBe("temporary timeout");
+  });
+
+  it("marks v2 unavailable only when the gateway explicitly returns 503", async () => {
+    const client = {
+      getConversationCapabilities: vi.fn(async () => {
+        throw new NetError("server_error", "conversation runtime unavailable", 503);
+      }),
+    };
+    useConnectionStore.setState({ client: client as never });
+
+    await expect(useConversationStore.getState().probeCapabilities()).resolves.toBe(false);
+    expect(useConversationStore.getState().v2Available).toBe(false);
   });
 });

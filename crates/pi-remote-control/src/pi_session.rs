@@ -103,6 +103,15 @@ pub struct PiTurnOutcome {
     pub interaction_requested: bool,
 }
 
+/// Live event observed while a turn streams. The gateway forwards these to
+/// remote clients so a conversation reads progressively instead of appearing
+/// all at once when the turn settles.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PiTurnStreamEvent {
+    /// One `text_delta` fragment of the assistant's final message.
+    TextDelta(String),
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct PiSessionBinding {
     relative_ref: String,
@@ -398,6 +407,16 @@ impl PiSessionHandle {
     /// agent settles. Session state is revalidated afterwards, identical to
     /// [`Self::prompt_and_wait_settled`].
     pub fn run_turn(&mut self, prompt: &str) -> Result<PiTurnOutcome, PiSessionError> {
+        self.run_turn_with_stream(prompt, |_| {})
+    }
+
+    /// [`Self::run_turn`] with a live-event callback: `on_stream` is invoked
+    /// for each streamed fragment as it arrives, before the turn settles.
+    pub fn run_turn_with_stream(
+        &mut self,
+        prompt: &str,
+        mut on_stream: impl FnMut(PiTurnStreamEvent),
+    ) -> Result<PiTurnOutcome, PiSessionError> {
         if prompt.is_empty()
             || prompt.len() > MAX_PROMPT_BYTES
             || prompt.chars().any(char::is_control)
@@ -439,6 +458,7 @@ impl PiSessionHandle {
                                 <= REMOTE_CONVERSATION_MAX_MESSAGE_TEXT_BYTES
                             {
                                 outcome.assistant_text.push_str(delta);
+                                on_stream(PiTurnStreamEvent::TextDelta(delta.to_owned()));
                             }
                         }
                     }
@@ -454,6 +474,24 @@ impl PiSessionHandle {
             validate_existing_raw_state(&self.config, &self.context, &raw_state, &self.pi_version)?;
         self.state = Some(state);
         Ok(outcome)
+    }
+
+    /// Binds the session's model before prompt delivery. The ref must be the
+    /// `provider/modelId` identity accepted at turn acceptance; any failure
+    /// leaves the session untouched and reports `RpcUnavailable` so the
+    /// runtime fails the turn closed instead of silently using another model.
+    pub fn set_model(&mut self, model_ref: &str) -> Result<(), PiSessionError> {
+        let Some((provider, model_id)) = model_ref.split_once('/') else {
+            return Err(err(PiSessionErrorCode::RpcUnavailable));
+        };
+        if provider.is_empty()
+            || model_id.is_empty()
+            || model_id.contains('/')
+            || model_ref.chars().any(char::is_control)
+        {
+            return Err(err(PiSessionErrorCode::RpcUnavailable));
+        }
+        self.child.set_model(provider, model_id)
     }
 
     pub fn shutdown(mut self) -> Result<(), PiSessionError> {
@@ -548,6 +586,35 @@ impl PiSessionChild {
             if value.get("type").and_then(Value::as_str) == Some("agent_settled") {
                 return Ok(());
             }
+        }
+    }
+
+    fn set_model(&mut self, provider: &str, model_id: &str) -> Result<(), PiSessionError> {
+        let line = serde_json::to_string(&serde_json::json!({
+            "type": "set_model",
+            "provider": provider,
+            "modelId": model_id,
+        }))
+        .map_err(|_| err(PiSessionErrorCode::RpcUnavailable))?;
+        self.process
+            .send_json_line(&line)
+            .map_err(|_| err(PiSessionErrorCode::RpcUnavailable))?;
+        let deadline = Instant::now() + self.rpc_timeout;
+        loop {
+            let line = self.recv_until(deadline)?;
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if value.get("type").and_then(Value::as_str) != Some("response") {
+                continue;
+            }
+            if value.get("command").and_then(Value::as_str) != Some("set_model") {
+                continue;
+            }
+            if value.get("success").and_then(Value::as_bool) == Some(true) {
+                return Ok(());
+            }
+            return Err(err(PiSessionErrorCode::RpcUnavailable));
         }
     }
 

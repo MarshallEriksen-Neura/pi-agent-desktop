@@ -7,63 +7,58 @@ import {
   ChevronRight,
   Check,
   AlertCircle,
+  FolderOpen,
 } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { useConnectionStore } from "@/stores/connection.store";
-import { StateView, FullScreenSpinner } from "@/components/primitives";
+import { useCapabilities } from "@/hooks/useCapabilities";
+import {
+  useTreeSelectionStore,
+  selectedFiles,
+} from "@/stores/tree-selection.store";
+import { StateView } from "@/components/primitives";
 import {
   MobileCard,
   MobileRow,
   BlockButton,
+  EmptyState,
 } from "@/components/visual";
+import { ListSkeleton } from "@/components/skeleton";
+import { OfflineView } from "@/components/connection-trouble";
 import { NetError } from "@/net/errors";
 import type {
   RemoteTreeEntry,
   RemoteTreePage,
-  RemoteProjectCapabilities,
 } from "@pi/remote-control-contracts";
 
 /**
- * ProjectTreePage — 受限只读文件选择器。浏览项目树(目录可导航,文件可选为
- * context),转发选择到 TaskComposerPage。
+ * ProjectTreePage — 受限只读文件浏览器。目录可导航,文件可预览(FileViewerPage)
+ * 或勾选为 context,转发选择到 TaskComposerPage。
  *
- * 安全(设计 §4):只展示元数据,不获取文件正文;选择数受服务端
- * maxContextFiles 限制;只使用相对路径。
+ * 安全(设计 §4):只展示元数据;选择数受服务端 maxContextFiles 限制;只使用
+ * 相对路径。文件正文由预览页单独拉取,同样只走相对路径。
  */
 export const ProjectTreePage = memo(function ProjectTreePage() {
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
-  const { isOnline } = useConnection();
+  const { isOnline, stored, connect, wake } = useConnection();
   const client = useConnectionStore((s) => s.client);
+  const { data: capabilities } = useCapabilities();
 
   const [dir, setDir] = useState<string>("");
   const [page, setPage] = useState<RemoteTreePage | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [capabilities, setCapabilities] =
-    useState<RemoteProjectCapabilities | null>(null);
+  // 选满上限后再点会被静默忽略 —— 必须给反馈,否则用户以为点击失灵了。
+  const [capHit, setCapHit] = useState(false);
 
-  useEffect(() => {
-    if (!client) return;
-    void (async () => {
-      try {
-        const caps = await client.getCapabilities();
-        setCapabilities({
-          maxTreeEntriesPerPage: caps.project.maxTreeEntriesPerPage,
-          maxContextFiles: caps.project.maxContextFiles,
-          maxRelativePathBytes: caps.project.maxRelativePathBytes,
-          fileBodyAvailable: false,
-        });
-      } catch {
-        // Capabilities are optional — fall back to a safe default.
-      }
-    })();
-  }, [client]);
-
-  const maxFiles = capabilities?.maxContextFiles ?? 32;
+  const maxFiles = capabilities?.project.maxContextFiles ?? 32;
+  const canPreview = capabilities?.project.fileBodyAvailable ?? false;
+  // 订阅整份 selections(toggle 必然产生新对象),行内即可同步判断勾选态。
+  const selections = useTreeSelectionStore((s) => s.selections);
+  const selected = selections[projectId];
 
   const load = useCallback(
     async (targetDir: string, targetCursor?: string) => {
@@ -104,18 +99,12 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
 
   const toggleFile = useCallback(
     (relativePath: string) => {
-      setSelected((prev) => {
-        const next = new Set(prev);
-        if (next.has(relativePath)) {
-          next.delete(relativePath);
-        } else {
-          if (next.size >= maxFiles) return prev; // cap
-          next.add(relativePath);
-        }
-        return next;
-      });
+      const outcome = useTreeSelectionStore
+        .getState()
+        .toggle(projectId, relativePath, maxFiles);
+      setCapHit(outcome === "capped");
     },
-    [maxFiles],
+    [projectId, maxFiles],
   );
 
   const navigateDir = (entry: RemoteTreeEntry) => {
@@ -123,8 +112,14 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
     void load(entry.relativePath);
   };
 
+  const openPreview = (entry: RemoteTreeEntry) => {
+    navigate(
+      `/projects/${encodeURIComponent(projectId)}/file?path=${encodeURIComponent(entry.relativePath)}`,
+    );
+  };
+
   const handleCompose = () => {
-    const files = Array.from(selected);
+    const files = selectedFiles(projectId);
     navigate(`/projects/${encodeURIComponent(projectId)}/compose`, {
       state: { contextFiles: files },
     });
@@ -132,16 +127,27 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
 
   if (!isOnline) {
     return (
-      <StateView
-        icon={<AlertCircle size={28} style={{ color: "var(--color-text-tertiary)" }} />}
-        title={t("error.offline")}
-        detail={t("error.offlineDetail")}
+      <OfflineView
+        canWake={Boolean(stored?.wakeOnLan?.targets.length)}
+        cachedTasks={[]}
+        onReconnect={connect}
+        onWake={wake}
       />
     );
   }
 
+  // 骨架而非转圈:文件树是等高行,骨架能预告落地后的形状。
   if (loading) {
-    return <FullScreenSpinner label={t("common.loading")} />;
+    return (
+      <div className="page-scroll">
+        <div className="breadcrumb">
+          <span style={{ color: "var(--color-text-tertiary)", fontSize: 14 }}>
+            {t("tree.root")}
+          </span>
+        </div>
+        <ListSkeleton count={6} />
+      </div>
+    );
   }
 
   if (error && !page) {
@@ -193,18 +199,28 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
           ))}
       </div>
 
-      {/* Selection counter */}
-      <div className="sel-counter">
-        {t("tree.selected", { count: selected.size, max: maxFiles })}
+      {/* Selection counter —— 选满上限时变成解释性提示,而不是一个不动的数字 */}
+      <div className={`sel-counter${capHit ? " cap" : ""}`}>
+        {capHit
+          ? t("tree.capReached", { max: maxFiles })
+          : t("tree.selected", { count: selected?.size ?? 0, max: maxFiles })}
       </div>
 
       {/* Entries */}
-      <MobileCard>
-        {entries.length === 0 ? (
-          <div className="hint">{t("tree.empty")}</div>
-        ) : (
-          entries.map((entry) => {
-            const isSelected = selected.has(entry.relativePath);
+      {entries.length === 0 ? (
+        <EmptyState icon={<FolderOpen size={26} />}>
+          <div style={{ marginBottom: 8 }}>{t("tree.empty")}</div>
+          {dir && (
+            <BlockButton variant="outline" onClick={() => void load("")}>
+              {t("tree.backToRoot")}
+            </BlockButton>
+          )}
+        </EmptyState>
+      ) : (
+        <MobileCard>
+          {entries.map((entry) => {
+            const isSelected = selected?.has(entry.relativePath) ?? false;
+            const atCap = !isSelected && (selected?.size ?? 0) >= maxFiles;
             return (
               <MobileRow
                 key={entry.relativePath}
@@ -229,41 +245,63 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
                       size={18}
                       style={{ color: "var(--color-text-tertiary)" }}
                     />
-                  ) : isSelected ? (
+                  ) : (
+                    // 点击行为已让给预览,勾选移到行尾独立触控区(padding 撑到
+                    // 44px)。到达上限的未选项降低不透明度,让「点不动」有视觉
+                    // 解释。span 而非 button:整行本身已是 button,嵌套按钮是
+                    // 非法 HTML。
                     <span
+                      role="checkbox"
+                      aria-checked={isSelected}
+                      aria-label={t("tree.selectFile", { name: entry.name })}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFile(entry.relativePath);
+                      }}
                       style={{
                         display: "grid",
                         placeItems: "center",
-                        width: 24,
-                        height: 24,
-                        borderRadius: "50%",
-                        background: "var(--color-accent)",
-                        color: "#fff",
+                        width: 44,
+                        height: 44,
+                        flexShrink: 0,
+                        marginRight: -10,
+                        cursor: "pointer",
+                        opacity: atCap ? 0.35 : 1,
                       }}
                     >
-                      <Check size={14} />
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          display: "grid",
+                          placeItems: "center",
+                          width: 24,
+                          height: 24,
+                          borderRadius: "50%",
+                          background: isSelected ? "var(--color-accent)" : "transparent",
+                          border: isSelected
+                            ? "none"
+                            : "1.5px solid var(--color-text-tertiary)",
+                          color: "#fff",
+                        }}
+                      >
+                        {isSelected && <Check size={14} />}
+                      </span>
                     </span>
-                  ) : (
-                    <span
-                      style={{
-                        width: 24,
-                        height: 24,
-                        borderRadius: "50%",
-                        border: "1.5px solid var(--color-text-tertiary)",
-                      }}
-                    />
                   )
                 }
                 onClick={
                   entry.kind === "directory"
                     ? () => navigateDir(entry)
-                    : () => toggleFile(entry.relativePath)
+                    : // 网关不支持正文时退回旧行为:整行点击即勾选。
+                      canPreview
+                      ? () => openPreview(entry)
+                      : () => toggleFile(entry.relativePath)
                 }
               />
             );
-          })
-        )}
-      </MobileCard>
+          })}
+        </MobileCard>
+      )}
 
       {/* Load more */}
       {hasMore && (
@@ -279,7 +317,7 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
       )}
 
       {/* Sticky compose bar */}
-      {selected.size > 0 && (
+      {(selected?.size ?? 0) > 0 && (
         <motion.div
           initial={{ y: 80, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
@@ -294,7 +332,7 @@ export const ProjectTreePage = memo(function ProjectTreePage() {
                 justifyContent: "center",
               }}
             >
-              {t("tree.composeWith", { count: selected.size })}
+              {t("tree.composeWith", { count: selected!.size })}
               <ChevronRight size={18} />
             </span>
           </BlockButton>

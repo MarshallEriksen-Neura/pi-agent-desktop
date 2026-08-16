@@ -1,8 +1,10 @@
-import { memo } from "react";
+import { memo, useEffect } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { useInteractionStore, selectPendingCount } from "@/stores/interaction-store";
+import { setCurrentRoute } from "@/services/route-tracker";
+import { onTaskNotificationTap } from "@/services/notifications";
 import { ConnectionBar } from "./ConnectionBar";
 
 /**
@@ -33,6 +35,25 @@ export const AppShell = memo(function AppShell() {
   const { phase } = useConnection();
   const pendingCount = useInteractionStore(selectPendingCount);
 
+  // Keep the route mirror current for notification "am I watching this?" checks.
+  useEffect(() => {
+    setCurrentRoute(location.pathname);
+  }, [location.pathname]);
+
+  // Deep-link from notification taps to the task/conversation detail page.
+  useEffect(() => {
+    return onTaskNotificationTap((route) => {
+      navigate(route);
+    });
+  }, [navigate]);
+
+  // 沉浸式页面:详情页(聊天室)隐藏连接条 + tab bar,消息流独占整屏;
+  // compose 表单页和文件预览页同样隐藏两者,让底部操作独占空间。
+  const isDetail = /^\/tasks\/[^/]+$/.test(location.pathname);
+  const isImmersive = /\/(compose|file)$/.test(location.pathname);
+  const hideConnectionBar = isDetail || isImmersive;
+  const hideTabBar = isDetail || isImmersive;
+
   return (
     <div
       style={{
@@ -42,23 +63,26 @@ export const AppShell = memo(function AppShell() {
         paddingTop: "var(--safe-top)",
       }}
     >
-      {/* Connection status bar */}
-      <ConnectionBar phase={phase} />
+      {/* Connection status bar — 沉浸式页面隐藏 */}
+      {!hideConnectionBar && <ConnectionBar phase={phase} />}
 
       {/* Page content */}
       <main
         style={{
           flex: 1,
           overflow: "auto",
-          paddingBottom: "calc(var(--safe-bottom) + 64px)",
+          paddingBottom: hideTabBar
+            ? "var(--safe-bottom)"
+            : "calc(var(--safe-bottom) + 64px)",
           WebkitOverflowScrolling: "touch",
         }}
       >
         <Outlet />
       </main>
 
-      {/* Bottom tab bar */}
-      <nav
+      {/* Bottom tab bar — compose 表单页隐藏 */}
+      {!hideTabBar && (
+        <nav
         style={{
           position: "fixed",
           bottom: 0,
@@ -69,7 +93,6 @@ export const AppShell = memo(function AppShell() {
           paddingBottom: "var(--safe-bottom)",
           background: "color-mix(in srgb, var(--color-bg-base) 85%, transparent)",
           backdropFilter: "blur(20px)",
-          borderTop: "1px solid var(--color-separator)",
           zIndex: 10,
         }}
       >
@@ -128,6 +151,7 @@ export const AppShell = memo(function AppShell() {
           );
         })}
       </nav>
+      )}
     </div>
   );
 });

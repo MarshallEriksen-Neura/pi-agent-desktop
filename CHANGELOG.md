@@ -2,7 +2,24 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
-## [Unreleased]
+## [0.5.0] — 2026-08-17
+
+### Added
+- **移动端流式回复** — 会话网关新增 `message.delta` 事件实时转发（`run_turn_with_stream` + 流式 outbox 写入），移动端回复逐字显示，不再等回合结束后一次性出现
+- **移动端本地通知** — `@capacitor/local-notifications` 接入：会话回复完成、一次性任务完成、Pi 等待交互时推送系统横幅通知；正在观看对应页面不打扰；点击通知深链跳转会话/任务详情
+- **CI/CD Android 打包** — `release.yml` 新增 `android` job：push tag 时自动构建并签名 APK 附到 GitHub Release（keystore 由 `PI_KEYSTORE_*` secrets 注入，未配置时 fallback debug 签名）
+- **Android 签名配置** — `build.gradle` 支持环境变量驱动的 release 签名 + tag 版本号注入（`-PversionName`）
+- 通知图标 `ic_stat_pi.xml`、通知渠道 `pi-task-events`（高优先级 + 震动）
+
+### Changed
+- **移动端聊天页布局重构** — 会话详情页按 iOS 信息架构重组：顶栏「返回 + 居中标题/副标题（状态·轮次·模型）+ ⋯ 菜单（归档/取消收进）」，模型选择移入 composer 底行，删除独立状态条、正文取消按钮与全宽归档按钮
+- **沉浸式页面** — 聊天详情页、新建任务页、文件预览页隐藏顶部连接条与底部 TabBar，内容独占整屏
+- **边框体系减淡** — 深色主题 `--color-separator` 0.6 → 0.34，TabBar/Composer 去除硬边框，改毛玻璃 + 背景色差分区
+- 连接条移除「Pi Desktop」文字，仅保留连接状态徽标
+
+### Fixed
+- 移动端第二轮对话 AI 回复不可见（数据正常但列表无自动滚动）— 新增近底部条件滚动跟随
+- 移动端只能看到回复最终内容、中间过程缺失 — 网关流式事件转发（桌面端需重启生效）
 
 ---
 

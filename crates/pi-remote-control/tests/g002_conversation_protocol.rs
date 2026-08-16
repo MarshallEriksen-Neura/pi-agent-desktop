@@ -330,6 +330,7 @@ fn turn(state: RemoteTurnState, error: Option<RemoteConversationError>) -> Remot
         user_message_id: "msg_user".to_owned(),
         assistant_message_id: None,
         pending_interaction_id: None,
+        model_ref: None,
         delivery: None,
         error,
     }

@@ -127,6 +127,7 @@ fn create_acceptance(conversation_id: &str, request_id: &str) -> ConversationAcc
         delivery_id: format!("delivery-{request_id}"),
         prompt: format!("prompt {request_id}"),
         context_json: br#"[]"#.to_vec(),
+        model_ref: None,
         created_at_ms: 1_000,
         created_at: "1970-01-01T00:00:01.000Z".into(),
         request_fingerprint: format!("fingerprint-{request_id}"),
@@ -149,6 +150,7 @@ fn append_acceptance(
         delivery_id: format!("delivery-{request_id}"),
         prompt: format!("prompt {request_id}"),
         context_json: br#"[]"#.to_vec(),
+        model_ref: None,
         created_at_ms,
         created_at: format!("unix-ms:{created_at_ms}"),
         request_fingerprint: format!("fingerprint-{request_id}"),
@@ -162,7 +164,7 @@ fn new_database_creates_schema_v3_without_restore_point() {
     let path = db_path("new");
     let _storage = RemoteStorage::open(&path).unwrap();
 
-    assert_eq!(schema_version(&path).as_deref(), Some("3"));
+    assert_eq!(schema_version(&path).as_deref(), Some("4"));
     let tables = table_names(&path);
     for required in [
         "conversations",
@@ -181,11 +183,14 @@ fn new_database_creates_schema_v3_without_restore_point() {
             "conversation_interactions",
             "conversation_sessions",
             "conversations",
+            "device_model_admin",
             "devices",
             "events",
             "idempotency",
             "messages",
             "metadata",
+            "model_admin_audit",
+            "remote_model_allowlist",
             "tasks",
             "turns",
         ]
@@ -252,7 +257,7 @@ fn schema_v2_upgrade_creates_sqlite_restore_point_and_preserves_v1_rows_byte_for
 
     let _storage = RemoteStorage::open(&path).unwrap();
 
-    assert_eq!(schema_version(&path).as_deref(), Some("3"));
+    assert_eq!(schema_version(&path).as_deref(), Some("4"));
     assert!(restore_path(&path, 2).exists());
     let connection = Connection::open(&path).unwrap();
     let after: Vec<u8> = connection
@@ -358,13 +363,13 @@ fn restore_point_failure_prevents_migration() {
 }
 
 #[test]
-fn downgrade_after_schema_v3_is_refused_without_deleting_data() {
+fn downgrade_after_schema_v4_is_refused_without_deleting_data() {
     let path = db_path("downgrade");
     let connection = Connection::open(&path).unwrap();
     connection
         .execute_batch(
             "CREATE TABLE metadata(key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
-             INSERT INTO metadata(key, value) VALUES ('schema_version', '4');
+             INSERT INTO metadata(key, value) VALUES ('schema_version', '5');
              CREATE TABLE conversations(conversation_id TEXT PRIMARY KEY NOT NULL);",
         )
         .unwrap();
@@ -374,11 +379,11 @@ fn downgrade_after_schema_v3_is_refused_without_deleting_data() {
     assert!(matches!(
         result,
         Err(StorageError::DowngradeRefused {
-            found: 4,
-            supported: 3,
+            found: 5,
+            supported: 4,
         })
     ));
-    assert_eq!(schema_version(&path).as_deref(), Some("4"));
+    assert_eq!(schema_version(&path).as_deref(), Some("5"));
     assert!(table_names(&path)
         .iter()
         .any(|name| name == "conversations"));
@@ -509,15 +514,17 @@ fn owner_scoped_load_list_and_message_pages_hide_other_devices() {
     storage
         .append_conversation_turn(&append_acceptance("conv-01", "req-02", 2_000))
         .unwrap();
+    let mut second_owner = create_acceptance("conv-02", "req-owner-02");
+    second_owner.owner_device_id = "mobile-02".into();
+    storage.create_conversation_turn(&second_owner).unwrap();
 
     assert!(storage
         .load_conversation("mobile-02", "conv-01")
         .unwrap()
         .is_none());
-    assert!(storage
-        .list_conversations("mobile-02", 10)
-        .unwrap()
-        .is_empty());
+    let other_owner = storage.list_conversations("mobile-02", 10).unwrap();
+    assert_eq!(other_owner.len(), 1);
+    assert_eq!(other_owner[0].conversation_id, "conv-02");
     assert!(storage
         .load_conversation_messages("mobile-02", "conv-01", None, 10)
         .unwrap()
@@ -535,6 +542,32 @@ fn owner_scoped_load_list_and_message_pages_hide_other_devices() {
         .unwrap();
     assert_eq!(page.messages.len(), 1);
     assert_eq!(page.next_cursor.as_deref(), Some("2"));
+
+    let desktop = storage.list_conversations_for_desktop(10).unwrap();
+    assert_eq!(desktop.len(), 2);
+    assert!(desktop.iter().any(|item| {
+        item.conversation_id == "conv-01" && item.owner_device_id == "mobile-01"
+    }));
+    assert!(desktop.iter().any(|item| {
+        item.conversation_id == "conv-02" && item.owner_device_id == "mobile-02"
+    }));
+    assert_eq!(
+        storage
+            .load_conversation_for_desktop("conv-02")
+            .unwrap()
+            .unwrap()
+            .owner_device_id,
+        "mobile-02"
+    );
+    assert_eq!(
+        storage
+            .load_conversation_messages_for_desktop("conv-02", None, 10)
+            .unwrap()
+            .unwrap()
+            .messages
+            .len(),
+        1
+    );
 
     cleanup(&path);
 }

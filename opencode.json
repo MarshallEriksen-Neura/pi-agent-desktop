@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "figma": {
+      "type": "remote",
+      "url": "https://mcp.figma.com/mcp",
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {file:.figma-token}"
+      },
+      "enabled": true
+    },
+    "stitch": {
+      "type": "remote",
+      "url": "https://stitch.googleapis.com/mcp",
+      "oauth": false,
+      "timeout": 600000,
+      "headers": {
+        "X-Goog-Api-Key": "{file:.stitch-key}"
+      }
+    }
+  }
+}

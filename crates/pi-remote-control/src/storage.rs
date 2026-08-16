@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const STORAGE_SCHEMA_VERSION: i64 = 3;
+pub const STORAGE_SCHEMA_VERSION: i64 = 4;
 pub const MAX_TASKS: usize = 500;
 pub const MAX_EVENTS: usize = 10_000;
 pub const TASK_RETENTION_MS: u64 = 30 * 24 * 60 * 60 * 1000;
@@ -118,6 +118,9 @@ pub struct ConversationAcceptance {
     pub delivery_id: String,
     pub prompt: String,
     pub context_json: Vec<u8>,
+    /// Immutable per-turn model binding, verified by the runtime before prompt
+    /// delivery. `None` = host default at acceptance time.
+    pub model_ref: Option<String>,
     pub created_at_ms: u64,
     pub created_at: String,
     pub request_fingerprint: String,
@@ -135,6 +138,9 @@ pub struct ConversationAppendAcceptance {
     pub delivery_id: String,
     pub prompt: String,
     pub context_json: Vec<u8>,
+    /// Immutable per-turn model binding; also advances the conversation
+    /// default when present.
+    pub model_ref: Option<String>,
     pub created_at_ms: u64,
     pub created_at: String,
     pub request_fingerprint: String,
@@ -187,6 +193,8 @@ pub struct DispatchableTurn {
     pub request_id: String,
     pub prompt: String,
     pub context_json: Vec<u8>,
+    /// Immutable per-turn model binding from acceptance.
+    pub model_ref: Option<String>,
     pub created_at_ms: u64,
 }
 
@@ -261,6 +269,7 @@ pub enum MigrationFailurePoint {
     BeforeRestorePoint,
     AfterRestorePoint,
     AfterV3Tables,
+    AfterV4Tables,
 }
 
 impl RemoteStorage {
@@ -341,14 +350,15 @@ impl RemoteStorage {
 
         transaction
             .execute(
-                "INSERT INTO conversations(conversation_id, owner_device_id, project_id, status, title, created_at_ms, updated_at_ms, archived_at_ms)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?5, NULL)",
+                "INSERT INTO conversations(conversation_id, owner_device_id, project_id, status, title, created_at_ms, updated_at_ms, archived_at_ms, default_model_ref)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?5, NULL, ?6)",
                 params![
                     acceptance.conversation_id,
                     acceptance.owner_device_id,
                     acceptance.project_id,
                     acceptance.title,
                     acceptance.created_at_ms as i64,
+                    acceptance.model_ref,
                 ],
             )
             .map_err(map_database_error)?;
@@ -362,6 +372,7 @@ impl RemoteStorage {
             &acceptance.delivery_id,
             &acceptance.prompt,
             &acceptance.context_json,
+            acceptance.model_ref.as_deref(),
             acceptance.created_at_ms,
             "create",
             &acceptance.request_fingerprint,
@@ -458,6 +469,7 @@ impl RemoteStorage {
             &acceptance.delivery_id,
             &acceptance.prompt,
             &acceptance.context_json,
+            acceptance.model_ref.as_deref(),
             acceptance.created_at_ms,
             "append",
             &acceptance.request_fingerprint,
@@ -466,8 +478,14 @@ impl RemoteStorage {
         )?;
         transaction
             .execute(
-                "UPDATE conversations SET status='queued', updated_at_ms=?1 WHERE conversation_id=?2",
-                params![acceptance.created_at_ms as i64, acceptance.conversation_id],
+                "UPDATE conversations SET status='queued', updated_at_ms=?1,
+                        default_model_ref=COALESCE(?2, default_model_ref)
+                 WHERE conversation_id=?3",
+                params![
+                    acceptance.created_at_ms as i64,
+                    acceptance.model_ref,
+                    acceptance.conversation_id,
+                ],
             )
             .map_err(map_database_error)?;
         let response = load_turn_append_response_locked(
@@ -503,12 +521,45 @@ impl RemoteStorage {
         Ok(response)
     }
 
+    /// Appends one live conversation event (message.delta / tool.*) to the
+    /// owner outbox in its own small transaction so the streaming lane can
+    /// emit while a turn is still running (the terminal `complete_turn`
+    /// remains the single authority for the final message). `build_event`
+    /// receives the assigned owner-scoped sequence so the serialized event
+    /// and the outbox sequence column always agree.
+    pub fn append_streaming_conversation_event<F>(
+        &self,
+        owner_device_id: &str,
+        event_id: &str,
+        emitted_at_ms: u64,
+        build_event: F,
+    ) -> Result<u64, StorageError>
+    where
+        F: FnOnce(u64) -> RemoteConversationEvent,
+    {
+        let mut connection = self.connection.lock().map_err(|_| StorageError::Database)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_database_error)?;
+        let sequence = next_raw_event_sequence(&transaction, owner_device_id)?;
+        let event = build_event(sequence);
+        insert_raw_conversation_event(
+            &transaction,
+            owner_device_id,
+            sequence,
+            event_id,
+            emitted_at_ms,
+            &event,
+        )?;
+        transaction.commit().map_err(map_database_error)?;
+        Ok(sequence)
+    }
+
     pub fn load_conversation(
         &self,
         owner_device_id: &str,
         conversation_id: &str,
-    ) -> Result<Option<RemoteConversationSnapshot>, StorageError> {
-        validate_key(owner_device_id)?;
+    ) -> Result<Option<RemoteConversationSnapshot>, StorageError> {        validate_key(owner_device_id)?;
         validate_key(conversation_id)?;
         let connection = self.connection.lock().map_err(|_| StorageError::Database)?;
         if !owner_conversation_exists_optional(&connection, owner_device_id, conversation_id)? {
@@ -542,6 +593,149 @@ impl RemoteStorage {
         ids.into_iter()
             .map(|id| load_conversation_snapshot(&connection, owner_device_id, &id))
             .collect()
+    }
+
+    /// Local-desktop administration query across paired-device owners.
+    ///
+    /// Network routes must continue to use [`Self::list_conversations`] so a
+    /// mobile principal can never cross the owner boundary. This method exists
+    /// only for the in-process Tauri bridge that owns the gateway database.
+    pub fn list_conversations_for_desktop(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<RemoteConversationSnapshot>, StorageError> {
+        let connection = self.connection.lock().map_err(|_| StorageError::Database)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT owner_device_id, conversation_id FROM conversations
+                 ORDER BY updated_at_ms DESC, conversation_id ASC
+                 LIMIT ?1",
+            )
+            .map_err(map_database_error)?;
+        let rows = statement
+            .query_map(params![limit.min(100) as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(map_database_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(map_database_error)?;
+        rows.into_iter()
+            .map(|(owner, id)| load_conversation_snapshot(&connection, &owner, &id))
+            .collect()
+    }
+
+    /// Loads one conversation for the local desktop bridge without requiring
+    /// the UI to know or transmit its owning device ID.
+    pub fn load_conversation_for_desktop(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<RemoteConversationSnapshot>, StorageError> {
+        validate_key(conversation_id)?;
+        let connection = self.connection.lock().map_err(|_| StorageError::Database)?;
+        let owner = connection
+            .query_row(
+                "SELECT owner_device_id FROM conversations WHERE conversation_id=?1",
+                params![conversation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(map_database_error)?;
+        owner
+            .map(|owner| load_conversation_snapshot(&connection, &owner, conversation_id))
+            .transpose()
+    }
+
+    pub fn load_conversation_messages_for_desktop(
+        &self,
+        conversation_id: &str,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<Option<RemoteMessagePageResponse>, StorageError> {
+        validate_key(conversation_id)?;
+        let connection = self.connection.lock().map_err(|_| StorageError::Database)?;
+        let exists = connection
+            .query_row(
+                "SELECT 1 FROM conversations WHERE conversation_id=?1",
+                params![conversation_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(map_database_error)?
+            .is_some();
+        if !exists {
+            return Ok(None);
+        }
+        let page_limit = limit.min(REMOTE_CONVERSATION_MAX_PAGE_SIZE).max(1);
+        let rows = load_messages_after(
+            &connection,
+            conversation_id,
+            after_ordinal.unwrap_or(0),
+            page_limit + 1,
+        )?;
+        let next_cursor = rows.get(page_limit).map(|(ordinal, _)| ordinal.to_string());
+        let messages = rows
+            .into_iter()
+            .take(page_limit)
+            .map(|(_, message)| message)
+            .collect();
+        Ok(Some(RemoteMessagePageResponse {
+            conversation_id: conversation_id.to_owned(),
+            messages,
+            next_cursor,
+        }))
+    }
+
+    /// Desktop-host append across owners. The desktop bridge is the gateway
+    /// owner and may append to any paired device's conversation; network
+    /// routes must keep using [`Self::append_conversation_turn`] so a mobile
+    /// principal can never cross the owner boundary. Idempotent by the
+    /// caller-supplied `request_id`.
+    pub fn append_conversation_turn_for_desktop(
+        &self,
+        conversation_id: &str,
+        prompt: &str,
+        context_json: Vec<u8>,
+        model_ref: Option<String>,
+        request_id: String,
+        event_id: String,
+    ) -> Result<RemoteTurnAppendResponse, StorageError> {
+        validate_key(conversation_id)?;
+        validate_key(&request_id)?;
+        validate_key(&event_id)?;
+        if prompt.is_empty()
+            || prompt.len() > REMOTE_CONVERSATION_MAX_PROMPT_BYTES
+            || context_json.len() > MAX_REQUEST_BYTES
+        {
+            return Err(StorageError::PayloadTooLarge);
+        }
+        let owner = self
+            .load_conversation_for_desktop(conversation_id)?
+            .ok_or(StorageError::InvalidKey)?
+            .owner_device_id;
+        let (created_at_ms, created_at) = {
+            let ms = now_ms();
+            (ms, crate::task_manager::format_timestamp(ms))
+        };
+        let turn_material = format!("desktop:{conversation_id}:{request_id}");
+        let turn_id = deterministic_id("turn", &turn_material);
+        let user_message_id = deterministic_id("msg", &turn_material);
+        let delivery_id = deterministic_id("dlv", &turn_material);
+        self.append_conversation_turn(&ConversationAppendAcceptance {
+            owner_device_id: owner,
+            conversation_id: conversation_id.to_owned(),
+            turn_id,
+            request_id,
+            user_message_id,
+            delivery_id,
+            prompt: prompt.to_owned(),
+            context_json,
+            model_ref,
+            created_at_ms,
+            created_at,
+            request_fingerprint: format!("desktop:{conversation_id}"),
+            idempotency_expires_at_ms: created_at_ms + 24 * 60 * 60 * 1000,
+            event_id,
+        })
     }
 
     pub fn load_conversation_messages(
@@ -1137,7 +1331,7 @@ impl RemoteStorage {
         let row = connection
             .query_row(
                 "SELECT t.turn_id, t.conversation_id, t.request_id, t.context_json,
-                        t.created_at_ms, c.owner_device_id, c.project_id
+                        t.created_at_ms, t.model_ref, c.owner_device_id, c.project_id
                  FROM turns t
                  JOIN conversations c ON c.conversation_id = t.conversation_id
                  WHERE t.state='queued' AND t.delivery_state='accepted'
@@ -1153,8 +1347,9 @@ impl RemoteStorage {
                         row.get::<_, String>(2)?,
                         row.get::<_, Vec<u8>>(3)?,
                         row.get::<_, i64>(4)?,
-                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
                     ))
                 },
             )
@@ -1166,6 +1361,7 @@ impl RemoteStorage {
             request_id,
             context_json,
             created_at_ms,
+            model_ref,
             owner,
             project_id,
         )) = row
@@ -1190,6 +1386,7 @@ impl RemoteStorage {
             request_id,
             prompt,
             context_json,
+            model_ref,
             created_at_ms: created_at_ms as u64,
         }))
     }
@@ -2022,6 +2219,115 @@ impl RemoteStorage {
         })
         .collect()
     }
+
+    /// Upserts one remote-model allowlist entry. Returns
+    /// `(remote_allowed, was_already_current)`.
+    pub fn set_model_remote_allowed(
+        &self,
+        model_ref: &str,
+        enabled: bool,
+        at_ms: u64,
+    ) -> Result<(bool, bool), StorageError> {
+        validate_key(model_ref)?;
+        let connection = self.connection.lock().map_err(|_| StorageError::Database)?;
+        let changed = connection
+            .execute(
+                "INSERT INTO remote_model_allowlist(model_ref, allowed, updated_at_ms)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(model_ref) DO UPDATE SET allowed=excluded.allowed, updated_at_ms=excluded.updated_at_ms
+                 WHERE remote_model_allowlist.allowed != excluded.allowed",
+                params![model_ref, i64::from(enabled), at_ms as i64],
+            )
+            .map_err(map_database_error)?;
+        Ok((enabled, changed == 0))
+    }
+
+    /// Loads the whole allowlist as `(model_ref, allowed)` pairs.
+    pub fn list_model_allowlist(&self) -> Result<Vec<(String, bool)>, StorageError> {
+        let connection = self.connection.lock().map_err(|_| StorageError::Database)?;
+        let mut statement = connection
+            .prepare("SELECT model_ref, allowed FROM remote_model_allowlist")
+            .map_err(map_database_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+            })
+            .map_err(map_database_error)?;
+        rows.map(|row| row.map_err(map_database_error)).collect()
+    }
+
+    /// Persists one model-admin grant. Returns `granted_now` (false when the
+    /// grant was already in the requested state).
+    pub fn set_model_admin_grant(
+        &self,
+        device_id: &str,
+        granted: bool,
+        at_ms: u64,
+    ) -> Result<bool, StorageError> {
+        validate_key(device_id)?;
+        let connection = self.connection.lock().map_err(|_| StorageError::Database)?;
+        if granted {
+            let changed = connection
+                .execute(
+                    "INSERT INTO device_model_admin(device_id, granted_at_ms)
+                     VALUES (?1, ?2) ON CONFLICT(device_id) DO NOTHING",
+                    params![device_id, at_ms as i64],
+                )
+                .map_err(map_database_error)?;
+            Ok(changed > 0)
+        } else {
+            let changed = connection
+                .execute(
+                    "DELETE FROM device_model_admin WHERE device_id=?1",
+                    params![device_id],
+                )
+                .map_err(map_database_error)?;
+            Ok(changed > 0)
+        }
+    }
+
+    /// Loads persisted model-admin grants as device ids.
+    pub fn list_model_admin_grants(&self) -> Result<Vec<String>, StorageError> {
+        let connection = self.connection.lock().map_err(|_| StorageError::Database)?;
+        let mut statement = connection
+            .prepare("SELECT device_id FROM device_model_admin")
+            .map_err(map_database_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(map_database_error)?;
+        rows.map(|row| row.map_err(map_database_error)).collect()
+    }
+
+    /// Appends one model-administration audit record (discover/add/enable/
+    /// grant/revoke). Bounded retention keeps the table small; the newest
+    /// records are the ones diagnostics surfaces.
+    pub fn record_model_admin_audit(
+        &self,
+        audit_id: &str,
+        operation: &str,
+        device_id: &str,
+        model_ref: Option<&str>,
+        at_ms: u64,
+    ) -> Result<(), StorageError> {
+        validate_key(audit_id)?;
+        validate_key(operation)?;
+        validate_key(device_id)?;
+        let connection = self.connection.lock().map_err(|_| StorageError::Database)?;
+        connection
+            .execute(
+                "INSERT INTO model_admin_audit(audit_id, operation, device_id, model_ref, at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![audit_id, operation, device_id, model_ref, at_ms as i64],
+            )
+            .map_err(map_database_error)?;
+        let _ = connection.execute(
+            "DELETE FROM model_admin_audit WHERE audit_id NOT IN (
+                SELECT audit_id FROM model_admin_audit ORDER BY at_ms DESC LIMIT 200
+             )",
+            [],
+        );
+        Ok(())
+    }
 }
 
 fn configure_and_migrate(
@@ -2056,6 +2362,20 @@ fn configure_and_migrate(
         1 => migrate_v1_to_v2(&transaction)?,
         2 => {}
         3 => {
+            migrate_v3_to_v4(&transaction)?;
+            if options.failure_point == Some(MigrationFailurePoint::AfterV4Tables) {
+                return Err(StorageError::Database);
+            }
+            transaction
+                .execute(
+                    "UPDATE metadata SET value=?1 WHERE key='schema_version'",
+                    params![STORAGE_SCHEMA_VERSION.to_string()],
+                )
+                .map_err(map_database_error)?;
+            transaction.commit().map_err(map_database_error)?;
+            return Ok(());
+        }
+        4 => {
             transaction.commit().map_err(map_database_error)?;
             return Ok(());
         }
@@ -2069,6 +2389,10 @@ fn configure_and_migrate(
     }
     create_v3_schema(&transaction)?;
     if options.failure_point == Some(MigrationFailurePoint::AfterV3Tables) {
+        return Err(StorageError::Database);
+    }
+    migrate_v3_to_v4(&transaction)?;
+    if options.failure_point == Some(MigrationFailurePoint::AfterV4Tables) {
         return Err(StorageError::Database);
     }
     transaction
@@ -2098,6 +2422,10 @@ fn validate_conversation_acceptance(
     {
         return Err(StorageError::PayloadTooLarge);
     }
+    if let Some(model_ref) = &acceptance.model_ref {
+        crate::conversation_protocol::validate_model_ref(model_ref)
+            .map_err(|_| StorageError::InvalidKey)?;
+    }
     Ok(())
 }
 
@@ -2118,6 +2446,10 @@ fn validate_conversation_append_acceptance(
     {
         return Err(StorageError::PayloadTooLarge);
     }
+    if let Some(model_ref) = &acceptance.model_ref {
+        crate::conversation_protocol::validate_model_ref(model_ref)
+            .map_err(|_| StorageError::InvalidKey)?;
+    }
     Ok(())
 }
 
@@ -2131,6 +2463,7 @@ fn insert_turn_message_idempotency(
     _delivery_id: &str,
     prompt: &str,
     context_json: &[u8],
+    model_ref: Option<&str>,
     created_at_ms: u64,
     operation: &str,
     fingerprint: &str,
@@ -2139,14 +2472,15 @@ fn insert_turn_message_idempotency(
 ) -> Result<(), StorageError> {
     transaction
         .execute(
-            "INSERT INTO turns(turn_id, conversation_id, request_id, state, delivery_state, context_json, error_json, created_at_ms, started_at_ms, finished_at_ms)
-             VALUES (?1, ?2, ?3, 'queued', 'accepted', ?4, NULL, ?5, NULL, NULL)",
+            "INSERT INTO turns(turn_id, conversation_id, request_id, state, delivery_state, context_json, error_json, created_at_ms, started_at_ms, finished_at_ms, model_ref)
+             VALUES (?1, ?2, ?3, 'queued', 'accepted', ?4, NULL, ?5, NULL, NULL, ?6)",
             params![
                 turn_id,
                 conversation_id,
                 request_id,
                 context_json,
-                created_at_ms as i64
+                created_at_ms as i64,
+                model_ref,
             ],
         )
         .map_err(map_database_error)?;
@@ -2331,9 +2665,9 @@ fn load_conversation_snapshot(
     owner_device_id: &str,
     conversation_id: &str,
 ) -> Result<RemoteConversationSnapshot, StorageError> {
-    let (project_id, title, status, created_at_ms, updated_at_ms, archived_at_ms) = connection
+    let (project_id, title, status, created_at_ms, updated_at_ms, archived_at_ms, default_model_ref) = connection
         .query_row(
-            "SELECT project_id, title, status, created_at_ms, updated_at_ms, archived_at_ms
+            "SELECT project_id, title, status, created_at_ms, updated_at_ms, archived_at_ms, default_model_ref
              FROM conversations WHERE owner_device_id=?1 AND conversation_id=?2",
             params![owner_device_id, conversation_id],
             |row| {
@@ -2344,6 +2678,7 @@ fn load_conversation_snapshot(
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )
@@ -2390,6 +2725,7 @@ fn load_conversation_snapshot(
         message_count,
         turn_count,
         queued_turn_count,
+        default_model_ref,
         capabilities: default_conversation_capabilities(),
     })
 }
@@ -2418,10 +2754,10 @@ fn load_turn(
     conversation_id: &str,
     turn_id: &str,
 ) -> Result<RemoteTurnSnapshot, StorageError> {
-    let (request_id, state, delivery_state, error_json, created_at_ms, started_at_ms, finished_at_ms) =
+    let (request_id, state, delivery_state, error_json, created_at_ms, started_at_ms, finished_at_ms, model_ref) =
         connection
             .query_row(
-                "SELECT request_id, state, delivery_state, error_json, created_at_ms, started_at_ms, finished_at_ms
+                "SELECT request_id, state, delivery_state, error_json, created_at_ms, started_at_ms, finished_at_ms, model_ref
                  FROM turns WHERE conversation_id=?1 AND turn_id=?2",
                 params![conversation_id, turn_id],
                 |row| {
@@ -2433,6 +2769,7 @@ fn load_turn(
                         row.get::<_, i64>(4)?,
                         row.get::<_, Option<i64>>(5)?,
                         row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 },
             )
@@ -2468,6 +2805,7 @@ fn load_turn(
         user_message_id,
         assistant_message_id,
         pending_interaction_id: None,
+        model_ref,
         delivery: Some(derive_delivery_snapshot(
             conversation_id,
             turn_id,
@@ -2687,6 +3025,7 @@ fn default_conversation_capabilities() -> RemoteConversationCapabilities {
         interactions: true,
         message_paging: true,
         event_replay: true,
+        model_catalog: true,
         max_queued_turns: REMOTE_CONVERSATION_MAX_QUEUED_TURNS,
         max_prompt_bytes: REMOTE_CONVERSATION_MAX_PROMPT_BYTES,
         max_context_files: REMOTE_CONVERSATION_MAX_CONTEXT_FILES,
@@ -3071,7 +3410,8 @@ fn create_v3_schema(transaction: &rusqlite::Transaction<'_>) -> Result<(), Stora
                 title TEXT,
                 created_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL,
-                archived_at_ms INTEGER
+                archived_at_ms INTEGER,
+                default_model_ref TEXT
              );
              CREATE TABLE conversation_sessions(
                 conversation_id TEXT PRIMARY KEY NOT NULL,
@@ -3094,6 +3434,7 @@ fn create_v3_schema(transaction: &rusqlite::Transaction<'_>) -> Result<(), Stora
                 created_at_ms INTEGER NOT NULL,
                 started_at_ms INTEGER,
                 finished_at_ms INTEGER,
+                model_ref TEXT,
                 UNIQUE(conversation_id, request_id),
                 FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
              );
@@ -3138,9 +3479,71 @@ fn create_v3_schema(transaction: &rusqlite::Transaction<'_>) -> Result<(), Stora
              CREATE INDEX idx_turns_delivery_state ON turns(delivery_state, created_at_ms);
              CREATE INDEX idx_messages_conversation_ordinal ON messages(conversation_id, ordinal);
              CREATE INDEX idx_conversation_interactions_turn ON conversation_interactions(turn_id);
-             CREATE INDEX idx_conversation_idempotency_expires ON conversation_idempotency(expires_at_ms);",
+             CREATE INDEX idx_conversation_idempotency_expires ON conversation_idempotency(expires_at_ms);
+             CREATE TABLE remote_model_allowlist(
+                model_ref TEXT PRIMARY KEY NOT NULL,
+                allowed INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE device_model_admin(
+                device_id TEXT PRIMARY KEY NOT NULL,
+                granted_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE model_admin_audit(
+                audit_id TEXT PRIMARY KEY NOT NULL,
+                operation TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                model_ref TEXT,
+                at_ms INTEGER NOT NULL
+             );",
         )
         .map_err(map_database_error)
+}
+
+/// v3 -> v4: per-turn and conversation-default model refs plus the gateway
+/// remote-model allowlist. Idempotent column guards keep this safe on fresh
+/// databases that already carry the columns from [`create_v3_schema`].
+fn migrate_v3_to_v4(transaction: &rusqlite::Transaction<'_>) -> Result<(), StorageError> {
+    for (table, column) in [
+        ("conversations", "default_model_ref"),
+        ("turns", "model_ref"),
+    ] {
+        let has_column = transaction
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(map_database_error)?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(map_database_error)?
+            .any(|column_name| column_name.map(|name| name == column).unwrap_or(false));
+        if !has_column {
+            transaction
+                .execute(
+                    &format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"),
+                    [],
+                )
+                .map_err(map_database_error)?;
+        }
+    }
+    transaction
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS remote_model_allowlist(
+                model_ref TEXT PRIMARY KEY NOT NULL,
+                allowed INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS device_model_admin(
+                device_id TEXT PRIMARY KEY NOT NULL,
+                granted_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS model_admin_audit(
+                audit_id TEXT PRIMARY KEY NOT NULL,
+                operation TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                model_ref TEXT,
+                at_ms INTEGER NOT NULL
+             );",
+        )
+        .map_err(map_database_error)?;
+    Ok(())
 }
 
 fn run_quick_check(connection: &Connection) -> Result<(), StorageError> {
@@ -3301,6 +3704,17 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis()
         .min(u64::MAX as u128) as u64
+}
+
+/// FNV-1a deterministic id: replayed requests with the same material must
+/// derive identical IDs so the storage idempotency lookup can hit.
+pub(crate) fn deterministic_id(prefix: &str, material: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in material.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{prefix}-{hash:016x}")
 }
 
 #[cfg(test)]

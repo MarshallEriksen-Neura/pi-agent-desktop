@@ -16,9 +16,9 @@
   --color-text-secondary: #aeaeb2;
   --color-text-tertiary: #636366;
 
-  /* 分隔线 */
-  --color-separator: rgba(84, 84, 88, 0.6);
-  --color-separator-strong: rgba(84, 84, 88, 0.85);
+  /* 分隔线 — 深色下刻意极淡(对齐桌面端 hairline),避免 1px 边框显黑显粗 */
+  --color-separator: rgba(84, 84, 88, 0.34);
+  --color-separator-strong: rgba(84, 84, 88, 0.5);
 
   /* 主题色 */
   --color-accent: #0a84ff;
@@ -91,8 +91,8 @@
     --color-text-primary: #000000;
     --color-text-secondary: #3c3c43;
     --color-text-tertiary: #8e8e93;
-    --color-separator: rgba(60, 60, 67, 0.29);
-    --color-separator-strong: rgba(60, 60, 67, 0.45);
+    --color-separator: rgba(60, 60, 67, 0.22);
+    --color-separator-strong: rgba(60, 60, 67, 0.34);
     --color-accent: #007aff;
     --color-accent-muted: rgba(0, 122, 255, 0.12);
     --color-success: #34c759;
@@ -249,4 +249,22 @@ textarea {
   50% {
     top: calc(100% - 30px);
   }
+}
+
+/* 水墨呼吸 — 引导页 hero 的有机光晕。
+ * 表达「链路存活」而非「正在加载」:所以是缓慢的形变 + 明暗,不是旋转。
+ * 12s 周期足够慢,不构成前庭刺激;reduced-motion 下由上方规则压到静止。 */
+@keyframes pi-ink-breathe {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: scale(1) rotate(0deg);
+  }
+  50% {
+    opacity: 0.62;
+    transform: scale(1.07) rotate(6deg);
+  }
+}
+.ink-breathe {
+  animation: pi-ink-breathe 12s ease-in-out infinite;
 }

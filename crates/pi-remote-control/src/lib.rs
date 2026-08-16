@@ -11,6 +11,7 @@ pub mod event_hub;
 pub mod gateway;
 pub mod identity;
 pub mod interaction;
+pub mod models;
 pub mod pairing;
 pub mod pi_session;
 pub mod principal;

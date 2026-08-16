@@ -12,7 +12,7 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: true,
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.{ts,tsx}"],
     // Polyfill localStorage/navigator for the token-vault dev-browser fallback
     // path exercised by the vault tests. Production Android uses native storage.
     setupFiles: ["tests/setup.ts"],

@@ -2,16 +2,21 @@ import { memo, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import { useShallow } from "zustand/react/shallow";
-import { Monitor, Power, Plus, MessageSquare, ChevronRight } from "lucide-react";
+import { Plus, MessageSquare, ChevronRight } from "lucide-react";
 import { t } from "@/i18n";
 import { useConnection } from "@/hooks/useConnection";
 import { useTaskStore } from "@/stores/task-store";
 import { useInteractionStore, selectPending } from "@/stores/interaction-store";
 import { usePromptCache } from "@/stores/prompt-cache";
 import { SecureTetherHero } from "@/components/SecureTether";
-import { StateView, FullScreenSpinner } from "@/components/primitives";
-import { BlockButton } from "@/components/visual";
 import { TaskCard } from "@/components/task-visual";
+import { TaskCardSkeleton } from "@/components/skeleton";
+import {
+  IdentityFailedView,
+  OfflineView,
+  ReconnectingView,
+  WakingView,
+} from "@/components/connection-trouble";
 import { taskTitle, formatClock } from "@/lib/task-label";
 import { REMOTE_TASK_TERMINAL_STATES } from "@pi/remote-control-contracts";
 
@@ -43,6 +48,7 @@ export const HomePage = memo(function HomePage() {
     isIdentityFailed,
     connect,
     wake,
+    disconnect,
   } = useConnection();
 
   const tasks = useTaskStore((s) => s.tasks);
@@ -61,77 +67,58 @@ export const HomePage = memo(function HomePage() {
   );
   const recent = useMemo(() => tasks.slice(0, RECENT_LIMIT), [tasks]);
 
+  // 连接异常四态各自渲染完整信息屏。核心信息是「桌面端的任务还在跑」——
+  // 原来的 StateView 单行文案答不了这个问题,用户会以为一切都停了。
   if (isWaking) {
-    return <FullScreenSpinner label={t("wake.waking")} />;
+    return (
+      <div>
+        <SecureTetherHero phase={phase} showLabel={false} />
+        <WakingView onCancel={disconnect} />
+      </div>
+    );
   }
 
   if (isReconnecting) {
     return (
       <div>
         <SecureTetherHero phase={phase} showLabel={false} />
-        <FullScreenSpinner label={t("connection.reconnecting")} />
+        <ReconnectingView onRetryNow={connect} />
       </div>
     );
   }
 
   if (isIdentityFailed) {
     return (
-      <StateView
-        icon={<Monitor size={28} style={{ color: "var(--color-danger)" }} />}
-        title={t("error.identityRotated")}
-        detail={t("error.identityRotatedDetail")}
-        action={
-          <BlockButton variant="outline" onClick={() => navigate("/pair")}>
-            {t("onboarding.start")}
-          </BlockButton>
-        }
-      />
+      <div>
+        <SecureTetherHero phase={phase} showLabel={false} />
+        <IdentityFailedView detail={lastError} onRepair={() => navigate("/pair")} />
+      </div>
     );
   }
 
   if (phase === "offline") {
-    const canWake = Boolean(stored?.wakeOnLan?.targets.length);
     return (
-      <StateView
-        icon={
-          canWake ? (
-            <Power size={28} style={{ color: "var(--color-accent)" }} />
-          ) : (
-            <Monitor size={28} style={{ color: "var(--color-text-tertiary)" }} />
-          )
-        }
-        title={t("error.unreachable")}
-        detail={
-          lastError === "wake_timeout"
-            ? t("wake.timeoutDetail")
-            : t("error.unreachableDetail")
-        }
-        action={
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-              width: "100%",
-              maxWidth: 260,
-            }}
-          >
-            {canWake && (
-              <BlockButton variant="primary" onClick={wake}>
-                {t("wake.action")}
-              </BlockButton>
-            )}
-            <BlockButton variant={canWake ? "outline" : "primary"} onClick={connect}>
-              {t("connection.reconnect")}
-            </BlockButton>
-          </div>
-        }
-      />
+      <div>
+        <SecureTetherHero phase={phase} showLabel={false} />
+        <OfflineView
+          canWake={Boolean(stored?.wakeOnLan?.targets.length)}
+          // 离线时 store 里的 tasks 是上次在线时的快照,可读但已陈旧。
+          cachedTasks={tasks.slice(0, RECENT_LIMIT)}
+          detail={lastError === "wake_timeout" ? t("wake.timeoutDetail") : undefined}
+          onReconnect={connect}
+          onWake={wake}
+        />
+      </div>
     );
   }
 
+  // 首屏加载:骨架而非转圈。形状与真实内容一致,落地时不跳版。
   if (!stored || !isOnline) {
-    return <FullScreenSpinner label={t("common.loading")} />;
+    return (
+      <div style={{ padding: "8px 16px" }}>
+        <TaskCardSkeleton count={2} />
+      </div>
+    );
   }
 
   const awaitingCount = pending.length;

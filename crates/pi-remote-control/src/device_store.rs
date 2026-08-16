@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use subtle::ConstantTimeEq;
 
 pub const MAX_PAIRED_DEVICES: usize = 8;
-pub const MAX_CONNECTIONS_PER_DEVICE: usize = 2;
+pub const MAX_CONNECTIONS_PER_DEVICE: usize = 4;
 pub const MAX_AUTHENTICATED_CONNECTIONS: usize = 16;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -68,6 +68,10 @@ struct DeviceRecord {
 struct DeviceStoreInner {
     identity_epoch: u64,
     devices: HashMap<String, DeviceRecord>,
+    /// Elevated model-administration grants, separate from pairing/task
+    /// execution. Kept in the registry so `authenticate` can mint a scope
+    /// set; persisted through the gateway storage table.
+    model_admin: BTreeSet<String>,
 }
 
 pub struct DeviceRegistry {
@@ -88,6 +92,7 @@ impl DeviceRegistry {
             inner: Mutex::new(DeviceStoreInner {
                 identity_epoch: 1,
                 devices: HashMap::new(),
+                model_admin: BTreeSet::new(),
             }),
         }
     }
@@ -229,8 +234,74 @@ impl DeviceRegistry {
         {
             return Err(DeviceStoreError::AuthenticationFailed);
         }
-        Principal::v1(device_id.to_owned(), identity_epoch)
-            .map_err(|_| DeviceStoreError::AuthenticationFailed)
+        Principal::restricted(
+            device_id.to_owned(),
+            identity_epoch,
+            [
+                crate::principal::RemoteScope::ReadCapabilities,
+                crate::principal::RemoteScope::ReadProjects,
+                crate::principal::RemoteScope::CreateTasks,
+                crate::principal::RemoteScope::ReadOwnedTasks,
+                crate::principal::RemoteScope::CancelOwnedTasks,
+                crate::principal::RemoteScope::RespondToOwnedInteractions,
+            ]
+            .into_iter()
+            .chain(
+                inner
+                    .model_admin
+                    .contains(device_id)
+                    .then_some(crate::principal::RemoteScope::ModelAdmin),
+            ),
+        )
+        .map_err(|_| DeviceStoreError::AuthenticationFailed)
+    }
+
+    /// Grants or revokes the elevated model-administration scope for one
+    /// device. Default is revoked: a fresh pairing can select allowed models
+    /// but cannot discover/add or toggle the remote allowlist.
+    pub fn set_model_admin(
+        &self,
+        device_id: &str,
+        granted: bool,
+    ) -> Result<bool, DeviceStoreError> {
+        if device_id.is_empty()
+            || device_id.len() > crate::protocol::MAX_DEVICE_ID_BYTES
+            || device_id.chars().any(char::is_control)
+        {
+            return Err(DeviceStoreError::InvalidDeviceId);
+        }
+        let mut inner = self.lock_inner()?;
+        let changed = if granted {
+            inner.model_admin.insert(device_id.to_owned())
+        } else {
+            inner.model_admin.remove(device_id)
+        };
+        Ok(changed)
+    }
+
+    /// Restores persisted model-admin grants at gateway start.
+    pub fn restore_model_admin(
+        &self,
+        device_ids: impl IntoIterator<Item = String>,
+    ) -> Result<(), DeviceStoreError> {
+        let mut inner = self.lock_inner()?;
+        for device_id in device_ids {
+            if device_id.is_empty()
+                || device_id.len() > crate::protocol::MAX_DEVICE_ID_BYTES
+                || device_id.chars().any(char::is_control)
+            {
+                continue;
+            }
+            if inner.devices.contains_key(&device_id) {
+                inner.model_admin.insert(device_id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Current model-admin grants (for diagnostics and revocation UI).
+    pub fn model_admin_devices(&self) -> Result<Vec<String>, DeviceStoreError> {
+        Ok(self.lock_inner()?.model_admin.iter().cloned().collect())
     }
 
     /// Validate a previously authenticated principal against the live device

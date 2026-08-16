@@ -12,10 +12,8 @@ import { SecureTetherBadge } from "@/components/SecureTether";
  */
 export const ConnectionBar = memo(function ConnectionBar({
   phase,
-  desktopName,
 }: {
   phase: ConnectionPhase;
-  desktopName?: string;
 }) {
   const navigate = useNavigate();
   if (phase === "idle") return null;
@@ -26,9 +24,8 @@ export const ConnectionBar = memo(function ConnectionBar({
       style={{
         display: "flex",
         alignItems: "center",
-        justifyContent: "space-between",
         width: "100%",
-        padding: "8px 16px",
+        padding: "6px 16px",
         border: "none",
         borderBottom: "1px solid var(--color-separator)",
         background: "transparent",
@@ -36,9 +33,6 @@ export const ConnectionBar = memo(function ConnectionBar({
         fontFamily: "var(--font-ui)",
       }}
     >
-      <span style={{ fontSize: 13, color: "var(--color-text-secondary)", fontWeight: 500 }}>
-        {desktopName ?? "Pi Desktop"}
-      </span>
       <SecureTetherBadge phase={phase} />
     </button>
   );

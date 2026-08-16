@@ -10,6 +10,7 @@ import { REMOTE_TASK_TERMINAL_STATES } from "@pi/remote-control-contracts";
 import { useConnectionStore } from "./connection.store";
 import { eventDispatcher } from "./event-dispatcher";
 import { NetError } from "@/net/errors";
+import { maybeNotifyTaskCompleted } from "@/services/notifications";
 
 /**
  * Task store — domain state for tasks, fed by:
@@ -144,6 +145,12 @@ export function applyTaskEvent(event: RemoteEvent): void {
   const seq = event.sequence;
   if (seq > store.lastSequence) {
     useTaskStore.setState({ lastSequence: seq });
+  }
+
+  // Terminal task notification — dedup + watching-page skip live in the
+  // service, so replays and reconnects never double-alert.
+  if (event.kind === "task.completed") {
+    void maybeNotifyTaskCompleted(event.taskId, event.state);
   }
 
   switch (event.kind) {

@@ -122,6 +122,67 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
 
+  android:
+    needs: create-release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 36
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web assets
+        run: pnpm --filter mobile build
+
+      - name: Sync Capacitor
+        run: pnpm --filter mobile cap sync android
+
+      - name: Decode release keystore
+        if: env.PI_KEYSTORE_BASE64 != ''
+        env:
+          PI_KEYSTORE_BASE64: ${{ secrets.PI_KEYSTORE_BASE64 }}
+        run: |
+          echo "$PI_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/pi-release.keystore"
+          echo "PI_KEYSTORE_PATH=$RUNNER_TEMP/pi-release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        working-directory: apps/mobile/android
+        env:
+          PI_KEYSTORE_PATH: ${{ env.PI_KEYSTORE_PATH }}
+          PI_KEYSTORE_PASSWORD: ${{ secrets.PI_KEYSTORE_PASSWORD }}
+          PI_KEY_ALIAS: ${{ secrets.PI_KEY_ALIAS }}
+          PI_KEY_PASSWORD: ${{ secrets.PI_KEY_PASSWORD }}
+        run: |
+          TAG_VERSION="${{ github.ref_name }}"
+          ./gradlew assembleRelease \
+            -PversionName="${TAG_VERSION#v}" \
+            --no-daemon
+
+      - name: Upload APK to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          fail_on_unmatched_files: false
+
   publish-release:
     needs: release
     runs-on: ubuntu-22.04

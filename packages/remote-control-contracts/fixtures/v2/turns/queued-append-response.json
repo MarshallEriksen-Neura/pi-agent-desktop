@@ -38,6 +38,7 @@
     "messageCount": 3,
     "turnCount": 2,
     "queuedTurnCount": 1,
+    "defaultModelRef": "anthropic/claude-sonnet-4",
     "capabilities": {
       "conversationV2": true,
       "piSessionResume": true,
@@ -46,6 +47,7 @@
       "interactions": true,
       "messagePaging": true,
       "eventReplay": true,
+      "modelCatalog": true,
       "maxQueuedTurns": 8,
       "maxPromptBytes": 32768,
       "maxContextFiles": 16,
@@ -58,6 +60,7 @@
     "requestId": "req_append_001",
     "ownerDeviceId": "device_phone_001",
     "state": "queued",
+    "modelRef": "anthropic/claude-sonnet-4",
     "createdAt": "2026-08-12T08:03:00.000Z",
     "updatedAt": "2026-08-12T08:03:00.000Z",
     "userMessageId": "msg_user_002",

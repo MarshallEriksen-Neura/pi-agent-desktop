@@ -6,6 +6,7 @@ use crate::event_hub::{EventHub, EventHubConfig, EventHubError, EventSubscriptio
 use crate::identity::CertificateIdentity;
 use crate::observability::V2Metrics;
 use crate::interaction::{InteractionError, InteractionManager};
+use crate::models::HostModelCatalog;
 use crate::pairing::PairingManager;
 use crate::project_catalog::{ProjectCatalog, ProjectCatalogError};
 use crate::protocol::{
@@ -25,13 +26,17 @@ use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
 pub const MAX_REST_BODY_BYTES: usize = 64 * 1024;
 pub const REST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Half-open TCP connections (phone killed, wifi switched) never deliver a
+/// close frame. An idle timeout tears the session down so the per-device
+/// connection budget is released instead of leaking into 429s on reconnect.
+pub const WS_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) struct BoundedJson<T>(pub(crate) T);
 
@@ -77,6 +82,9 @@ pub struct GatewayState {
     pub supervisor: Arc<TaskSupervisor>,
     pub storage: Option<Arc<RemoteStorage>>,
     pub conversations: Option<Arc<ConversationRuntimeManager>>,
+    pub models: Option<Arc<HostModelCatalog>>,
+    /// Per-device sliding-window counters for elevated model-admin routes.
+    pub model_admin_rate: Arc<Mutex<std::collections::HashMap<String, (u64, u32)>>>,
     pub metrics: Arc<V2Metrics>,
 }
 
@@ -157,6 +165,9 @@ impl GatewayState {
                 .restore_device(device)
                 .map_err(|_| StorageError::Corrupt)?;
         }
+        devices
+            .restore_model_admin(storage.list_model_admin_grants()?)
+            .map_err(|_| StorageError::Corrupt)?;
         let state = Self::build_with_restore(
             identity,
             devices,
@@ -250,8 +261,17 @@ impl GatewayState {
             storage,
             event_hub,
             conversations: None,
+            models: None,
+            model_admin_rate: Arc::new(Mutex::new(std::collections::HashMap::new())),
             metrics: Arc::new(V2Metrics::default()),
         })
+    }
+
+    /// Wires the redacted host model catalog. `None` keeps model routes
+    /// fail-closed (503) and conversation `modelRef` selection unavailable.
+    pub fn with_models(mut self, catalog: Option<Arc<HostModelCatalog>>) -> Self {
+        self.models = catalog;
+        self
     }
 
     /// Wires the conversation runtime. V2 routes stay fail-closed (503)
@@ -272,6 +292,7 @@ pub fn build_router(state: GatewayState) -> Router {
         .route("/api/v1/server", get(server))
         .route("/api/v1/projects", get(projects))
         .route("/api/v1/projects/:project_id/tree", get(project_tree))
+        .route("/api/v1/projects/:project_id/file", get(project_file))
         .route("/api/v1/tasks", get(tasks).post(create_task))
         .route("/api/v1/tasks/:task_id", get(task_snapshot))
         .route("/api/v1/tasks/:task_id/cancel", post(cancel_task))
@@ -356,7 +377,7 @@ async fn capabilities(
             max_tree_entries_per_page: crate::project_catalog::MAX_TREE_ENTRIES_PER_PAGE as u16,
             max_context_files: crate::protocol::MAX_CONTEXT_FILES as u8,
             max_relative_path_bytes: crate::protocol::MAX_RELATIVE_PATH_BYTES as u16,
-            file_body_available: false,
+            file_body_available: true,
         },
     }))
 }
@@ -366,6 +387,11 @@ struct TreeQuery {
     #[serde(default)]
     dir: String,
     cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileQuery {
+    path: String,
 }
 
 async fn projects(
@@ -392,6 +418,22 @@ async fn project_tree(
         .tree(&project_id, &query.dir, query.cursor.as_deref())
         .map_err(|error| map_project_error(error, request_id.clone()))?;
     Ok(Json(page))
+}
+
+async fn project_file(
+    State(state): State<Arc<GatewayState>>,
+    Path(project_id): Path<String>,
+    Query(query): Query<FileQuery>,
+    headers: HeaderMap,
+) -> Result<Json<crate::protocol::RemoteFileBody>, GatewayErrorResponse> {
+    let request_id = request_id(&headers);
+    authenticate_headers(&state.devices, &headers)
+        .map_err(|error| error.with_request_id(request_id.clone()))?;
+    let body = state
+        .projects
+        .read_file_body(&project_id, &query.path)
+        .map_err(|error| map_project_error(error, request_id.clone()))?;
+    Ok(Json(body))
 }
 
 async fn create_task(
@@ -625,6 +667,7 @@ async fn websocket_session(
             return;
         }
     }
+    let mut last_activity = std::time::Instant::now();
 
     loop {
         loop {
@@ -650,13 +693,23 @@ async fn websocket_session(
         match tokio::time::timeout(std::time::Duration::from_millis(100), socket.recv()).await {
             Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => break,
             Ok(Some(Ok(Message::Ping(payload)))) => {
+                last_activity = std::time::Instant::now();
                 if socket.send(Message::Pong(payload)).await.is_err() {
                     break;
                 }
             }
-            Ok(Some(Ok(Message::Pong(_)))) => {}
-            Ok(Some(Ok(Message::Text(_)))) | Ok(Some(Ok(Message::Binary(_)))) => {}
-            Err(_) => {}
+            Ok(Some(Ok(Message::Pong(_)))) => last_activity = std::time::Instant::now(),
+            Ok(Some(Ok(Message::Text(_)))) | Ok(Some(Ok(Message::Binary(_)))) => {
+                last_activity = std::time::Instant::now();
+            }
+            Err(_) => {
+                // No frame within the poll window. A half-open connection
+                // never signals EOF; the idle deadline is the only way to
+                // reclaim its connection budget.
+                if last_activity.elapsed() >= WS_IDLE_TIMEOUT {
+                    break;
+                }
+            }
         }
     }
     state.event_hub.unsubscribe(subscription.id);
@@ -730,6 +783,7 @@ fn map_project_error(
         | ProjectCatalogError::ReparsePoint
         | ProjectCatalogError::NotDirectory
         | ProjectCatalogError::NotRegularFile
+        | ProjectCatalogError::FileNotText
         | ProjectCatalogError::NameInvalid => GatewayError::InvalidRequest,
         ProjectCatalogError::CursorStoreFull | ProjectCatalogError::ProjectLimit => {
             GatewayError::RateLimited

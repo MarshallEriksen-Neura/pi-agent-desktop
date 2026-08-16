@@ -77,6 +77,7 @@ pub enum RemoteConversationErrorCode {
     Cancelled,
     HostInterrupted,
     EventBackpressure,
+    ModelUnavailable,
     InternalError,
 }
 
@@ -207,6 +208,12 @@ pub struct RemoteTurnSnapshot {
         skip_serializing_if = "Option::is_none"
     )]
     pub pending_interaction_id: Option<String>,
+    #[serde(
+        rename = "modelRef",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub model_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<RemoteDeliverySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -283,6 +290,8 @@ pub struct RemoteConversationCapabilities {
     pub message_paging: bool,
     #[serde(rename = "eventReplay")]
     pub event_replay: bool,
+    #[serde(rename = "modelCatalog")]
+    pub model_catalog: bool,
     #[serde(rename = "maxQueuedTurns")]
     pub max_queued_turns: u8,
     #[serde(rename = "maxPromptBytes")]
@@ -372,6 +381,12 @@ pub struct RemoteConversationSnapshot {
     pub turn_count: u64,
     #[serde(rename = "queuedTurnCount")]
     pub queued_turn_count: u64,
+    #[serde(
+        rename = "defaultModelRef",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_model_ref: Option<String>,
     pub capabilities: RemoteConversationCapabilities,
 }
 
@@ -430,6 +445,12 @@ pub struct RemoteConversationCreateRequest {
     pub prompt: String,
     #[serde(rename = "contextFiles")]
     pub context_files: Vec<RemoteConversationContextFile>,
+    #[serde(
+        rename = "modelRef",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub model_ref: Option<String>,
 }
 
 impl RemoteConversationCreateRequest {
@@ -437,7 +458,11 @@ impl RemoteConversationCreateRequest {
         validate_required_text("requestId", &self.request_id, MAX_REQUEST_ID_BYTES)?;
         validate_required_text("projectId", &self.project_id, MAX_REQUEST_ID_BYTES)?;
         validate_text_allow_newlines("prompt", &self.prompt, REMOTE_CONVERSATION_MAX_PROMPT_BYTES)?;
-        validate_context_files(&self.context_files)
+        validate_context_files(&self.context_files)?;
+        if let Some(model_ref) = &self.model_ref {
+            validate_model_ref(model_ref)?;
+        }
+        Ok(())
     }
 }
 
@@ -463,6 +488,12 @@ pub struct RemoteTurnAppendRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub context_files: Option<Vec<RemoteConversationContextFile>>,
+    #[serde(
+        rename = "modelRef",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub model_ref: Option<String>,
 }
 
 impl RemoteTurnAppendRequest {
@@ -471,6 +502,9 @@ impl RemoteTurnAppendRequest {
         validate_text_allow_newlines("prompt", &self.prompt, REMOTE_CONVERSATION_MAX_PROMPT_BYTES)?;
         if let Some(context_files) = &self.context_files {
             validate_context_files(context_files)?;
+        }
+        if let Some(model_ref) = &self.model_ref {
+            validate_model_ref(model_ref)?;
         }
         Ok(())
     }
@@ -894,6 +928,25 @@ fn validate_context_files(
     }
     for file in context_files {
         validate_relative_path(&file.relative_path)?;
+    }
+    Ok(())
+}
+
+/// `provider/modelId` reference. Provider ids and model ids are both
+/// bounded, non-empty, control-free tokens; the model id may contain dots
+/// and dashes but never slashes (so the ref split stays unambiguous).
+pub fn validate_model_ref(model_ref: &str) -> Result<(), ValidationError> {
+    let Some((provider, model_id)) = model_ref.split_once('/') else {
+        return Err(ValidationError::InvalidValue {
+            field: "modelRef",
+        });
+    };
+    validate_required_text("modelRef.provider", provider, MAX_REQUEST_ID_BYTES)?;
+    if model_id.is_empty() || model_id.len() > MAX_REQUEST_ID_BYTES {
+        return Err(ValidationError::InvalidValue { field: "modelRef" });
+    }
+    if model_id.contains('/') || model_ref.chars().any(char::is_control) {
+        return Err(ValidationError::InvalidValue { field: "modelRef" });
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useEffect } from "react";
+import { memo, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -14,8 +14,15 @@ import type { PairingQrPayload } from "@pi/remote-control-contracts";
 import { t } from "@/i18n";
 import { usePairing, type PairingState } from "@/hooks/usePairing";
 import { useQrScanner, type ScannerPhase } from "@/hooks/useQrScanner";
+import { useConnectionStore } from "@/stores/connection.store";
 import { BlockButton } from "@/components/visual";
 import { ScanFrame } from "@/components/task-visual";
+import {
+  PairingSteps,
+  PairingSuccess,
+  PinMismatchView,
+  UnreachableView,
+} from "@/components/pairing-states";
 import { parseAndValidateQr } from "@/security/qr-validate";
 import { shouldEnablePairingScanner } from "@/security/pairing-flow";
 
@@ -114,9 +121,25 @@ const STATE_CONFIG: Record<
 
 const TRANSITIONAL: PairingState[] = ["scanning", "validating", "connecting"];
 
+/**
+ * 走到这几个态时,页面交给 pairing-states 里的完整信息屏渲染,而不是
+ * 「图标圆 + 一行文案 + 重试按钮」的通用壳。判断依据是:用户在这一步需要
+ * 做决策(信任/拒绝)或需要核对数据(设备地址/指纹),而不只是被告知结果。
+ */
+const RICH_STATES: PairingState[] = ["success", "pinMismatch", "unreachable"];
+
 export const PairingPage = memo(function PairingPage() {
   const navigate = useNavigate();
-  const { state, pair, reset, setState, errorDetail } = usePairing();
+  const {
+    state,
+    pair,
+    reset,
+    setState,
+    errorDetail,
+    pinConflict,
+    trustNewCertificate,
+  } = usePairing();
+  const stored = useConnectionStore((s) => s.stored);
   const [manualJson, setManualJson] = useState("");
 
   const scanner = useQrScanner({
@@ -145,17 +168,67 @@ export const PairingPage = memo(function PairingPage() {
 
   const config = STATE_CONFIG[state];
   const isTransitional = TRANSITIONAL.includes(state);
-  const isError = !isTransitional && state !== "idle" && state !== "success";
+  const isRich = RICH_STATES.includes(state);
+  const isError = !isTransitional && state !== "idle" && state !== "success" && !isRich;
   const isSuccess = state === "success";
   const scannerMessage = scannerStatusMessage(scanner.phase);
 
-  // Auto-redirect on success (after the success animation plays). This must be
-  // an effect: scheduling work during render can repeat on every re-render.
-  useEffect(() => {
-    if (!isSuccess) return;
-    const timer = window.setTimeout(() => navigate("/home", { replace: true }), 1500);
-    return () => window.clearTimeout(timer);
-  }, [isSuccess, navigate]);
+  // 成功态不再自动跳转。设计稿给了「开始使用」按钮,理由是成功屏上有设备
+  // 地址和证书状态需要核对 —— 1.5 秒后自己溜走的屏,用户来不及看完。
+  // 跳转改由 PairingSuccess 的按钮触发。
+
+  // 富态各自渲染完整信息屏,不套通用壳。
+  if (isRich) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          height: "100%",
+          paddingTop: "var(--safe-top)",
+        }}
+      >
+        <div className="mtopbar">
+          <button
+            className="ico"
+            onClick={() => navigate("/")}
+            aria-label={t("common.back")}
+            style={{ fontSize: 22, lineHeight: 1 }}
+          >
+            ‹
+          </button>
+        </div>
+        <div
+          style={{
+            flex: 1,
+            overflow: "auto",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            padding: "0 20px 24px",
+            WebkitOverflowScrolling: "touch",
+          }}
+        >
+          {isSuccess && (
+            <PairingSuccess
+              stored={stored}
+              onContinue={() => navigate("/home", { replace: true })}
+            />
+          )}
+          {state === "pinMismatch" && (
+            <PinMismatchView
+              conflict={pinConflict}
+              onCancel={() => navigate("/", { replace: true })}
+              onTrust={() => void trustNewCertificate()}
+            />
+          )}
+          {state === "unreachable" && (
+            <UnreachableView detail={errorDetail} onRetry={reset} />
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -257,6 +330,18 @@ export const PairingPage = memo(function PairingPage() {
           </p>
         </div>
 
+        {/* 配对中的分步清单 —— 卡住时能看出卡在哪一步。
+            scanning 还没开始握手,所以只在 validating/connecting 显示。 */}
+        {(state === "validating" || state === "connecting") && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            style={{ width: "100%", maxWidth: 260 }}
+          >
+            <PairingSteps activeStep={state === "validating" ? 1 : 2} />
+          </motion.div>
+        )}
+
         {state === "idle" && scannerMessage && (
           <div style={{ textAlign: "center", maxWidth: 300 }}>
             <p
@@ -334,7 +419,9 @@ export const PairingPage = memo(function PairingPage() {
                   minHeight: 80,
                   marginTop: 8,
                   padding: 10,
-                  fontSize: 12,
+                  // 16px 是 iOS 的门槛:更小的字号会让 Safari 在聚焦时自动放大
+                  // 页面(index.html 已不再用 user-scalable=no 压制这个行为)。
+                  fontSize: 16,
                   fontFamily: "var(--font-mono)",
                   background: "var(--color-bg-elevated)",
                   border: "1px solid var(--color-separator)",

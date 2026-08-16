@@ -6,5 +6,6 @@
     {
       "relativePath": "README.md"
     }
-  ]
+  ],
+  "modelRef": "openai/gpt-4.1"
 }

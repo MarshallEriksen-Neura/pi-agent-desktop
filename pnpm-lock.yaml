@@ -147,6 +147,9 @@ importers:
       '@capacitor/core':
         specifier: ^8.0.0
         version: 8.5.0
+      '@capacitor/local-notifications':
+        specifier: ^8.3.0
+        version: 8.3.0(@capacitor/core@8.5.0)
       '@pi/remote-control-contracts':
         specifier: workspace:*
         version: link:../../packages/remote-control-contracts
@@ -165,6 +168,9 @@ importers:
       react-router-dom:
         specifier: ^6.28.0
         version: 6.30.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      streamdown:
+        specifier: 2.5.0
+        version: 2.5.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       zustand:
         specifier: ^5.0.0
         version: 5.0.14(@types/react@19.2.17)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
@@ -384,6 +390,11 @@ packages:
 
   '@capacitor/keyboard@8.0.5':
     resolution: {integrity: sha512-oFXygC4eKYA5l2MdpTR06L2M/4x6e2SLD5yS1T9+UBDKTkzyvhWKEhbYLUaTIBPpLKqlfGudJw1X73S1H9eUzQ==}
+    peerDependencies:
+      '@capacitor/core': '>=8.0.0'
+
+  '@capacitor/local-notifications@8.3.0':
+    resolution: {integrity: sha512-QvgW2ucBAwtI/arLrUP1XRTJVzJxmdI9BOCl+E9J2HAmYuSWZtDFb3e1fpnciVzwZaq6RDP00baBQgG6eYik/Q==}
     peerDependencies:
       '@capacitor/core': '>=8.0.0'
 
@@ -3499,6 +3510,10 @@ snapshots:
       '@capacitor/core': 8.5.0
 
   '@capacitor/keyboard@8.0.5(@capacitor/core@8.5.0)':
+    dependencies:
+      '@capacitor/core': 8.5.0
+
+  '@capacitor/local-notifications@8.3.0(@capacitor/core@8.5.0)':
     dependencies:
       '@capacitor/core': 8.5.0
 

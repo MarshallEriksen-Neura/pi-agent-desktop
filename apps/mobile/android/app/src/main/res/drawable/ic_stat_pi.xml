@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification status-bar icon: hand-drawn π on transparent canvas.
+     Android renders this as a white silhouette in the status bar. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M4.2,9.2 C6.6,7.4 9.4,7.1 12,7.1 C14.6,7.1 17.4,7.4 19.8,9.2" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M9.4,7.3 C9.3,10.4 9.2,13.4 8.8,15.8 C8.6,17.0 8.1,17.7 7.4,17.9" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M14.6,7.2 C14.5,10.4 14.6,13.5 15.2,15.6 C15.6,17.1 16.7,17.8 17.6,17.2 C17.9,17.0 18.1,16.7 18.2,16.3" />
+</vector>

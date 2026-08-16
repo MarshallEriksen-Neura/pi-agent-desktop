@@ -253,7 +253,14 @@ pub fn run() {
             remote_control::remote_control_disable,
             remote_control::remote_control_pairing_payload,
             remote_control::remote_control_revoke_device,
-            remote_control::remote_control_reset_identity
+            remote_control::remote_control_reset_identity,
+            remote_control::remote_conversations_list,
+            remote_control::remote_conversation_get,
+            remote_control::remote_conversation_messages,
+            remote_control::remote_conversation_append,
+            remote_control::remote_conversation_cancel,
+            remote_control::remote_conversation_archive,
+            remote_control::remote_control_set_model_admin
         ])
         .setup(|app| {
             if let Err(e) = app

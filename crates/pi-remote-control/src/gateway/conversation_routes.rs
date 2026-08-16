@@ -14,9 +14,14 @@ use crate::conversation_protocol::{
     RemoteConversationCreateResponse, RemoteConversationEvent, RemoteConversationListResponse,
     RemoteConversationSnapshot, RemoteConversationStatus, RemoteConversationSummary,
     RemoteMessagePageResponse, RemoteTurnAppendRequest, RemoteTurnAppendResponse,
-    RemoteTurnCancelRequest, RemoteTurnCancelResponse, REMOTE_CONVERSATION_MAX_CONTEXT_FILES,
-    REMOTE_CONVERSATION_MAX_PAGE_SIZE, REMOTE_CONVERSATION_MAX_PROMPT_BYTES,
-    REMOTE_CONVERSATION_MAX_QUEUED_TURNS,
+    RemoteTurnCancelRequest, RemoteTurnCancelResponse, validate_model_ref,
+    REMOTE_CONVERSATION_MAX_CONTEXT_FILES, REMOTE_CONVERSATION_MAX_PAGE_SIZE,
+    REMOTE_CONVERSATION_MAX_PROMPT_BYTES, REMOTE_CONVERSATION_MAX_QUEUED_TURNS,
+};
+use crate::models::{
+    HostModelCatalog, ModelAllowlist, ModelCatalogError, RemoteModelAddRequest,
+    RemoteModelAddResponse, RemoteModelCatalogResponse, RemoteModelDiscoverRequest,
+    RemoteModelDiscoverResponse, RemoteModelEnableRequest, RemoteModelEnableResponse,
 };
 use crate::storage::{
     ConversationAcceptance, ConversationAppendAcceptance, RemoteStorage, StorageError,
@@ -67,16 +72,7 @@ fn map_storage_error(error: StorageError, rid: Option<String>) -> GatewayErrorRe
     mapped.with_request_id(rid)
 }
 
-fn deterministic_id(prefix: &str, material: &str) -> String {
-    // FNV-1a: replayed requests with the same owner/request material must
-    // derive identical IDs so the storage idempotency lookup can hit.
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in material.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{prefix}-{hash:016x}")
-}
+pub(crate) use crate::storage::deterministic_id;
 
 fn fingerprint<T: Serialize>(value: &T) -> Result<String, GatewayError> {
     serde_json::to_string(value).map_err(|_| GatewayError::Internal)
@@ -115,8 +111,80 @@ pub(super) fn v2_router() -> Router<Arc<GatewayState>> {
             post(archive_conversation),
         )
         .route("/api/v2/turns/:turn_id/cancel", post(cancel_turn_route))
+        .route("/api/v2/models", get(list_models).post(add_models))
+        .route("/api/v2/models/discover", post(discover_models))
+        .route(
+            "/api/v2/models/:model_ref/remote-enable",
+            post(enable_remote_model),
+        )
         .route("/api/v2/events", get(events_v2))
         .route("/api/v2/events/stream", get(events_v2_stream))
+}
+
+/// Model routes fail closed (503) until the host injected a catalog.
+fn model_gate<'a>(
+    state: &'a GatewayState,
+    rid: Option<String>,
+) -> Result<&'a Arc<HostModelCatalog>, GatewayErrorResponse> {
+    state
+        .models
+        .as_ref()
+        .ok_or_else(|| GatewayError::ServiceUnavailable.with_request_id(rid))
+}
+
+fn load_allowlist(state: &GatewayState) -> Result<ModelAllowlist, GatewayErrorResponse> {
+    let Some(storage) = state.storage.as_ref() else {
+        return Err(GatewayError::ServiceUnavailable.with_request_id(None));
+    };
+    storage
+        .list_model_allowlist()
+        .map(ModelAllowlist::new)
+        .map_err(|error| map_storage_error(error, None))
+}
+
+fn map_model_catalog_error(
+    error: ModelCatalogError,
+    rid: Option<String>,
+) -> GatewayErrorResponse {
+    let mapped = match error {
+        ModelCatalogError::ProviderNotFound => GatewayError::NotFound,
+        ModelCatalogError::InvalidFile | ModelCatalogError::InvalidPayload => {
+            GatewayError::InvalidRequest
+        }
+        ModelCatalogError::TooLarge => GatewayError::PayloadTooLarge,
+        ModelCatalogError::Unavailable => GatewayError::ServiceUnavailable,
+    };
+    mapped.with_request_id(rid)
+}
+
+/// Validates a conversation `modelRef` against the redacted catalog:
+/// must exist, be available, and be remote-allowed. Fails closed when the
+/// catalog is not wired.
+fn validate_conversation_model_ref(
+    state: &GatewayState,
+    model_ref: Option<&str>,
+    rid: Option<String>,
+) -> Result<(), GatewayErrorResponse> {
+    let Some(model_ref) = model_ref else {
+        return Ok(());
+    };
+    validate_model_ref(model_ref).map_err(|_| GatewayError::InvalidRequest.with_request_id(rid.clone()))?;
+    let catalog = model_gate(state, rid.clone())?;
+    let allowlist = load_allowlist(state)?;
+    let response = catalog
+        .list(&allowlist)
+        .map_err(|error| map_model_catalog_error(error, rid.clone()))?;
+    let Some(entry) = response
+        .models
+        .iter()
+        .find(|entry| entry.model_ref == model_ref)
+    else {
+        return Err(GatewayError::InvalidRequest.with_request_id(rid));
+    };
+    if !entry.available || !entry.remote_allowed {
+        return Err(GatewayError::Forbidden.with_request_id(rid));
+    }
+    Ok(())
 }
 
 async fn capabilities_v2(
@@ -135,6 +203,7 @@ async fn capabilities_v2(
         interactions: true,
         message_paging: true,
         event_replay: true,
+        model_catalog: state.models.is_some(),
         max_queued_turns: REMOTE_CONVERSATION_MAX_QUEUED_TURNS,
         max_prompt_bytes: REMOTE_CONVERSATION_MAX_PROMPT_BYTES,
         max_context_files: REMOTE_CONVERSATION_MAX_CONTEXT_FILES,
@@ -204,6 +273,7 @@ async fn create_conversation(
     request
         .validate()
         .map_err(|_| GatewayError::InvalidRequest.with_request_id(rid.clone()))?;
+    validate_conversation_model_ref(&state, request.model_ref.as_deref(), rid.clone())?;
     state
         .projects
         .project_summary(&request.project_id)
@@ -237,6 +307,7 @@ async fn create_conversation(
         delivery_id,
         prompt: request.prompt.clone(),
         context_json,
+        model_ref: request.model_ref.clone(),
         created_at_ms,
         created_at,
         request_fingerprint,
@@ -367,6 +438,7 @@ async fn append_turn(
     request
         .validate()
         .map_err(|_| GatewayError::InvalidRequest.with_request_id(rid.clone()))?;
+    validate_conversation_model_ref(&state, request.model_ref.as_deref(), rid.clone())?;
     let owner_device_id = authenticated.principal.device_id().to_owned();
     let snapshot = storage
         .load_conversation(&owner_device_id, &conversation_id)
@@ -409,6 +481,7 @@ async fn append_turn(
         delivery_id,
         prompt: request.prompt.clone(),
         context_json,
+        model_ref: request.model_ref.clone(),
         created_at_ms,
         created_at,
         request_fingerprint,
@@ -652,15 +725,26 @@ async fn conversation_websocket_session(
             }
         }
 
+        let mut last_activity = std::time::Instant::now();
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(250)) => {},
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                // Half-open connections never deliver a close frame; the
+                // idle deadline reclaims the connection budget so reconnect
+                // does not stack 429s.
+                if last_activity.elapsed() >= super::routes::WS_IDLE_TIMEOUT {
+                    break;
+                }
+            },
             incoming = socket.recv() => {
                 match incoming {
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     Some(Ok(Message::Ping(payload))) => {
+                        last_activity = std::time::Instant::now();
                         if socket.send(Message::Pong(payload)).await.is_err() { break; }
                     }
-                    Some(Ok(Message::Pong(_))) | Some(Ok(Message::Text(_))) | Some(Ok(Message::Binary(_))) => {}
+                    Some(Ok(Message::Pong(_))) | Some(Ok(Message::Text(_))) | Some(Ok(Message::Binary(_))) => {
+                        last_activity = std::time::Instant::now();
+                    }
                 }
             }
         }
@@ -686,4 +770,173 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis()
         .min(u64::MAX as u128) as u64
+}
+
+async fn list_models(
+    State(state): State<Arc<GatewayState>>,
+    headers: HeaderMap,
+) -> Result<Json<RemoteModelCatalogResponse>, GatewayErrorResponse> {
+    let rid = request_id(&headers);
+    authenticate_headers(&state.devices, &headers)
+        .map_err(|error| error.with_request_id(rid.clone()))?;
+    let catalog = model_gate(&state, rid.clone())?;
+    let allowlist = load_allowlist(&state)?;
+    let response = catalog
+        .list(&allowlist)
+        .map_err(|error| map_model_catalog_error(error, rid))?;
+    Ok(Json(response))
+}
+
+/// Sliding-window rate limit for elevated model-admin routes: 10 calls per
+/// device per 60s. Bounded memory: entries are pruned when the window rolls.
+fn model_admin_rate_limited(state: &GatewayState, device_id: &str) -> bool {
+    const WINDOW_MS: u64 = 60_000;
+    const MAX_CALLS: u32 = 10;
+    let now = clock_now().0;
+    let mut table = state
+        .model_admin_rate
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = table.entry(device_id.to_owned()).or_insert((0, 0));
+    if now.saturating_sub(entry.0) >= WINDOW_MS {
+        *entry = (now, 1);
+        return false;
+    }
+    entry.1 += 1;
+    if entry.1 > MAX_CALLS {
+        if table.len() > 256 {
+            table.retain(|_, (window, _)| now.saturating_sub(*window) < WINDOW_MS);
+        }
+        return true;
+    }
+    false
+}
+
+async fn discover_models(
+    State(state): State<Arc<GatewayState>>,
+    headers: HeaderMap,
+    BoundedJson(request): BoundedJson<RemoteModelDiscoverRequest>,
+) -> Result<Json<RemoteModelDiscoverResponse>, GatewayErrorResponse> {
+    let rid = request_id(&headers);
+    let authenticated = authenticate_headers(&state.devices, &headers)
+        .map_err(|error| error.with_request_id(rid.clone()))?;
+    authenticated
+        .principal
+        .require(crate::principal::RemoteScope::ModelAdmin)
+        .map_err(|_| GatewayError::Forbidden.with_request_id(rid.clone()))?;
+    if model_admin_rate_limited(&state, authenticated.principal.device_id()) {
+        return Err(GatewayError::RateLimited.with_request_id(rid));
+    }
+    let catalog = model_gate(&state, rid.clone())?;
+    if request.provider.is_empty()
+        || request.provider.len() > crate::protocol::MAX_DEVICE_ID_BYTES
+        || request.provider.chars().any(char::is_control)
+    {
+        return Err(GatewayError::InvalidRequest.with_request_id(rid));
+    }
+    let response = catalog
+        .discover(&request.provider)
+        .map_err(|error| map_model_catalog_error(error, rid.clone()))?;
+    if let Some(storage) = state.storage.as_ref() {
+        let (at_ms, _) = clock_now();
+        let _ = storage.record_model_admin_audit(
+            &format!("audit-discover-{at_ms}-{}", authenticated.principal.device_id()),
+            "discover",
+            authenticated.principal.device_id(),
+            Some(&request.provider),
+            at_ms,
+        );
+    }
+    Ok(Json(response))
+}
+
+async fn add_models(
+    State(state): State<Arc<GatewayState>>,
+    headers: HeaderMap,
+    BoundedJson(request): BoundedJson<RemoteModelAddRequest>,
+) -> Result<Json<RemoteModelAddResponse>, GatewayErrorResponse> {
+    let rid = request_id(&headers);
+    let authenticated = authenticate_headers(&state.devices, &headers)
+        .map_err(|error| error.with_request_id(rid.clone()))?;
+    authenticated
+        .principal
+        .require(crate::principal::RemoteScope::ModelAdmin)
+        .map_err(|_| GatewayError::Forbidden.with_request_id(rid.clone()))?;
+    if model_admin_rate_limited(&state, authenticated.principal.device_id()) {
+        return Err(GatewayError::RateLimited.with_request_id(rid));
+    }
+    let catalog = model_gate(&state, rid.clone())?;
+    if request.provider.is_empty()
+        || request.provider.len() > crate::protocol::MAX_DEVICE_ID_BYTES
+        || request.provider.chars().any(char::is_control)
+    {
+        return Err(GatewayError::InvalidRequest.with_request_id(rid));
+    }
+    let allowlist = load_allowlist(&state)?;
+    let response = catalog
+        .add(&request.provider, &request.models, &allowlist)
+        .map_err(|error| map_model_catalog_error(error, rid.clone()))?;
+    if let Some(storage) = state.storage.as_ref() {
+        let (at_ms, _) = clock_now();
+        let _ = storage.record_model_admin_audit(
+            &format!("audit-add-{at_ms}-{}", authenticated.principal.device_id()),
+            "add",
+            authenticated.principal.device_id(),
+            Some(&request.provider),
+            at_ms,
+        );
+    }
+    Ok(Json(response))
+}
+
+async fn enable_remote_model(
+    State(state): State<Arc<GatewayState>>,
+    Path(model_ref): Path<String>,
+    headers: HeaderMap,
+    BoundedJson(request): BoundedJson<RemoteModelEnableRequest>,
+) -> Result<Json<RemoteModelEnableResponse>, GatewayErrorResponse> {
+    let rid = request_id(&headers);
+    let authenticated = authenticate_headers(&state.devices, &headers)
+        .map_err(|error| error.with_request_id(rid.clone()))?;
+    authenticated
+        .principal
+        .require(crate::principal::RemoteScope::ModelAdmin)
+        .map_err(|_| GatewayError::Forbidden.with_request_id(rid.clone()))?;
+    if model_admin_rate_limited(&state, authenticated.principal.device_id()) {
+        return Err(GatewayError::RateLimited.with_request_id(rid));
+    }
+    let catalog = model_gate(&state, rid.clone())?;
+    validate_model_ref(&model_ref)
+        .map_err(|_| GatewayError::InvalidRequest.with_request_id(rid.clone()))?;
+    let allowlist = load_allowlist(&state)?;
+    let response = catalog
+        .list(&allowlist)
+        .map_err(|error| map_model_catalog_error(error, rid.clone()))?;
+    if !response
+        .models
+        .iter()
+        .any(|entry| entry.model_ref == model_ref)
+    {
+        return Err(GatewayError::NotFound.with_request_id(rid));
+    }
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| GatewayError::ServiceUnavailable.with_request_id(rid.clone()))?;
+    let (_, duplicate) = storage
+        .set_model_remote_allowed(&model_ref, request.enabled, clock_now().0)
+        .map_err(|error| map_storage_error(error, rid.clone()))?;
+    let (at_ms, _) = clock_now();
+    let _ = storage.record_model_admin_audit(
+        &format!("audit-enable-{at_ms}-{}", authenticated.principal.device_id()),
+        "enable",
+        authenticated.principal.device_id(),
+        Some(&model_ref),
+        at_ms,
+    );
+    Ok(Json(RemoteModelEnableResponse {
+        model_ref,
+        remote_allowed: request.enabled,
+        duplicate,
+    }))
 }

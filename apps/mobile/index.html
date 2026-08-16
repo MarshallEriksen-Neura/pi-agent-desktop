@@ -2,9 +2,15 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      不写 maximum-scale / user-scalable=no:禁止缩放会让低视力用户无法放大页面
+      (WCAG 1.4.4)。iOS 会在聚焦 <16px 输入框时自动放大,那是靠把输入框字号
+      设成 >=16px 解决的,不是靠禁用缩放。viewport-fit=cover 配合 env(safe-area-*)
+      处理刘海屏。
+    -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="theme-color" content="#000000" />
     <meta name="apple-mobile-web-app-capable" content="yes" />

@@ -326,6 +326,20 @@ pub struct RemoteTreePage {
     pub next_cursor: Option<String>,
 }
 
+/// Read-only text preview of one project file (design §4 extension:
+/// `fileBodyAvailable`). Capped at `MAX_FILE_BODY_BYTES`, UTF-8 text only —
+/// binary content is rejected, oversized files come back truncated.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteFileBody {
+    #[serde(rename = "relativePath")]
+    pub relative_path: String,
+    pub content: String,
+    #[serde(rename = "sizeBytes")]
+    pub size_bytes: u64,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteProjectCapabilities {
     #[serde(rename = "maxTreeEntriesPerPage")]

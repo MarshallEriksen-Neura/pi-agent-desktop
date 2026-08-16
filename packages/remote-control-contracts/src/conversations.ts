@@ -72,6 +72,7 @@ export type RemoteConversationErrorCode =
   | "cancelled"
   | "host_interrupted"
   | "event_backpressure"
+  | "model_unavailable"
   | "internal_error";
 
 export interface RemoteConversationError {
@@ -99,6 +100,9 @@ export interface RemoteTurnSnapshot {
   readonly requestId: RequestId;
   readonly ownerDeviceId: DeviceId;
   readonly state: RemoteTurnState;
+  /** Immutable per-turn model reference (`provider/modelId`). The model bound
+   * to this turn at acceptance; never rewritten by later model changes. */
+  readonly modelRef?: string;
   readonly createdAt: IsoTimestamp;
   readonly updatedAt: IsoTimestamp;
   readonly startedAt?: IsoTimestamp;
@@ -127,6 +131,10 @@ export interface RemoteConversationSnapshot {
   readonly messageCount: number;
   readonly turnCount: number;
   readonly queuedTurnCount: number;
+  /** Conversation-default model ref (`provider/modelId`). Advances when a
+   * turn is appended with an explicit `modelRef`; historical turns keep their
+   * own immutable `modelRef`. */
+  readonly defaultModelRef?: string;
   readonly capabilities: RemoteConversationCapabilities;
 }
 
@@ -192,6 +200,8 @@ export interface RemoteConversationCapabilities {
   readonly interactions: boolean;
   readonly messagePaging: boolean;
   readonly eventReplay: boolean;
+  /** Host-side model catalog (`/api/v2/models`) and per-turn model binding. */
+  readonly modelCatalog: boolean;
   readonly maxQueuedTurns: typeof REMOTE_CONVERSATION_MAX_QUEUED_TURNS;
   readonly maxPromptBytes: typeof REMOTE_CONVERSATION_MAX_PROMPT_BYTES;
   readonly maxContextFiles: typeof REMOTE_CONVERSATION_MAX_CONTEXT_FILES;
@@ -203,6 +213,9 @@ export interface RemoteConversationCreateRequest {
   readonly projectId: ProjectId;
   readonly prompt: string;
   readonly contextFiles: readonly RemoteConversationContextFile[];
+  /** Model ref (`provider/modelId`) for the first turn; becomes the
+   * conversation default. Omit to use the host default model. */
+  readonly modelRef?: string;
 }
 
 export interface RemoteConversationCreateResponse {
@@ -216,6 +229,10 @@ export interface RemoteTurnAppendRequest {
   readonly requestId: RequestId;
   readonly prompt: string;
   readonly contextFiles?: readonly RemoteConversationContextFile[];
+  /** Model ref (`provider/modelId`) for this new turn; becomes the
+   * conversation default from this turn onward. Omit to keep the existing
+   * conversation default. */
+  readonly modelRef?: string;
 }
 
 export interface RemoteTurnAppendResponse {

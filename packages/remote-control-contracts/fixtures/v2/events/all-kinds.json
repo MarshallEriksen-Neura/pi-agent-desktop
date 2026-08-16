@@ -25,6 +25,7 @@
         "interactions": true,
         "messagePaging": true,
         "eventReplay": true,
+        "modelCatalog": true,
         "maxQueuedTurns": 8,
         "maxPromptBytes": 32768,
         "maxContextFiles": 16,

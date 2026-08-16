@@ -4,7 +4,7 @@ use pi_remote_control::protocol::{
     PairingFailure, PairingQrPayload, PairingRequest, PairingSuccess, PolicyFixtureManifest,
     RemoteEvent, RemoteInteractionRequest, RemoteInteractionResponse, RemoteInteractionSnapshot,
     RemoteProjectCapabilities, RemoteProjectSummary, RemoteTaskCreateRequest, RemoteTaskError,
-    RemoteTaskSnapshot, RemoteTreePage,
+    RemoteTaskSnapshot, RemoteTreePage, RemoteFileBody,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
@@ -29,6 +29,9 @@ fn shared_fixtures_round_trip_through_rust_serde() {
     ));
     assert_round_trip::<RemoteProjectCapabilities>(include_str!(
         "../../../packages/remote-control-contracts/fixtures/v1/projects/capabilities.json"
+    ));
+    assert_round_trip::<RemoteFileBody>(include_str!(
+        "../../../packages/remote-control-contracts/fixtures/v1/projects/file-body.json"
     ));
     assert_round_trip::<RemoteTaskCreateRequest>(include_str!(
         "../../../packages/remote-control-contracts/fixtures/v1/tasks/create-request.json"

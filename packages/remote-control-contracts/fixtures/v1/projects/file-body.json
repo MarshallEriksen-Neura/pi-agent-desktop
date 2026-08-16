@@ -1,0 +1,6 @@
+{
+  "relativePath": "src/main.rs",
+  "content": "fn main() {\n    println!(\"hello from the project\");\n}\n",
+  "sizeBytes": 54,
+  "truncated": false
+}

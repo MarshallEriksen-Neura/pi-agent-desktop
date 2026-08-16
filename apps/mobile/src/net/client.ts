@@ -5,6 +5,7 @@ import type {
   PairingResponse,
   RemoteProjectSummary,
   RemoteTreePage,
+  RemoteFileBody,
   RemoteTaskSnapshot,
   RemoteTaskCreateRequest,
   RemoteInteractionSnapshot,
@@ -19,6 +20,11 @@ import type {
   RemoteTurnAppendRequest,
   RemoteTurnAppendResponse,
   RemoteTurnCancelResponse,
+  RemoteModelCatalogResponse,
+  RemoteModelDiscoverResponse,
+  RemoteModelAddRequest,
+  RemoteModelAddResponse,
+  RemoteModelEnableResponse,
 } from "@pi/remote-control-contracts";
 
 /**
@@ -97,6 +103,16 @@ export class RemoteControlClient {
     if (cursor) params.set("cursor", cursor);
     const qs = params.toString();
     return this.sendJson("GET", `/api/v1/projects/${encodeURIComponent(projectId)}/tree${qs ? `?${qs}` : ""}`);
+  }
+
+  /** Read-only text preview of one project file (binary files are rejected
+   *  server-side; oversized files come back truncated). */
+  async getFileBody(projectId: string, path: string): Promise<RemoteFileBody> {
+    const params = new URLSearchParams({ path });
+    return this.sendJson(
+      "GET",
+      `/api/v1/projects/${encodeURIComponent(projectId)}/file?${params.toString()}`,
+    );
   }
 
   // ----------------------------------------------------------------
@@ -219,6 +235,33 @@ export class RemoteControlClient {
   async getConversationEvents(after?: number): Promise<ConversationEventsReplay> {
     const qs = after != null ? `?after=${after}` : "";
     return this.sendJson("GET", `/api/v2/events${qs}`);
+  }
+
+  // ----------------------------------------------------------------
+  // Redacted model catalog (v2) — host-owned credentials stay on desktop.
+  // ----------------------------------------------------------------
+
+  async listModels(): Promise<RemoteModelCatalogResponse> {
+    return this.sendJson("GET", "/api/v2/models");
+  }
+
+  async discoverModels(provider: string): Promise<RemoteModelDiscoverResponse> {
+    return this.sendJson("POST", "/api/v2/models/discover", { provider });
+  }
+
+  async addModels(req: RemoteModelAddRequest): Promise<RemoteModelAddResponse> {
+    return this.sendJson("POST", "/api/v2/models", req);
+  }
+
+  async enableRemoteModel(
+    modelRef: string,
+    enabled: boolean,
+  ): Promise<RemoteModelEnableResponse> {
+    return this.sendJson(
+      "POST",
+      `/api/v2/models/${encodeURIComponent(modelRef)}/remote-enable`,
+      { enabled },
+    );
   }
 
   // ----------------------------------------------------------------

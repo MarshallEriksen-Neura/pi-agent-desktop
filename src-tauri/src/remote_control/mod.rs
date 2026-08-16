@@ -8,6 +8,9 @@ mod wake_on_lan;
 
 use pi_backend_core::projects::{canonical_project_root, DurableJsonStore};
 use pi_remote_control::config::RemoteControlConfig;
+use pi_remote_control::conversation_protocol::{
+    RemoteConversationSnapshot, RemoteMessagePageResponse,
+};
 use pi_remote_control::conversation_runtime::{
     ConversationRuntimeConfig, ConversationRuntimeManager,
 };
@@ -633,6 +636,16 @@ fn build_running_gateway<R: Runtime>(
     } else {
         gateway
     };
+    let gateway = gateway.with_models(
+        pi_remote_control::models::HostModelCatalog::new(
+            crate::pi_settings::home_dir()
+                .ok()
+                .map(|home| home.join(".pi").join("agent").join("models.json")),
+            String::new(),
+            String::new(),
+        )
+        .map(std::sync::Arc::new),
+    );
     let tls = build_server_config(&identity).map_err(|error| error.to_string())?;
     let router = build_router(gateway.clone());
     let (command_tx, command_rx) = mpsc::channel();
@@ -937,6 +950,174 @@ pub fn remote_control_reset_identity<R: Runtime>(
     state: State<'_, RemoteControlState>,
 ) -> Result<RemoteControlStatus, String> {
     state.reset_identity(&app)
+}
+
+#[tauri::command]
+pub fn remote_conversations_list(
+    state: State<'_, RemoteControlState>,
+    limit: Option<usize>,
+) -> Result<Vec<RemoteConversationSnapshot>, String> {
+    state.with_gateway(|gateway| {
+        let storage = gateway
+            .storage
+            .as_ref()
+            .ok_or_else(|| "remote conversation storage is unavailable".to_owned())?;
+        storage
+            .list_conversations_for_desktop(limit.unwrap_or(100))
+            .map_err(storage_error)
+    })
+}
+
+#[tauri::command]
+pub fn remote_conversation_get(
+    state: State<'_, RemoteControlState>,
+    conversation_id: String,
+) -> Result<RemoteConversationSnapshot, String> {
+    state.with_gateway(|gateway| {
+        let storage = gateway
+            .storage
+            .as_ref()
+            .ok_or_else(|| "remote conversation storage is unavailable".to_owned())?;
+        storage
+            .load_conversation_for_desktop(&conversation_id)
+            .map_err(storage_error)?
+            .ok_or_else(|| "remote conversation was not found".to_owned())
+    })
+}
+
+#[tauri::command]
+pub fn remote_conversation_messages(
+    state: State<'_, RemoteControlState>,
+    conversation_id: String,
+    after_ordinal: Option<u64>,
+    limit: Option<usize>,
+) -> Result<RemoteMessagePageResponse, String> {
+    state.with_gateway(|gateway| {
+        let storage = gateway
+            .storage
+            .as_ref()
+            .ok_or_else(|| "remote conversation storage is unavailable".to_owned())?;
+        storage
+            .load_conversation_messages_for_desktop(
+                &conversation_id,
+                after_ordinal,
+                limit.unwrap_or(100),
+            )
+            .map_err(storage_error)?
+            .ok_or_else(|| "remote conversation was not found".to_owned())
+    })
+}
+
+#[tauri::command]
+pub fn remote_conversation_append(
+    state: State<'_, RemoteControlState>,
+    conversation_id: String,
+    prompt: String,
+    model_ref: Option<String>,
+    request_id: String,
+) -> Result<pi_remote_control::conversation_protocol::RemoteTurnAppendResponse, String> {
+    state.with_gateway(|gateway| {
+        let storage = gateway
+            .storage
+            .as_ref()
+            .ok_or_else(|| "remote conversation storage is unavailable".to_owned())?;
+        if prompt.trim().is_empty() {
+            return Err("prompt must not be empty".to_owned());
+        }
+        if request_id.is_empty() || request_id.len() > 128 {
+            return Err("requestId is invalid".to_owned());
+        }
+        let event_id = format!("desktop-append-{request_id}");
+        storage
+            .append_conversation_turn_for_desktop(
+                &conversation_id,
+                prompt.trim(),
+                Vec::new(),
+                model_ref,
+                request_id,
+                event_id,
+            )
+            .map_err(storage_error)
+    })
+}
+
+#[tauri::command]
+pub fn remote_conversation_cancel(
+    state: State<'_, RemoteControlState>,
+    conversation_id: String,
+    turn_id: String,
+) -> Result<bool, String> {
+    state.with_gateway(|gateway| {
+        let storage = gateway
+            .storage
+            .as_ref()
+            .ok_or_else(|| "remote conversation storage is unavailable".to_owned())?;
+        let snapshot = storage
+            .load_conversation_for_desktop(&conversation_id)
+            .map_err(storage_error)?
+            .ok_or_else(|| "remote conversation was not found".to_owned())?;
+        let manager = gateway
+            .conversations
+            .as_ref()
+            .ok_or_else(|| "remote conversation runtime is unavailable".to_owned())?;
+        Ok(manager.cancel_turn(&snapshot.owner_device_id, &conversation_id, &turn_id))
+    })
+}
+
+#[tauri::command]
+pub fn remote_conversation_archive(
+    state: State<'_, RemoteControlState>,
+    conversation_id: String,
+) -> Result<bool, String> {
+    state.with_gateway(|gateway| {
+        let storage = gateway
+            .storage
+            .as_ref()
+            .ok_or_else(|| "remote conversation storage is unavailable".to_owned())?;
+        let snapshot = storage
+            .load_conversation_for_desktop(&conversation_id)
+            .map_err(storage_error)?
+            .ok_or_else(|| "remote conversation was not found".to_owned())?;
+        let manager = gateway
+            .conversations
+            .as_ref()
+            .ok_or_else(|| "remote conversation runtime is unavailable".to_owned())?;
+        Ok(manager.archive_conversation(&snapshot.owner_device_id, &conversation_id))
+    })
+}
+
+/// Grants or revokes the elevated model-administration scope for one paired
+/// device. Persisted through gateway storage and audited; the registry and
+/// the database are updated together so the live scope cannot drift from
+/// the durable grant.
+#[tauri::command]
+pub fn remote_control_set_model_admin(
+    state: State<'_, RemoteControlState>,
+    device_id: String,
+    granted: bool,
+) -> Result<bool, String> {
+    state.with_gateway(|gateway| {
+        let registry = &gateway.devices;
+        registry
+            .set_model_admin(&device_id, granted)
+            .map_err(|error| error.to_string())?;
+        let storage = gateway
+            .storage
+            .as_ref()
+            .ok_or_else(|| "remote conversation storage is unavailable".to_owned())?;
+        let at_ms = now_ms();
+        storage
+            .set_model_admin_grant(&device_id, granted, at_ms)
+            .map_err(storage_error)?;
+        let _ = storage.record_model_admin_audit(
+            &format!("audit-grant-{at_ms}-{device_id}"),
+            if granted { "grant" } else { "revoke" },
+            &device_id,
+            None,
+            at_ms,
+        );
+        Ok(granted)
+    })
 }
 
 fn storage_error(error: StorageError) -> String {

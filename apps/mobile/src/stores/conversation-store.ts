@@ -16,6 +16,7 @@ import { useConnectionStore } from "./connection.store";
 import { useConversationDrafts } from "./conversation-drafts";
 import { NetError } from "@/net/errors";
 import { conversationEventDispatcher } from "./conversation-event-dispatcher";
+import { maybeNotifyConversationCompleted, maybeNotifyInteractionWaiting } from "@/services/notifications";
 
 /**
  * Conversation store — server-authoritative durable transcripts (G006).
@@ -48,6 +49,9 @@ interface ConversationStoreState {
   open: OpenConversation | null;
   /** null = not probed yet; false = gateway keeps v2 fail-closed (503). */
   v2Available: boolean | null;
+  /** Last capability probe failure. Transient failures do not disable a
+   * previously available v2 runtime or silently switch new work to v1. */
+  v2ProbeError: string | null;
   loading: boolean;
   error: string | null;
   lastEventSequence: number;
@@ -189,6 +193,7 @@ export const useConversationStore = create<ConversationStoreState>((set, get) =>
   summaries: [],
   open: null,
   v2Available: null,
+  v2ProbeError: null,
   loading: false,
   error: null,
   lastEventSequence: 0,
@@ -198,10 +203,14 @@ export const useConversationStore = create<ConversationStoreState>((set, get) =>
     if (!client) return false;
     try {
       await client.getConversationCapabilities();
-      set({ v2Available: true });
+      set({ v2Available: true, v2ProbeError: null });
       return true;
-    } catch {
-      set({ v2Available: false });
+    } catch (e) {
+      const unavailable = e instanceof NetError && e.status === 503;
+      set((state) => ({
+        v2Available: unavailable ? false : state.v2Available,
+        v2ProbeError: errorMessage(e),
+      }));
       return false;
     }
   },
@@ -374,6 +383,19 @@ export const useConversationStore = create<ConversationStoreState>((set, get) =>
   },
 
   applyEvent: (event) => {
+    // Lifecycle notifications — checked before any branch so a turn that
+    // completes in ANOTHER conversation still alerts. Dedup lives in the
+    // service, and "user is watching this conversation" is decided there too.
+    if (event.kind === "turn.completed" && event.state === "succeeded") {
+      const open = get().open;
+      const preview =
+        open?.snapshot.conversationId === event.conversationId
+          ? open.snapshot.latestMessage?.text
+          : undefined;
+      void maybeNotifyConversationCompleted(event.conversationId, preview);
+    } else if (event.kind === "interaction.requested") {
+      void maybeNotifyInteractionWaiting(event.conversationId, event.prompt);
+    }
     const open = get().open;
     if (!open || event.conversationId !== open.snapshot.conversationId) {
       // Keep list metadata useful while another conversation is open. The
@@ -453,6 +475,7 @@ export const useConversationStore = create<ConversationStoreState>((set, get) =>
       summaries: [],
       open: null,
       v2Available: null,
+      v2ProbeError: null,
       loading: false,
       error: null,
       lastEventSequence: 0,

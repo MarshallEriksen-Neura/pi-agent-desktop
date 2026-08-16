@@ -10,6 +10,11 @@ pub enum RemoteScope {
     ReadOwnedTasks,
     CancelOwnedTasks,
     RespondToOwnedInteractions,
+    /// Elevated, opt-in model administration: discover/add models and toggle
+    /// the remote allowlist. Deliberately absent from the v1 scope set, so
+    /// every newly paired device starts without it and the host grants it
+    /// separately from ordinary task execution.
+    ModelAdmin,
 }
 
 /// Scope and owner claims captured at authentication time. This value is not

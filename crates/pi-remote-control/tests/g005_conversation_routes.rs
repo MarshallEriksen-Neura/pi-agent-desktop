@@ -933,3 +933,182 @@ async fn archive_is_owner_scoped_and_diagnostics_are_redacted_counters_only() {
 
     let _ = std::fs::remove_dir_all(rig.root);
 }
+
+#[tokio::test]
+async fn model_admin_routes_require_elevated_scope_and_audit_operations() {
+    let mut rig = rig("model-admin");
+    let (owner, owner_token) = register_device(&rig.state, "mobile-01");
+    let (admin, admin_token) = register_device(&rig.state, "mobile-02");
+
+    // Wire a redacted host catalog so the routes are reachable.
+    let models_dir = rig.root.join("models");
+    std::fs::create_dir_all(&models_dir).unwrap();
+    let models_json = models_dir.join("models.json");
+    std::fs::write(
+        &models_json,
+        r#"{"providers": {"openai": {"baseUrl": "https://api.openai.com/v1", "api": "openai-responses", "apiKey": "sk-secret", "models": [{"id": "gpt-4.1", "name": "GPT-4.1"}]}}}"#,
+    )
+    .unwrap();
+    let state = rig.state.with_models(
+        pi_remote_control::models::HostModelCatalog::new(
+            Some(models_json),
+            String::new(),
+            String::new(),
+        )
+        .map(Arc::new),
+    );
+    let router = build_router(state.clone());
+    rig.state = state;
+    rig.router = router;
+
+    // Model catalog listing stays open to every paired device, redacted.
+    let listing = rig
+        .router
+        .clone()
+        .oneshot(auth_request(Method::GET, "/api/v2/models", &owner, &owner_token, Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(listing.status(), StatusCode::OK);
+    let listing_value = json_body(listing).await;
+    assert_eq!(listing_value["models"][0]["modelId"], "gpt-4.1");
+    let listing_text = listing_value.to_string();
+    assert!(!listing_text.contains("sk-secret"));
+    assert!(!listing_text.contains("https://"));
+
+    // discover/add/enable are elevated: a default pairing gets 403.
+    for (uri, body) in [
+        ("/api/v2/models/discover", serde_json::json!({"provider": "openai"})),
+        ("/api/v2/models", serde_json::json!({"provider": "openai", "models": []})),
+        ("/api/v2/models/openai%2Fgpt-4.1/remote-enable", serde_json::json!({"enabled": true})),
+    ] {
+        let denied = rig
+            .router
+            .clone()
+            .oneshot(auth_request(Method::POST, uri, &owner, &owner_token, body))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{uri}");
+    }
+
+    // Granting model-admin to a device enables the routes; the grant is
+    // durable and the audit trail records the operations.
+    rig.state
+        .devices
+        .set_model_admin(&admin, true)
+        .expect("grant");
+    rig.state
+        .storage
+        .as_ref()
+        .unwrap()
+        .set_model_admin_grant(&admin, true, now_ms())
+        .expect("persist grant");
+
+    let discovered = rig
+        .router
+        .clone()
+        .oneshot(auth_request(
+            Method::POST,
+            "/api/v2/models/discover",
+            &admin,
+            &admin_token,
+            serde_json::json!({"provider": "openai"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(discovered.status(), StatusCode::OK);
+    let discovered_value = json_body(discovered).await;
+    assert_eq!(discovered_value["candidates"][0]["modelId"], "gpt-4.1");
+
+    let enabled = rig
+        .router
+        .clone()
+        .oneshot(auth_request(
+            Method::POST,
+            "/api/v2/models/openai%2Fgpt-4.1/remote-enable",
+            &admin,
+            &admin_token,
+            serde_json::json!({"enabled": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(enabled.status(), StatusCode::OK);
+    let enabled_value = json_body(enabled).await;
+    assert!(enabled_value["remoteAllowed"].as_bool().unwrap());
+
+    // The audit table recorded both operations.
+    let connection = rusqlite::Connection::open(rig.root.join("gateway.db")).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM model_admin_audit WHERE device_id=?1",
+            [&admin],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 2);
+
+    // Revocation flips the routes back to forbidden for the same device.
+    rig.state
+        .devices
+        .set_model_admin(&admin, false)
+        .expect("revoke");
+    let denied = rig
+        .router
+        .clone()
+        .oneshot(auth_request(
+            Method::POST,
+            "/api/v2/models/discover",
+            &admin,
+            &admin_token,
+            serde_json::json!({"provider": "openai"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let _ = std::fs::remove_dir_all(rig.root);
+}
+
+#[tokio::test]
+async fn model_ref_on_create_requires_remote_allowed_model_or_fails_clean() {
+    let rig = rig("model-ref-gate");
+    let (owner, owner_token) = register_device(&rig.state, "mobile-01");
+    let project_id = rig.state.projects.list_projects()[0].project_id.clone();
+
+    // No catalog wired: explicit modelRef fails closed with a 503 while the
+    // same request without a modelRef still creates the conversation.
+    let without_model = rig
+        .router
+        .clone()
+        .oneshot(auth_request(
+            Method::POST,
+            "/api/v2/conversations",
+            &owner,
+            &owner_token,
+            create_body("req-nomodel", &project_id, "hello"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(without_model.status(), StatusCode::OK);
+
+    let with_model = rig
+        .router
+        .clone()
+        .oneshot(auth_request(
+            Method::POST,
+            "/api/v2/conversations",
+            &owner,
+            &owner_token,
+            serde_json::json!({
+                "requestId": "req-model",
+                "projectId": project_id,
+                "prompt": "hello with model",
+                "contextFiles": [],
+                "modelRef": "openai/gpt-4.1",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(with_model.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let _ = std::fs::remove_dir_all(rig.root);
+}

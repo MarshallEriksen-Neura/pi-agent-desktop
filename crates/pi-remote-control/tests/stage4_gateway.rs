@@ -386,12 +386,22 @@ async fn websocket_route_authenticates_and_enforces_per_device_limit() {
         .await
         .expect("second websocket connection");
     assert_eq!(second_response.status(), StatusCode::SWITCHING_PROTOCOLS);
-    let third = connect_async(websocket_request(&url, &device_id, &token))
+    let (third, third_response) = connect_async(websocket_request(&url, &device_id, &token))
         .await
-        .expect_err("third websocket must be rate limited");
-    assert!(third.to_string().contains("429"));
+        .expect("third websocket connection");
+    assert_eq!(third_response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let (fourth, fourth_response) = connect_async(websocket_request(&url, &device_id, &token))
+        .await
+        .expect("fourth websocket connection");
+    assert_eq!(fourth_response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let fifth = connect_async(websocket_request(&url, &device_id, &token))
+        .await
+        .expect_err("fifth websocket must be rate limited");
+    assert!(fifth.to_string().contains("429"));
     drop(first);
     drop(second);
+    drop(third);
+    drop(fourth);
     server.abort();
 }
 
@@ -415,4 +425,145 @@ async fn gateway_server_is_fail_closed_when_disabled() {
     let result =
         GatewayServer::start(&RemoteControlConfig::default(), build_router(state()), tls).await;
     assert!(matches!(result, Err(GatewayServerError::Disabled)));
+}
+
+#[tokio::test]
+async fn gateway_serves_file_body_with_policy_enforcement() {
+    let state = state();
+    let temp = tempfile::tempdir().expect("temp project");
+    std::fs::create_dir(temp.path().join("src")).expect("source directory");
+    std::fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").expect("source file");
+    std::fs::write(temp.path().join(".env"), "SECRET=1\n").expect("denied file");
+    std::fs::write(temp.path().join("blob.bin"), vec![0x00, 0x01, 0x00, 0x02])
+        .expect("binary file");
+    // One ASCII byte shifts the parity so the 256 KiB cut lands in the middle
+    // of a two-byte character — exercises the UTF-8 boundary trim.
+    let mut oversized = String::from("a");
+    oversized.push_str(&"é".repeat(200_000));
+    std::fs::write(temp.path().join("oversized.txt"), &oversized).expect("oversized file");
+    let project = state
+        .projects
+        .allow_project(temp.path(), "fixture-project", None)
+        .expect("allow project");
+    let (device_id, token) = auth_device(&state, "mobile-one");
+    let router = build_router(state.clone());
+
+    // The capability gate the mobile app keys its preview entry on.
+    let caps = router
+        .clone()
+        .oneshot(authenticated_request(
+            Method::GET,
+            "/api/v1/capabilities",
+            &device_id,
+            &token,
+            Body::empty(),
+        ))
+        .await
+        .expect("capabilities response");
+    assert_eq!(caps.status(), StatusCode::OK);
+    let caps_json: serde_json::Value = serde_json::from_slice(
+        &to_bytes(caps.into_body(), 64 * 1024)
+            .await
+            .expect("capabilities body"),
+    )
+    .expect("capabilities JSON");
+    assert_eq!(caps_json["project"]["fileBodyAvailable"], true);
+
+    let base = format!("/api/v1/projects/{}/file", project.project_id);
+
+    // Happy path: text file, full body.
+    let file = router
+        .clone()
+        .oneshot(authenticated_request(
+            Method::GET,
+            &format!("{base}?path=src/main.rs"),
+            &device_id,
+            &token,
+            Body::empty(),
+        ))
+        .await
+        .expect("file response");
+    assert_eq!(file.status(), StatusCode::OK);
+    let file_body: pi_remote_control::protocol::RemoteFileBody = serde_json::from_slice(
+        &to_bytes(file.into_body(), 1024 * 1024)
+            .await
+            .expect("file body"),
+    )
+    .expect("file JSON");
+    assert_eq!(file_body.relative_path, "src/main.rs");
+    assert_eq!(file_body.content, "fn main() {}\n");
+    assert_eq!(file_body.size_bytes, 13);
+    assert!(!file_body.truncated);
+
+    // Denied entry (.env) and traversal must both be rejected.
+    for path in [".env", "..%2F..%2Fetc%2Fhosts"] {
+        let denied = router
+            .clone()
+            .oneshot(authenticated_request(
+                Method::GET,
+                &format!("{base}?path={path}"),
+                &device_id,
+                &token,
+                Body::empty(),
+            ))
+            .await
+            .expect("denied response");
+        assert_eq!(denied.status(), StatusCode::BAD_REQUEST, "path={path}");
+    }
+
+    // Binary content (NUL bytes) is refused as not previewable.
+    let binary = router
+        .clone()
+        .oneshot(authenticated_request(
+            Method::GET,
+            &format!("{base}?path=blob.bin"),
+            &device_id,
+            &token,
+            Body::empty(),
+        ))
+        .await
+        .expect("binary response");
+    assert_eq!(binary.status(), StatusCode::BAD_REQUEST);
+
+    // Oversized text: truncated, cut on a UTF-8 boundary, size reflects the
+    // real on-disk file.
+    let oversized_res = router
+        .clone()
+        .oneshot(authenticated_request(
+            Method::GET,
+            &format!("{base}?path=oversized.txt"),
+            &device_id,
+            &token,
+            Body::empty(),
+        ))
+        .await
+        .expect("oversized response");
+    assert_eq!(oversized_res.status(), StatusCode::OK);
+    let oversized_body: pi_remote_control::protocol::RemoteFileBody = serde_json::from_slice(
+        &to_bytes(oversized_res.into_body(), 2 * 1024 * 1024)
+            .await
+            .expect("oversized body"),
+    )
+    .expect("oversized JSON");
+    assert!(oversized_body.truncated);
+    let cap = pi_remote_control::project_catalog::MAX_FILE_BODY_BYTES;
+    assert_eq!(oversized_body.content.len(), cap - 1);
+    assert_eq!(
+        oversized_body.size_bytes,
+        1 + 2 * 200_000_u64,
+        "sizeBytes reports the real file, not the truncated slice"
+    );
+
+    // Auth still gates the new endpoint.
+    let anonymous = router
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("{base}?path=src/main.rs"))
+                .body(Body::empty())
+                .expect("anonymous request"),
+        )
+        .await
+        .expect("anonymous response");
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
 }

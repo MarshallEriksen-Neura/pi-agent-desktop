@@ -7,11 +7,13 @@
 //! never the child process — is the source of context continuity.
 
 use crate::conversation_protocol::{
-    RemoteConversationError, RemoteConversationErrorCode, RemoteTurnTerminalState,
-    REMOTE_CONVERSATION_GLOBAL_ACTIVE_TURNS,
+    RemoteConversationError, RemoteConversationErrorCode, RemoteConversationEvent,
+    RemoteConversationEventBase, RemoteMessageDeltaEvent, RemoteTurnTerminalState,
+    REMOTE_CONVERSATION_GLOBAL_ACTIVE_TURNS, REMOTE_CONVERSATION_MAX_MESSAGE_TEXT_BYTES,
 };
 use crate::pi_session::{
     PiSessionAdapter, PiSessionBinding, PiSessionContext, PiSessionError, PiSessionHandle,
+    PiTurnStreamEvent,
 };
 use crate::observability::V2Metrics;
 use crate::project_catalog::ProjectCatalog;
@@ -385,6 +387,26 @@ impl ConversationRuntimeManager {
             event_id: format!("rt-running-{turn}"),
         });
 
+        // Verify the per-turn model binding before any prompt delivery. A
+        // mismatch fails the turn closed with a stable redacted error; it
+        // never silently falls back to another model.
+        if let Some(model_ref) = dispatchable.model_ref.as_deref() {
+            if handle.set_model(model_ref).is_err() {
+                drop(handle);
+                let _ = self.complete_failed(
+                    dispatchable,
+                    RemoteConversationErrorCode::ModelUnavailable,
+                    "model selection failed before delivery",
+                    false,
+                );
+                return DispatchOutcome::Completed {
+                    conversation_id: conversation.clone(),
+                    turn_id: turn.clone(),
+                    terminal: RemoteTurnTerminalState::Failed,
+                };
+            }
+        }
+
         let process = handle.process_handle();
         {
             let mut executing = self
@@ -399,7 +421,44 @@ impl ConversationRuntimeManager {
                 cancel_requested: AtomicBool::new(false),
             });
         }
-        let result = handle.run_turn(&dispatchable.prompt);
+        let result = {
+            // Live-lane forwarding: each streamed text fragment becomes a
+            // durable message.delta event in the outbox, so remote clients
+            // render the reply progressively instead of after the turn ends.
+            // The message id matches the terminal assistant message committed
+            // by complete_turn, so a reconnect/replay converges cleanly.
+            let mut delta_index: u64 = 0;
+            let mut streamed_bytes: usize = 0;
+            handle.run_turn_with_stream(&dispatchable.prompt, |stream_event| {
+                let PiTurnStreamEvent::TextDelta(delta) = stream_event;
+                if streamed_bytes >= REMOTE_CONVERSATION_MAX_MESSAGE_TEXT_BYTES {
+                    return;
+                }
+                streamed_bytes = streamed_bytes.saturating_add(delta.len());
+                delta_index += 1;
+                let (at_ms, at) = clock_now();
+                let event_id = format!("rt-delta-{turn}-{delta_index}");
+                let _ = self.storage.append_streaming_conversation_event(
+                    &owner,
+                    &event_id,
+                    at_ms,
+                    |sequence| {
+                        RemoteConversationEvent::MessageDelta(RemoteMessageDeltaEvent {
+                            base: RemoteConversationEventBase {
+                                event_id: event_id.clone(),
+                                emitted_at: at.clone(),
+                                sequence,
+                                device_id: owner.clone(),
+                                conversation_id: conversation.clone(),
+                            },
+                            turn_id: turn.clone(),
+                            message_id: format!("assistant-{turn}"),
+                            delta,
+                        })
+                    },
+                );
+            })
+        };
         let cancel_requested = {
             let mut executing = self
                 .executing

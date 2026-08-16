@@ -11,6 +11,7 @@ import {
   Clock,
 } from "lucide-react";
 import { t } from "@/i18n";
+import { Markdown } from "./markdown";
 import type { ToolInvocation } from "@/lib/transcript";
 
 /**
@@ -20,25 +21,31 @@ import type { ToolInvocation } from "@/lib/transcript";
  * 本文件只负责视觉,不做数据判断。
  */
 
-/** 用户 / 助手气泡。user 蓝色右对齐,assistant 灰色左对齐。 */
+/** 用户 / 助手气泡。user 蓝色右对齐,assistant 灰左对齐。assistant 正文走
+ * Markdown(代码块/列表/粗体),`grouped` 时省略时间戳并收紧间距,形成连续
+ * 消息的阅读节奏。 */
 export const MessageBubble = memo(function MessageBubble({
   role,
   text,
   time,
+  grouped = false,
 }: {
   role: "user" | "assistant";
   text: string;
   time?: string;
+  grouped?: boolean;
 }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 8, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ type: "spring", stiffness: 320, damping: 26 }}
-      className={`msg ${role}`}
+      className={`msg ${role}${grouped ? " grouped" : ""}`}
     >
-      <div className="bubble">{text}</div>
-      {time && <span className="msg-time">{time}</span>}
+      <div className="bubble">
+        {role === "assistant" ? <Markdown text={text} /> : text}
+      </div>
+      {time && !grouped && <span className="msg-time">{time}</span>}
     </motion.div>
   );
 });
@@ -130,9 +137,36 @@ export const ToolCard = memo(function ToolCard({ tool }: { tool: ToolInvocation 
   );
 });
 
-/** stderr 警告块 — 与正文分离,避免诊断信息污染阅读。 */
+/**
+ * stderr 警告块 — 与正文分离,避免诊断信息污染阅读。
+ *
+ * 长输出折叠:一个 Rust panic backtrace 或 webpack 报错动辄几十行,平铺会把
+ * 整条对话流冲掉。超过阈值时只显示首行(通常就是错误摘要),其余收进 details。
+ *
+ * 这里刻意**不**做「Agent 报错消息」那种独立组件。错误渲染在这个 app 里只有
+ * 两个归属:终态失败走 task.error 的独立卡片,流内诊断走本组件。
+ * `OutputFragment.stream` 只有 stdout / stderr / tool / meta 四个值,没有 error
+ * 流 —— 想再加一路错误渲染就得靠猜 stdout 文本内容,那会让同一个错误被渲染两次。
+ */
+const WARN_FOLD_LINES = 6;
+
 export const WarningBlock = memo(function WarningBlock({ text }: { text: string }) {
-  return <div className="warnblock">{text}</div>;
+  const lines = text.split("\n");
+  if (lines.length <= WARN_FOLD_LINES) {
+    return <div className="warnblock">{text}</div>;
+  }
+
+  // 首行当摘要 —— stderr 的第一行几乎总是错误本身,后续是调用栈。
+  const [summary, ...rest] = lines;
+  return (
+    <details className="warnblock foldable">
+      <summary>
+        <span className="wsum">{summary}</span>
+        <span className="wmore">{t("chat.stderrMore", { count: rest.length })}</span>
+      </summary>
+      <div className="wrest">{rest.join("\n")}</div>
+    </details>
+  );
 });
 
 /** 系统提示 — 输出截断、无法解析的 tool 载荷等。居中弱化。 */

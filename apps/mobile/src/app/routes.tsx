@@ -12,6 +12,7 @@ const HomePage = lazy(() => import("@/pages/HomePage").then((m) => ({ default: m
 const SettingsPage = lazy(() => import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
 const ProjectsPage = lazy(() => import("@/pages/ProjectsPage").then((m) => ({ default: m.ProjectsPage })));
 const ProjectTreePage = lazy(() => import("@/pages/ProjectTreePage").then((m) => ({ default: m.ProjectTreePage })));
+const FileViewerPage = lazy(() => import("@/pages/FileViewerPage").then((m) => ({ default: m.FileViewerPage })));
 const TaskComposerPage = lazy(() => import("@/pages/TaskComposerPage").then((m) => ({ default: m.TaskComposerPage })));
 const TasksPage = lazy(() => import("@/pages/TasksPage").then((m) => ({ default: m.TasksPage })));
 const TaskDetailPage = lazy(() => import("@/pages/TaskDetailPage").then((m) => ({ default: m.TaskDetailPage })));
@@ -44,6 +45,7 @@ export const router = createBrowserRouter([
       page("/home", <HomePage />),
       page("/projects", <ProjectsPage />),
       page("/projects/:projectId/tree", <ProjectTreePage />),
+      page("/projects/:projectId/file", <FileViewerPage />),
       page("/projects/:projectId/compose", <TaskComposerPage />),
       page("/tasks", <TasksPage />),
       page("/tasks/:taskId", <TaskDetailPage />),

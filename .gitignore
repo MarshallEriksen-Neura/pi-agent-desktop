@@ -40,6 +40,12 @@ next-env.d.ts.timestamp
 .env*.local
 *.pem
 
+# stitch API key (referenced via {file:.stitch-key} in opencode.json)
+.stitch-key
+
+# figma MCP bearer token (referenced via {file:.figma-token} in opencode.json)
+.figma-token
+
 # pi CLI local state (sessions, cache)
 .pi/
 

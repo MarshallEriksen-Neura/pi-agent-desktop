@@ -275,7 +275,7 @@ fn schema_v1_is_migrated_without_discarding_existing_snapshots() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "3");
+    assert_eq!(version, "4");
 
     let _ = fs::remove_file(path);
 }
