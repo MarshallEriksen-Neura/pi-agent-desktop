@@ -158,7 +158,7 @@ jobs:
         run: pnpm --filter mobile build
 
       - name: Sync Capacitor
-        run: pnpm --filter mobile cap sync android
+        run: pnpm --filter mobile cap:sync
 
       - name: Decode release keystore
         if: env.PI_KEYSTORE_BASE64 != ''
