@@ -177,6 +177,7 @@ jobs:
           PI_KEY_ALIAS: ${{ secrets.PI_KEY_ALIAS }}
           PI_KEY_PASSWORD: ${{ secrets.PI_KEY_PASSWORD }}
         run: |
+          chmod +x gradlew
           TAG_VERSION="${{ github.ref_name }}"
           ./gradlew assembleRelease \
             -PversionName="${TAG_VERSION#v}" \
