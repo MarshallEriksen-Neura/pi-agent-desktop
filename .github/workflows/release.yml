@@ -149,6 +149,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build workspace packages
+        # @pi/remote-control-contracts ships via dist/ — build it (and any
+        # sibling packages) before the app so TS/vite can resolve them.
+        run: pnpm -r --filter "./packages/**" build
+
       - name: Build web assets
         run: pnpm --filter mobile build
 
