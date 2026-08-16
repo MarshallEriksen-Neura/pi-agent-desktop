@@ -74,6 +74,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build workspace packages
+        # @pi/remote-control-contracts ships via dist/ — build workspace
+        # packages before the desktop/mobile apps can resolve them.
+        run: pnpm -r --filter "./packages/**" build
+
       - name: Import Apple certificate
         if: matrix.platform == 'macos-latest' && env.APPLE_CERTIFICATE != ''
         env:
