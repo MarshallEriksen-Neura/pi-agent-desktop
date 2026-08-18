@@ -27,6 +27,8 @@ interface PiStore {
   currentModel: PiModel | null;
   thinkingLevel: ThinkingLevel;
   commands: PiCommandInfo[];
+  /** Error from the latest get_available_models request only. */
+  modelsError: string | null;
   lastError: string | null;
 
   connect: (opts?: { cwd?: string; resumePath?: string }) => Promise<void>;
@@ -101,11 +103,12 @@ export const usePi = create<PiStore>((set, get) => ({
   currentModel: null,
   thinkingLevel: "medium",
   commands: [],
+  modelsError: null,
   lastError: null,
 
   connect: async (opts) => {
     if (get().status !== "disconnected") return;
-    set({ status: "connecting", lastError: null });
+    set({ status: "connecting", modelsError: null, lastError: null });
     const client = getPiClient();
     try {
       // Subscribe BEFORE start(): pi announces itself with a `session` event as
@@ -135,6 +138,7 @@ export const usePi = create<PiStore>((set, get) => ({
     } catch (e) {
       set({
         status: "disconnected",
+        modelsError: e instanceof Error ? e.message : String(e),
         lastError: e instanceof Error ? e.message : String(e),
       });
     }
@@ -181,35 +185,45 @@ export const usePi = create<PiStore>((set, get) => ({
 
     const patch: Partial<PiStore> = {};
     const errors: string[] = [];
+    let modelsError: string | null = null;
 
     const failure = (label: string, r: PromiseSettledResult<{ success: boolean; error?: string }>) => {
       if (r.status === "rejected") {
-        errors.push(`${label}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
-        return true;
+        return `${label}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`;
       }
       if (!r.value.success) {
-        errors.push(`${label}: ${r.value.error ?? "failed"}`);
-        return true;
+        return `${label}: ${r.value.error ?? "failed"}`;
       }
-      return false;
+      return null;
     };
 
     // Only overwrite on success — a failed query must not blank state that a
     // previous refresh already populated.
-    if (!failure("get_available_models", models) && models.status === "fulfilled") {
+    const modelFailure = failure("get_available_models", models);
+    if (models.status === "fulfilled" && !modelFailure) {
       const list = models.value.data?.models;
       if (list && list.length > 0) patch.models = list;
       else if (list) patch.models = [];
+    } else {
+      modelsError = modelFailure;
     }
-    if (!failure("get_state", state) && state.status === "fulfilled") {
+    const stateFailure = failure("get_state", state);
+    if (stateFailure) errors.push(stateFailure);
+    else if (state.status === "fulfilled") {
       patch.currentModel = state.value.data?.model ?? null;
       patch.thinkingLevel = state.value.data?.thinkingLevel ?? "medium";
     }
-    if (!failure("get_commands", commands) && commands.status === "fulfilled") {
+    const commandsFailure = failure("get_commands", commands);
+    if (commandsFailure) errors.push(commandsFailure);
+    else if (commands.status === "fulfilled") {
       patch.commands = commands.value.data?.commands ?? [];
     }
 
-    set({ ...patch, lastError: errors.length > 0 ? errors.join(" · ") : null });
+    set({
+      ...patch,
+      modelsError,
+      lastError: errors.length > 0 ? errors.join(" · ") : null,
+    });
   },
 
   setModel: async (m) => {
@@ -277,6 +291,7 @@ export function resetPiStoreForTests(): void {
     currentModel: null,
     thinkingLevel: "medium",
     commands: [],
+    modelsError: null,
     lastError: null,
   });
 }

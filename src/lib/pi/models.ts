@@ -167,6 +167,9 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
   addModel: async (providerId, cfg, model) => {
     const st = get();
     if (st.parseError) return; // never overwrite a file we couldn't parse
+    // pi rejects the whole models.json if any entry has an empty id — refuse
+    // to write one here so a single blank model can't blank the model list.
+    if (!model.id || !model.id.trim()) return;
     const data = structuredClone(st.data);
     const existing = data.providers[providerId];
     const provider: CustomProvider = existing
@@ -201,7 +204,8 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
   addModels: async (providerId, cfg, models) => {
     const st = get();
     if (st.parseError) return; // never overwrite a file we couldn't parse
-    if (models.length === 0) return;
+    const clean = models.filter((m) => m.id && m.id.trim());
+    if (clean.length === 0) return;
     const data = structuredClone(st.data);
     const existing = data.providers[providerId];
     const provider: CustomProvider = existing
@@ -219,7 +223,7 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
           models: [],
         };
     const seen = new Set(provider.models.map((m) => m.id));
-    for (const m of models) {
+    for (const m of clean) {
       if (seen.has(m.id)) continue;
       seen.add(m.id);
       provider.models.push(m);
@@ -273,6 +277,7 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
   updateModel: async (oldProviderId, oldModelId, newProviderId, cfg, model) => {
     const st = get();
     if (st.parseError) return;
+    if (!model.id || !model.id.trim()) return;
     const data = structuredClone(st.data);
 
     // Snapshot the old provider before we potentially delete it, so we can

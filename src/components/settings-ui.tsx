@@ -14,14 +14,18 @@ export function SettingsPage({
   subtitle,
   children,
   maxWidth = 640,
+  scrollRef,
 }: {
   title: string;
   subtitle?: string;
   children: React.ReactNode;
   maxWidth?: number | string;
+  /** optional ref to the scroll container (for "scroll to top" affordances) */
+  scrollRef?: React.Ref<HTMLDivElement>;
 }) {
   return (
     <div
+      ref={scrollRef}
       style={{
         height: "100%",
         overflowY: "auto",

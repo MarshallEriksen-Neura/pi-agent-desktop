@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  ArrowUp,
   Bot,
   Check,
   ChevronDown,
+  ChevronsDown,
+  ChevronsUp,
   Plus,
   RefreshCw,
   Search,
@@ -40,6 +43,25 @@ import {
 } from "@/lib/pi/model-scope";
 
 const spring = { type: "spring" as const, stiffness: 320, damping: 28 };
+
+/** First grouping letter of a model id — A–Z, everything else folds into "#". */
+function firstLetter(id: string): string {
+  const c = id.trim().charAt(0).toUpperCase();
+  return /[A-Z]/.test(c) ? c : "#";
+}
+
+const ALPHA_INDEX = [
+  "#", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
+  "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U",
+  "V", "W", "X", "Y", "Z",
+];
+
+/** A–Z letters actually present in a provider's models (plus "#"). */
+function providerLetterIndex(models: CustomModelDef[]): string[] {
+  const set = new Set<string>();
+  models.forEach((m) => set.add(firstLetter(m.id)));
+  return ALPHA_INDEX.filter((l) => set.has(l));
+}
 
 async function confirmRemoval(message: string): Promise<boolean> {
   try {
@@ -78,6 +100,67 @@ export default function ModelsPage() {
     selected: string[];
   } | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // Per-provider inline model filter (handles the single-provider-with-hundreds
+  // case: filter without losing your place in the page).
+  const [cardFilter, setCardFilter] = useState<Record<string, string>>({});
+  // Left rail: which provider is in view + element refs for scroll targets.
+  const [activeProvider, setActiveProvider] = useState<string | null>(null);
+  const providerEls = useRef<Record<string, HTMLElement | null>>({});
+  const modelRowEls = useRef<Record<string, (HTMLElement | null)[]>>({});
+  const allModelsEl = useRef<HTMLDivElement | null>(null);
+  const scrollerEl = useRef<HTMLDivElement | null>(null);
+
+  const setCardFilterFor = useCallback((providerId: string, value: string) => {
+    setCardFilter((prev) => ({ ...prev, [providerId]: value }));
+  }, []);
+
+  /** Expand (and scroll to) a provider card — the rail's "jump" action. */
+  const jumpToProvider = useCallback((providerId: string) => {
+    setExpanded((prev) => ({ ...prev, [providerId]: true }));
+    // Give the layout one frame to expand before scrolling to the card.
+    requestAnimationFrame(() => {
+      providerEls.current[providerId]?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }, []);
+
+  const jumpToAllModels = useCallback(() => {
+    allModelsEl.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const scrollToTop = useCallback(() => {
+    scrollerEl.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
+  const expandAll = useCallback(() => {
+    setExpanded((prev) => {
+      const next = { ...prev };
+      Object.keys(customProviders).forEach((providerId) => {
+        next[providerId] = true;
+      });
+      return next;
+    });
+  }, [customProviders]);
+
+  const collapseAll = useCallback(() => {
+    setExpanded({});
+  }, []);
+
+  /** Scroll a provider card's model list to the first model at a letter. */
+  const jumpToLetter = useCallback(
+    (providerId: string, letter: string) => {
+      const rows = modelRowEls.current[providerId];
+      if (!rows) return;
+      const target = rows.find(
+        (el) => el?.dataset.letter === letter || (letter === "#" && el?.dataset.letter === "#")
+      );
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    },
+    []
+  );
 
   useEffect(() => {
     piModelsStore.load();
@@ -234,10 +317,37 @@ export default function ModelsPage() {
       .filter(({ matchedModels, providerMatch }) => providerMatch || matchedModels.length > 0);
   }, [customProviders, search]);
 
+  // Scroll-spy: highlight the provider whose card is nearest the top of the
+  // viewport — the rail's "where am I" cue (Wayfinding).
+  useEffect(() => {
+    const cards = filteredProviderEntries
+      .map(({ providerId }) => providerEls.current[providerId])
+      .filter((el): el is HTMLElement => Boolean(el));
+    if (cards.length === 0) return;
+    const observer = new IntersectionObserver(
+      (items) => {
+        const visible = items
+          .filter((item) => item.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0]) {
+          setActiveProvider(visible[0].target.getAttribute("data-provider-id"));
+        }
+      },
+      { rootMargin: "-72px 0px -70% 0px", threshold: 0 }
+    );
+    cards.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [filteredProviderEntries]);
+
   const paperBg = "var(--ink-paper-bg)";
 
   return (
-    <SettingsPage title={t("models.title")} subtitle={t("models.customModelsHelp")}>
+    <SettingsPage
+      title={t("models.title")}
+      subtitle={t("models.customModelsHelp")}
+      maxWidth={1040}
+      scrollRef={scrollerEl}
+    >
       <div
         className="min-h-full"
         style={{
@@ -245,7 +355,30 @@ export default function ModelsPage() {
           padding: "8px 0 48px",
         }}
       >
-        <div style={{ display: "grid", gap: 20 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns:
+              filteredProviderEntries.length > 0 ? "216px minmax(0, 1fr)" : "minmax(0, 1fr)",
+            gap: 24,
+            alignItems: "start",
+          }}
+        >
+          {/* Left rail — provider quick-jump navigation */}
+          {filteredProviderEntries.length > 0 && (
+            <ProviderRail
+              entries={filteredProviderEntries}
+              activeProvider={activeProvider}
+              allModelsVisible={piStatus === "ready"}
+              onJump={jumpToProvider}
+              onJumpAllModels={jumpToAllModels}
+              onExpandAll={expandAll}
+              onCollapseAll={collapseAll}
+              onBackTop={scrollToTop}
+            />
+          )}
+          {/* Main content */}
+          <div style={{ display: "grid", gap: 20 }}>
           {/* Toolbar */}
           <motion.div
             initial={{ opacity: 0, y: 12 }}
@@ -301,15 +434,32 @@ export default function ModelsPage() {
               const enabledCount = provider.models.filter((m) =>
                 isModelEnabled(enabledModels, providerId, m.id)
               ).length;
+              const cardQuery = (cardFilter[providerId] ?? "").trim().toLowerCase();
+              const localModels = cardQuery
+                ? matchedModels.filter(
+                    (m) =>
+                      (m.name || m.id).toLowerCase().includes(cardQuery) ||
+                      m.id.toLowerCase().includes(cardQuery)
+                  )
+                : matchedModels;
+              const cardLetters = providerLetterIndex(provider.models);
+              const cardLettersPresent = new Set(
+                localModels.map((m) => firstLetter(m.id))
+              );
               return (
                 <div
                   key={providerId}
+                  ref={(el) => {
+                    providerEls.current[providerId] = el;
+                  }}
+                  data-provider-id={providerId}
                   className="overflow-hidden"
                   style={{
                     borderRadius: 24,
                     background: "var(--card-bg)",
                     border: "1px solid var(--ink-border)",
                     boxShadow: "0 12px 40px rgba(0,0,0,0.06)",
+                    scrollMarginTop: 88,
                   }}
                 >
                   <button
@@ -430,8 +580,19 @@ export default function ModelsPage() {
                             </button>
                           </div>
 
+                          {/* In-card filter + A–Z jump — keeps large providers navigable */}
+                          {provider.models.length > 12 && (
+                            <CardModelIndex
+                              filter={cardFilter[providerId] ?? ""}
+                              onFilterChange={(v) => setCardFilterFor(providerId, v)}
+                              letters={cardLetters}
+                              present={cardLettersPresent}
+                              onJumpLetter={(l) => jumpToLetter(providerId, l)}
+                            />
+                          )}
+
                           {/* Models grid */}
-                          {matchedModels.length === 0 ? (
+                          {localModels.length === 0 ? (
                             <div
                               className="rounded-2xl py-8 text-center text-sm"
                               style={{
@@ -442,8 +603,8 @@ export default function ModelsPage() {
                               {t("models.noSearchResults")}
                             </div>
                           ) : (
-                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                              {matchedModels.map((model) => {
+                            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+                              {localModels.map((model, rowIndex) => {
                                 const enabled = isModelEnabled(
                                   enabledModels,
                                   providerId,
@@ -451,27 +612,29 @@ export default function ModelsPage() {
                                 );
                                 const meta = resolveModelMetaOrFallback(model.id, providerId);
                                 return (
-                                  <motion.div
+                                  <div
                                     key={model.id}
-                                    layout
-                                    whileTap={{ scale: 0.98 }}
-                                    className="group flex items-center gap-2.5 rounded-2xl border p-3 transition-shadow"
+                                    ref={(el) => {
+                                      (modelRowEls.current[providerId] ??= [])[rowIndex] = el;
+                                    }}
+                                    data-letter={firstLetter(model.id)}
+                                    className="group flex items-center gap-2 rounded-xl border px-2.5 py-1.5 transition-colors"
                                     style={{
-                                      background: "var(--input-bg)",
+                                      background: enabled
+                                        ? "rgba(44,90,160,0.06)"
+                                        : "var(--input-bg)",
                                       borderColor: enabled
                                         ? "rgba(44,90,160,0.35)"
                                         : "var(--ink-border)",
-                                      boxShadow: enabled
-                                        ? "0 0 0 1px rgba(44,90,160,0.1)"
-                                        : "none",
+                                      scrollMarginTop: 8,
                                     }}
                                   >
                                     <button
                                       onClick={() => setEnabled(providerId, model.id)}
-                                      className="flex shrink-0 items-center justify-center rounded-lg transition-colors"
+                                      className="flex shrink-0 items-center justify-center rounded-md transition-colors"
                                       style={{
-                                        width: 22,
-                                        height: 22,
+                                        width: 19,
+                                        height: 19,
                                         background: enabled
                                           ? "var(--ink-accent)"
                                           : "var(--card-bg)",
@@ -482,25 +645,26 @@ export default function ModelsPage() {
                                         color: enabled ? "#fff" : "transparent",
                                       }}
                                     >
-                                      <Check size={13} strokeWidth={3} />
+                                      <Check size={11} strokeWidth={3} />
                                     </button>
                                     <span style={{ flexShrink: 0, display: "inline-flex" }}>
-                                      <ModelIcon iconKey={meta.iconKey} size={16} color={meta.color} />
+                                      <ModelIcon iconKey={meta.iconKey} size={13} color={meta.color} />
                                     </span>
                                     <div
                                       className="min-w-0 flex-1 cursor-pointer"
+                                      title={model.id}
                                       onClick={() =>
                                         setEditingModel({ providerId, model })
                                       }
                                     >
                                       <p
-                                        className="truncate text-sm font-medium"
+                                        className="truncate text-[13px] font-medium leading-tight"
                                         style={{ color: "var(--ink-title)" }}
                                       >
                                         {model.name || model.id}
                                       </p>
                                       <p
-                                        className="truncate text-[11px]"
+                                        className="truncate text-[10.5px] leading-tight"
                                         style={{ color: "var(--muted-foreground)" }}
                                       >
                                         {model.id}
@@ -511,9 +675,9 @@ export default function ModelsPage() {
                                       className="opacity-0 transition-opacity group-hover:opacity-100"
                                       style={{ color: "var(--muted-foreground)" }}
                                     >
-                                      <X size={14} />
+                                      <X size={13} />
                                     </button>
-                                  </motion.div>
+                                  </div>
                                 );
                               })}
                             </div>
@@ -583,6 +747,7 @@ export default function ModelsPage() {
           {/* All models reported by pi */}
           {piStatus === "ready" && (
             <AllModelsSection
+              innerRef={allModelsEl}
               enabledModels={enabledModels}
               onToggle={setEnabled}
             />
@@ -603,6 +768,7 @@ export default function ModelsPage() {
               {t("models.footer")}
             </motion.div>
           )}
+        </div>
         </div>
       </div>
 
@@ -666,6 +832,214 @@ export default function ModelsPage() {
         </Dialog>
       )}
     </SettingsPage>
+  );
+}
+
+function ProviderRail({
+  entries,
+  activeProvider,
+  allModelsVisible,
+  onJump,
+  onJumpAllModels,
+  onExpandAll,
+  onCollapseAll,
+  onBackTop,
+}: {
+  entries: Array<{
+    providerId: string;
+    provider: CustomProvider;
+    matchedModels: CustomModelDef[];
+    providerMatch: boolean;
+  }>;
+  activeProvider: string | null;
+  allModelsVisible: boolean;
+  onJump: (id: string) => void;
+  onJumpAllModels: () => void;
+  onExpandAll: () => void;
+  onCollapseAll: () => void;
+  onBackTop: () => void;
+}) {
+  const t = useT();
+  return (
+    <motion.aside
+      initial={{ opacity: 0, x: -12 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ ...spring, delay: 0.1 }}
+      className="rounded-2xl border p-2"
+      style={{
+        position: "sticky",
+        top: 16,
+        background: "var(--card-bg)",
+        borderColor: "var(--ink-border)",
+        boxShadow: "0 12px 40px rgba(0,0,0,0.06)",
+        maxHeight: "calc(100vh - 150px)",
+        overflowY: "auto",
+        overscrollBehavior: "contain",
+      }}
+    >
+      <div className="flex items-center justify-between px-2 pb-2 pt-1">
+        <span
+          className="text-[11px] font-semibold uppercase tracking-wider"
+          style={{ color: "var(--muted-foreground)" }}
+        >
+          {t("models.providers")}
+        </span>
+        <div className="flex items-center gap-0.5">
+          <motion.button
+            whileTap={{ scale: 0.85 }}
+            onClick={onExpandAll}
+            title={t("models.expandAll")}
+            aria-label={t("models.expandAll")}
+            style={{ padding: 4, color: "var(--muted-foreground)", cursor: "pointer" }}
+          >
+            <ChevronsDown size={15} />
+          </motion.button>
+          <motion.button
+            whileTap={{ scale: 0.85 }}
+            onClick={onCollapseAll}
+            title={t("models.collapseAll")}
+            aria-label={t("models.collapseAll")}
+            style={{ padding: 4, color: "var(--muted-foreground)", cursor: "pointer" }}
+          >
+            <ChevronsUp size={15} />
+          </motion.button>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gap: 2 }}>
+        {entries.map(({ providerId, provider }) => {
+          const active = activeProvider === providerId;
+          return (
+            <motion.button
+              key={providerId}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => onJump(providerId)}
+              className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors"
+              style={{
+                background: active ? "rgba(44,90,160,0.12)" : "transparent",
+                cursor: "pointer",
+              }}
+            >
+              <ProviderMeta provider={providerId} size={16} />
+              <span
+                className="min-w-0 flex-1 truncate text-[12.5px] font-medium"
+                style={{ color: active ? "var(--ink-accent)" : "var(--foreground)" }}
+              >
+                {PROVIDER_META[providerId]?.label ?? providerId}
+              </span>
+              <span
+                className="text-[10.5px] tabular-nums"
+                style={{ color: "var(--muted-foreground)" }}
+              >
+                {provider.models.length}
+              </span>
+            </motion.button>
+          );
+        })}
+      </div>
+
+      <div
+        className="mt-2 border-t pt-2"
+        style={{ borderColor: "var(--ink-border)" }}
+      >
+        {allModelsVisible && (
+          <motion.button
+            whileTap={{ scale: 0.98 }}
+            onClick={onJumpAllModels}
+            className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors"
+            style={{ cursor: "pointer" }}
+          >
+            <Bot size={15} style={{ color: "var(--muted-foreground)" }} />
+            <span
+              className="min-w-0 flex-1 truncate text-[12.5px] font-medium"
+              style={{ color: "var(--foreground)" }}
+            >
+              {t("models.allModels")}
+            </span>
+          </motion.button>
+        )}
+        <motion.button
+          whileTap={{ scale: 0.98 }}
+          onClick={onBackTop}
+          className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors"
+          style={{ cursor: "pointer" }}
+        >
+          <ArrowUp size={15} style={{ color: "var(--muted-foreground)" }} />
+          <span
+            className="min-w-0 flex-1 truncate text-[12.5px] font-medium"
+            style={{ color: "var(--foreground)" }}
+          >
+            {t("models.backToTop")}
+          </span>
+        </motion.button>
+      </div>
+    </motion.aside>
+  );
+}
+
+function CardModelIndex({
+  filter,
+  onFilterChange,
+  letters,
+  present,
+  onJumpLetter,
+}: {
+  filter: string;
+  onFilterChange: (v: string) => void;
+  letters: string[];
+  present: Set<string>;
+  onJumpLetter: (l: string) => void;
+}) {
+  const t = useT();
+  return (
+    <div
+      className="mb-3 rounded-2xl border px-3 py-2.5"
+      style={{
+        background: "var(--input-bg)",
+        borderColor: "var(--ink-border)",
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <Search size={14} style={{ color: "var(--muted-foreground)" }} />
+        <input
+          value={filter}
+          onChange={(e) => onFilterChange(e.target.value)}
+          placeholder={t("models.filterModels")}
+          className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-[var(--muted-foreground)]"
+          style={{ color: "var(--foreground)" }}
+        />
+        {filter && (
+          <button
+            onClick={() => onFilterChange("")}
+            aria-label={t("models.clearSearch")}
+            style={{ color: "var(--muted-foreground)", cursor: "pointer" }}
+          >
+            <X size={13} />
+          </button>
+        )}
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-0.5">
+        {letters.map((l) => {
+          const active = present.has(l);
+          return (
+            <button
+              key={l}
+              onClick={() => active && onJumpLetter(l)}
+              disabled={!active}
+              className="grid h-6 w-6 place-items-center rounded-md text-[10.5px] font-semibold transition-colors"
+              style={{
+                color: active ? "var(--ink-accent)" : "var(--muted-foreground)",
+                background: active ? "rgba(44,90,160,0.1)" : "transparent",
+                opacity: active ? 1 : 0.35,
+                cursor: active ? "pointer" : "default",
+              }}
+            >
+              {l}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1019,9 +1393,11 @@ function FetchDialog({
 }
 
 function AllModelsSection({
+  innerRef,
   enabledModels,
   onToggle,
 }: {
+  innerRef?: React.Ref<HTMLDivElement>;
   enabledModels: string[];
   onToggle: (providerId: string, modelId: string) => void | Promise<void>;
 }) {
@@ -1040,6 +1416,7 @@ function AllModelsSection({
 
   return (
     <motion.div
+      ref={innerRef}
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ ...spring, delay: 0.25 }}
@@ -1048,6 +1425,7 @@ function AllModelsSection({
         borderRadius: 24,
         background: "var(--card-bg)",
         border: "1px solid var(--ink-border)",
+        scrollMarginTop: 88,
       }}
     >
       <div className="border-b px-5 py-4" style={{ borderColor: "var(--ink-border)" }}>

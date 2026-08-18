@@ -89,6 +89,8 @@ export const en: Record<string, string> = {
   "tab.projects": "Projects",
   "tab.tasks": "Tasks",
   "tab.settings": "Settings",
+  "tab.navigation": "Main navigation",
+  "tab.tasksWithPending": "Tasks, {count} awaiting your reply",
 
   // Common
   "common.cancel": "Cancel",
@@ -238,6 +240,14 @@ export const en: Record<string, string> = {
   "interaction.pendingBannerDetail": "Pi is waiting for your response",
   "interaction.awaitingInput": "Task awaiting input",
   "interaction.respond": "Respond",
+  "interaction.sheetTitle": "Pi is asking",
+  "interaction.questionOf": "Q {current} / {total}",
+  "interaction.prev": "Back",
+  "interaction.editorPlaceholder": "Type a detailed reply…",
+  "interaction.done": "Done",
+  "interaction.finishing": "Pi is preparing the next question…",
+  "interaction.selectHint": "Pick an option, or type your own answer",
+  "interaction.selectHintReady": "Press Submit to send",
 
   // Chat transcript
   "chat.thinking": "Pi is thinking",

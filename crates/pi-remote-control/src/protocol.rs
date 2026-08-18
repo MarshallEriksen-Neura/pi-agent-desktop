@@ -495,6 +495,8 @@ pub enum RemoteInteractionKind {
     Confirm,
     Select,
     Input,
+    /// Multi-line free-form text (pi's `extension_ui_request` `editor` method).
+    Editor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -585,7 +587,7 @@ impl RemoteInteractionResponse {
                 }
                 Ok(())
             }
-            (RemoteInteractionKind::Input, RemoteInteractionResponseValue::Text(value)) => {
+            (RemoteInteractionKind::Input | RemoteInteractionKind::Editor, RemoteInteractionResponseValue::Text(value)) => {
                 validate_text("value", value, MAX_INTERACTION_VALUE_BYTES)
             }
             _ => Err(ValidationError::InvalidValue { field: "value" }),

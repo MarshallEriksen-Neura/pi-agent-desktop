@@ -27,7 +27,13 @@ import { Check, ChevronDown, SlidersHorizontal } from "lucide-react";
  * set_model via usePi (optimistic, instant).
  */
 export function ModelPicker({ compact = false }: { compact?: boolean }) {
-  const { models, currentModel, setModel, lastError, refresh } = usePi();
+  const {
+    models,
+    currentModel,
+    setModel,
+    modelsError,
+    refresh,
+  } = usePi();
   const loadSettings = usePiSettings((s) => s.load);
   const enabled = usePiSettings((s) => s.effective().enabledModels);
   const t = useT();
@@ -150,7 +156,7 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
                 with nothing configured, or the query never came back. Saying
                 "none configured" for a failed query sends the user to the wrong
                 place — offer a retry instead. */}
-            {models.length === 0 && lastError ? (
+            {models.length === 0 && modelsError ? (
               <>
                 <div style={{ color: "var(--danger)", marginBottom: 6 }}>
                   {t("modelPicker.loadFailed")}

@@ -26,8 +26,7 @@ import { useExpiryCountdown } from "@/hooks/useExpiryCountdown";
 import { useModelCatalog, selectableModels } from "@/stores/models-store";
 import { StateView } from "@/components/primitives";
 import { BlockButton, DetailHeader, MobileCard, MobileRow } from "@/components/visual";
-import { LongPressButton } from "@/components/confirm";
-import { Timeline, TimelineNode, OptionRow, PromptBox } from "@/components/task-visual";
+import { Timeline, TimelineNode } from "@/components/task-visual";
 import { DetailSkeleton, ListSkeleton } from "@/components/skeleton";
 import {
   MessageBubble,
@@ -35,7 +34,6 @@ import {
   ToolCard,
   WarningBlock,
   SystemNote,
-  InlineInteraction,
   ResolvedInteraction,
 } from "@/components/chat";
 import { buildTranscript } from "@/lib/transcript";
@@ -700,22 +698,18 @@ const TranscriptView = memo(function TranscriptView({
 });
 
 /**
- * One interaction inside the transcript. Pending renders an answerable card;
- * resolved/expired collapses to a one-line summary so history stays traceable
- * without eating space.
+ * One interaction inside the transcript. Pending renders a compact card whose
+ * single action opens the answering bottom sheet (with the conversation still
+ * visible behind it); resolved/expired collapses to a one-line summary so
+ * history stays traceable without eating space.
  */
 const InteractionEntry = memo(function InteractionEntry({
   interaction,
 }: {
   interaction: RemoteInteractionSnapshot;
 }) {
-  const respond = useInteractionStore((s) => s.respond);
-  const isResponding = useInteractionStore((s) =>
-    s.responding.has(interaction.interactionId),
-  );
+  const openSheet = useInteractionStore((s) => s.openSheet);
   const remaining = useExpiryCountdown(interaction.expiresAt);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
 
   if (interaction.status !== "pending") {
     return (
@@ -731,82 +725,35 @@ const InteractionEntry = memo(function InteractionEntry({
     );
   }
 
-  const expired = remaining === 0;
-  const locked = isResponding || expired;
-
   return (
-    <InlineInteraction countdown={remaining !== null ? formatRemaining(remaining) : undefined}>
-      <PromptBox>{interaction.prompt}</PromptBox>
-
-      {/* confirm 的两个分支不对称:「拒绝」是安全默认,「批准」可能不可逆
-          (合并、推送、删除都走这条路)。所以不做成并列双按钮 —— 拒绝单击可达,
-          批准要长按。旧版把 Yes 放在左边且单击生效,在手机上远程误触代价太高。 */}
-      {interaction.kind === "confirm" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <BlockButton
-            variant="outline"
-            disabled={locked}
-            onClick={() => void respond(interaction.interactionId, "confirm", false)}
-          >
-            {t("interaction.reject")}
-          </BlockButton>
-          <LongPressButton
-            disabled={locked}
-            onConfirm={() => void respond(interaction.interactionId, "confirm", true)}
-          >
-            {t("confirm.longPress")}
-          </LongPressButton>
-        </div>
-      )}
-
-      {interaction.kind === "select" && (
-        <>
-          {(interaction.options ?? []).map((opt) => (
-            <OptionRow
-              key={opt.value}
-              label={opt.label}
-              selected={selected === opt.value}
-              onClick={() => setSelected(opt.value)}
-              disabled={locked}
-            />
-          ))}
-          <BlockButton
-            variant="success"
-            disabled={locked || selected === null}
-            onClick={() => {
-              if (selected !== null) {
-                void respond(interaction.interactionId, "select", selected);
-              }
-            }}
-          >
-            {t("interaction.submit")}
-          </BlockButton>
-        </>
-      )}
-
-      {interaction.kind === "input" && (
-        <>
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            disabled={locked}
-            rows={3}
-            placeholder={t("interaction.inputPlaceholder")}
-            className="prompt-input"
-            style={{ minHeight: 72, fontSize: 16 }}
-          />
-          <BlockButton
-            variant="success"
-            disabled={locked || draft.trim().length === 0}
-            onClick={() =>
-              void respond(interaction.interactionId, "input", draft.trim())
-            }
-          >
-            {t("interaction.submit")}
-          </BlockButton>
-        </>
-      )}
-    </InlineInteraction>
+    <div className="ix-inline">
+      <div className="ixhead">
+        <span className="ixicon">
+          <MessageSquare size={13} />
+        </span>
+        <span className="ixtitle">{t("chat.piWantsAction")}</span>
+        {remaining !== null && (
+          <span className="ixcd">{formatRemaining(remaining)}</span>
+        )}
+      </div>
+      <p
+        style={{
+          margin: "0 0 12px",
+          fontSize: 14,
+          lineHeight: 1.55,
+          color: "var(--color-text-primary)",
+          wordBreak: "break-word",
+        }}
+      >
+        {interaction.prompt}
+      </p>
+      <BlockButton
+        variant="primary"
+        onClick={() => openSheet(interaction.interactionId)}
+      >
+        {t("interaction.respond")}
+      </BlockButton>
+    </div>
   );
 });
 

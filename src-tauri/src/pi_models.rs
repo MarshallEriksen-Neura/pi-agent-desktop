@@ -64,17 +64,22 @@ pub async fn pi_fetch_models(
         .await
         .map_err(|e| format!("invalid JSON response: {e}"))?;
 
+    // Skip entries with empty ids/names — pi's models.json schema requires a
+    // non-empty `id`/`name`, and a single blank entry makes pi reject the whole
+    // file (leaving the desktop with no model list at all).
     let ids: Vec<String> = if let Some(arr) = json.get("data").and_then(|v| v.as_array()) {
         arr.iter()
-            .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(|s| s.to_string()))
+            .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
             .collect()
     } else if let Some(arr) = json.get("models").and_then(|v| v.as_array()) {
         arr.iter()
-            .filter_map(|m| {
-                m.get("name")
-                    .and_then(|i| i.as_str())
-                    .map(|s| s.trim_start_matches("models/").to_string())
-            })
+            .filter_map(|m| m.get("name").and_then(|i| i.as_str()))
+            .map(|s| s.trim().trim_start_matches("models/"))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
             .collect()
     } else {
         return Err("no model list in response (expected a `data` or `models` array)".into());

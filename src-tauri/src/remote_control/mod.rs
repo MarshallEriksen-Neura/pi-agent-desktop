@@ -31,6 +31,7 @@ use pi_remote_control::storage::StorageError;
 use pi_remote_control::task_manager::format_timestamp;
 use pi_remote_control::task_runtime::RemoteTaskRuntimeConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -568,68 +569,72 @@ fn build_running_gateway<R: Runtime>(
         return Err("remote-control identity and authorization epochs differ".to_owned());
     }
     let selected_project_root = crate::projects::last_project()?.map(PathBuf::from);
-    match selected_project_root.as_deref() {
-        Some(root) => {
-            if let Err(error) = restore_selected_project(&project_store_path, &gateway, root)
-                .and_then(|_| sync_gateway_project_parts(&project_store_path, &gateway, root))
-            {
-                gateway.supervisor.stop();
-                return Err(error);
-            }
-        }
-        None => {
-            if let Err(error) = persist_project_records(&project_store_path, &[]) {
-                gateway.supervisor.stop();
-                return Err(error);
-            }
-        }
+    let recent_projects = crate::projects::projects_recent()?;
+    if let Err(error) = sync_gateway_recent_projects(&project_store_path, &gateway, &recent_projects)
+    {
+        gateway.supervisor.stop();
+        return Err(error);
     }
 
     // V2 is an additive capability. The legacy gateway remains available when
     // the installed Pi cannot pass the private-session compatibility probe;
     // conversation routes stay fail-closed until a verified runtime exists.
-    let conversation_runtime = match (
-        gateway.projects.list_projects().first(),
-        selected_project_root,
-    ) {
-        (Some(project), Some(project_root)) => {
-            let session_config = PiSessionConfig::new(
-                conversation_pi_binary,
-                app_data_dir.join("remote-control-sessions"),
-            );
-            let probe_context = PiSessionContext {
-                owner_device_id: "remote-control-probe".to_owned(),
-                conversation_id: "probe".to_owned(),
-                project_id: project.project_id.clone(),
-                project_root,
-            };
-            match PiSessionAdapter::probe(session_config.clone(), probe_context) {
-                Ok(probe) => match PiSessionAdapter::new(session_config, probe) {
-                    Ok(adapter) => {
-                        if let Some(storage) = gateway.storage.clone() {
-                            let recovery_ms = now_ms();
-                            let recovery_at = format_timestamp(recovery_ms);
-                            storage
-                                .recover_non_terminal_turns(recovery_ms, &recovery_at)
-                                .map_err(storage_error)?;
-                            let manager = ConversationRuntimeManager::new(
-                                storage,
-                                Arc::clone(&gateway.projects),
-                                Arc::new(adapter),
-                                ConversationRuntimeConfig::default(),
-                            );
-                            manager.start();
-                            Some(manager)
-                        } else {
-                            None
-                        }
+    // The active session follows the desktop's current project, not the first
+    // catalog entry — the catalog now holds every recent project for mobile.
+    let conversation_runtime = match selected_project_root.as_deref() {
+        Some(project_root) => {
+            let canonical_root = canonical_project_root(project_root).ok();
+            let active = gateway
+                .projects
+                .persisted_projects()
+                .into_iter()
+                .find(|project| {
+                    canonical_root
+                        .as_ref()
+                        .is_some_and(|root| &project.root == root)
+                });
+            match active {
+                Some(project) => {
+                    let session_config = PiSessionConfig::new(
+                        conversation_pi_binary,
+                        app_data_dir.join("remote-control-sessions"),
+                    );
+                    let probe_context = PiSessionContext {
+                        owner_device_id: "remote-control-probe".to_owned(),
+                        conversation_id: "probe".to_owned(),
+                        project_id: project.project_id.clone(),
+                        project_root: project_root.to_path_buf(),
+                    };
+                    match PiSessionAdapter::probe(session_config.clone(), probe_context) {
+                        Ok(probe) => match PiSessionAdapter::new(session_config, probe) {
+                            Ok(adapter) => {
+                                if let Some(storage) = gateway.storage.clone() {
+                                    let recovery_ms = now_ms();
+                                    let recovery_at = format_timestamp(recovery_ms);
+                                    storage
+                                        .recover_non_terminal_turns(recovery_ms, &recovery_at)
+                                        .map_err(storage_error)?;
+                                    let manager = ConversationRuntimeManager::new(
+                                        storage,
+                                        Arc::clone(&gateway.projects),
+                                        Arc::new(adapter),
+                                        ConversationRuntimeConfig::default(),
+                                    );
+                                    manager.start();
+                                    Some(manager)
+                                } else {
+                                    None
+                                }
+                            }
+                            Err(_) => None,
+                        },
+                        Err(_) => None,
                     }
-                    Err(_) => None,
-                },
-                Err(_) => None,
+                }
+                None => None,
             }
         }
-        _ => None,
+        None => None,
     };
     let gateway = if let Some(manager) = conversation_runtime.clone() {
         gateway.with_conversation_runtime(manager)
@@ -1136,82 +1141,108 @@ struct PersistedProjectFile {
     last_opened_at: Option<String>,
 }
 
-fn restore_selected_project(
-    path: &Path,
-    gateway: &GatewayState,
-    selected_root: &Path,
-) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let bytes =
-        fs::read(path).map_err(|error| format!("cannot read project allowlist: {error}"))?;
-    let projects: Vec<PersistedProjectFile> =
-        serde_json::from_slice(&bytes).map_err(|_| "project allowlist is corrupt".to_owned())?;
-    let selected_root = canonical_project_root(selected_root).map_err(|error| error.to_string())?;
-    for project in projects {
-        let Ok(project_root) = canonical_project_root(&project.root) else {
-            continue;
-        };
-        if project_root != selected_root {
-            continue;
-        }
-        gateway
-            .projects
-            .restore_project(PersistedProject {
-                project_id: project.project_id,
-                root: project.root,
-                name: project.name,
-                last_opened_at: project.last_opened_at,
-            })
-            .map_err(|error| error.to_string())?;
-        break;
-    }
-    Ok(())
-}
-
 fn sync_gateway_project(
     running: &RunningGateway,
     root: &Path,
 ) -> Result<RemoteProjectSummary, String> {
-    sync_gateway_project_parts(&running.project_store_path, &running.gateway, root)
+    let recents = crate::projects::projects_recent()?;
+    sync_gateway_recent_projects(&running.project_store_path, &running.gateway, &recents)?;
+    let canonical = canonical_project_root(root).map_err(|error| error.to_string())?;
+    let project = running
+        .gateway
+        .projects
+        .persisted_projects()
+        .into_iter()
+        .find(|project| project.root == canonical)
+        .ok_or_else(|| "opened project is not visible to remote control".to_owned())?;
+    running
+        .gateway
+        .projects
+        .project_summary(&project.project_id)
+        .map_err(|error| error.to_string())
 }
 
-fn sync_gateway_project_parts(
+/// Reconcile the remotely visible project catalog with the desktop's recent
+/// projects. Previously persisted opaque ids are restored first so the mobile
+/// side keeps stable ids across desktop restarts; projects removed from the
+/// recents list are dropped from the allowlist (and their tasks revoked) only
+/// after the allowlist file has been durably updated.
+fn sync_gateway_recent_projects(
     project_store_path: &Path,
     gateway: &GatewayState,
-    root: &Path,
-) -> Result<RemoteProjectSummary, String> {
-    let name = root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("project")
-        .to_owned();
-    let (summary, previous) = gateway
-        .projects
-        .replace_with_single_project(root, name, None)
-        .map_err(|error| error.to_string())?;
-    let desired = gateway.projects.persisted_projects();
-    if let Err(error) = persist_project_records(project_store_path, &desired) {
-        let rollback = gateway
-            .projects
-            .replace_with_persisted_projects(previous.clone())
-            .map_err(|rollback| rollback.to_string());
-        return match rollback {
-            Ok(()) => Err(error),
-            Err(rollback) => Err(format!(
-                "{error}; remote project rollback also failed: {rollback}"
-            )),
-        };
-    }
-    for project in previous {
-        if project.project_id == summary.project_id {
+    recents: &[crate::projects::RecentProject],
+) -> Result<(), String> {
+    let mut desired = Vec::new();
+    for recent in recents {
+        let Ok(canonical_root) = canonical_project_root(Path::new(&recent.path)) else {
             continue;
+        };
+        desired.push((
+            canonical_root,
+            recent.name.clone(),
+            format_timestamp(recent.last_opened_at),
+        ));
+    }
+    let desired_roots = desired
+        .iter()
+        .map(|(root, _, _)| root.clone())
+        .collect::<HashSet<_>>();
+
+    if let Ok(bytes) = fs::read(project_store_path) {
+        if let Ok(records) = serde_json::from_slice::<Vec<PersistedProjectFile>>(&bytes) {
+            for record in records {
+                let Ok(record_root) = canonical_project_root(&record.root) else {
+                    continue;
+                };
+                if !desired_roots.contains(&record_root) {
+                    continue;
+                }
+                let _ = gateway.projects.restore_project(PersistedProject {
+                    project_id: record.project_id,
+                    root: record.root,
+                    name: record.name,
+                    last_opened_at: record.last_opened_at,
+                });
+            }
         }
+    }
+
+    let previous = gateway.projects.persisted_projects();
+
+    for (root, name, last_opened_at) in &desired {
+        gateway
+            .projects
+            .allow_project(root, name.clone(), Some(last_opened_at.clone()))
+            .map_err(|error| error.to_string())?;
+    }
+
+    let dropped = gateway
+        .projects
+        .persisted_projects()
+        .into_iter()
+        .filter(|project| !desired_roots.contains(&project.root))
+        .map(|project| {
+            gateway
+                .projects
+                .remove_project(&project.project_id)
+                .map(|_| project)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+
+    let next = gateway.projects.persisted_projects();
+    if let Err(error) = persist_project_records(project_store_path, &next) {
+        let _ = gateway
+            .projects
+            .replace_with_persisted_projects(previous.clone());
+        return Err(error);
+    }
+
+    for project in &dropped {
         gateway.supervisor.cancel_project(&project.project_id);
         gateway.tasks.revoke_project(&project.project_id);
     }
-    Ok(summary)
+    Ok(())
 }
 
 fn persist_project_records(path: &Path, projects: &[PersistedProject]) -> Result<(), String> {
@@ -1491,12 +1522,19 @@ mod command_smoke {
         let switched = invoke(&webview, "remote_control_status", json!({}));
         let projects = switched["projects"]
             .as_array()
-            .expect("switched status should include the desktop project");
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0]["name"], "current-project-b");
-        let second_project_id = projects[0]["projectId"]
-            .as_str()
-            .expect("current project should have an opaque id")
+            .expect("switched status should include the desktop projects");
+        assert_eq!(projects.len(), 2, "recent projects stay visible on mobile");
+        let switched_names = projects
+            .iter()
+            .map(|p| p["name"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert!(switched_names.contains(&"current-project-a"));
+        assert!(switched_names.contains(&"current-project-b"));
+        let second_project_id = projects
+            .iter()
+            .find(|p| p["name"].as_str() == Some("current-project-b"))
+            .and_then(|p| p["projectId"].as_str())
+            .expect("opened project should have an opaque id")
             .to_owned();
 
         // A normal application exit stops only the listener. The durable
@@ -1522,10 +1560,13 @@ mod command_smoke {
         assert_eq!(restored["port"], port);
         let projects = restored["projects"]
             .as_array()
-            .expect("restored status should include the desktop project");
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0]["name"], "current-project-b");
-        assert_eq!(projects[0]["projectId"], second_project_id);
+            .expect("restored status should include the desktop projects");
+        assert_eq!(projects.len(), 2, "recent projects survive a desktop restart");
+        let restored_b = projects
+            .iter()
+            .find(|p| p["name"].as_str() == Some("current-project-b"))
+            .expect("recent project should survive a desktop restart");
+        assert_eq!(restored_b["projectId"], json!(second_project_id));
 
         let disabled = invoke(&webview, "remote_control_disable", json!({}));
         assert_eq!(disabled["enabled"], false);

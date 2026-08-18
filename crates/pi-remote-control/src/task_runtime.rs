@@ -401,7 +401,9 @@ impl RemoteTaskRuntime {
                 serde_json::json!({"type":"extension_ui_response","id":response.interaction_id,"confirmed":confirmed})
             }
             (
-                RemoteInteractionKind::Select | RemoteInteractionKind::Input,
+                RemoteInteractionKind::Select
+                | RemoteInteractionKind::Input
+                | RemoteInteractionKind::Editor,
                 RemoteInteractionResponseValue::Text(value),
             ) => {
                 serde_json::json!({"type":"extension_ui_response","id":response.interaction_id,"value":value})
@@ -726,6 +728,7 @@ fn parse_interaction(value: &Value, task_id: &str) -> Option<RemoteInteractionRe
         "confirm" => RemoteInteractionKind::Confirm,
         "select" => RemoteInteractionKind::Select,
         "input" => RemoteInteractionKind::Input,
+        "editor" => RemoteInteractionKind::Editor,
         _ => return None,
     };
     let now = now_ms();

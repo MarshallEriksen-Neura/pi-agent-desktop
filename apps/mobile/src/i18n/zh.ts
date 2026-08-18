@@ -88,6 +88,8 @@ export const zh: Record<string, string> = {
   "tab.projects": "项目",
   "tab.tasks": "任务",
   "tab.settings": "设置",
+  "tab.navigation": "主导航",
+  "tab.tasksWithPending": "任务，{count} 项等待你回应",
 
   // Common
   "common.cancel": "取消",
@@ -236,6 +238,14 @@ export const zh: Record<string, string> = {
   "interaction.pendingBannerDetail": "Pi 正在等待你的响应",
   "interaction.awaitingInput": "任务等待输入",
   "interaction.respond": "去响应",
+  "interaction.sheetTitle": "Pi 想问你",
+  "interaction.questionOf": "第 {current} / {total} 题",
+  "interaction.prev": "上一步",
+  "interaction.editorPlaceholder": "详细回复…",
+  "interaction.done": "已完成",
+  "interaction.finishing": "Pi 正在准备下一个问题…",
+  "interaction.selectHint": "选择一个选项，或输入自定义答案",
+  "interaction.selectHintReady": "点「提交」发送",
 
   // Chat transcript
   "chat.thinking": "Pi 正在思考",

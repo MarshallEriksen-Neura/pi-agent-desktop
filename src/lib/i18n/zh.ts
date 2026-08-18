@@ -507,6 +507,11 @@ export const zh: Record<keyof typeof en, string> = {
   "models.noSearchResults": "没有匹配的模型",
   "models.providerSettings": "服务商设置",
   "models.configure": "配置",
+  "models.providers": "服务商",
+  "models.expandAll": "全部展开",
+  "models.collapseAll": "全部折叠",
+  "models.filterModels": "筛选模型…",
+  "models.backToTop": "回到顶部",
 
   // plugins page
   "plugins.title": "插件",

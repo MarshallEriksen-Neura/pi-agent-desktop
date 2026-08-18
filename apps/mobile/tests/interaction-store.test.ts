@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { useInteractionStore, applyInteractionEvent } from "@/stores/interaction-store";
+import {
+  useInteractionStore,
+  applyInteractionEvent,
+  selectSheetStack,
+} from "@/stores/interaction-store";
 import type { RemoteEvent, RemoteInteractionSnapshot } from "@pi/remote-control-contracts";
 
 function makeInteraction(overrides: Partial<RemoteInteractionSnapshot> = {}): RemoteInteractionSnapshot {
@@ -157,5 +161,125 @@ describe("Interaction store — confirm / select / input", () => {
     });
 
     expect(useInteractionStore.getState().interactions["ix-1"].response?.value).toBe("user typed this");
+  });
+
+  describe("bottom sheet state", () => {
+    it("opens and closes the sheet", () => {
+      useInteractionStore.getState().openSheet("ix-1");
+      expect(useInteractionStore.getState().sheetOpen).toBe(true);
+      expect(useInteractionStore.getState().sheetFocusId).toBe("ix-1");
+
+      useInteractionStore.getState().closeSheet();
+      expect(useInteractionStore.getState().sheetOpen).toBe(false);
+      expect(useInteractionStore.getState().sheetFocusId).toBe(null);
+    });
+
+    it("openSheet without an id clears the focus", () => {
+      useInteractionStore.getState().openSheet("ix-1");
+      useInteractionStore.getState().openSheet();
+      expect(useInteractionStore.getState().sheetFocusId).toBe(null);
+    });
+
+    it("auto-opens on interaction.requested", () => {
+      useInteractionStore.setState({ sheetOpen: false, sheetDismissedAt: null });
+      applyInteractionEvent({
+        ...makeEventBase(1),
+        kind: "interaction.requested",
+        interactionId: "ix-1",
+        taskId: "task-1",
+        interactionKind: "select",
+        prompt: "Pick one",
+        expiresAt: "2026-01-01T00:05:00Z",
+      });
+
+      const s = useInteractionStore.getState();
+      expect(s.sheetOpen).toBe(true);
+      expect(s.sheetFocusId).toBe("ix-1");
+    });
+
+    it("respects the dismissal cooldown before auto-opening again", () => {
+      useInteractionStore.setState({ sheetOpen: false, sheetDismissedAt: Date.now() });
+      applyInteractionEvent({
+        ...makeEventBase(1),
+        kind: "interaction.requested",
+        interactionId: "ix-1",
+        taskId: "task-1",
+        interactionKind: "select",
+        prompt: "Pick one",
+        expiresAt: "2026-01-01T00:05:00Z",
+      });
+      expect(useInteractionStore.getState().sheetOpen).toBe(false);
+    });
+
+    it("does not auto-open while already open", () => {
+      useInteractionStore.setState({ sheetOpen: true, sheetFocusId: "ix-0", sheetDismissedAt: null });
+      applyInteractionEvent({
+        ...makeEventBase(1),
+        kind: "interaction.requested",
+        interactionId: "ix-1",
+        taskId: "task-1",
+        interactionKind: "select",
+        prompt: "Pick one",
+        expiresAt: "2026-01-01T00:05:00Z",
+      });
+      const s = useInteractionStore.getState();
+      expect(s.sheetOpen).toBe(true);
+      expect(s.sheetFocusId).toBe("ix-0");
+    });
+
+    it("stacks pending interactions oldest-first for the sheet", () => {
+      const older = makeInteraction({
+        interactionId: "ix-older",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const newer = makeInteraction({
+        interactionId: "ix-newer",
+        kind: "input",
+        createdAt: "2026-01-01T00:01:00Z",
+      });
+      const resolved = makeInteraction({
+        interactionId: "ix-resolved",
+        kind: "select",
+        status: "resolved",
+        createdAt: "2026-01-01T00:02:00Z",
+        options: [{ label: "A", value: "a" }],
+      });
+      useInteractionStore.setState((s) => ({
+        interactions: {
+          ...s.interactions,
+          [newer.interactionId]: newer,
+          [older.interactionId]: older,
+          [resolved.interactionId]: resolved,
+        },
+        order: [resolved.interactionId, newer.interactionId, older.interactionId],
+      }));
+
+      const stack = selectSheetStack(useInteractionStore.getState());
+      expect(stack.map((i) => i.interactionId)).toEqual(["ix-older", "ix-newer"]);
+    });
+
+    it("drops answered interactions from the stack once resolved", () => {
+      const a = makeInteraction({ interactionId: "ix-a", createdAt: "2026-01-01T00:00:00Z" });
+      const b = makeInteraction({
+        interactionId: "ix-b",
+        kind: "input",
+        createdAt: "2026-01-01T00:01:00Z",
+      });
+      useInteractionStore.setState((s) => ({
+        interactions: { ...s.interactions, [a.interactionId]: a, [b.interactionId]: b },
+        order: [b.interactionId, a.interactionId],
+      }));
+
+      applyInteractionEvent({
+        ...makeEventBase(1),
+        kind: "interaction.resolved",
+        interactionId: "ix-a",
+        taskId: "task-1",
+        response: { interactionId: "ix-a", kind: "confirm", value: true, submittedAt: "2026-01-01T00:02:00Z" },
+      });
+
+      const stack = selectSheetStack(useInteractionStore.getState());
+      expect(stack.map((i) => i.interactionId)).toEqual(["ix-b"]);
+    });
   });
 });

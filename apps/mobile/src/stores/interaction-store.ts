@@ -35,6 +35,15 @@ interface InteractionState {
   /** interactionIds currently being responded to (in-flight POST). */
   responding: Set<string>;
 
+  /** Bottom-sheet answering surface — see components/interaction-sheet.tsx. */
+  sheetOpen: boolean;
+  /** Interaction the sheet should focus; null = first pending. */
+  sheetFocusId: string | null;
+  /** When the user last dismissed the sheet (auto-open cooldown, ms epoch). */
+  sheetDismissedAt: number | null;
+
+  openSheet: (interactionId?: string) => void;
+  closeSheet: () => void;
   refresh: () => Promise<void>;
   fetchInteraction: (interactionId: string) => Promise<RemoteInteractionSnapshot | null>;
   respond: (
@@ -52,6 +61,17 @@ export const useInteractionStore = create<InteractionState>((set, get) => ({
   refreshing: false,
   error: null,
   responding: new Set(),
+  sheetOpen: false,
+  sheetFocusId: null,
+  sheetDismissedAt: null,
+
+  openSheet: (interactionId) => {
+    set({ sheetOpen: true, sheetFocusId: interactionId ?? null, sheetDismissedAt: null });
+  },
+
+  closeSheet: () => {
+    set({ sheetOpen: false, sheetFocusId: null, sheetDismissedAt: Date.now() });
+  },
 
   refresh: async () => {
     const client = useConnectionStore.getState().client;
@@ -127,6 +147,9 @@ export const useInteractionStore = create<InteractionState>((set, get) => ({
       refreshing: false,
       error: null,
       responding: new Set(),
+      sheetOpen: false,
+      sheetFocusId: null,
+      sheetDismissedAt: null,
     });
   },
 }));
@@ -140,6 +163,22 @@ export function selectPending(s: InteractionState): RemoteInteractionSnapshot[] 
   return s.order
     .map((id) => s.interactions[id])
     .filter((i): i is RemoteInteractionSnapshot => Boolean(i) && i.status === "pending");
+}
+
+/**
+ * The bottom sheet's question stack: pending interactions in the order they
+ * were asked (oldest first), so a questionnaire flows forward. The sheet keeps
+ * answering; answered questions drop out, new arrivals append.
+ */
+export function selectSheetStack(s: InteractionState): RemoteInteractionSnapshot[] {
+  return s.order
+    .map((id) => s.interactions[id])
+    .filter((i): i is RemoteInteractionSnapshot => Boolean(i) && i.status === "pending")
+    .sort(
+      (a, b) =>
+        Date.parse(a.createdAt) - Date.parse(b.createdAt) ||
+        a.interactionId.localeCompare(b.interactionId),
+    );
 }
 
 /** Count of pending interactions — drives the tab badge. */
@@ -183,6 +222,17 @@ export function applyInteractionEvent(event: RemoteEvent): void {
       // Fetch the authoritative snapshot — the event is a signal; the snapshot
       // carries options + full prompt + expiry.
       void useInteractionStore.getState().fetchInteraction(event.interactionId);
+      // Surface the question immediately: the bottom sheet pops up (or, when
+      // already answering a sequence, slides to it after the current one).
+      // A deliberate dismissal earns a short cooldown before the sheet pops
+      // again — the badge stays as the quieter fallback.
+      useInteractionStore.setState((s) => {
+        if (s.sheetOpen) return s;
+        if (s.sheetDismissedAt !== null && Date.now() - s.sheetDismissedAt < 20_000) {
+          return s;
+        }
+        return { sheetOpen: true, sheetFocusId: event.interactionId };
+      });
       break;
     }
     case "interaction.resolved": {

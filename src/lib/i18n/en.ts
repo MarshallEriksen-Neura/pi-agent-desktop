@@ -519,6 +519,11 @@ export const en = {
   "models.noSearchResults": "No models match your search.",
   "models.providerSettings": "Provider settings",
   "models.configure": "Configure",
+  "models.providers": "Providers",
+  "models.expandAll": "Expand all",
+  "models.collapseAll": "Collapse all",
+  "models.filterModels": "Filter models…",
+  "models.backToTop": "Back to top",
 
   // plugins page
   "plugins.title": "Plugins",

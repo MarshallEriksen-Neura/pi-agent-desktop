@@ -144,7 +144,7 @@ export function transitionRemoteTask(
  * Bounded interaction kinds. Unknown kinds are rejected by the gateway rather
  * than exposed as arbitrary extension UI (plan Stage 1).
  */
-export type RemoteInteractionKind = "confirm" | "select" | "input";
+export type RemoteInteractionKind = "confirm" | "select" | "input" | "editor";
 
 export interface RemoteInteractionOption {
   readonly label: string;

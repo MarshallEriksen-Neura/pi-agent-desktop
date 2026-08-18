@@ -77,6 +77,19 @@
   /* 弹簧曲线(对齐 demo --spring-smooth) */
   --spring-smooth: cubic-bezier(0.22, 0.61, 0.36, 1);
 
+  /* Floating tab bar — 浅色瓷器胶囊，悬于深色工作台上 */
+  --floating-tab-height: 64px;
+  --floating-tab-gutter: 16px;
+  --floating-tab-offset: 8px;
+  --floating-tab-surface: rgba(250, 250, 253, 0.92);
+  --floating-tab-border: rgba(255, 255, 255, 0.72);
+  --floating-tab-shadow: 0 16px 34px rgba(0, 0, 0, 0.34), 0 3px 10px rgba(0, 0, 0, 0.18);
+  --floating-tab-ink: #5f5f6a;
+  --floating-tab-active: #5e5ce6;
+  --floating-tab-active-lens: rgba(94, 92, 230, 0.12);
+  --floating-tab-focus: rgba(94, 92, 230, 0.78);
+  --floating-tab-transition: 180ms;
+
   /* Secure Tether 几何参数 */
   --tether-stroke: 2px;
   --tether-lock-size: 14px;
@@ -111,6 +124,13 @@
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
     --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.16);
     --material-regular: rgba(0, 0, 0, 0.05);
+    --floating-tab-surface: rgba(255, 255, 255, 0.88);
+    --floating-tab-border: rgba(255, 255, 255, 0.9);
+    --floating-tab-shadow: 0 14px 28px rgba(60, 60, 67, 0.16), 0 2px 6px rgba(60, 60, 67, 0.08);
+    --floating-tab-ink: #5d5d66;
+    --floating-tab-active: #5856d6;
+    --floating-tab-active-lens: rgba(88, 86, 214, 0.12);
+    --floating-tab-focus: rgba(88, 86, 214, 0.82);
   }
 }
 
@@ -158,6 +178,127 @@ body.pi-barcode-scanner-active #root {
 input,
 textarea {
   user-select: text;
+}
+
+/* Floating bottom navigation — the active tab is a contained lavender lens. */
+.floating-tab-dock {
+  position: fixed;
+  right: 0;
+  bottom: calc(var(--safe-bottom) + var(--floating-tab-offset));
+  left: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  padding: 0 var(--floating-tab-gutter);
+  pointer-events: none;
+}
+
+.floating-tab-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: min(100%, 440px);
+  min-height: var(--floating-tab-height);
+  padding: 4px;
+  border: 1px solid var(--floating-tab-border);
+  border-radius: calc(var(--floating-tab-height) / 2);
+  background: var(--floating-tab-surface);
+  box-shadow: var(--floating-tab-shadow);
+  backdrop-filter: blur(22px) saturate(1.16);
+  -webkit-backdrop-filter: blur(22px) saturate(1.16);
+  pointer-events: auto;
+}
+
+.floating-tab-button {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 56px;
+  padding: 5px 4px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--floating-tab-ink);
+  cursor: pointer;
+  font: 500 10px/1 var(--font-ui);
+  letter-spacing: -0.01em;
+  transition:
+    color var(--floating-tab-transition) var(--spring-smooth),
+    background-color var(--floating-tab-transition) var(--spring-smooth),
+    transform var(--floating-tab-transition) var(--spring-smooth);
+}
+
+.floating-tab-button::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--floating-tab-active-lens);
+  content: "";
+  opacity: 0;
+  transform: scale(0.82);
+  transition:
+    opacity var(--floating-tab-transition) var(--spring-smooth),
+    transform var(--floating-tab-transition) var(--spring-smooth);
+}
+
+.floating-tab-button.is-active {
+  color: var(--floating-tab-active);
+  font-weight: 700;
+}
+
+.floating-tab-button.is-active::before {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.floating-tab-button:active {
+  transform: scale(0.96);
+}
+
+.floating-tab-button:focus-visible {
+  z-index: 1;
+  outline: 2px solid var(--floating-tab-focus);
+  outline-offset: 2px;
+}
+
+.floating-tab-icon,
+.floating-tab-label {
+  position: relative;
+  z-index: 1;
+}
+
+.floating-tab-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+}
+
+.floating-tab-label {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-tab-badge {
+  position: absolute;
+  top: -5px;
+  right: -10px;
+  display: grid;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  place-items: center;
+  border: 1.5px solid var(--floating-tab-surface);
+  border-radius: 999px;
+  background: var(--color-status-awaiting);
+  color: #fff;
+  font: 700 9px/1 var(--font-ui);
+  letter-spacing: 0;
 }
 
 /* Reduced motion */

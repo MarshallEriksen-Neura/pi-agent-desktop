@@ -147,7 +147,6 @@ export function initAgentBridge() {
     } else if (BASH_TOOL.test(e.toolName)) {
       rec.kind = "bash";
       const cmd = argCommand(args);
-      ui.setTerminalOpen(true);
 
       const blocksStore = useTerminalBlocks.getState();
       if (blocksStore.viewMode === "blocks") {

@@ -356,7 +356,7 @@ struct CapabilitiesResponse {
     #[serde(rename = "maxActiveTasks")]
     max_active_tasks: usize,
     #[serde(rename = "supportedInteractions")]
-    supported_interactions: [&'static str; 3],
+    supported_interactions: [&'static str; 4],
     project: RemoteProjectCapabilities,
 }
 
@@ -372,7 +372,7 @@ async fn capabilities(
         max_request_body_bytes: MAX_REST_BODY_BYTES,
         max_queue_size: crate::task_manager::TASK_QUEUE_CAPACITY,
         max_active_tasks: 1,
-        supported_interactions: ["confirm", "select", "input"],
+        supported_interactions: ["confirm", "select", "input", "editor"],
         project: RemoteProjectCapabilities {
             max_tree_entries_per_page: crate::project_catalog::MAX_TREE_ENTRIES_PER_PAGE as u16,
             max_context_files: crate::protocol::MAX_CONTEXT_FILES as u8,
