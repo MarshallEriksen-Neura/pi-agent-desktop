@@ -14,10 +14,16 @@ const EXPECTED_COMMAND_NAMES = [
   "pet_window_set_position", "pet_window_show", "pet_window_toggle", "pi_cli",
   "pi_cli_update_check", "pi_fetch_models", "pi_generate_title", "pi_send",
   "pi_settings_read", "pi_settings_write", "pi_start", "pi_stop", "project_open",
+  "mcp_adapter_check", "mcp_config_discover", "mcp_config_open_dir", "mcp_config_read", "mcp_config_write",
   "project_resolve",
   "project_pick", "project_remove_recent", "projects_recent", "runtime_config_read",
   "runtime_config_write", "workspace_root", "wsl_list_distros",
   "wsl_runtime_validate", "wsl_shell_bridge_path",
+  "remote_control_disable", "remote_control_enable", "remote_control_pairing_payload",
+  "remote_control_private_addresses", "remote_control_reset_identity",
+  "remote_control_revoke_device", "remote_control_status", "remote_conversation_append",
+  "remote_conversation_archive", "remote_conversation_cancel", "remote_conversation_get",
+  "remote_conversation_messages", "remote_conversations_list",
 ].sort();
 const EXPECTED_PI_EVENTS = ["pi://exit", "pi://line", "pi://stderr"];
 

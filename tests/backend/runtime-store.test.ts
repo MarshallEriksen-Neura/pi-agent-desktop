@@ -48,6 +48,11 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
     piConfiguration: {
       readSettings: async () => ({ path: "", exists: false, content: "" }),
       writeSettings: async () => undefined,
+      readMcpConfig: async () => ({ path: "", exists: false, content: "" }),
+      writeMcpConfig: async () => undefined,
+      openMcpConfigDirectory: async () => undefined,
+      checkMcpAdapter: async () => ({ installed: false, otherConfigPaths: [] }),
+      discoverMcpSources: async () => [],
       fetchModels: async () => [],
       runPiCli: async () => ({ code: 0, stdout: "", stderr: "" }),
       checkPiCliUpdate: async () => ({

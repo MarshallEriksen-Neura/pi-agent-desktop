@@ -17,6 +17,7 @@ import {
   FileText,
   Globe,
   ListChecks,
+  PlugZap,
   Search,
   Terminal,
   Wrench,
@@ -32,6 +33,7 @@ const KIND_ICON: Record<ToolKind, typeof Wrench> = {
   web: Globe,
   task: ListChecks,
   agent: Bot,
+  mcp: PlugZap,
   other: Wrench,
 };
 

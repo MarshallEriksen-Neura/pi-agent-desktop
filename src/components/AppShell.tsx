@@ -68,7 +68,16 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initCloseBehavior();
     // restore user-customized appearance (colors, background, text scale)
     useAppearance.getState().init();
-    configureChatRecovery(chatRecoveryService);
+    try {
+      configureChatRecovery(chatRecoveryService);
+    } catch (error) {
+      // Next dev Fast Refresh can remount this component with a new service
+      // object while the module-level singleton is intentionally preserved.
+      // Keep the first service rather than taking down the whole preview.
+      if (!(error instanceof Error && error.message === "Chat recovery service is already configured.")) {
+        throw error;
+      }
+    }
     configureSessionProjectRootResolver(
       () => useWorkspace.getState().root,
     );

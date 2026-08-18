@@ -570,7 +570,8 @@ fn build_running_gateway<R: Runtime>(
     }
     let selected_project_root = crate::projects::last_project()?.map(PathBuf::from);
     let recent_projects = crate::projects::projects_recent()?;
-    if let Err(error) = sync_gateway_recent_projects(&project_store_path, &gateway, &recent_projects)
+    if let Err(error) =
+        sync_gateway_recent_projects(&project_store_path, &gateway, &recent_projects)
     {
         gateway.supervisor.stop();
         return Err(error);
@@ -1561,7 +1562,11 @@ mod command_smoke {
         let projects = restored["projects"]
             .as_array()
             .expect("restored status should include the desktop projects");
-        assert_eq!(projects.len(), 2, "recent projects survive a desktop restart");
+        assert_eq!(
+            projects.len(),
+            2,
+            "recent projects survive a desktop restart"
+        );
         let restored_b = projects
             .iter()
             .find(|p| p["name"].as_str() == Some("current-project-b"))

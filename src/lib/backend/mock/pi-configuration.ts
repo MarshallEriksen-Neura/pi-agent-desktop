@@ -1,5 +1,7 @@
 import type {
   CliResultDto,
+  McpAdapterStatusDto,
+  McpDiscoverySourceDto,
   PiConfigurationPort,
   PiSkillDirectoryEntryDto,
   SettingsScopeFileDto,
@@ -12,6 +14,9 @@ export interface MockPiConfigurationOptions {
   settings?: Partial<Record<SettingsScope | "models", SettingsScopeFileDto>>;
   skillFiles?: Record<string, string>;
   skillDirectories?: Record<string, PiSkillDirectoryEntryDto[]>;
+  mcpAdapterInstalled?: boolean;
+  mcpOtherConfigPaths?: string[];
+  mcpSources?: McpDiscoverySourceDto[];
 }
 
 const DEFAULT_SETTINGS: Record<SettingsScope | "models", SettingsScopeFileDto> = {
@@ -89,8 +94,23 @@ export function createMockPiConfigurationPort(
       { ...DEFAULT_SETTINGS[scope], ...options.settings?.[scope] },
     ])
   );
+  const mcpSettings = new Map<SettingsScope, SettingsScopeFileDto>([
+    [
+      "global",
+      {
+        path: "~/.pi/agent/mcp.json",
+        exists: false,
+        content: "",
+      },
+    ],
+    ["project", { path: ".pi/mcp.json", exists: false, content: "" }],
+  ]);
   const skillFiles = new Map(Object.entries(options.skillFiles ?? {}));
   const skillDirectories = new Map(Object.entries(options.skillDirectories ?? {}));
+  const mcpAdapterStatus: McpAdapterStatusDto = {
+    installed: options.mcpAdapterInstalled ?? false,
+    otherConfigPaths: options.mcpOtherConfigPaths ?? [],
+  };
 
   return {
     readSettings: async (scope) => ({ ...(settings.get(scope) ?? DEFAULT_SETTINGS[scope]) }),
@@ -99,6 +119,35 @@ export function createMockPiConfigurationPort(
       const current = settings.get(scope) ?? DEFAULT_SETTINGS[scope];
       settings.set(scope, { ...current, exists: true, content });
     },
+
+    readMcpConfig: async (scope) => ({ ...(mcpSettings.get(scope) as SettingsScopeFileDto) }),
+
+    writeMcpConfig: async (scope, content) => {
+      const current = mcpSettings.get(scope) as SettingsScopeFileDto;
+      mcpSettings.set(scope, {
+        ...current,
+        path: scope === "global" ? "~/.pi/agent/mcp.json" : ".pi/mcp.json",
+        exists: true,
+        content,
+      });
+    },
+
+    openMcpConfigDirectory: async () => {},
+
+    checkMcpAdapter: async () => ({ ...mcpAdapterStatus }),
+
+    discoverMcpSources: async () => [...(options.mcpSources ?? [
+      {
+        id: "standard-global",
+        label: "Standard MCP",
+        path: "~/.config/mcp/mcp.json",
+        scope: "global",
+        format: "json",
+        supported: true,
+        content: JSON.stringify({ mcpServers: { docs: { command: "npx", args: ["-y", "example-mcp-server"] } } }),
+        reason: null,
+      },
+    ])],
 
     fetchModels: async (_config: ProviderConfig) => {
       await new Promise((resolve) => setTimeout(resolve, 300));

@@ -11,6 +11,7 @@ import {
   Download,
   Settings,
   ListTodo,
+  Plug,
 } from "lucide-react";
 import { useUI } from "@/lib/store";
 import { usePi } from "@/lib/pi/store";
@@ -24,6 +25,7 @@ const ITEMS: { href: string; icon: React.ReactNode; labelKey: MsgKey }[] = [
   { href: "/plugins/", icon: <Puzzle size={17} />, labelKey: "nav.plugins" },
   { href: "/skills/", icon: <Wand2 size={17} />, labelKey: "nav.skills" },
   { href: "/store/", icon: <Download size={17} />, labelKey: "nav.store" },
+  { href: "/mcp/", icon: <Plug size={17} />, labelKey: "nav.mcp" },
   { href: "/settings/", icon: <Settings size={17} />, labelKey: "nav.settings" },
 ];
 

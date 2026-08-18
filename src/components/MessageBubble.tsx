@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { motion } from "motion/react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@appica/ui-react/collapsible";
 import { Spinner } from "@appica/ui-react/spinner";
@@ -16,7 +16,8 @@ import {
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n";
 import { useMessageActions } from "@/lib/pi/message-actions";
-import { toolDetail, toolTitle } from "@/lib/pi/tool-label";
+import { mcpAuthCompleteExample, toolDetail, toolTitle } from "@/lib/pi/tool-label";
+import { openExternal } from "@/lib/open-external";
 import { ActivityLine } from "./ActivityLine";
 import { ImageLightbox } from "./ImageLightbox";
 import { useChat, type ChatMessage } from "@/lib/pi/chat";
@@ -37,6 +38,7 @@ interface MessageBubbleProps {
 export function MessageBubble({ m, animateIn = true }: MessageBubbleProps) {
   const t = useT();
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [showCopy, showCopyOn, hideCopySoon, keepCopy] = useHoverReveal();
 
   if (m.role === "user") {
     return (
@@ -51,8 +53,11 @@ export function MessageBubble({ m, animateIn = true }: MessageBubbleProps) {
             alignItems: "flex-end",
             gap: 4,
             margin: "6px 0",
-        }}
-      >
+            position: "relative",
+          }}
+          onMouseEnter={showCopyOn}
+          onMouseLeave={hideCopySoon}
+        >
         {(m.images?.length ?? 0) > 0 && (
           <div
             style={{
@@ -106,22 +111,31 @@ export function MessageBubble({ m, animateIn = true }: MessageBubbleProps) {
           </div>
         )}
         {m.text && (
-          <div
-            style={{
-              maxWidth: "85%",
-              padding: "8px 13px",
-              borderRadius: 16,
-              borderBottomRightRadius: 5,
-              background: "var(--accent)",
-              color: "var(--text-on-accent)",
-              fontSize: 13,
-              lineHeight: 1.5,
-              whiteSpace: "pre-wrap",
-              overflowWrap: "anywhere",
-            }}
-          >
-            {m.text}
-          </div>
+          <>
+            <div
+              style={{
+                maxWidth: "85%",
+                padding: "8px 13px",
+                borderRadius: 16,
+                borderBottomRightRadius: 5,
+                background: "var(--accent)",
+                color: "var(--text-on-accent)",
+                fontSize: 13,
+                lineHeight: 1.5,
+                whiteSpace: "pre-wrap",
+                overflowWrap: "anywhere",
+              }}
+            >
+              {m.text}
+            </div>
+            <BubbleCopyButton
+              text={m.text}
+              visible={showCopy}
+              align="end"
+              onEnter={keepCopy}
+              onLeave={hideCopySoon}
+            />
+          </>
         )}
         </motion.div>
         <ImageLightbox src={previewSrc} onClose={() => setPreviewSrc(null)} />
@@ -134,9 +148,98 @@ export function MessageBubble({ m, animateIn = true }: MessageBubbleProps) {
   );
 }
 
+/** Hover-reveal state with a grace window so the pointer can cross the small
+ *  gap between the bubble and its floating copy button without it vanishing. */
+function useHoverReveal(): [boolean, () => void, () => void, () => void] {
+  const [visible, setVisible] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+
+  const show = () => {
+    window.clearTimeout(timer.current);
+    setVisible(true);
+  };
+  const scheduleHide = () => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setVisible(false), 150);
+  };
+  const keep = () => {
+    window.clearTimeout(timer.current);
+    setVisible(true);
+  };
+
+  return [visible, show, scheduleHide, keep];
+}
+
+/** Floating copy pill that fades in below a bubble on hover. */
+function BubbleCopyButton({
+  text,
+  visible,
+  align,
+  onEnter,
+  onLeave,
+}: {
+  text: string;
+  visible: boolean;
+  align: "start" | "end";
+  onEnter: () => void;
+  onLeave: () => void;
+}) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  const { copyMarkdown } = useMessageActions(text);
+
+  const handleCopy = async () => {
+    await copyMarkdown();
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  };
+
+  return (
+    <motion.button
+      onClick={handleCopy}
+      initial={false}
+      animate={{ opacity: visible ? 1 : 0, y: visible ? 0 : -2 }}
+      transition={{ duration: 0.12 }}
+      aria-label={t("message.copy")}
+      onMouseEnter={(e) => {
+        onEnter();
+        (e.currentTarget as HTMLButtonElement).style.background = "var(--bg-sunken)";
+      }}
+      onMouseLeave={(e) => {
+        onLeave();
+        (e.currentTarget as HTMLButtonElement).style.background = "var(--bg-base)";
+      }}
+      style={{
+        position: "absolute",
+        top: "100%",
+        marginTop: 3,
+        ...(align === "end" ? { right: 0 } : { left: 0 }),
+        zIndex: 3,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "3px 8px",
+        borderRadius: 6,
+        border: "1px solid var(--separator)",
+        background: "var(--bg-base)",
+        boxShadow: "var(--shadow-sm)",
+        color: copied ? "var(--accent)" : "var(--text-tertiary)",
+        fontSize: 11.5,
+        cursor: "pointer",
+        pointerEvents: visible ? "auto" : "none",
+        transition: "background 0.15s ease, color 0.15s ease",
+      }}
+    >
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+      {t(copied ? "message.copied" : "message.copy")}
+    </motion.button>
+  );
+}
+
 function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean }) {
   const t = useT();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showCopy, showCopyOn, hideCopySoon, keepCopy] = useHoverReveal();
   const { copyMarkdown, fork } = useMessageActions(m.text, m.id);
 
   const handleCopy = async () => {
@@ -155,23 +258,29 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 400, damping: 28 }}
       style={{ margin: "6px 0 10px", position: "relative" }}
-      onMouseEnter={() => setMenuOpen(false)}
+      onMouseEnter={() => {
+        setMenuOpen(false);
+        showCopyOn();
+      }}
+      onMouseLeave={hideCopySoon}
     >
       {m.thinking && <ThinkingBlock text={m.thinking} done={!m.streaming} />}
 
       {m.isError && <ErrorNotice m={m} />}
 
       {m.tools.map((tool, i) => (
-        <ActivityLine
-          key={tool.id}
-          status={tool.status}
-          toolName={tool.name}
-          title={toolTitle(tool.name, tool.args)}
-          detail={toolDetail(tool.args)}
-          // only the freshly-started row slides in; earlier rows are already
-          // settled, so a virtualized re-mount must not replay the whole list
-          animateIn={animateIn && i === m.tools.length - 1}
-        />
+        <div key={tool.id}>
+          <ActivityLine
+            status={tool.status}
+            toolName={tool.name}
+            title={toolTitle(tool.name, tool.args)}
+            detail={toolDetail(tool.args)}
+            // only the freshly-started row slides in; earlier rows are already
+            // settled, so a virtualized re-mount must not replay the whole list
+            animateIn={animateIn && i === m.tools.length - 1}
+          />
+          {tool.authUrl && <McpAuthHint url={tool.authUrl} toolName={tool.name} args={tool.args} />}
+        </div>
       ))}
 
       {(m.text || m.streaming) && (
@@ -218,6 +327,7 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
 
               {menuOpen && (
                 <motion.div
+                  role="menu"
                   initial={{ opacity: 0, scale: 0.95, y: -4 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   transition={{ duration: 0.12 }}
@@ -237,6 +347,7 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
                   onMouseLeave={() => setMenuOpen(false)}
                 >
                   <button
+                    role="menuitem"
                     onClick={handleCopy}
                     style={{
                       display: "block",
@@ -261,6 +372,7 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
                     {t("message.copy")}
                   </button>
                   <button
+                    role="menuitem"
                     onClick={handleFork}
                     style={{
                       display: "block",
@@ -290,7 +402,56 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
           )}
         </div>
       )}
+
+      {!m.streaming && m.text && (
+        <BubbleCopyButton
+          text={m.text}
+          visible={showCopy}
+          align="start"
+          onEnter={keepCopy}
+          onLeave={hideCopySoon}
+        />
+      )}
     </motion.div>
+  );
+}
+
+function McpAuthHint({ url, toolName, args }: { url: string; toolName: string; args: unknown }) {
+  const t = useT();
+  const example = mcpAuthCompleteExample(toolName, args);
+  return (
+    <div
+      role="note"
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 7,
+        margin: "2px 0 5px 22px",
+        padding: "6px 8px",
+        borderLeft: "2px solid var(--accent)",
+        background: "color-mix(in srgb, var(--accent) 7%, transparent)",
+        fontSize: 11.5,
+        color: "var(--text-secondary)",
+      }}
+    >
+      <span>{t("mcp.authHint")}</span>
+      <button
+        type="button"
+        onClick={() => openExternal(url)}
+        style={{ border: 0, background: "transparent", color: "var(--accent)", cursor: "pointer", padding: 0, font: "inherit" }}
+      >
+        {t("mcp.openAuthUrl")}
+      </button>
+      <span style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)", color: "var(--text-tertiary)" }}>
+        {url}
+      </span>
+      {example && (
+        <code style={{ flexBasis: "100%", overflowWrap: "anywhere", color: "var(--text-tertiary)", fontSize: 10.5 }}>
+          {example}
+        </code>
+      )}
+    </div>
   );
 }
 

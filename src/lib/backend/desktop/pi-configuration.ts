@@ -3,6 +3,8 @@ import type {
   PiConfigurationPort,
   PiSkillDirectoryEntryDto,
   SettingsScopeFileDto,
+  McpAdapterStatusDto,
+  McpDiscoverySourceDto,
 } from "../ports";
 import type { ProviderConfig } from "../../pi/models";
 import type { SettingsScope } from "../../pi/settings";
@@ -22,6 +24,31 @@ export const desktopPiConfigurationPort: PiConfigurationPort = {
       content,
       root: root ?? null,
     }),
+
+  readMcpConfig: (scope: SettingsScope, root?: string | null) =>
+    desktopInvoke<SettingsScopeFileDto>("mcp_config_read", {
+      scope,
+      root: root ?? null,
+    }),
+
+  writeMcpConfig: (scope: SettingsScope, content: string, root?: string | null) =>
+    desktopInvoke<void>("mcp_config_write", {
+      scope,
+      content,
+      root: root ?? null,
+    }),
+
+  openMcpConfigDirectory: (scope: SettingsScope, root?: string | null) =>
+    desktopInvoke<void>("mcp_config_open_dir", {
+      scope,
+      root: root ?? null,
+    }),
+
+  checkMcpAdapter: (root?: string | null) =>
+    desktopInvoke<McpAdapterStatusDto>("mcp_adapter_check", { root: root ?? null }),
+
+  discoverMcpSources: (root?: string | null) =>
+    desktopInvoke<McpDiscoverySourceDto[]>("mcp_config_discover", { root: root ?? null }),
 
   fetchModels: (config: ProviderConfig) =>
     desktopInvoke<string[]>("pi_fetch_models", {

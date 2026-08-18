@@ -16,12 +16,15 @@ import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
 import { restoreFromTray } from "../window-close";
 import { getChatRecoveryTarget } from "../orchestration/chat-recovery";
+import { mcpAuthUrl } from "./tool-label";
 
 export interface ChatToolCall {
   id: string;
   name: string;
   args?: unknown;
   status: "running" | "done" | "error";
+  /** OAuth authorization URL surfaced by an MCP auth-start result. */
+  authUrl?: string;
 }
 
 export interface ChatMessage {
@@ -734,7 +737,11 @@ export const useChat = create<ChatStore>((set, get) => ({
           ...m,
           tools: m.tools.map((t) =>
             t.id === e.toolCallId
-              ? { ...t, status: e.isError ? ("error" as const) : ("done" as const) }
+              ? {
+                  ...t,
+                  status: e.isError ? ("error" as const) : ("done" as const),
+                  authUrl: mcpAuthUrl(t.name, e.result, t.args),
+                }
               : t
           ),
         })),

@@ -17,6 +17,7 @@ const SEARCH_TOOL = /^(grep|search|glob|find|rg|ls|list[_-]?(dir|files)?)$/i;
 const WEB_TOOL = /^(web[_-]?(search|fetch)|fetch|http|browse|curl)$/i;
 const TASK_TOOL = /^(todo(?:[_-]?write)?|task|plan)$/i;
 const AGENT_TOOL = /^((sub)?agent|dispatch[_-]?agent|task[_-]?agent)$/i;
+const MCP_TOOL = /^mcp(?:$|(?:__|:|\/))/i;
 
 /** Semantic bucket a tool falls into — drives which icon the row shows. */
 export type ToolKind =
@@ -27,6 +28,7 @@ export type ToolKind =
   | "web"
   | "task"
   | "agent"
+  | "mcp"
   | "other";
 
 export function toolKind(toolName: string): ToolKind {
@@ -37,7 +39,12 @@ export function toolKind(toolName: string): ToolKind {
   if (WEB_TOOL.test(toolName)) return "web";
   if (TASK_TOOL.test(toolName)) return "task";
   if (AGENT_TOOL.test(toolName)) return "agent";
+  if (MCP_TOOL.test(toolName)) return "mcp";
   return "other";
+}
+
+export function isMcpTool(toolName: string): boolean {
+  return MCP_TOOL.test(toolName);
 }
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -76,6 +83,18 @@ export function relPath(p: string): string {
 /** headline for a tool call: `$ pnpm build`, `Read src/lib/pi/chat.ts`, `Grep` */
 export function toolTitle(toolName: string, rawArgs: unknown): string {
   const args = asRecord(rawArgs);
+  if (isMcpTool(toolName)) {
+    const action = typeof args.action === "string" ? args.action : undefined;
+    const server = typeof args.server === "string" ? args.server : undefined;
+    const target = typeof args.tool === "string" ? args.tool : undefined;
+    if (toolName.toLowerCase() === "mcp") {
+      return ["MCP", action, server && target ? `${server}/${target}` : server || target]
+        .filter(Boolean)
+        .join(" · ");
+    }
+    const parts = toolName.split(/__|:|\//).filter(Boolean);
+    return ["MCP", parts.slice(1).join("/") || parts[0]].filter(Boolean).join(" · ");
+  }
   if (BASH_TOOL.test(toolName)) {
     const cmd = argCommand(args) ?? "";
     return `$ ${cmd}`.trim();
@@ -83,6 +102,47 @@ export function toolTitle(toolName: string, rawArgs: unknown): string {
   const p = argPath(args);
   const name = toolName.charAt(0).toUpperCase() + toolName.slice(1);
   return p ? `${name} ${relPath(normPath(p))}` : name;
+}
+
+function resultText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(resultText).filter(Boolean).join("\n");
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return [record.text, record.content, record.message, record.result]
+      .map(resultText)
+      .filter(Boolean)
+      .join("\n") || JSON.stringify(value);
+  }
+  return "";
+}
+
+/** Extract a short-lived OAuth authorization URL from an MCP auth-start result. */
+export function mcpAuthUrl(toolName: string, value: unknown, rawArgs?: unknown): string | undefined {
+  if (!isMcpTool(toolName)) return undefined;
+  const args = asRecord(rawArgs);
+  const action = typeof args.action === "string" ? args.action.toLowerCase() : undefined;
+  if (action && action !== "auth-start") return undefined;
+
+  // pi-mcp-adapter exposes this as a structured detail. Prefer it over text so
+  // a normal MCP result containing an OAuth-looking link cannot trigger the UI.
+  const result = asRecord(value);
+  const details = asRecord(result.details);
+  const structuredUrl = details.authorizationUrl;
+  if (typeof structuredUrl === "string" && /^https?:\/\//i.test(structuredUrl)) return structuredUrl;
+
+  const text = resultText(value);
+  if (!/(?:auth[-_ ]?start|oauth|authorize|authorization)/i.test(text)) return undefined;
+  return text.match(/https?:\/\/[^\s<>"']+/i)?.[0]?.replace(/[),.;]+$/, "");
+}
+
+/** Stable adapter syntax shown after a browser OAuth redirect. */
+export function mcpAuthCompleteExample(toolName: string, rawArgs: unknown): string | undefined {
+  if (!isMcpTool(toolName)) return undefined;
+  const server = asRecord(rawArgs).server;
+  if (typeof server !== "string" || server.trim().length === 0) return undefined;
+  const escaped = server.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `mcp({ action: "auth-complete", server: "${escaped}", args: { code: "PASTE_CODE_HERE" } })`;
 }
 
 /** the dimmed trailing half of a row: the args that the title didn't cover */

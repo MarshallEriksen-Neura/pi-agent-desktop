@@ -1,5 +1,6 @@
 mod chat_store;
 mod fs_bridge;
+mod mcp_config;
 mod pet_window;
 mod pi_bridge;
 mod pi_command;
@@ -227,6 +228,11 @@ pub fn run() {
             pi_settings::pi_settings_read,
             pi_settings::pi_settings_write,
             pi_settings::pi_cli,
+            mcp_config::mcp_config_read,
+            mcp_config::mcp_config_write,
+            mcp_config::mcp_config_open_dir,
+            mcp_config::mcp_adapter_check,
+            mcp_config::mcp_config_discover,
             projects::projects_recent,
             projects::project_resolve,
             projects::project_open,

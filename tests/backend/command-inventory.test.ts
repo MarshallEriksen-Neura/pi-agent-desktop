@@ -36,8 +36,8 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   assert.equal(result.inventory.legacyTauriFileCount, 0);
   assert.equal(result.inventory.legacyTauriRefCount, 0);
   assert.ok(result.inventory.tauriRefCount > 0);
-  assert.ok(result.inventory.commandCallCount >= 38);
-  assert.equal(result.inventory.commandUniqueCount, 39);
+  assert.ok(result.inventory.commandCallCount >= 59);
+  assert.equal(result.inventory.commandUniqueCount, 57);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -58,6 +58,11 @@ test("locks the desktop command names and Pi process event names", () => {
     "fs_rename",
     "fs_write_file",
     "list_custom_pets",
+    "mcp_adapter_check",
+    "mcp_config_discover",
+    "mcp_config_open_dir",
+    "mcp_config_read",
+    "mcp_config_write",
     "open_external",
     "pet_window_hide",
     "pet_window_set_position",
@@ -77,6 +82,19 @@ test("locks the desktop command names and Pi process event names", () => {
     "project_remove_recent",
     "project_resolve",
     "projects_recent",
+    "remote_control_disable",
+    "remote_control_enable",
+    "remote_control_pairing_payload",
+    "remote_control_private_addresses",
+    "remote_control_reset_identity",
+    "remote_control_revoke_device",
+    "remote_control_status",
+    "remote_conversation_append",
+    "remote_conversation_archive",
+    "remote_conversation_cancel",
+    "remote_conversation_get",
+    "remote_conversation_messages",
+    "remote_conversations_list",
     "runtime_config_read",
     "runtime_config_write",
     "workspace_root",

@@ -76,8 +76,9 @@ test.describe('Message Operations', () => {
     const menuButton = messageContainer.locator('button[aria-label="Message options"]');
     await menuButton.click();
 
-    // Click copy option
-    await page.locator('text=Copy').click();
+    // Click copy option (scoped to the menu — the hover copy pill on the
+    // message also matches the "Copy" text)
+    await page.locator('[role="menu"] button:has-text("Copy")').click();
 
     // Wait a bit for clipboard operation
     await page.waitForTimeout(100);

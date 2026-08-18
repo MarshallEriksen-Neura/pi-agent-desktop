@@ -13,6 +13,8 @@ export type {
   SettingsScopeFileDto,
   CliResultDto,
   PiSkillDirectoryEntryDto,
+  McpAdapterStatusDto,
+  McpDiscoverySourceDto,
 } from "./pi-configuration";
 export type {
   PiProcessExit,
