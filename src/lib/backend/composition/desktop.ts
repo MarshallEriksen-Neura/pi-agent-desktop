@@ -21,6 +21,7 @@ import {
 export function createDesktopBackendPorts(): BackendPorts {
   return {
     piProcess: createDesktopPiProcessPort(),
+    createPiProcess: (taskId) => createDesktopPiProcessPort(taskId),
     sessionRepository: desktopSessionRepositoryPort,
     workspaceFs: desktopWorkspaceFsPort,
     projectCatalog: desktopProjectCatalogPort,

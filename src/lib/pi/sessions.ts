@@ -1,19 +1,20 @@
 "use client";
 
 import { create } from "zustand";
-import { useChat, type ChatMessage } from "./chat";
+import { getChatStore, clearChatStores, type ChatMessage } from "./chat";
+import { getPiStore, clearPiStores } from "./store";
+import { getPiClient, disposeAllPiClients, disposePiClient } from "./client";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
 import type { GenerateTitleInput, SessionRepositoryPort } from "../backend/ports";
 import { getBackendKind, getPort } from "../backend/composition/container";
-import { getPiClient } from "./client";
 import {
   readCurrentPiSessionPath,
-  resetPiConversation,
-  restartPiForRestoredSession,
   getCurrentPiModel,
   syncPiSessionName,
 } from "../orchestration/session-lifecycle";
+import { setActiveTaskId, getActiveTaskId, setSessionTitle, setFocusSessionHandler } from "./task-context";
+import { DEFAULT_TASK_ID } from "../backend/ports/pi-process";
 
 /**
  * Chat-session history — zustand in front, SQLite (Tauri/Rust) behind.
@@ -28,6 +29,10 @@ import {
  * belonging to the open project, and switching projects swaps the whole list.
  * Cross-project sessions must stay invisible — resuming one would point pi at a
  * session file recorded under a different cwd.
+ *
+ * Parallel tasks: every session owns its own pi process (keyed by the session
+ * id via `task-context`), so switching conversations no longer restarts or
+ * kills a running task — background tasks keep streaming into their own stores.
  */
 
 export interface ChatSessionMeta {
@@ -50,10 +55,7 @@ interface SessionsStore {
 
   init: (projectRoot: string) => Promise<void>;
   /** Re-scope history to another project (called after the workspace switches). */
-  switchProject: (
-    projectRoot: string,
-    options?: { processAlreadyResumed?: boolean },
-  ) => Promise<void>;
+  switchProject: (projectRoot: string) => Promise<void>;
   newSession: () => Promise<void>;
   switchSession: (id: string) => Promise<void>;
   renameSession: (id: string, name: string) => Promise<void>;
@@ -175,18 +177,27 @@ function derivePreview(messages: ChatMessage[]): string {
   return last ? last.text.trim().slice(0, 80) : "";
 }
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
-/** true while load() repaints the chat — the autosave listener must not fire */
-let restoring = false;
+/* ── per-task runtime bookkeeping ── */
 
-/** One in-flight title request per desktop conversation. */
+/** Tasks whose pi process has been started — their store holds live state. */
+const liveTasks = new Set<string>();
+/** Tasks whose chat store has an autosave subscription attached. */
+const autosaved = new Set<string>();
+/** Tasks currently repainting from the DB — autosave must not fire during load. */
+const restoringTasks = new Set<string>();
+/** Tasks whose `session` listener is registered for sessionPath re-sync. */
+const syncListenerHooked = new Set<string>();
+/** Tasks that successfully pinned pi's sessionPath. */
+const sessionPathSynced = new Set<string>();
+/** Tasks warned about a missing sessionPath (avoid spam). */
+const sessionPathWarningFor = new Set<string>();
+/** Debounced save timers, one per task. */
+const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** One in-flight title request per conversation. */
 const titleRequests = new Map<string, string>();
 /** Failed requests keep the normal fallback; streaming updates must not retry them. */
 const titleAttempts = new Set<string>();
-
-/** true once syncSessionPath has successfully captured pi's sessionPath */
-let sessionPathSynced = false;
-let sessionPathWarningFor: string | null = null;
 
 /**
  * Retry delays for syncSessionPath when pi isn't ready to answer get_state yet
@@ -195,17 +206,18 @@ let sessionPathWarningFor: string | null = null;
  */
 const SYNC_DELAYS_MS = [2_000, 5_000, 10_000];
 
-/** Persist the active session with the current chat transcript right now. */
-async function flushSave() {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
+/** Persist a task's session with the current chat transcript right now. */
+async function flushSave(taskId?: string) {
+  const id = taskId ?? useSessions.getState().activeId;
+  if (!id) return;
+  const timer = saveTimers.get(id);
+  if (timer) {
+    clearTimeout(timer);
+    saveTimers.delete(id);
   }
-  const { activeId, sessions } = useSessions.getState();
-  if (!activeId) return;
-  const current = sessions.find((s) => s.id === activeId);
+  const current = useSessions.getState().sessions.find((s) => s.id === id);
   if (!current) return;
-  const messages = useChat.getState().messages;
+  const messages = getChatStore(id).getState().messages;
   const meta: ChatSessionMeta = {
     ...current,
     name: current.name || deriveName(messages),
@@ -224,9 +236,16 @@ async function flushSave() {
   }
 }
 
-function scheduleSave() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => void flushSave(), 800);
+function scheduleSave(taskId: string) {
+  const timer = saveTimers.get(taskId);
+  if (timer) clearTimeout(timer);
+  saveTimers.set(
+    taskId,
+    setTimeout(() => {
+      saveTimers.delete(taskId);
+      void flushSave(taskId);
+    }, 800)
+  );
 }
 
 /**
@@ -235,22 +254,22 @@ function scheduleSave() {
  * The request is deliberately best effort: a failed or stale result leaves the
  * existing first-message fallback intact and must never affect a user prompt.
  */
-async function generateInitialTitle(messages: ChatMessage[]) {
+async function generateInitialTitle(taskId: string, messages: ChatMessage[]) {
   const dependencies = sessionDependencies();
   if (!dependencies.desktopFeatures) return;
   const { activeId, sessions } = useSessions.getState();
-  if (!activeId || titleAttempts.has(activeId)) return;
-  const session = sessions.find((item) => item.id === activeId);
+  if (!activeId || titleAttempts.has(taskId)) return;
+  const session = sessions.find((item) => item.id === taskId);
   if (!session) return;
 
   const userMessages = messages.filter((message) => message.role === "user" && message.text.trim());
   if (userMessages.length !== 1) return;
   const firstMessage = userMessages[0];
-  titleAttempts.add(activeId);
-  titleRequests.set(activeId, firstMessage.id);
+  titleAttempts.add(taskId);
+  titleRequests.set(taskId, firstMessage.id);
 
   try {
-    const model = getCurrentPiModel();
+    const model = getCurrentPiModel(taskId);
     const input: GenerateTitleInput = {
       prompt: firstMessage.text,
       provider: model?.provider ?? null,
@@ -262,63 +281,54 @@ async function generateInitialTitle(messages: ChatMessage[]) {
     if (!normalized) return;
 
     const current = useSessions.getState();
-    const target = current.sessions.find((item) => item.id === activeId);
+    const target = current.sessions.find((item) => item.id === taskId);
     // A late title must never rename another conversation or replace a name
     // the user entered while the model request was running.
-    if (current.activeId !== activeId || !target || titleRequests.get(activeId) !== firstMessage.id) return;
+    if (current.activeId !== taskId || !target || titleRequests.get(taskId) !== firstMessage.id) return;
     const fallback = deriveName(messages);
     if (target.name && target.name !== fallback) return;
-    await current.renameSession(activeId, normalized);
+    await current.renameSession(taskId, normalized);
   } catch {
     // Title generation is optional; the normal first-message fallback remains.
   } finally {
-    if (titleRequests.get(activeId) === firstMessage.id) titleRequests.delete(activeId);
+    if (titleRequests.get(taskId) === firstMessage.id) titleRequests.delete(taskId);
   }
 }
 
 /**
- * Persist the active session right now. Exported for callers that are about to
- * tear down the pi process / swap projects and must not lose the transcript.
+ * Persist a session right now. Exported for callers that are about to tear down
+ * the pi process / swap projects and must not lose the transcript.
  */
 export const flushActiveSession = () => flushSave();
 
 /**
- * Ask pi for its current session file path and pin it on the active record.
- *
- * pi's `get_state` RPC returns `sessionFile` (full .jsonl path) and `sessionId`
- * (UUID). It does NOT return a field called `sessionPath` (that was a wrong
- * assumption in the original protocol types), and pi does NOT emit a `session`
- * event in RPC mode — so `client.lastSessionId` is always empty in practice.
- *
- * Both `sessionFile` and `sessionId` are valid for `--session <path|id>` at
- * process startup, which is how context is restored on the next launch.
+ * Ask pi for its current session file path for a task and pin it on the record.
  *
  * Without one of these, sessionPath stays empty in SQLite and the next app
  * launch spawns pi without `--session` — the agent loses all prior context
  * while the UI still shows history (the "AI forgot" symptom).
  */
-async function syncSessionPath(): Promise<void> {
+async function syncSessionPath(taskId: string): Promise<void> {
   if (!sessionDependencies().desktopFeatures) return;
   let lastFailure = "";
   for (let attempt = 0; attempt <= SYNC_DELAYS_MS.length; attempt++) {
     let path = "";
-    const result = await readCurrentPiSessionPath();
+    const result = await readCurrentPiSessionPath(taskId);
     path = result.path;
     lastFailure = result.failure;
 
-    const { activeId } = useSessions.getState();
-    if (path && activeId) {
-      sessionPathSynced = true;
-      sessionPathWarningFor = null;
+    if (path && useSessions.getState().activeId) {
+      sessionPathSynced.add(taskId);
+      sessionPathWarningFor.delete(taskId);
       useSessions.setState((s) => ({
         sessions: s.sessions.map((x) =>
-          x.id === activeId ? { ...x, sessionPath: path } : x
+          x.id === taskId ? { ...x, sessionPath: path } : x
         ),
       }));
       const meta = useSessions
         .getState()
-        .sessions.find((x) => x.id === activeId);
-      if (meta) await backendSave(meta, useChat.getState().messages);
+        .sessions.find((x) => x.id === taskId);
+      if (meta) await backendSave(meta, getChatStore(taskId).getState().messages);
       return; // success
     }
     // Nothing yet — pi may still be booting. Retry.
@@ -329,56 +339,92 @@ async function syncSessionPath(): Promise<void> {
         "[syncSessionPath] failed after retries — no sessionFile/sessionId from get_state. " +
           `Next launch will start pi without --session.${lastFailure ? ` ${lastFailure}` : ""}`,
       );
-      if (activeId && sessionPathWarningFor !== activeId) {
-        sessionPathWarningFor = activeId;
+      if (!sessionPathWarningFor.has(taskId)) {
+        sessionPathWarningFor.add(taskId);
         useExtUi.getState().pushToast(t("session.noPath"), "warning", 8000);
       }
     }
   }
 }
 
-/** Repaint the chat from a stored transcript without tripping the autosave. */
-async function repaint(id: string) {
-  restoring = true;
+/** Repaint a task's chat from a stored transcript without tripping the autosave. */
+async function repaint(taskId: string) {
+  restoringTasks.add(taskId);
   try {
-    useChat.getState().load(await backendLoad(id));
+    getChatStore(taskId).getState().load(await backendLoad(taskId));
   } finally {
-    restoring = false;
+    restoringTasks.delete(taskId);
   }
 }
 
-/**
- * Reset Pi's in-memory context. If the RPC command is rejected, restart the
- * process without a resume path so the new local conversation cannot silently
- * continue inside the previous conversation's context.
- */
-async function resetPiSession(
-  projectRoot: string,
-  restartForProject = false
-): Promise<boolean> {
-  return resetPiConversation(projectRoot, () => void syncSessionPath(), restartForProject);
+/** Attach autosave + title generation to a task's chat store (once per task). */
+function hookAutosave(taskId: string) {
+  if (autosaved.has(taskId)) return;
+  autosaved.add(taskId);
+  getChatStore(taskId).subscribe((s, prev) => {
+    if (restoringTasks.has(taskId) || s.messages === prev.messages) return;
+    scheduleSave(taskId);
+    void generateInitialTitle(taskId, s.messages);
+  });
 }
 
-/** Begin an empty conversation in `projectRoot` and reset pi's session. */
-async function startFresh(
-  projectRoot: string,
-  restartForProject = false,
-  processAlreadyReset = false,
+/**
+ * Bring a task's pi process up: init its chat store, attach autosave, and spawn
+ * its own `pi --mode rpc` process (resuming `resumePath` when available).
+ * Idempotent — a task whose process is already running is left untouched.
+ */
+async function ensureTaskStarted(
+  taskId: string,
+  opts: { cwd?: string; resumePath?: string }
 ): Promise<void> {
-  sessionPathSynced = false;
-  sessionPathWarningFor = null;
-  useChat.getState().clear();
+  const chat = getChatStore(taskId);
+  if (!chat.getState().initialized) chat.getState().init();
+  hookAutosave(taskId);
+
+  const pi = getPiStore(taskId);
+  if (pi.getState().status === "disconnected") {
+    await pi.getState().connect({ cwd: opts.cwd, resumePath: opts.resumePath });
+  }
+
+  liveTasks.add(taskId);
+
+  // Re-sync sessionPath when pi announces it's ready — the initial call may run
+  // before pi can answer get_state (slow boot, session resume, WSL hop).
+  if (!syncListenerHooked.has(taskId)) {
+    syncListenerHooked.add(taskId);
+    getPiClient(taskId).on("session", () => {
+      if (!sessionPathSynced.has(taskId)) void syncSessionPath(taskId);
+    });
+  }
+  void syncSessionPath(taskId);
+}
+
+/** Tear down every task process and store (switching projects). */
+function resetTaskRegistry(): void {
+  disposeAllPiClients();
+  liveTasks.clear();
+  autosaved.clear();
+  restoringTasks.clear();
+  syncListenerHooked.clear();
+  sessionPathSynced.clear();
+  sessionPathWarningFor.clear();
+  for (const timer of saveTimers.values()) clearTimeout(timer);
+  saveTimers.clear();
+  clearChatStores();
+  clearPiStores();
+}
+
+/** Begin an empty conversation in `projectRoot` as its own new task/process. */
+async function startFresh(projectRoot: string): Promise<void> {
   const meta = createMeta(projectRoot);
+  setActiveTaskId(meta.id);
+  setSessionTitle(meta.id, "");
   useSessions.setState((s) => ({
     sessions: [meta, ...s.sessions],
     activeId: meta.id,
   }));
   void backendSave(meta, []);
-  if (!processAlreadyReset) {
-    await resetPiSession(projectRoot, restartForProject);
-  } else {
-    void syncSessionPath();
-  }
+  await ensureTaskStarted(meta.id, { cwd: projectRoot || undefined });
 }
 
 /* ── store ── */
@@ -396,71 +442,57 @@ export const useSessions = create<SessionsStore>((set, get) => ({
 
     const sessions = await backendList(key);
     set({ sessions });
+    sessions.forEach((s) => setSessionTitle(s.id, s.name));
+    // Background-completion notifications use this to focus their conversation.
+    setFocusSessionHandler((id) => {
+      void useSessions.getState().switchSession(id);
+    });
 
     const latest = sessions[0];
     if (latest) {
-      // refresh-restore: repaint this project's newest conversation. Pi was
-      // already spawned with --session <path> in AppShell (via
-      // peekLatestSessionPath), so the agent loop has the full prior context.
-      // No switch_session RPC needed — just sync the path for future saves.
-      await repaint(latest.id);
       set({ activeId: latest.id });
-    } else {
-      const meta = createMeta(key);
-      set({ sessions: [meta], activeId: meta.id });
-      void backendSave(meta, []);
-    }
-    void syncSessionPath();
-
-    // Retry sessionPath sync when pi announces it's ready — the call above
-    // may run before pi can answer get_state (slow boot, session resume, WSL
-    // hop). The `session` event is pi's "ready for requests" signal, so it's
-    // the most reliable trigger. The retry loop inside syncSessionPath is the
-    // safety net in case this listener misses the event (connect() runs before
-    // init()).
-    if (sessionDependencies().desktopFeatures) {
-      getPiClient().on("session", () => {
-        if (!sessionPathSynced) void syncSessionPath();
+      setActiveTaskId(latest.id);
+      // Refresh-restore: repaint the newest conversation and spawn its process
+      // with --session so the agent loop has the full prior context.
+      await repaint(latest.id);
+      await ensureTaskStarted(latest.id, {
+        cwd: key || undefined,
+        resumePath: latest.sessionPath || undefined,
       });
+    } else {
+      await startFresh(key);
     }
-
-    // autosave — every chat change lands in the active session (debounced)
-    useChat.subscribe((s, prev) => {
-      if (restoring || s.messages === prev.messages) return;
-      scheduleSave();
-      void generateInitialTitle(s.messages);
-    });
 
     // best-effort flush on refresh/close (localStorage path is synchronous)
     window.addEventListener("beforeunload", () => void flushSave());
   },
 
-  switchProject: async (projectRoot, options) => {
+  switchProject: async (projectRoot) => {
     const key = projectKey(projectRoot);
     if (get().initialized && key === get().projectRoot) return;
-    await flushSave(); // persist the outgoing project's transcript first
-    sessionPathSynced = false;
+    await flushSave(); // persist the outgoing project's transcripts first
+
+    // A different cwd means every old-project process must go — their session
+    // files live under the previous project root.
+    resetTaskRegistry();
+    set({ initialized: true, projectRoot: key, sessions: [], activeId: null });
+    setActiveTaskId(getActiveTaskId() || DEFAULT_TASK_ID);
 
     const sessions = await backendList(key);
-    set({ initialized: true, projectRoot: key, sessions, activeId: null });
+    set({ sessions });
+    sessions.forEach((s) => setSessionTitle(s.id, s.name));
 
     const latest = sessions[0];
     if (latest) {
-      // returning to a project resumes where it left off
-      await repaint(latest.id);
       set({ activeId: latest.id });
-      // Restart pi with the new project root and session path — both cwd
-      // and context must change for the switched project.
-      if (!options?.processAlreadyResumed) {
-        const restored = await restartPiForRestoredSession(
-          projectRoot,
-          latest.sessionPath,
-        );
-        if (!restored) return;
-      }
-      void syncSessionPath();
+      setActiveTaskId(latest.id);
+      await repaint(latest.id);
+      await ensureTaskStarted(latest.id, {
+        cwd: key || undefined,
+        resumePath: latest.sessionPath || undefined,
+      });
     } else {
-      await startFresh(key, true, options?.processAlreadyResumed === true);
+      await startFresh(key);
     }
   },
 
@@ -468,7 +500,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     const { activeId, sessions, projectRoot } = get();
     const active = sessions.find((s) => s.id === activeId);
     // reuse an untouched session instead of stacking empty ones
-    if (active && useChat.getState().messages.length === 0) return;
+    if (active && getChatStore(active.id).getState().messages.length === 0) return;
     await flushSave();
     await startFresh(projectRoot);
   },
@@ -476,38 +508,32 @@ export const useSessions = create<SessionsStore>((set, get) => ({
   switchSession: async (id) => {
     if (id === get().activeId) return;
     await flushSave();
-    sessionPathSynced = false;
-
-    await repaint(id);
     set({ activeId: id });
+    setActiveTaskId(id);
 
     const meta = get().sessions.find((s) => s.id === id);
     const sessionPath = meta?.sessionPath ?? "";
 
-    if (sessionPath) {
-      // Always restart pi with --session <path> to guarantee full context
-      // restoration. The switch_session RPC is unreliable — pi may return
-      // success without actually loading prior context into its agent loop,
-      // leaving the agent with no memory while the UI shows history (the
-      // "AI forgot" symptom). --session at spawn time is the only mechanism
-      // proven to load the full transcript (past turns, tool results,
-      // thinking) into the agent loop.
-      const root = sessionDependencies().projectRoot() ?? get().projectRoot;
-      const restored = await restartPiForRestoredSession(root || undefined, sessionPath);
-      if (restored) void syncSessionPath();
-    } else {
+    if (!liveTasks.has(id) && !sessionPath) {
       // No session path was ever persisted for this conversation — pi cannot
-      // resume prior context. Create a new session so the sessionPath gets
-      // pinned for future launches, and tell the user explicitly.
+      // resume prior context. Start the task fresh and tell the user explicitly.
       useExtUi.getState().pushToast(t("session.contextLost"), "warning", 8000);
-      const root = sessionDependencies().projectRoot() ?? get().projectRoot;
-      await resetPiSession(root);
     }
+    if (!liveTasks.has(id)) {
+      await repaint(id);
+    }
+
+    const root = sessionDependencies().projectRoot() ?? get().projectRoot;
+    await ensureTaskStarted(id, {
+      cwd: root || undefined,
+      resumePath: sessionPath || undefined,
+    });
   },
 
   renameSession: async (id, name) => {
     const trimmed = name.trim();
     if (!trimmed) return;
+    setSessionTitle(id, trimmed);
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === id ? { ...x, name: trimmed } : x)),
     }));
@@ -518,7 +544,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     }
     if (id === get().activeId && sessionDependencies().desktopFeatures) {
       // Keep Pi's own session picker in sync with the desktop-side history.
-      void syncPiSessionName(trimmed);
+      void syncPiSessionName(id, trimmed);
     }
   },
 
@@ -533,11 +559,34 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       sessions: s.sessions.filter((x) => x.id !== id),
       ...(wasActive ? { activeId: null } : {}),
     }));
+
+    // The deleted conversation's process is no longer needed.
+    disposePiClient(id);
+    liveTasks.delete(id);
+    autosaved.delete(id);
+    restoringTasks.delete(id);
+    syncListenerHooked.delete(id);
+    sessionPathSynced.delete(id);
+    sessionPathWarningFor.delete(id);
+    const timer = saveTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      saveTimers.delete(id);
+    }
+
     if (!wasActive) return;
 
     const next = get().sessions[0];
     if (next) {
-      await get().switchSession(next.id);
+      set({ activeId: next.id });
+      setActiveTaskId(next.id);
+      if (!liveTasks.has(next.id)) await repaint(next.id);
+      const meta = get().sessions.find((s) => s.id === next.id);
+      const root = sessionDependencies().projectRoot() ?? get().projectRoot;
+      await ensureTaskStarted(next.id, {
+        cwd: root || undefined,
+        resumePath: meta?.sessionPath || undefined,
+      });
     } else {
       await startFresh(get().projectRoot);
     }

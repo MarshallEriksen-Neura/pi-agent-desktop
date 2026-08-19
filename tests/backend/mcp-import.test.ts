@@ -25,6 +25,7 @@ function source(content: unknown, overrides: Partial<McpDiscoverySourceDto> = {}
 }
 
 class FakePiProcess implements PiProcessPort {
+  readonly taskId = "default";
   readonly sent: PiCommand[] = [];
   private readonly lineHandlers = new Set<(line: string) => void>();
   private readonly stderrHandlers = new Set<(line: string) => void>();

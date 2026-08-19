@@ -1,7 +1,7 @@
 import type { ProjectCatalogPort, WorkspaceFsPort } from "../backend/ports";
 import type { FsEntry } from "../workspace";
 import { useSessions, flushActiveSession, peekLatestSessionPath } from "../pi/sessions";
-import { restartPiForProjectSwitch } from "./session-lifecycle";
+import { disposeAllPiClients } from "../pi/client";
 
 export interface ProjectSwitchInput {
   path: string;
@@ -16,6 +16,7 @@ export interface ProjectSwitchInput {
 export interface ProjectSwitchServices {
   flushOutgoingSession(): Promise<void>;
   latestSessionPath(root: string): Promise<string>;
+  /** Tear down every old-project pi process before the scope swaps. */
   restartPi(root: string, resumePath?: string): Promise<boolean>;
   switchSessionProject(root: string): Promise<void>;
 }
@@ -23,9 +24,13 @@ export interface ProjectSwitchServices {
 const defaultServices: ProjectSwitchServices = {
   flushOutgoingSession: flushActiveSession,
   latestSessionPath: peekLatestSessionPath,
-  restartPi: restartPiForProjectSwitch,
-  switchSessionProject: (root) =>
-    useSessions.getState().switchProject(root, { processAlreadyResumed: true }),
+  // Every process belongs to the outgoing project's cwd — stop them all.
+  // switchProject() then spawns the new project's active session fresh.
+  restartPi: async () => {
+    disposeAllPiClients();
+    return true;
+  },
+  switchSessionProject: (root) => useSessions.getState().switchProject(root),
 };
 
 export async function switchWorkspaceProject(

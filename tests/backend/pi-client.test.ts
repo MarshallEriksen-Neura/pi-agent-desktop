@@ -14,6 +14,7 @@ import type {
 import type { PiCommand, PiResponse } from "../../src/lib/pi/protocol";
 
 class FakePiProcess implements PiProcessPort {
+  readonly taskId = "default";
   readonly sent: PiCommand[] = [];
   startedWith: PiProcessStartOptions | undefined;
   failSend: Error | null = null;

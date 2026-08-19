@@ -17,6 +17,7 @@ import {
 function fakePorts(label = "fake"): BackendPorts {
   return {
     piProcess: {
+      taskId: "default",
       start: async () => undefined,
       send: async () => undefined,
       stop: async () => undefined,
@@ -24,6 +25,15 @@ function fakePorts(label = "fake"): BackendPorts {
       onStderr: () => () => undefined,
       onExit: () => () => undefined,
     },
+    createPiProcess: () => ({
+      taskId: "default",
+      start: async () => undefined,
+      send: async () => undefined,
+      stop: async () => undefined,
+      onLine: () => () => undefined,
+      onStderr: () => () => undefined,
+      onExit: () => () => undefined,
+    }),
     sessionRepository: {
       list: async () => [],
       load: async () => [],

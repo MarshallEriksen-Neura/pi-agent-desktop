@@ -8,6 +8,8 @@
 use pi_backend_core::pi_process::{
     LaunchSpec, PiProcess, ProcessEvent, ProcessLimits, ProcessPhase, ProcessSnapshot,
 };
+use serde::Serialize;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,55 +20,79 @@ use tauri::{AppHandle, Emitter, State};
 
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Task key used when the caller omits `task_id` — the primary conversation.
+pub const DEFAULT_TASK_ID: &str = "default";
+
+/// Normalize a caller-supplied `task_id`: blank/absent maps to `default`.
+fn task_key(task_id: Option<String>) -> String {
+    let task = task_id.unwrap_or_default();
+    let task = task.trim();
+    if task.is_empty() {
+        DEFAULT_TASK_ID.to_owned()
+    } else {
+        task.to_owned()
+    }
+}
+
+/// Outbound stdout/stderr event — the payload now names the owning task so the
+/// frontend can route each line to the correct conversation.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PiLineEvent {
+    task_id: String,
+    line: String,
+}
+
+/// Outbound exit event — same task routing as `PiLineEvent`.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PiExitEvent {
+    task_id: String,
+    code: Option<i32>,
+}
+
+/// One or more independently-running `pi --mode rpc` processes, keyed by task
+/// id. A task's process is a full agent loop over its own session file, so
+/// parallel conversations each get their own process.
 pub struct PiProc(pub Mutex<PiRuntime>);
 
 pub struct PiRuntime {
     next_generation: u64,
-    process: Option<Arc<PiProcess>>,
+    processes: HashMap<String, Arc<PiProcess>>,
 }
 
 impl Default for PiProc {
     fn default() -> Self {
         Self(Mutex::new(PiRuntime {
             next_generation: 1,
-            process: None,
+            processes: HashMap::new(),
         }))
     }
 }
 
 impl PiProc {
+    /// Stop every running process (app shutdown).
     pub fn shutdown(&self, timeout: Duration) -> Result<(), String> {
-        let process = self
-            .0
-            .lock()
-            .map_err(|_| "Pi runtime lock is poisoned".to_owned())?
-            .process
-            .clone();
-        if let Some(process) = process {
+        let processes = {
+            let mut runtime = self
+                .0
+                .lock()
+                .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
+            runtime.processes.drain().map(|(_, p)| p).collect::<Vec<_>>()
+        };
+        for process in processes {
             process.stop(timeout).map_err(|error| error.to_string())?;
-            self.clear_if_current(&process)?;
         }
         Ok(())
     }
 
+    /// Health probe: prefer the primary (default) process, fall back to any.
     pub fn snapshot(&self) -> Option<ProcessSnapshot> {
-        let process = self.0.lock().ok()?.process.clone()?;
-        process.snapshot().ok()
-    }
-
-    fn clear_if_current(&self, observed: &Arc<PiProcess>) -> Result<(), String> {
-        let mut runtime = self
-            .0
-            .lock()
-            .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
-        if runtime
-            .process
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, observed))
-        {
-            runtime.process = None;
+        let runtime = self.0.lock().ok()?;
+        if let Some(process) = runtime.processes.get(DEFAULT_TASK_ID) {
+            return process.snapshot().ok();
         }
-        Ok(())
+        runtime.processes.values().next().and_then(|p| p.snapshot().ok())
     }
 }
 
@@ -74,10 +100,12 @@ impl PiProc {
 pub fn pi_start(
     app: AppHandle,
     state: State<'_, PiProc>,
+    task_id: Option<String>,
     cwd: Option<String>,
     binary: Option<String>,
     resume_path: Option<String>,
 ) -> Result<(), String> {
+    let task = task_key(task_id);
     // Repair/migrate the WSL custom-shell override before the new Pi process
     // reads settings.json. Native mode is a no-op.
     crate::wsl::sync_shell_bridge_settings(cwd.as_deref())?;
@@ -85,7 +113,7 @@ pub fn pi_start(
         .0
         .lock()
         .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
-    if let Some(process) = runtime.process.as_ref() {
+    if let Some(process) = runtime.processes.get(&task) {
         let snapshot = process.snapshot().map_err(|error| error.to_string())?;
         if matches!(
             snapshot.phase,
@@ -93,7 +121,7 @@ pub fn pi_start(
         ) {
             return Ok(());
         }
-        runtime.process.take();
+        runtime.processes.remove(&task);
     }
 
     let bin = binary.as_deref().unwrap_or("pi");
@@ -116,6 +144,7 @@ pub fn pi_start(
     let generation = runtime.next_generation;
     runtime.next_generation = runtime.next_generation.saturating_add(1);
     let spec = LaunchSpec::from_command(&cmd);
+    let task_for_sink = task.clone();
     let process =
         PiProcess::spawn(
             generation,
@@ -123,13 +152,31 @@ pub fn pi_start(
             ProcessLimits::default(),
             move |event| match event {
                 ProcessEvent::Stdout(line) => {
-                    let _ = app.emit("pi://line", line);
+                    let _ = app.emit(
+                        "pi://line",
+                        PiLineEvent {
+                            task_id: task_for_sink.clone(),
+                            line,
+                        },
+                    );
                 }
                 ProcessEvent::Stderr(line) => {
-                    let _ = app.emit("pi://stderr", line);
+                    let _ = app.emit(
+                        "pi://stderr",
+                        PiLineEvent {
+                            task_id: task_for_sink.clone(),
+                            line,
+                        },
+                    );
                 }
                 ProcessEvent::Exit(exit) => {
-                    let _ = app.emit("pi://exit", exit.code);
+                    let _ = app.emit(
+                        "pi://exit",
+                        PiExitEvent {
+                            task_id: task_for_sink.clone(),
+                            code: exit.code,
+                        },
+                    );
                 }
                 ProcessEvent::Diagnostic(diagnostic) => {
                     eprintln!("[pi-process] {}", diagnostic.code);
@@ -137,18 +184,24 @@ pub fn pi_start(
             },
         )
         .map_err(|error| format!("failed to spawn Pi CLI `{bin}`: {error}"))?;
-    runtime.process = Some(Arc::new(process));
+    runtime.processes.insert(task, Arc::new(process));
     Ok(())
 }
 
 #[tauri::command]
-pub fn pi_send(state: State<'_, PiProc>, line: String) -> Result<(), String> {
+pub fn pi_send(
+    state: State<'_, PiProc>,
+    task_id: Option<String>,
+    line: String,
+) -> Result<(), String> {
+    let task = task_key(task_id);
     let process = state
         .0
         .lock()
         .map_err(|_| "Pi runtime lock is poisoned".to_owned())?
-        .process
-        .clone()
+        .processes
+        .get(&task)
+        .cloned()
         .ok_or("pi is not running")?;
     process
         .send_json_line(&line)
@@ -156,18 +209,18 @@ pub fn pi_send(state: State<'_, PiProc>, line: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn pi_stop(state: State<'_, PiProc>) -> Result<(), String> {
+pub fn pi_stop(state: State<'_, PiProc>, task_id: Option<String>) -> Result<(), String> {
+    let task = task_key(task_id);
     let process = state
         .0
         .lock()
         .map_err(|_| "Pi runtime lock is poisoned".to_owned())?
-        .process
-        .clone();
+        .processes
+        .remove(&task);
     if let Some(process) = process {
         process
             .stop(PROCESS_STOP_TIMEOUT)
             .map_err(|error| error.to_string())?;
-        state.clear_if_current(&process)?;
     }
     Ok(())
 }

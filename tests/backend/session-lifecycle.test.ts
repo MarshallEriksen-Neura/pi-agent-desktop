@@ -12,6 +12,7 @@ import {
 } from "../../src/lib/pi/sessions";
 
 class StateProcess implements PiProcessPort {
+  readonly taskId = "default";
   private line: ((line: string) => void) | null = null;
 
   constructor(private readonly state: PiState) {}

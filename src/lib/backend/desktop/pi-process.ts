@@ -4,12 +4,43 @@ import type {
   PiProcessPort,
   PiProcessStartOptions,
 } from "../ports/pi-process";
+import { DEFAULT_TASK_ID } from "../ports/pi-process";
 import { desktopInvoke } from "./invoke";
 import type { PiCommand } from "../../pi/protocol";
 
 type Unlisten = () => void;
 
+/** Payload shape of the `pi://line` / `pi://stderr` events. */
+interface PiLineEventPayload {
+  taskId: string;
+  line: string;
+}
+
+/** Payload shape of the `pi://exit` event. */
+interface PiExitEventPayload {
+  taskId: string;
+  code: number | null;
+}
+
+function isLinePayload(value: unknown): value is PiLineEventPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as PiLineEventPayload).taskId === "string" &&
+    typeof (value as PiLineEventPayload).line === "string"
+  );
+}
+
+function isExitPayload(value: unknown): value is PiExitEventPayload {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as PiExitEventPayload).taskId === "string"
+  );
+}
+
 export class DesktopPiProcessPort implements PiProcessPort {
+  readonly taskId: string;
   private readonly lineHandlers = new Set<(line: string) => void>();
   private readonly stderrHandlers = new Set<(line: string) => void>();
   private readonly exitHandlers = new Set<(exit: PiProcessExit) => void>();
@@ -17,9 +48,14 @@ export class DesktopPiProcessPort implements PiProcessPort {
   private unlistenStderr: Unlisten | null = null;
   private unlistenExit: Unlisten | null = null;
 
+  constructor(taskId = DEFAULT_TASK_ID) {
+    this.taskId = taskId;
+  }
+
   async start(options: PiProcessStartOptions = {}): Promise<void> {
     await this.ensureListeners();
     await desktopInvoke("pi_start", {
+      taskId: this.taskId,
       cwd: options.cwd ?? null,
       binary: null,
       resumePath: options.resumePath ?? null,
@@ -27,11 +63,14 @@ export class DesktopPiProcessPort implements PiProcessPort {
   }
 
   async send(command: PiCommand): Promise<void> {
-    await desktopInvoke("pi_send", { line: JSON.stringify(command) });
+    await desktopInvoke("pi_send", {
+      taskId: this.taskId,
+      line: JSON.stringify(command),
+    });
   }
 
   async stop(): Promise<void> {
-    await desktopInvoke("pi_stop");
+    await desktopInvoke("pi_stop", { taskId: this.taskId });
     this.cleanupListeners();
   }
 
@@ -58,19 +97,27 @@ export class DesktopPiProcessPort implements PiProcessPort {
 
   private async ensureListeners(): Promise<void> {
     if (!this.unlistenLine) {
-      this.unlistenLine = await listen<string>("pi://line", (event) => {
-        this.lineHandlers.forEach((handler) => handler(event.payload));
+      this.unlistenLine = await listen<unknown>("pi://line", (event) => {
+        const payload = event.payload;
+        if (!isLinePayload(payload) || payload.taskId !== this.taskId) return;
+        this.lineHandlers.forEach((handler) => handler(payload.line));
       });
     }
     if (!this.unlistenStderr) {
-      this.unlistenStderr = await listen<string>("pi://stderr", (event) => {
-        this.stderrHandlers.forEach((handler) => handler(event.payload));
+      this.unlistenStderr = await listen<unknown>("pi://stderr", (event) => {
+        const payload = event.payload;
+        if (!isLinePayload(payload) || payload.taskId !== this.taskId) return;
+        this.stderrHandlers.forEach((handler) => handler(payload.line));
       });
     }
     if (!this.unlistenExit) {
-      this.unlistenExit = await listen<number | null>("pi://exit", (event) => {
+      this.unlistenExit = await listen<unknown>("pi://exit", (event) => {
+        const payload = event.payload;
+        if (!isExitPayload(payload) || payload.taskId !== this.taskId) return;
         this.cleanupListeners();
-        this.exitHandlers.forEach((handler) => handler({ code: event.payload ?? null }));
+        this.exitHandlers.forEach((handler) =>
+          handler({ code: payload.code ?? null })
+        );
       });
     }
   }
@@ -85,8 +132,8 @@ export class DesktopPiProcessPort implements PiProcessPort {
   }
 }
 
-export function createDesktopPiProcessPort(): PiProcessPort {
-  return new DesktopPiProcessPort();
+export function createDesktopPiProcessPort(taskId = DEFAULT_TASK_ID): PiProcessPort {
+  return new DesktopPiProcessPort(taskId);
 }
 
 function once(cleanup: () => void): () => void {

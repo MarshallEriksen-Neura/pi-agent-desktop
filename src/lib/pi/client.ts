@@ -7,7 +7,12 @@ import {
   parsePiLine,
 } from "./protocol";
 import { getPort } from "../backend/composition/container";
-import type { PiProcessExit, PiProcessPort } from "../backend/ports/pi-process";
+import {
+  DEFAULT_TASK_ID,
+  type PiProcessExit,
+  type PiProcessPort,
+} from "../backend/ports/pi-process";
+import { getActiveTaskId } from "./task-context";
 
 type EventCb = (e: PiEvent) => void;
 
@@ -226,20 +231,58 @@ export class PiClient {
   }
 }
 
-let client: PiClient | null = null;
+/**
+ * One `PiClient` per task id — each owns its own pi process via a task-scoped
+ * port, so parallel conversations stream into their own clients. A client
+ * survives process restarts (the port is re-spawned), so the request/response
+ * correlation tables stay valid across `restart`.
+ */
+const clients = new Map<string, PiClient>();
 
-export function getPiClient(): PiClient {
-  if (!client) client = new PiClient(getPort("piProcess"));
+function resolveTaskId(taskId?: string): string {
+  const given = (taskId ?? "").trim();
+  if (given) return given;
+  const active = getActiveTaskId().trim();
+  return active || DEFAULT_TASK_ID;
+}
+
+/**
+ * The client for a task (defaults to the currently focused conversation).
+ * Lazily creates a task-scoped process port on first use.
+ */
+export function getPiClient(taskId?: string): PiClient {
+  const key = resolveTaskId(taskId);
+  let client = clients.get(key);
+  if (!client) {
+    client = new PiClient(getPort("createPiProcess")(key));
+    clients.set(key, client);
+  }
   return client;
+}
+
+/** Tear down a specific task's client (used when switching projects). */
+export function disposePiClient(taskId: string): void {
+  const key = taskId.trim() || DEFAULT_TASK_ID;
+  const client = clients.get(key);
+  if (!client) return;
+  client.dispose();
+  clients.delete(key);
+}
+
+/** Tear down every task's client (app shutdown / project switch). */
+export function disposeAllPiClients(): void {
+  for (const client of clients.values()) client.dispose();
+  clients.clear();
 }
 
 export function configurePiClientForTests(process: PiProcessPort): PiClient {
   resetPiClientForTests();
-  client = new PiClient(process);
+  const client = new PiClient(process);
+  clients.set(resolveTaskId(), client);
   return client;
 }
 
 export function resetPiClientForTests(): void {
-  client?.dispose();
-  client = null;
+  for (const client of clients.values()) client.dispose();
+  clients.clear();
 }

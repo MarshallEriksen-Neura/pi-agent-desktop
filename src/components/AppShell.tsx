@@ -9,11 +9,9 @@ import { SubagentDetail } from "./Subagents";
 import { CliUpdateToast } from "./CliUpdateToast";
 import { useCliUpdate } from "@/lib/pi/cli-update";
 import { usePi } from "@/lib/pi/store";
-import { useChat } from "@/lib/pi/chat";
 import {
   configureSessionProjectRootResolver,
   useSessions,
-  peekLatestSessionPath,
 } from "@/lib/pi/sessions";
 import { useExtUi } from "@/lib/pi/ext-ui";
 import { useSubagents } from "@/lib/pi/subagents";
@@ -57,8 +55,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 }
 
 function MainShell({ children }: { children: React.ReactNode }) {
-  const connect = usePi((s) => s.connect);
-
   useEffect(() => {
     // restore the saved UI language (or detect from the system) before first paint settles
     useI18n.getState().initLocale();
@@ -82,7 +78,6 @@ function MainShell({ children }: { children: React.ReactNode }) {
       () => useWorkspace.getState().root,
     );
     // subscribe before connecting so no early events are missed
-    useChat.getState().init();
     useExtUi.getState().init();
     useSubagents.getState().initPiBridge();
     initAgentBridge(); // tool events → task strip / editor highlights / terminal + pet bridge
@@ -93,19 +88,9 @@ function MainShell({ children }: { children: React.ReactNode }) {
       .load()
       // resolve the project root next so Pi and its commands share a cwd
       .then(() => useWorkspace.getState().init())
-      // peek the newest session's path for THIS project BEFORE connecting so pi
-      // can spawn with `--session <path>` and load the full prior context
-      // in-process — the later `switch_session` RPC inside sessions.init() is
-      // only a fallback
-      .then(async () => {
-        const root = useWorkspace.getState().root ?? undefined;
-        const resumePath = await peekLatestSessionPath(root ?? "");
-        await connect({
-          cwd: root,
-          resumePath: resumePath || undefined,
-        });
-      })
-      // session history restores after connect so the UI repaints the transcript
+      // session history restores after the workspace resolves; sessions.init()
+      // spawns the active conversation's own pi process with its saved
+      // --session path, so every task runs in its own process (parallel tasks)
       .then(() => useSessions.getState().init(useWorkspace.getState().root ?? ""))
 
       // background pi CLI version check — pops the update toast when newer
@@ -156,7 +141,7 @@ function MainShell({ children }: { children: React.ReactNode }) {
       destroyAgentBridge();
       closeUnlisten?.();
     };
-  }, [connect]);
+  }, []);
 
   // Auto-launch the pet companion on startup when the user previously enabled
   // it — instead of waiting until they open PetSettings. (PetSettings also does

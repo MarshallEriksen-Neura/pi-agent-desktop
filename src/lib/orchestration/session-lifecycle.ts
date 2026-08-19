@@ -2,123 +2,30 @@ import { getPiClient } from "../pi/client";
 import { useExtUi } from "../pi/ext-ui";
 import type { PiState } from "../pi/protocol";
 import { piRequestErrorText } from "../pi/request-error";
-import { usePi } from "../pi/store";
+import { getPiStore } from "../pi/store";
 import { t } from "../i18n";
 
-export interface SessionLifecycleDeps {
-  projectRoot: () => string;
-  syncSessionPath: () => void;
-}
-
-export function getCurrentPiModel(): { provider: string; id: string } | null {
-  const model = usePi.getState().currentModel;
+export function getCurrentPiModel(taskId?: string): { provider: string; id: string } | null {
+  const model = getPiStore(taskId ?? "").getState().currentModel;
   return model ? { provider: model.provider, id: model.id } : null;
 }
 
-export async function resetPiConversation(
-  projectRoot: string,
-  syncSessionPath: () => void,
-  restartForProject = false
-): Promise<boolean> {
-  if (restartForProject) {
-    try {
-      await usePi.getState().restart(projectRoot || undefined);
-      syncSessionPath();
-      return true;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      usePi.setState({ status: "disconnected", lastError: detail });
-      useExtUi.getState().pushToast(
-        t("session.projectSwitchFailed", { error: detail }),
-        "error",
-        9000
-      );
-      return false;
-    }
-  }
-
-  let firstFailure = "";
-  try {
-    const response = await getPiClient().request({ type: "new_session" });
-    if (!response.success) {
-      firstFailure = response.error || t("agent.taskFailed");
-      throw new Error(firstFailure);
-    }
-    syncSessionPath();
-    return true;
-  } catch (error) {
-    firstFailure ||= piRequestErrorText(error);
-  }
-
-  try {
-    await usePi.getState().restart(projectRoot || undefined);
-    useExtUi.getState().pushToast(
-      t("session.newRecovered", { error: firstFailure }),
-      "warning",
-      7000
-    );
-    syncSessionPath();
-    return true;
-  } catch (error) {
-    const restartFailure = error instanceof Error ? error.message : String(error);
-    usePi.setState({ status: "disconnected", lastError: restartFailure });
-    useExtUi.getState().pushToast(
-      t("session.newFailed", {
-        error: `${firstFailure} · ${restartFailure}`,
-      }),
-      "error",
-      9000
-    );
-    return false;
-  }
-}
-
-export async function restartPiForRestoredSession(
-  projectRoot: string | undefined,
-  sessionPath: string
-): Promise<boolean> {
-  try {
-    await usePi.getState().restart(projectRoot, sessionPath);
-    return true;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    usePi.setState({ status: "disconnected", lastError: detail });
-    useExtUi.getState().pushToast(
-      t("session.restoreFailedDetailed", { error: detail }),
-      "error",
-      9000
-    );
-    return false;
-  }
-}
-
-export async function restartPiForProjectSwitch(
-  projectRoot: string,
-  sessionPath?: string
-): Promise<boolean> {
-  try {
-    await usePi.getState().restart(projectRoot, sessionPath);
-    return true;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    usePi.setState({ status: "disconnected", lastError: detail });
-    useExtUi.getState().pushToast(
-      t("session.projectSwitchFailed", { error: detail }),
-      "error",
-      9000
-    );
-    return false;
-  }
-}
-
-export async function readCurrentPiSessionPath(): Promise<{
+/**
+ * Ask pi for its current session file path for a specific task.
+ *
+ * pi's `get_state` RPC returns `sessionFile` (full .jsonl path) and `sessionId`
+ * (UUID). Both are valid for `--session <path|id>` at process startup, which is
+ * how context is restored on the next launch.
+ */
+export async function readCurrentPiSessionPath(taskId?: string): Promise<{
   path: string;
   failure: string;
 }> {
   let failure = "";
   let path = "";
   try {
-    const response = await getPiClient().request<PiState>({ type: "get_state" });
+    const client = getPiClient(taskId);
+    const response = await client.request<PiState>({ type: "get_state" });
     if (!response.success) {
       failure = response.error || "get_state failed";
     } else {
@@ -131,12 +38,12 @@ export async function readCurrentPiSessionPath(): Promise<{
   } catch (error) {
     failure = piRequestErrorText(error);
   }
-  return { path: path || getPiClient().lastSessionId, failure };
+  return { path: path || getPiClient(taskId).lastSessionId, failure };
 }
 
-export async function syncPiSessionName(name: string): Promise<void> {
+export async function syncPiSessionName(taskId: string, name: string): Promise<void> {
   try {
-    const response = await getPiClient().request({
+    const response = await getPiClient(taskId).request({
       type: "set_session_name",
       name,
     });

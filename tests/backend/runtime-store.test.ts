@@ -11,6 +11,7 @@ import { resetRuntimeStoreForTests, useRuntime } from "../../src/lib/pi/runtime"
 function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
   return {
     piProcess: {
+      taskId: "default",
       start: async () => undefined,
       send: async () => undefined,
       stop: async () => undefined,
@@ -18,6 +19,15 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
       onStderr: () => () => undefined,
       onExit: () => () => undefined,
     },
+    createPiProcess: () => ({
+      taskId: "default",
+      start: async () => undefined,
+      send: async () => undefined,
+      stop: async () => undefined,
+      onLine: () => () => undefined,
+      onStderr: () => () => undefined,
+      onExit: () => () => undefined,
+    }),
     sessionRepository: {
       list: async () => [],
       load: async () => [],

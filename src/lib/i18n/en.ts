@@ -148,6 +148,10 @@ export const en = {
   // task failure surfacing
   "agent.taskFailedTitle": "Pi task failed",
   "agent.taskFailed": "The task stopped with an error",
+  "agent.backgroundDoneTitle": "{title} finished",
+  "agent.backgroundDoneBody": "Tap to view the result",
+  "agent.backgroundWorking": "working",
+  "agent.backgroundWaiting": "needs your input",
   "agent.piExited": "Pi process exited (code {code}) — the run was interrupted.",
   "agent.piExitedUnknown": "Pi process exited — the run was interrupted.",
   "agent.piUnavailable": "Pi is not connected or not running, so the task was not sent. Check the Pi CLI is installed and started in Settings.",

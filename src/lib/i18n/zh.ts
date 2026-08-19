@@ -149,6 +149,10 @@ export const zh: Record<keyof typeof en, string> = {
   // task failure surfacing
   "agent.taskFailedTitle": "Pi 任务出错",
   "agent.taskFailed": "任务执行过程中出现错误，已停止",
+  "agent.backgroundDoneTitle": "{title} 已完成",
+  "agent.backgroundDoneBody": "点击查看结果",
+  "agent.backgroundWorking": "执行中",
+  "agent.backgroundWaiting": "等待你的输入",
   "agent.piExited": "Pi 进程已退出（退出码 {code}），任务被中断。",
   "agent.piExitedUnknown": "Pi 进程已退出，任务被中断。",
   "agent.piUnavailable": "Pi 未连接或未运行，任务未发送。请在设置中确认 Pi CLI 已安装并启动。",

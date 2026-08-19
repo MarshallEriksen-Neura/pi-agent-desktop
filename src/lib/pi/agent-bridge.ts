@@ -14,6 +14,7 @@
  */
 
 import { getPiClient } from "./client";
+import { getActiveTaskId, useTaskContext } from "./task-context";
 import { useUI } from "@/lib/store";
 import { useWorkspace } from "@/lib/workspace";
 import { termBus, ansi } from "@/lib/terminal-bus";
@@ -97,16 +98,15 @@ function changedLines(prev: string, next: string): number[] {
 
 let bridged = false;
 let bridgeUnlisteners: Array<() => void> = [];
+let recs = new Map<string, ToolRec>();
+let taskSwitchUnlisten: (() => void) | null = null;
 
-export function initAgentBridge() {
-  if (bridged) return;
-  bridged = true;
+/** Subscribe the agent surfaces to a specific task's pi event stream. */
+function bindAgentBridge(taskId: string) {
+  while (bridgeUnlisteners.length > 0) bridgeUnlisteners.pop()?.();
+  recs = new Map<string, ToolRec>();
 
-  // Initialize pet bridge alongside agent bridge
-  initPetBridge();
-
-  const client = getPiClient();
-  const recs = new Map<string, ToolRec>();
+  const client = getPiClient(taskId);
 
   bridgeUnlisteners.push(
     client.on("agent_start", () => useUI.getState().beginAgentRun()),
@@ -258,8 +258,28 @@ export function initAgentBridge() {
   }));
 }
 
+export function initAgentBridge() {
+  if (bridged) return;
+  bridged = true;
+
+  // Initialize pet bridge alongside agent bridge
+  initPetBridge(getActiveTaskId());
+
+  bindAgentBridge(getActiveTaskId());
+
+  // Rebind whenever the focused conversation switches so the task strip and
+  // terminal reflect the active task's tool events.
+  taskSwitchUnlisten = useTaskContext.subscribe((s, prev) => {
+    if (s.activeTaskId === prev.activeTaskId) return;
+    initPetBridge(s.activeTaskId);
+    bindAgentBridge(s.activeTaskId);
+  });
+}
+
 export function destroyAgentBridge() {
   if (!bridged) return;
+  taskSwitchUnlisten?.();
+  taskSwitchUnlisten = null;
   while (bridgeUnlisteners.length > 0) bridgeUnlisteners.pop()?.();
   destroyPetBridge();
   bridged = false;

@@ -14,6 +14,7 @@ const MOCK_MODELS: PiModel[] = [
 ];
 
 export class MockPiProcessPort implements PiProcessPort {
+  readonly taskId: string;
   private listeners = new Set<(line: string) => void>();
   private model: PiModel = MOCK_MODELS[1];
   private agentActive = false;
@@ -29,6 +30,10 @@ export class MockPiProcessPort implements PiProcessPort {
 
   private started = false;
   private cwd = "/mock/workspace";
+
+  constructor(taskId = "default") {
+    this.taskId = taskId;
+  }
 
   async start(options: PiProcessStartOptions = {}): Promise<void> {
     if (this.failNextStart) {
@@ -915,8 +920,8 @@ export class MockPiProcessPort implements PiProcessPort {
    PiClient — request/response correlation + typed event subscription
    ──────────────────────────────────────────────────────────────────────────── */
 
-export function createMockPiProcessPort(): PiProcessPort {
-  return new MockPiProcessPort();
+export function createMockPiProcessPort(taskId = "default"): PiProcessPort {
+  return new MockPiProcessPort(taskId);
 }
 
 function once(cleanup: () => void): () => void {

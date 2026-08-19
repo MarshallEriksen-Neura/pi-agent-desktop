@@ -10,9 +10,10 @@ import {
 } from "@appica/ui-react/collapsible";
 import { Spinner } from "@appica/ui-react/spinner";
 import { useUI } from "@/lib/store";
-import { useChat, type ChatMessage, type DeliveryMode } from "@/lib/pi/chat";
-import { usePi } from "@/lib/pi/store";
-import { useSessions } from "@/lib/pi/sessions";
+import { useChat, getChatStore, type ChatMessage, type DeliveryMode } from "@/lib/pi/chat";
+import { usePi, getPiStore } from "@/lib/pi/store";
+import { useSessions, type ChatSessionMeta } from "@/lib/pi/sessions";
+import { focusSession } from "@/lib/pi/task-context";
 import { useSubagents } from "@/lib/pi/subagents";
 import { useExtUi } from "@/lib/pi/ext-ui";
 import { useT } from "@/lib/i18n";
@@ -260,6 +261,10 @@ export function AgentPanel() {
       {/* extension setStatus lines — live status pushed by pi extensions */}
       <ExtStatusLine />
 
+      {/* background tasks — other conversations running in parallel. Compact
+          pills: name + current tool + per-task stop; click to focus. */}
+      <BackgroundTasksStrip />
+
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         <Virtuoso<ChatMessage>
           ref={virtuosoRef}
@@ -428,5 +433,118 @@ export function AgentPanel() {
         </div>
       </div>
     </aside>
+  );
+}
+
+/* ── background running-task strip ── */
+
+/** Derive the live tool name for a conversation, if any is mid-flight. */
+function lastActiveTool(messages: ChatMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const tool = messages[i].tools.find((t) => t.status === "running");
+    if (tool) return tool.name;
+  }
+  return null;
+}
+
+/**
+ * Compact strip of every background conversation that is busy (running or
+ * waiting on input). Only the non-focused tasks show here — the focused one is
+ * already on screen. Click a pill to focus that task; the stop button aborts it
+ * without switching away.
+ */
+function BackgroundTasksStrip() {
+  const sessions = useSessions((s) => s.sessions);
+  const activeId = useSessions((s) => s.activeId);
+  return (
+    <div style={{ padding: "0 12px 8px", display: "flex", flexDirection: "column", gap: 6 }}>
+      {sessions
+        .filter((s) => s.id !== activeId)
+        .map((s) => (
+          <BackgroundTaskPill key={s.id} session={s} />
+        ))}
+    </div>
+  );
+}
+
+function BackgroundTaskPill({ session }: { session: ChatSessionMeta }) {
+  const t = useT();
+  const streaming = getChatStore(session.id)((st) => st.streaming);
+  const waiting = getChatStore(session.id)((st) => st.waiting);
+  const piRunning = getPiStore(session.id)((st) => st.status === "running");
+  const lastTool = getChatStore(session.id)((st) => lastActiveTool(st.messages));
+
+  if (!streaming && !piRunning && !waiting) return null;
+  const name = session.name.trim() || t("session.untitled");
+  const label = waiting
+    ? t("agent.backgroundWaiting")
+    : lastTool
+      ? lastTool
+      : t("agent.backgroundWorking");
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => focusSession(session.id)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          focusSession(session.id);
+        }
+      }}
+      title={name}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "5px 6px 5px 9px",
+        borderRadius: 8,
+        border: "1px solid var(--separator)",
+        background: "color-mix(in srgb, var(--accent) 6%, transparent)",
+        fontSize: 12,
+        cursor: "pointer",
+        color: "var(--text-secondary)",
+      }}
+    >
+      <motion.span
+        initial={{ opacity: 0.4 }}
+        animate={{ opacity: [0.4, 1, 0.4] }}
+        transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: "50%",
+          flexShrink: 0,
+          background: waiting ? "var(--warning)" : "var(--accent)",
+        }}
+      />
+      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <b style={{ color: "var(--text-primary)", fontWeight: 600 }}>{name}</b>
+        <span style={{ opacity: 0.7 }}>{` · ${label}`}</span>
+      </span>
+      <motion.button
+        whileTap={{ scale: 0.9 }}
+        title={t("agent.stop")}
+        aria-label={t("agent.stop")}
+        onClick={(e) => {
+          e.stopPropagation();
+          getChatStore(session.id).getState().abort();
+        }}
+        style={{
+          border: "none",
+          background: "transparent",
+          color: "var(--text-tertiary)",
+          cursor: "pointer",
+          display: "grid",
+          placeItems: "center",
+          width: 18,
+          height: 18,
+          borderRadius: 4,
+        }}
+      >
+        <Square size={11} fill="currentColor" />
+      </motion.button>
+    </div>
   );
 }

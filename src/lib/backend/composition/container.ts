@@ -20,6 +20,8 @@ export type BackendKind = "desktop-tauri" | "browser-preview";
 
 export interface BackendPorts {
   piProcess: PiProcessPort;
+  /** Factory for per-task pi-process ports — one process per conversation. */
+  createPiProcess: PiProcessPortFactory;
   sessionRepository: SessionRepositoryPort;
   workspaceFs: WorkspaceFsPort;
   projectCatalog: ProjectCatalogPort;
@@ -37,6 +39,9 @@ export interface BackendPorts {
 }
 
 export type BackendPortName = keyof BackendPorts;
+
+/** Creates an isolated pi-process port bound to a task id. */
+export type PiProcessPortFactory = (taskId?: string) => PiProcessPort;
 
 export class BackendContainerError extends Error {
   constructor(

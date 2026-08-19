@@ -21,6 +21,7 @@ import {
 export function createBrowserBackendPorts(): BackendPorts {
   return {
     piProcess: createMockPiProcessPort(),
+    createPiProcess: (taskId) => createMockPiProcessPort(taskId),
     sessionRepository: createMockSessionRepositoryPort(),
     workspaceFs: createMockWorkspaceFsPort(),
     projectCatalog: createMockProjectCatalogPort(),

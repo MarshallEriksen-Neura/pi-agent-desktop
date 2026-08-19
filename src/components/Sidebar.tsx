@@ -21,6 +21,8 @@ import {
 import { useUI } from "@/lib/store";
 import { useWorkspace, type FsEntry } from "@/lib/workspace";
 import { useSessions, type ChatSessionMeta } from "@/lib/pi/sessions";
+import { getChatStore } from "@/lib/pi/chat";
+import { getPiStore } from "@/lib/pi/store";
 import { useT } from "@/lib/i18n";
 import { SectionLabel } from "./primitives";
 
@@ -535,6 +537,25 @@ const SessionRow = memo(function SessionRow({ s, active }: { s: ChatSessionMeta;
   const switchSession = useSessions((st) => st.switchSession);
   const renameSession = useSessions((st) => st.renameSession);
   const deleteSession = useSessions((st) => st.deleteSession);
+  // Running indicator: this conversation's own task is streaming (or its pi
+  // process is mid-run), so a background task keeps showing a live dot even
+  // when another session is focused. Color encodes attention state (running /
+  // waiting-on-input / failed), mirroring the pet state machine.
+  const taskStreaming = getChatStore(s.id)((st) => st.streaming);
+  const taskRunning = getPiStore(s.id)((st) => st.status === "running");
+  const taskWaiting = getChatStore(s.id)((st) => st.waiting);
+  const taskFailed = getChatStore(s.id)((st) => {
+    const last = st.messages[st.messages.length - 1];
+    return last?.isError === true;
+  });
+  const taskState = taskFailed
+    ? "failed"
+    : taskWaiting
+      ? "waiting"
+      : taskStreaming || taskRunning
+        ? "running"
+        : "idle";
+  const busy = taskState !== "idle";
   const [hover, setHover] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -643,6 +664,34 @@ const SessionRow = memo(function SessionRow({ s, active }: { s: ChatSessionMeta;
         >
           <Trash2 size={12} />
         </motion.button>
+      )}
+      {busy && !editing && (
+        <motion.span
+          initial={{ opacity: 0.4 }}
+          animate={{ opacity: [0.4, 1, 0.4] }}
+          transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+          title={t("agent.working")}
+          style={{
+            position: "absolute",
+            right: hover ? 38 : 16,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background:
+              taskState === "failed"
+                ? "var(--danger)"
+                : taskState === "waiting"
+                  ? "var(--warning)"
+                  : "var(--accent)",
+            boxShadow:
+              taskState === "waiting"
+                ? "0 0 0 2px color-mix(in srgb, var(--warning) 35%, transparent)"
+                : "0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent)",
+            pointerEvents: "none",
+          }}
+        />
       )}
     </div>
   );

@@ -6,6 +6,7 @@
  */
 
 import { getPiClient } from "@/lib/pi/client";
+import { getActiveTaskId } from "@/lib/pi/task-context";
 import { usePet } from "./store";
 import type { PetState, PetStateUpdate } from "./types";
 import { sessionManager } from "./session-manager";
@@ -47,13 +48,14 @@ function sessionKey(): string {
 }
 
 /**
- * Initialize pet event bridge — call this once at app startup
+ * Subscribe the pet's live state to a specific task's pi event stream. Rebinding
+ * to a new task switches which conversation drives the pet.
  */
-export function initPetBridge() {
-  if (bridged) return;
-  bridged = true;
+function bindPetPi(taskId: string) {
+  piUnlisteners.forEach((unlisten) => unlisten());
+  piUnlisteners = [];
 
-  const client = getPiClient();
+  const client = getPiClient(taskId);
 
   // Listen for session events to track current session ID
   piUnlisteners.push(client.on("session", (e) => {
@@ -126,6 +128,16 @@ export function initPetBridge() {
     }
     syncStateToWindow();
   }));
+}
+
+/**
+ * Initialize pet event bridge — call this once at app startup. Re-binding to a
+ * different task id switches which conversation drives the pet's state.
+ */
+export function initPetBridge(taskId?: string) {
+  bindPetPi(taskId ?? getActiveTaskId());
+  if (bridged) return;
+  bridged = true;
 
   // Fallback: periodic check for edge cases (longer interval now)
   stateCheckInterval = setInterval(() => {
