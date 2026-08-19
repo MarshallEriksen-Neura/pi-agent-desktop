@@ -1,5 +1,7 @@
 export type { AssetUrlPort } from "./asset-url";
 export type {
+  AgentBrowserInstallResultDto,
+  AgentBrowserStatusDto,
   ApprovalInfoDto,
   BrowserPort,
   BrowserStatusDto,

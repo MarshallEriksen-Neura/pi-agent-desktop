@@ -71,6 +71,10 @@ export const en = {
   "topbar.askAnything": "Ask Pi anything…",
   "topbar.toggleTerminal": "Toggle terminal",
   "topbar.toggleTheme": "Toggle theme",
+  // the theme control cycles system → light → dark; the label names the state
+  "topbar.themeSystem": "Theme: follow system",
+  "topbar.themeLight": "Theme: light",
+  "topbar.themeDark": "Theme: dark",
   "topbar.zenMode": "Zen mode",
   "topbar.workMode": "Work mode",
   "topbar.toggleAgentPanel": "Toggle agent panel",
@@ -914,4 +918,8 @@ export const en = {
   "browser.approveBody": "pi is about to navigate the in-app browser to {origin}. This site is not approved yet.",
   "browser.approveAllow": "Allow",
   "browser.approveDeny": "Deny",
+  "browser.agentMissing": "The agent-browser CLI that powers pi's browser tool is not installed.",
+  "browser.agentInstall": "Install",
+  "browser.agentInstalling": "Installing…",
+  "browser.agentVersionMismatch": "agent-browser {version} detected — pi expects {expected}.",
 } as const;

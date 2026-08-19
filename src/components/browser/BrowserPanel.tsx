@@ -6,7 +6,7 @@ import { AnimatePresence } from "motion/react";
 import { Dialog, DialogContent } from "@appica/ui-react/dialog";
 import { Button } from "@appica/ui-react/button";
 import { Input } from "@appica/ui-react/input";
-import { ArrowLeft, ArrowRight, RefreshCw, Shield, ShieldAlert, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Download, RefreshCw, Shield, ShieldAlert, Trash2, X } from "lucide-react";
 import { useBrowser, initBrowserEvents } from "@/lib/browser/store";
 import { useT } from "@/lib/i18n";
 
@@ -42,6 +42,10 @@ export function BrowserPanel() {
     back,
     forward,
     refresh,
+    agentStatus,
+    agentInstalling,
+    refreshAgentCheck,
+    installAgentBrowser,
     clearError,
     dispose,
   } = useBrowser();
@@ -53,6 +57,7 @@ export function BrowserPanel() {
     void initBrowserEvents();
     void refresh();
     void loadAllowlist();
+    void refreshAgentCheck();
     return dispose;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -150,6 +155,58 @@ export function BrowserPanel() {
           </Button>
         )}
       </div>
+
+      {/* agent-browser CLI status (backing pi's `agent_browser` tool) */}
+      {agentStatus && !agentStatus.installed && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 12px",
+            borderBottom: "1px solid var(--separator)",
+            background: "var(--surface)",
+          }}
+        >
+          <ShieldAlert size={14} style={{ color: "var(--warning)", flexShrink: 0 }} />
+          <span style={{ flex: 1, fontSize: 11.5, color: "var(--text-secondary)" }}>
+            {t("browser.agentMissing")}
+          </span>
+          <Button
+            size="sm"
+            onClick={() => void installAgentBrowser()}
+            disabled={agentInstalling}
+            style={{ height: 26, fontSize: 11.5 }}
+          >
+            <Download size={13} style={{ marginRight: 4 }} />
+            {agentInstalling ? t("browser.agentInstalling") : t("browser.agentInstall")}
+          </Button>
+        </div>
+      )}
+      {agentStatus?.installed &&
+        agentStatus.version &&
+        agentStatus.version !== agentStatus.expected && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 12px",
+              borderBottom: "1px solid var(--separator)",
+              background: "var(--surface)",
+              fontSize: 11.5,
+              color: "var(--text-tertiary)",
+            }}
+          >
+            <Shield size={13} style={{ flexShrink: 0 }} />
+            <span>
+              {t("browser.agentVersionMismatch", {
+                version: agentStatus.version,
+                expected: agentStatus.expected,
+              })}
+            </span>
+          </div>
+        )}
 
       {/* Live view */}
       <div

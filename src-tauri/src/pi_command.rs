@@ -18,6 +18,32 @@ pub fn command(binary: Option<&str>) -> Result<Command, String> {
     Ok(Command::new(program))
 }
 
+/// Resolve a bare program name to an executable path on PATH (any platform).
+/// Windows searches `PATHEXT` (so npm shims like `npm.cmd` resolve) and falls
+/// back to the user's npm prefix, mirroring how `pi` itself is located.
+pub fn resolve_executable(binary: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        resolve_windows_program(binary).ok()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::var_os("PATH")?;
+        for directory in std::env::split_paths(&path) {
+            let candidate = directory.join(binary);
+            let executable = candidate
+                .metadata()
+                .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false);
+            if executable {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+}
+
 #[cfg(windows)]
 fn resolve_windows_program(binary: &str) -> Result<PathBuf, String> {
     let path = std::env::var_os("PATH").unwrap_or_default();

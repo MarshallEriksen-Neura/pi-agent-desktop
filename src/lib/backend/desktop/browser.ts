@@ -1,6 +1,8 @@
 import { desktopInvoke } from "./invoke";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AgentBrowserInstallResultDto,
+  AgentBrowserStatusDto,
   ApprovalInfoDto,
   BrowserPort,
   BrowserStatusDto,
@@ -23,6 +25,8 @@ export const desktopBrowserPort: BrowserPort = {
   eval: (expression) => desktopInvoke<unknown>("browser_eval", { expression }),
   allowlist: () => desktopInvoke<string[]>("browser_allowlist"),
   removeOrigin: (origin) => desktopInvoke<void>("browser_remove_origin", { origin }),
+  checkAgentBrowser: () => desktopInvoke<AgentBrowserStatusDto>("agent_browser_check"),
+  installAgentBrowser: () => desktopInvoke<AgentBrowserInstallResultDto>("agent_browser_install"),
   onState: (handler) =>
     listen<BrowserStatusDto>("browser://state", (event) => handler(event.payload)),
   onApproval: (handler) =>

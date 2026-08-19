@@ -25,6 +25,20 @@ export interface NavigateResultDto {
   error?: string | null;
 }
 
+/** Upstream `agent-browser` CLI availability (used by pi's `agent_browser` tool). */
+export interface AgentBrowserStatusDto {
+  installed: boolean;
+  version?: string | null;
+  expected: string;
+  error?: string | null;
+}
+
+export interface AgentBrowserInstallResultDto {
+  ok: boolean;
+  log: string;
+  status: AgentBrowserStatusDto;
+}
+
 export interface BrowserPort {
   start(): Promise<BrowserStatusDto>;
   stop(): Promise<void>;
@@ -41,6 +55,8 @@ export interface BrowserPort {
   eval(expression: string): Promise<unknown>;
   allowlist(): Promise<string[]>;
   removeOrigin(origin: string): Promise<void>;
+  checkAgentBrowser(): Promise<AgentBrowserStatusDto>;
+  installAgentBrowser(): Promise<AgentBrowserInstallResultDto>;
   onState(handler: (status: BrowserStatusDto) => void): Promise<() => void>;
   onApproval(handler: (info: ApprovalInfoDto) => void): Promise<() => void>;
   onConsole(handler: (text: string) => void): Promise<() => void>;
@@ -63,6 +79,8 @@ export function createTauriBrowserPort(invokeFn: typeof invoke): BrowserPort {
     eval: (expression) => invokeFn<unknown>("browser_eval", { expression }),
     allowlist: () => invokeFn<string[]>("browser_allowlist"),
     removeOrigin: (origin) => invokeFn<void>("browser_remove_origin", { origin }),
+    checkAgentBrowser: () => invokeFn<AgentBrowserStatusDto>("agent_browser_check"),
+    installAgentBrowser: () => invokeFn<AgentBrowserInstallResultDto>("agent_browser_install"),
     onState: (handler) =>
       listen<BrowserStatusDto>("browser://state", (event) => handler(event.payload)),
     onApproval: (handler) =>
@@ -76,6 +94,7 @@ export interface MockBrowserPort extends BrowserPort {}
 
 export function createMockBrowserPort(): BrowserPort {
   const status: BrowserStatusDto = { running: false, loading: false };
+  let agentInstalled = false;
   return {
     start: async () => {
       status.running = true;
@@ -107,6 +126,19 @@ export function createMockBrowserPort(): BrowserPort {
     eval: async () => null,
     allowlist: async () => [],
     removeOrigin: async () => {},
+    checkAgentBrowser: async () => ({
+      installed: agentInstalled,
+      version: agentInstalled ? "0.33.0" : null,
+      expected: "0.33.0",
+    }),
+    installAgentBrowser: async () => {
+      agentInstalled = true;
+      return {
+        ok: true,
+        log: "mock: installed agent-browser",
+        status: { installed: true, version: "0.33.0", expected: "0.33.0" },
+      };
+    },
     onState: async () => () => {},
     onApproval: async () => () => {},
     onConsole: async () => () => {},

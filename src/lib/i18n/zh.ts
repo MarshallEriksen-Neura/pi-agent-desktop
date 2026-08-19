@@ -73,6 +73,10 @@ export const zh: Record<keyof typeof en, string> = {
   "topbar.askAnything": "问 Pi 任何问题…",
   "topbar.toggleTerminal": "切换终端",
   "topbar.toggleTheme": "切换主题",
+  // 主题按钮依次切换 跟随系统 → 浅色 → 深色，标签显示当前状态
+  "topbar.themeSystem": "主题：跟随系统",
+  "topbar.themeLight": "主题：浅色",
+  "topbar.themeDark": "主题：深色",
   "topbar.zenMode": "禅模式",
   "topbar.workMode": "Work 模式",
   "topbar.toggleAgentPanel": "切换智能体面板",
@@ -881,4 +885,8 @@ export const zh: Record<keyof typeof en, string> = {
   "browser.approveBody": "pi 即将在内置浏览器中打开 {origin}。该网站尚未授权。",
   "browser.approveAllow": "允许",
   "browser.approveDeny": "拒绝",
+  "browser.agentMissing": "agent-browser 命令行未安装 — pi 的浏览器工具将无法使用。",
+  "browser.agentInstall": "一键安装",
+  "browser.agentInstalling": "安装中…",
+  "browser.agentVersionMismatch": "agent-browser 版本 {version},pi 期望 {expected}。",
 };

@@ -33,6 +33,13 @@
   --bg-overlay: rgba(242, 242, 247, 0.72);
   --bg-sunken: #ebebf0;
 
+  /* Alias for --bg-elevated. BrowserPanel and remote-tasks style inset regions
+     with var(--surface); it was never declared, so those backgrounds resolved to
+     nothing and the panels rendered transparent over the window material. One
+     declaration covers both themes — it forwards to a token each theme redefines,
+     and appearance.ts's --bg-elevated override flows through it too. */
+  --surface: var(--bg-elevated);
+
   /* Materials (glass) — pair with backdrop-filter */
   --material-thin: rgba(255, 255, 255, 0.6);
   --material-regular: rgba(255, 255, 255, 0.72);
@@ -235,8 +242,8 @@
    class on <html> in sync with data-theme.                                */
 :root,
 .light {
-  --primary: var(--ios-blue);
-  --primary-foreground: #ffffff;
+  --primary: var(--accent);
+  --primary-foreground: var(--text-on-accent);
   --background: var(--bg-base);
   --foreground: var(--text-primary);
   --muted: var(--bg-elevated);
@@ -250,8 +257,8 @@
 
 :root[data-theme="dark"],
 .dark {
-  --primary: var(--ios-blue-dark);
-  --primary-foreground: #ffffff;
+  --primary: var(--accent);
+  --primary-foreground: var(--text-on-accent);
   --background: var(--bg-base);
   --foreground: var(--text-primary);
   --muted: var(--bg-elevated);
@@ -261,20 +268,46 @@
   --destructive: var(--danger);
 }
 
-/* Expose semantic tokens to Tailwind v4 utilities (bg-base, text-primary, ...) */
+/* The rest of Appica's primary ramp. Its Button paints hover/press as a radial
+   gradient from --primary to --primary-muted, so leaving --primary-muted on
+   Appica's default (near-white in dark, near-black in light) blew out the
+   center of every hovered button under white label text. Routing the whole ramp
+   through our accent tokens also means a user's custom accent — appearance.ts
+   overrides --accent / --accent-hover / --focus-ring inline on <html> — carries
+   through the ramp with no extra bookkeeping there.
+
+   One rule for both themes: every value resolves through accent tokens that are
+   already theme-aware. It must still list .light/.dark explicitly — Appica
+   declares this ramp on those classes (specificity 0,1,0), so a bare :root
+   (0,0,1) would lose to it in dark mode and leave --primary-muted near-white,
+   which is the blowout above. Equal specificity + later source order wins. */
+:root,
+.light,
+:root[data-theme="dark"],
+.dark {
+  --primary-muted: var(--accent-hover);
+  --primary-strong: var(--accent-hover);
+  --primary-subtle: var(--accent-muted);
+  --primary-soft: var(--accent-muted);
+  --focus-ring-primary: var(--focus-ring);
+}
+
+/* Expose semantic tokens to Tailwind v4 utilities (bg-base, bg-elevated, ...)
+   ⚠ Do NOT add --color-primary / --color-secondary / --color-tertiary here.
+   Those names belong to Appica's palette (`bg-primary`, `text-primary-foreground`,
+   `text-foreground-*`), and Tailwind resolves one value per name — the last
+   @theme wins, which is ours. Pointing them at our *text* colors made every
+   Appica primary Button paint its background with the text color: in dark mode
+   that is near-white under white label text, i.e. an invisible button. Use the
+   `--text-*` vars directly in `style` (that is what the codebase already does). */
 @theme inline {
   --color-base: var(--bg-base);
   --color-elevated: var(--bg-elevated);
   --color-sunken: var(--bg-sunken);
-  --color-primary: var(--text-primary);
-  --color-secondary: var(--text-secondary);
-  --color-tertiary: var(--text-tertiary);
   --color-accent: var(--accent);
   --color-separator: var(--separator);
   --font-sans: var(--font-ui);
   --font-mono: var(--font-mono);
-  --radius-md: var(--radius-md);
-  --radius-lg: var(--radius-lg);
 }
 
 /* ── Base reset ── */

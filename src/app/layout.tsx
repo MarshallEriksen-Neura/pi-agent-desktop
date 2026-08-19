@@ -28,14 +28,31 @@ export const viewport: Viewport = {
   ],
 };
 
+/**
+ * Resolve the theme before first paint. The markup below ships `dark` because a
+ * static export has no request-time signal, so without this a light-OS user
+ * would see a dark flash until initTheme() runs after hydration. Kept tiny and
+ * inline — it must execute before the body paints. Mirrors store.ts: a pinned
+ * `pi-desktop.theme` wins, otherwise follow the OS.
+ */
+const THEME_BOOTSTRAP = `(function(){try{
+var s=null;try{s=localStorage.getItem("pi-desktop.theme")}catch(e){}
+var t=(s==="light"||s==="dark")?s:(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches===false?"light":"dark");
+var e=document.documentElement;e.setAttribute("data-theme",t);
+e.classList.toggle("dark",t==="dark");e.classList.toggle("light",t==="light");
+}catch(e){}})();`;
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   return (
-    // default to dark for the immersive coding surface (.dark also drives Appica UI)
+    // dark is the SSR default (see THEME_BOOTSTRAP); .dark also drives Appica UI
     <html lang="en" data-theme="dark" className={`dark ${cormorant.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
+      </head>
       <body>
         {/* app-level last resort — Next's global-error breaks output:"export" */}
         <GlobalErrorBoundary>

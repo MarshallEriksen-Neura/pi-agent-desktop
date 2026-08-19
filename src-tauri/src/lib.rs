@@ -1,3 +1,4 @@
+mod agent_browser;
 mod chat_store;
 mod browser;
 mod fs_bridge;
@@ -288,7 +289,9 @@ pub fn run() {
             browser::browser_reload,
             browser::browser_eval,
             browser::browser_allowlist,
-            browser::browser_remove_origin
+            browser::browser_remove_origin,
+            agent_browser::agent_browser_check,
+            agent_browser::agent_browser_install
         ])
         .setup(|app| {
             if let Err(e) = app

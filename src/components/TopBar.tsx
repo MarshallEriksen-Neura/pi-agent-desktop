@@ -11,6 +11,7 @@ import {
   SquareTerminal,
   Moon,
   Sun,
+  MonitorSmartphone,
   Focus,
   Sparkles,
   MessagesSquare,
@@ -40,6 +41,7 @@ export function TopBar() {
     zenMode,
     workMode,
     theme,
+    themeSource,
     setCommandPalette,
   } = useUI();
 
@@ -175,8 +177,24 @@ export function TopBar() {
       <IconButton label={t("topbar.toggleTerminal")} onClick={toggleTerminal} active={terminalOpen}>
         <SquareTerminal size={16} />
       </IconButton>
-      <IconButton label={t("topbar.toggleTheme")} onClick={toggleTheme}>
-        {theme === "dark" ? <Moon size={16} /> : <Sun size={16} />}
+      {/* three-way: following the OS reads as the monitor glyph, not sun/moon */}
+      <IconButton
+        label={
+          themeSource === "system"
+            ? t("topbar.themeSystem")
+            : theme === "dark"
+              ? t("topbar.themeDark")
+              : t("topbar.themeLight")
+        }
+        onClick={toggleTheme}
+      >
+        {themeSource === "system" ? (
+          <MonitorSmartphone size={16} />
+        ) : theme === "dark" ? (
+          <Moon size={16} />
+        ) : (
+          <Sun size={16} />
+        )}
       </IconButton>
       <IconButton label={t("topbar.zenMode")} onClick={toggleZen} active={zenMode}>
         <Focus size={16} />

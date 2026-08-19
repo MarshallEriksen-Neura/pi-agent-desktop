@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import type {
+  AgentBrowserStatusDto,
   ApprovalInfoDto,
   BrowserStatusDto,
 } from "@/lib/backend/ports";
@@ -31,6 +32,10 @@ interface BrowserUiState {
   approval: ApprovalInfoDto | null;
   /** Approved origins (hosts the agent may navigate to without prompting). */
   allowlist: string[];
+  /** Upstream `agent-browser` CLI status (pi's `agent_browser` tool backend). */
+  agentStatus: AgentBrowserStatusDto | null;
+  /** True while `npm install -g agent-browser` is running. */
+  agentInstalling: boolean;
   /** Last action error (toast-able). */
   lastError: string | null;
 
@@ -42,6 +47,8 @@ interface BrowserUiState {
   approveOrigin: (allow: boolean) => Promise<void>;
   loadAllowlist: () => Promise<void>;
   removeAllowedOrigin: (origin: string) => Promise<void>;
+  refreshAgentCheck: () => Promise<void>;
+  installAgentBrowser: () => Promise<void>;
   captureFrame: () => Promise<void>;
   click: (x: number, y: number) => Promise<void>;
   setUrlDraft: (url: string) => void;
@@ -115,6 +122,8 @@ export const useBrowser = create<BrowserUiState>()((set, get) => {
     urlDraft: "",
     approval: null,
     allowlist: [],
+    agentStatus: null,
+    agentInstalling: false,
     lastError: null,
 
     refresh,
@@ -201,6 +210,31 @@ export const useBrowser = create<BrowserUiState>()((set, get) => {
         set({ allowlist: get().allowlist.filter((item) => item !== origin) });
       } catch (error) {
         set({ lastError: errorMessage(error) });
+      }
+    },
+
+    refreshAgentCheck: async () => {
+      try {
+        const agentStatus = await port().checkAgentBrowser();
+        set({ agentStatus });
+      } catch (error) {
+        set({ lastError: errorMessage(error) });
+      }
+    },
+
+    installAgentBrowser: async () => {
+      set({ agentInstalling: true, lastError: null });
+      try {
+        const result = await port().installAgentBrowser();
+        set({ agentStatus: result.status });
+        if (!result.ok) {
+          const reason = (result.status.error ?? result.log.trim()) || "install failed";
+          set({ lastError: reason });
+        }
+      } catch (error) {
+        set({ lastError: errorMessage(error) });
+      } finally {
+        set({ agentInstalling: false });
       }
     },
 

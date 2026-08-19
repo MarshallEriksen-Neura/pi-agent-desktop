@@ -21,6 +21,24 @@ function applyThemeDom(theme: Theme) {
   el.classList.toggle("light", theme === "light");
 }
 
+const DARK_QUERY = "(prefers-color-scheme: dark)";
+
+/** the OS light/dark preference; dark when it can't be read */
+function systemTheme(): Theme {
+  if (typeof window === "undefined") return "dark";
+  return window.matchMedia?.(DARK_QUERY).matches === false ? "light" : "dark";
+}
+
+/**
+ * Where the active theme came from. "system" tracks the OS live; "user" pins
+ * the explicit choice (toggling is what makes it explicit) and survives
+ * restarts. Only "user" is persisted — absence of the key means "follow the OS",
+ * so a fresh install adopts the system theme instead of forcing dark.
+ */
+export type ThemeSource = "system" | "user";
+
+let stopThemeWatch: (() => void) | null = null;
+
 export interface AgentTask {
   id: string;
   title: string;
@@ -52,6 +70,7 @@ let reviewResolver: ((accept: boolean) => void) | null = null;
 
 interface UIState {
   theme: Theme;
+  themeSource: ThemeSource;
   zenMode: boolean;
   workMode: boolean;
   sidebarOpen: boolean;
@@ -74,7 +93,14 @@ interface UIState {
   closeDialogOpen: boolean;
 
   toggleTheme: () => void;
-  /** restore the saved theme — call once on mount */
+  /** adopt an explicit theme (pins it as the user's choice) */
+  setTheme: (theme: Theme) => void;
+  /** drop the pinned choice and track the OS again */
+  useSystemTheme: () => void;
+  /**
+   * Restore the saved theme, or adopt the OS one, and start tracking OS
+   * changes. Call once on mount; safe to call again (the watcher is replaced).
+   */
   initTheme: () => void;
   toggleZen: () => void;
   toggleWork: () => void;
@@ -103,7 +129,9 @@ interface UIState {
 }
 
 export const useUI = create<UIState>((set) => ({
+  // matches the SSR <html> default; initTheme() reconciles with storage/OS
   theme: "dark",
+  themeSource: "system",
   zenMode: false,
   workMode: false,
   sidebarOpen: true,
@@ -120,9 +148,19 @@ export const useUI = create<UIState>((set) => ({
   closeBehavior: "ask",
   closeDialogOpen: false,
 
-  toggleTheme: () =>
-    set((s) => {
-      const theme = s.theme === "dark" ? "light" : "dark";
+  /**
+   * system → light → dark → system. Three-way rather than a plain flip because
+   * pinning a theme has to stay undoable: a two-way toggle would strand the user
+   * off the OS track with no way back to it from the top bar.
+   */
+  toggleTheme: () => {
+    const { theme, themeSource, setTheme, useSystemTheme } = useUI.getState();
+    if (themeSource === "system") setTheme("light");
+    else if (theme === "light") setTheme("dark");
+    else useSystemTheme();
+  },
+  setTheme: (theme) =>
+    set(() => {
       applyThemeDom(theme);
       // re-derive appearance overrides that depend on the theme (bg image base)
       useAppearance.getState().set({});
@@ -131,20 +169,53 @@ export const useUI = create<UIState>((set) => ({
       } catch {
         // storage unavailable (private mode) — keep the choice in-memory only
       }
-      return { theme };
+      return { theme, themeSource: "user" as const };
+    }),
+  useSystemTheme: () =>
+    set(() => {
+      const theme = systemTheme();
+      applyThemeDom(theme);
+      useAppearance.getState().set({});
+      try {
+        localStorage.removeItem(THEME_STORAGE_KEY);
+      } catch {
+        // storage unavailable — the in-memory source still tracks the OS
+      }
+      return { theme, themeSource: "system" as const };
     }),
   initTheme: () =>
-    set((s) => {
+    set(() => {
       let saved: string | null = null;
       try {
         saved = localStorage.getItem(THEME_STORAGE_KEY);
       } catch {
-        // storage unavailable — stay on the default
+        // storage unavailable — fall through to the OS preference
       }
-      if (saved !== "light" && saved !== "dark") return {};
-      if (saved === s.theme) return {};
-      applyThemeDom(saved);
-      return { theme: saved };
+      const pinned: Theme | null = saved === "light" || saved === "dark" ? saved : null;
+      const theme: Theme = pinned ?? systemTheme();
+
+      // Always write the DOM: <html> ships a hardcoded dark default for SSR, so
+      // skipping this when theme === state left a light-OS user on dark chrome.
+      applyThemeDom(theme);
+
+      // One watcher per process — initTheme is idempotent under Fast Refresh.
+      stopThemeWatch?.();
+      const mq = typeof window !== "undefined" ? window.matchMedia?.(DARK_QUERY) : null;
+      if (mq) {
+        const onChange = (event: MediaQueryListEvent) => {
+          // A pinned choice outranks the OS; keep tracking so unpinning is live.
+          if (useUI.getState().themeSource !== "system") return;
+          const next: Theme = event.matches ? "dark" : "light";
+          applyThemeDom(next);
+          useUI.setState({ theme: next });
+          // appearance reads data-theme, so this must follow applyThemeDom
+          useAppearance.getState().set({});
+        };
+        mq.addEventListener("change", onChange);
+        stopThemeWatch = () => mq.removeEventListener("change", onChange);
+      }
+
+      return { theme, themeSource: pinned ? ("user" as const) : ("system" as const) };
     }),
   toggleZen: () => set((s) => ({ zenMode: !s.zenMode })),
   toggleWork: () => set((s) => ({ workMode: !s.workMode })),
