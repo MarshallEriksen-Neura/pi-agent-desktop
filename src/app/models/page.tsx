@@ -1111,8 +1111,8 @@ function ProviderDialog({
           <select
             value={api}
             onChange={(e) => setApi(e.target.value)}
-            className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
-            style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+            className="pi-native-select w-full rounded-xl border px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
+            style={{ borderColor: "var(--ink-border)" }}
           >
             {API_TYPES.map((type) => (
               <option key={type} value={type}>

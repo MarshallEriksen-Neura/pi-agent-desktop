@@ -1,4 +1,5 @@
 import { desktopAssetUrlPort } from "../desktop/asset-url";
+import { desktopBrowserPort } from "../desktop/browser";
 import { desktopExternalNavigationPort } from "../desktop/external-navigation";
 import { desktopNotificationPort } from "../desktop/notification";
 import { desktopPetWindowPort } from "../desktop/pet-window";
@@ -33,6 +34,7 @@ export function createDesktopBackendPorts(): BackendPorts {
     assetUrl: desktopAssetUrlPort,
     petWindow: desktopPetWindowPort,
     externalNavigation: desktopExternalNavigationPort,
+    browser: desktopBrowserPort,
   };
 }
 

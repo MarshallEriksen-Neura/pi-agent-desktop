@@ -1,4 +1,5 @@
 mod chat_store;
+mod browser;
 mod fs_bridge;
 mod mcp_config;
 mod pet_window;
@@ -28,6 +29,11 @@ use remote_control::RemoteControlState;
 #[cfg(feature = "remote-control-smoke")]
 pub fn run_remote_control_command_smoke() {
     remote_control::run_command_smoke();
+}
+
+#[cfg(feature = "browser-smoke")]
+pub fn run_browser_smoke() {
+    browser::run_smoke();
 }
 
 #[derive(Default)]
@@ -205,6 +211,7 @@ pub fn run() {
         .manage(PiProc::default())
         .manage(BackendLifecycle::default())
         .manage(RemoteControlState::default())
+        .manage(browser::BrowserState::default())
         .manage(chat_store::ChatDb::default())
         .invoke_handler(tauri::generate_handler![
             chat_store::chat_sessions_list,
@@ -266,7 +273,22 @@ pub fn run() {
             remote_control::remote_conversation_append,
             remote_control::remote_conversation_cancel,
             remote_control::remote_conversation_archive,
-            remote_control::remote_control_set_model_admin
+            remote_control::remote_control_set_model_admin,
+            browser::browser_start,
+            browser::browser_stop,
+            browser::browser_status,
+            browser::browser_navigate,
+            browser::browser_approve_origin,
+            browser::browser_screenshot,
+            browser::browser_click,
+            browser::browser_type,
+            browser::browser_press_key,
+            browser::browser_back,
+            browser::browser_forward,
+            browser::browser_reload,
+            browser::browser_eval,
+            browser::browser_allowlist,
+            browser::browser_remove_origin
         ])
         .setup(|app| {
             if let Err(e) = app
@@ -281,6 +303,7 @@ pub fn run() {
             if let Err(e) = create_tray(app) {
                 eprintln!("[tray] failed to create system tray: {e}");
             }
+            browser::start_event_forwarder(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

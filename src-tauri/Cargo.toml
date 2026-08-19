@@ -9,11 +9,17 @@ rust-version = "1.77.2"
 
 [features]
 remote-control-smoke = []
+browser-smoke = []
 
 [[bin]]
 name = "remote-control-command-smoke"
 path = "src/bin/remote-control-command-smoke.rs"
 required-features = ["remote-control-smoke"]
+
+[[bin]]
+name = "browser-smoke"
+path = "src/bin/browser-smoke.rs"
+required-features = ["browser-smoke"]
 
 [lib]
 name = "pi_desktop_lib"
@@ -52,6 +58,8 @@ axum = { version = ">=0.7, <0.8", features = ["http1", "ws", "macros"] }
 # `tokio` is not a reqwest feature (it is always a dependency since 0.12), so it
 # must not be listed here or resolution fails on newer cargo.
 reqwest = { version = "=0.12.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = "=0.24.0"
+futures-util = "0.3"
 rustls = { version = "=0.23.31", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "io-util"] }
 

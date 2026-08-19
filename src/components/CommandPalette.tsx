@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Autocomplete,
@@ -11,6 +11,7 @@ import {
   AutocompleteEmpty,
 } from "@appica/ui-react/autocomplete";
 import {
+  ArrowLeft,
   Sparkles,
   Focus,
   MessagesSquare,
@@ -104,6 +105,26 @@ function PaletteBody() {
   const wsRoot = useWorkspace((s) => s.root);
   const recents = useWorkspace((s) => s.recents);
   const t = useT();
+  const [asking, setAsking] = useState(false);
+  const [question, setQuestion] = useState("");
+
+  const openAsk = () => {
+    setQuestion("");
+    setAsking(true);
+  };
+
+  const closeAsk = () => {
+    setQuestion("");
+    setAsking(false);
+  };
+
+  const sendQuestion = () => {
+    const text = question.trim();
+    if (!text) return;
+    setQuestion("");
+    setCommandPalette(false);
+    void useChat.getState().send(text);
+  };
 
   const commands = useMemo<Command[]>(() => {
     const close = () => setCommandPalette(false);
@@ -113,10 +134,7 @@ function PaletteBody() {
         icon: <Sparkles size={15} />,
         label: t("palette.ask"),
         hint: "agent",
-        run: () => {
-          close();
-          // focus the composer by sending an empty-intent — user types in panel
-        },
+        run: openAsk,
       },
       {
         id: "new-session",
@@ -235,6 +253,89 @@ function PaletteBody() {
     }));
     return [...base, ...fromProjects, ...fromPi];
   }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t]);
+
+  if (asking) {
+    return (
+      <div style={{ padding: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px 10px" }}>
+          <button
+            type="button"
+            onClick={closeAsk}
+            aria-label={t("palette.askBack")}
+            title={t("palette.askBack")}
+            style={{
+              display: "grid",
+              placeItems: "center",
+              width: 28,
+              height: 28,
+              border: "none",
+              borderRadius: 8,
+              background: "transparent",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+            }}
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
+            {t("palette.askTitle")}
+          </span>
+        </div>
+        <textarea
+          autoFocus
+          value={question}
+          onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              closeAsk();
+            } else if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              sendQuestion();
+            }
+          }}
+          placeholder={t("palette.askPlaceholder")}
+          rows={4}
+          style={{
+            display: "block",
+            width: "100%",
+            minHeight: 112,
+            resize: "vertical",
+            padding: "12px 14px",
+            border: "1px solid var(--separator)",
+            borderRadius: 10,
+            outline: "none",
+            background: "var(--bg-sunken)",
+            color: "var(--text-primary)",
+            fontFamily: "var(--font-ui)",
+            fontSize: 14,
+            lineHeight: 1.5,
+            boxSizing: "border-box",
+          }}
+        />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 4px 2px" }}>
+          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>{t("palette.askHint")}</span>
+          <button
+            type="button"
+            onClick={sendQuestion}
+            disabled={!question.trim()}
+            style={{
+              border: "none",
+              borderRadius: 8,
+              padding: "7px 14px",
+              background: question.trim() ? "var(--accent)" : "var(--separator)",
+              color: "#FFFFFF",
+              cursor: question.trim() ? "pointer" : "not-allowed",
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            {t("palette.askSend")}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <Autocomplete

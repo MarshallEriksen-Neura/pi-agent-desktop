@@ -216,6 +216,18 @@
   color-scheme: dark;
 }
 
+/* Keep native provider options readable in the dark theme. */
+.pi-native-select {
+  color: var(--text-primary);
+  background-color: var(--input-bg);
+  color-scheme: light dark;
+}
+
+.pi-native-select option {
+  color: var(--text-primary);
+  background-color: var(--bg-elevated);
+}
+
 /* ── Appica UI bridge ─────────────────────────────────────────────────────
    Map Appica's raw tokens onto our iOS token system so every Appica
    component (Switch, Dialog, Toast, …) renders in the Pi/iOS skin.
