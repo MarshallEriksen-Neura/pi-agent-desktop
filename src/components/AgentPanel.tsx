@@ -271,9 +271,12 @@ export function AgentPanel() {
           data={messages}
           atTopStateChange={setIsAtTop}
           atBottomStateChange={setIsAtBottom}
-          // streaming? follow new content smoothly only while at the bottom —
-          // scrolling up to read history is never interrupted.
-          followOutput={(atBottom) => (streaming && atBottom ? "smooth" : false)}
+          // streaming? follow new content only while at the bottom — scrolling up
+          // to read history is never interrupted. `auto` (not `smooth`): a smooth
+          // scroll animates for ~1s, which tokens outpace, so the view falls behind
+          // its own target and drifts off the bottom. An instant jump per chunk is
+          // what actually reads as staying pinned.
+          followOutput={(atBottom) => (streaming && atBottom ? "auto" : false)}
           // buffer items above/below the viewport so fast scrolls stay filled.
           increaseViewportBy={{ top: 600, bottom: 600 }}
           computeItemKey={(_index, m) => m.id}
@@ -284,7 +287,10 @@ export function AgentPanel() {
               // Top of the scroll area (does NOT stick) — subagents, live task
               // strip, and the empty-state hint when there are no messages.
               Header: () => (
-              <div style={{ padding: "4px 12px 0" }}>
+              // flow-root for the same reason as the item wrapper below — the deck's
+              // own bottom margin would otherwise collapse out of the measured box
+              // and shorten Virtuoso's idea of the header height.
+              <div style={{ display: "flow-root", padding: "4px 12px 0" }}>
                 {/* subagent deck — parallel workers, tap a card for detail */}
                 <SubagentDeck />
 
@@ -329,7 +335,7 @@ export function AgentPanel() {
               // produced nothing visible yet, so it reads as the first row of the
               // activity list rather than a loading panel.
               Footer: () => (
-              <div style={{ padding: "0 12px 6px" }}>
+              <div style={{ display: "flow-root", padding: "0 12px 6px" }}>
                 <AnimatePresence>
                   {waitingForFirstToken && (
                     <motion.div
@@ -359,7 +365,15 @@ export function AgentPanel() {
             // Only the latest message plays the entrance animation — historical
             // messages use initial={false} so virtualized re-mounts on scroll
             // don't replay the fade-in.
-            <div style={{ padding: "0 12px" }}>
+            //
+            // `flow-root` is load-bearing, not cosmetic. Virtuoso sizes each row with
+            // getBoundingClientRect(), which never includes margins. MessageBubble
+            // spaces itself with vertical margins and this wrapper has no vertical
+            // padding, so without a block formatting context those margins collapse
+            // straight out of the box Virtuoso measures. Every row then under-reports
+            // by ~7px: the bottom spacer comes out short, scrollHeight grows as you
+            // arrive, and the transcript can never reach its own end.
+            <div style={{ display: "flow-root", padding: "0 12px" }}>
               <MessageBubble
                 key={m.id}
                 m={m}

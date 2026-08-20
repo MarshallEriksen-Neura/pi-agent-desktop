@@ -283,6 +283,8 @@ export const zh: Record<keyof typeof en, string> = {
 
   // extension sheet
   "ext.request": "扩展请求",
+  "ext.selectCustomPlaceholder": "都不合适？直接输入你的答案…",
+  "ext.selectCustomSend": "发送",
 
   // settings page
   "settings.title": "设置",

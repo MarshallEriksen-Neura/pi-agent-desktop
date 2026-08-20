@@ -1,6 +1,6 @@
 //! Cross-platform command construction for the Pi CLI.
 
-#[cfg(windows)]
+use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -95,6 +95,48 @@ fn resolve_windows_program_from(
     None
 }
 
+/// Best-effort location of npm's global bin directory, where `npm install -g`
+/// drops CLI shims (e.g. `agent-browser.cmd` on Windows).
+fn npm_bin_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        // npm's default Windows prefix: %APPDATA%\npm (matches the fallback in
+        // `resolve_windows_program` above).
+        let appdata = std::env::var_os("APPDATA")?;
+        Some(PathBuf::from(appdata).join("npm"))
+    }
+    #[cfg(not(windows))]
+    {
+        // Common non-sudo setup: ~/.npm-global/bin. Normal npm prefixes are
+        // already on PATH for Unix, so this is only a best-effort convenience.
+        let home = std::env::var_os("HOME")?;
+        let local = PathBuf::from(home).join(".npm-global").join("bin");
+        local.is_dir().then_some(local)
+    }
+}
+
+/// Compute PATH with `npm_bin` prepended, or `None` when it is already present.
+fn with_npm_bin_prepended(path: &std::ffi::OsStr, npm_bin: &Path) -> Option<OsString> {
+    let mut directories: Vec<PathBuf> = std::env::split_paths(path).collect();
+    if directories.iter().any(|directory| directory == npm_bin) {
+        return None;
+    }
+    directories.insert(0, npm_bin.to_path_buf());
+    std::env::join_paths(directories).ok()
+}
+
+/// Prepend npm's global bin directory to `cmd`'s PATH so pi and the processes
+/// it spawns (e.g. the `pi-agent-browser-native` wrapper launching
+/// `agent-browser.cmd` through PowerShell) can resolve npm-installed CLIs even
+/// when the npm prefix is missing from the inherited PATH.
+pub fn prepend_npm_bin_to_path(cmd: &mut Command) {
+    let Some(npm_bin) = npm_bin_dir() else { return };
+    let Some(path) = std::env::var_os("PATH") else { return };
+    if let Some(joined) = with_npm_bin_prepended(&path, &npm_bin) {
+        cmd.env("PATH", joined);
+    }
+}
+
 #[cfg(windows)]
 fn windows_extensions(path_ext: &std::ffi::OsStr) -> Vec<String> {
     path_ext
@@ -185,5 +227,21 @@ mod tests {
 
         assert_eq!(resolved.as_deref(), Some(cmd.as_path()));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn prepends_npm_bin_without_duplicating() {
+        use std::ffi::OsStr;
+
+        let npm_bin = PathBuf::from("C:/npm-prefix");
+        let plain = with_npm_bin_prepended(OsStr::new("C:/tools;D:/bin"), &npm_bin)
+            .expect("npm bin should be prepended");
+        let dirs: Vec<PathBuf> = std::env::split_paths(&plain).collect();
+        assert_eq!(dirs[0], npm_bin);
+        assert_eq!(dirs.len(), 3);
+
+        // Already on PATH — no mutation.
+        let duplicate = with_npm_bin_prepended(OsStr::new("C:/npm-prefix;D:/bin"), &npm_bin);
+        assert!(duplicate.is_none());
     }
 }

@@ -282,6 +282,8 @@ export const en = {
 
   // extension sheet
   "ext.request": "Extension request",
+  "ext.selectCustomPlaceholder": "None of these? Type your own answer…",
+  "ext.selectCustomSend": "Send",
 
   // settings page
   "settings.title": "Settings",

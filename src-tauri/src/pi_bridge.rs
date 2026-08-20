@@ -126,6 +126,10 @@ pub fn pi_start(
 
     let bin = binary.as_deref().unwrap_or("pi");
     let mut cmd = crate::pi_command::command(binary.as_deref())?;
+    // Ensure npm-installed CLIs (e.g. `agent-browser.cmd` for the
+    // `pi-agent-browser-native` wrapper) resolve inside the pi child process
+    // even when the npm global prefix is missing from the inherited PATH.
+    crate::pi_command::prepend_npm_bin_to_path(&mut cmd);
     cmd.args(["--mode", "rpc"]);
     // Resume a specific session at process startup so pi loads the full prior
     // context (past turns, tool results, thinking) into its agent loop — the

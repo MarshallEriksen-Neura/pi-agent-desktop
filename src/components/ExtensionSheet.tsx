@@ -102,6 +102,42 @@ function SheetBody({ req }: { req: ExtensionUiRequest }) {
               {opt}
             </Button>
           ))}
+
+          {/* Free-text escape hatch. The RPC carries no "this option means type
+              your own" flag — options are plain strings — so rather than
+              pattern-matching a phrase pi might reword or localize, every
+              select offers its own input. An answer the model did not think of
+              goes back as the response value, same as a picked option. */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              margin: "8px 6px 2px",
+              paddingTop: 10,
+              borderTop: "1px solid var(--separator)",
+            }}
+          >
+            <Input
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && text.trim()) {
+                  respond(req, { value: text.trim() });
+                }
+              }}
+              placeholder={t("ext.selectCustomPlaceholder")}
+              style={{ flex: 1, borderRadius: 99, fontSize: 13 }}
+            />
+            <Button
+              variant="primary"
+              disabled={!text.trim()}
+              onClick={() => respond(req, { value: text.trim() })}
+              style={{ borderRadius: 99 }}
+            >
+              {t("ext.selectCustomSend")}
+            </Button>
+          </div>
         </div>
       )}
 
