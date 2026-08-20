@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { AnimatePresence, motion } from "motion/react";
-import { useUI } from "@/lib/store";
+import {
+  AGENT_PANEL_WIDTH_MAX,
+  AGENT_PANEL_WIDTH_MIN,
+  useUI,
+} from "@/lib/store";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
 import { EditorCanvas } from "@/components/EditorCanvas";
 import { AgentPanel } from "@/components/AgentPanel";
+import { PanelResizer } from "@/components/PanelResizer";
 import { CommandPalette } from "@/components/CommandPalette";
 import { DiffReviewCard } from "@/components/DiffReviewCard";
 import { ModelPicker } from "@/components/ModelPicker";
@@ -26,10 +31,19 @@ const TerminalDrawer = dynamic(
 
 const springPanel = { type: "spring" as const, stiffness: 300, damping: 30 };
 
+/** Floor for the editor column while the chat rail is dragged wider. */
+const EDITOR_MIN_WIDTH = 360;
+
 export default function Home() {
   const {
     sidebarOpen,
     agentPanelOpen,
+    agentPanelWidth,
+    agentPanelResizing,
+    setAgentPanelWidth,
+    persistAgentPanelWidth,
+    setAgentPanelResizing,
+    resetAgentPanelWidth,
     zenMode,
     workMode,
     setCommandPalette,
@@ -39,6 +53,10 @@ export default function Home() {
     agentRunning,
   } = useUI();
   const t = useT();
+  const rowRef = useRef<HTMLDivElement>(null);
+  /** live width of the panel row — the drag ceiling and the effective width
+   *  both depend on it, and it changes when the window is resized */
+  const [rowWidth, setRowWidth] = useState(0);
 
   // Global keyboard shortcuts (iOS-clean: one modifier, memorable)
   useEffect(() => {
@@ -70,6 +88,47 @@ export default function Home() {
   const showAgent = !zenMode && (workMode || agentPanelOpen);
   const showEditor = !zenMode && !workMode;
 
+  // Track the row's width so the rail can be capped against what's actually
+  // available. An observer rather than a window resize listener: the row is also
+  // resized by things the window doesn't report, like the nav rail.
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) =>
+      setRowWidth(entry.contentRect.width),
+    );
+    observer.observe(el);
+    setRowWidth(el.getBoundingClientRect().width);
+    return () => observer.disconnect();
+  }, []);
+
+  /**
+   * The widest the rail may be right now: whatever the row can spare above the
+   * editor's floor. Measuring the row means the nav rail is already excluded;
+   * the sidebar is subtracted because it doesn't shrink.
+   */
+  const agentMaxWidth = useMemo(() => {
+    if (!rowWidth) return AGENT_PANEL_WIDTH_MAX;
+    const room = rowWidth - (showSidebar ? 248 : 0) - EDITOR_MIN_WIDTH;
+    // A minimum-size window can leave less room than the rail's own floor.
+    // Clamping up rather than inverting the range keeps the rail usable and
+    // lets the editor be the one that gives.
+    return Math.max(AGENT_PANEL_WIDTH_MIN, Math.min(AGENT_PANEL_WIDTH_MAX, room));
+  }, [rowWidth, showSidebar]);
+
+  /**
+   * The rendered width, which is not the same as the saved one. A rail dragged
+   * wide on a large window has to fold back on a small one, but the preference
+   * itself is kept: widen the window and the rail returns to what the user
+   * chose, rather than being permanently trimmed by the narrowest session.
+   */
+  const agentEffectiveWidth = Math.min(agentPanelWidth, agentMaxWidth);
+
+  const agentPanelBounds = useCallback(
+    () => ({ min: AGENT_PANEL_WIDTH_MIN, max: agentMaxWidth }),
+    [agentMaxWidth],
+  );
+
   return (
     <div
       style={{
@@ -82,7 +141,10 @@ export default function Home() {
     >
       <TopBar />
 
-      <div style={{ display: "flex", flex: 1, minHeight: 0, position: "relative" }}>
+      <div
+        ref={rowRef}
+        style={{ display: "flex", flex: 1, minHeight: 0, position: "relative" }}
+      >
         <AnimatePresence initial={false}>
           {showSidebar && (
             <motion.div
@@ -116,12 +178,24 @@ export default function Home() {
             <motion.div
               key="agent"
               initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 320, opacity: 1 }}
+              animate={{ width: agentEffectiveWidth, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
-              transition={springPanel}
-              style={{ overflow: "hidden", flexShrink: 0 }}
+              /* The spring is right for open/close but wrong for a drag — it
+                 would lag a frame or two behind the pointer. */
+              transition={agentPanelResizing ? { duration: 0 } : springPanel}
+              style={{ position: "relative", overflow: "hidden", flexShrink: 0 }}
             >
-              <AgentPanel />
+              <PanelResizer
+                edge="left"
+                width={agentEffectiveWidth}
+                bounds={agentPanelBounds}
+                onResize={setAgentPanelWidth}
+                onResizeStateChange={setAgentPanelResizing}
+                onCommit={persistAgentPanelWidth}
+                onReset={resetAgentPanelWidth}
+                label={t("agent.resize")}
+              />
+              <AgentPanel width={agentEffectiveWidth} />
             </motion.div>
           ))}
       </div>

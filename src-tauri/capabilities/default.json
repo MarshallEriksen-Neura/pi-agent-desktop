@@ -16,6 +16,7 @@
     "core:window:allow-is-visible",
     "core:window:allow-is-minimized",
     "dialog:allow-message",
+    "dialog:allow-confirm",
     "updater:default",
     "process:default",
     "notification:default"

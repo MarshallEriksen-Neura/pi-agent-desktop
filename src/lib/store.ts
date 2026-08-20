@@ -8,6 +8,14 @@ export type TaskStatus = "done" | "running" | "queued" | "error";
 
 const THEME_STORAGE_KEY = "pi-desktop.theme";
 const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";
+const AGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.agentPanelWidth";
+
+/** Docked chat rail width, in px. Only applies in the default layout —
+ *  work mode stretches the panel to a centered reading column, zen mode hides it. */
+export const AGENT_PANEL_WIDTH_DEFAULT = 320;
+/** Narrower than this and the composer + model picker stop fitting on one row. */
+export const AGENT_PANEL_WIDTH_MIN = 280;
+export const AGENT_PANEL_WIDTH_MAX = 900;
 
 // what happens when the user closes the main window
 export type CloseBehavior = "ask" | "minimize" | "quit";
@@ -38,6 +46,9 @@ function systemTheme(): Theme {
 export type ThemeSource = "system" | "user";
 
 let stopThemeWatch: (() => void) | null = null;
+
+const clampAgentPanelWidth = (px: number) =>
+  Math.round(Math.min(AGENT_PANEL_WIDTH_MAX, Math.max(AGENT_PANEL_WIDTH_MIN, px)));
 
 export interface AgentTask {
   id: string;
@@ -75,6 +86,10 @@ interface UIState {
   workMode: boolean;
   sidebarOpen: boolean;
   agentPanelOpen: boolean;
+  /** user-dragged width of the docked chat rail (px) */
+  agentPanelWidth: number;
+  /** true only while the divider is being dragged — suppresses the width spring */
+  agentPanelResizing: boolean;
   commandPaletteOpen: boolean;
   terminalOpen: boolean;
   activeFile: string;
@@ -106,6 +121,15 @@ interface UIState {
   toggleWork: () => void;
   toggleSidebar: () => void;
   toggleAgentPanel: () => void;
+  /** live width during a drag — clamped, not persisted (call persist on release) */
+  setAgentPanelWidth: (px: number) => void;
+  /** write the current width to storage; call once when the drag settles */
+  persistAgentPanelWidth: () => void;
+  setAgentPanelResizing: (resizing: boolean) => void;
+  /** back to the stock 320px rail and forget the saved width */
+  resetAgentPanelWidth: () => void;
+  /** restore the saved rail width — call once on mount */
+  initAgentPanelWidth: () => void;
   toggleTerminal: () => void;
   setTerminalOpen: (open: boolean) => void;
   setCommandPalette: (open: boolean) => void;
@@ -136,6 +160,8 @@ export const useUI = create<UIState>((set) => ({
   workMode: false,
   sidebarOpen: true,
   agentPanelOpen: true,
+  agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
+  agentPanelResizing: false,
   commandPaletteOpen: false,
   activeFile: "src/lib/agent.ts",
 
@@ -221,6 +247,48 @@ export const useUI = create<UIState>((set) => ({
   toggleWork: () => set((s) => ({ workMode: !s.workMode })),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
+  /**
+   * Storage is deliberately not touched here: a drag fires this once per frame,
+   * so persisting inline would mean ~60 synchronous localStorage writes a second.
+   * The caller writes once on pointer release instead.
+   */
+  setAgentPanelWidth: (px) =>
+    set((s) => {
+      const width = clampAgentPanelWidth(px);
+      return width === s.agentPanelWidth ? {} : { agentPanelWidth: width };
+    }),
+  persistAgentPanelWidth: () => {
+    try {
+      localStorage.setItem(
+        AGENT_PANEL_WIDTH_STORAGE_KEY,
+        String(useUI.getState().agentPanelWidth),
+      );
+    } catch {
+      // storage unavailable (private mode) — the width stays for this session only
+    }
+  },
+  setAgentPanelResizing: (resizing) => set({ agentPanelResizing: resizing }),
+  resetAgentPanelWidth: () =>
+    set(() => {
+      try {
+        localStorage.removeItem(AGENT_PANEL_WIDTH_STORAGE_KEY);
+      } catch {
+        // storage unavailable — the in-memory reset still applies
+      }
+      return { agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT };
+    }),
+  initAgentPanelWidth: () =>
+    set(() => {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(AGENT_PANEL_WIDTH_STORAGE_KEY);
+      } catch {
+        // storage unavailable — stay on the default rail width
+      }
+      const px = saved === null ? NaN : Number(saved);
+      if (!Number.isFinite(px)) return {};
+      return { agentPanelWidth: clampAgentPanelWidth(px) };
+    }),
   setCommandPalette: (open) => set({ commandPaletteOpen: open }),
   setActiveFile: (file) => set({ activeFile: file }),
 

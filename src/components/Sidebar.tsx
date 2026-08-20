@@ -11,6 +11,8 @@ import {
   FilePlus2,
   FolderPlus,
   Pencil,
+  Smartphone,
+  RefreshCw,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { ScrollArea } from "@appica/ui-react/scroll-area";
@@ -23,6 +25,8 @@ import { useWorkspace, type FsEntry } from "@/lib/workspace";
 import { useSessions, type ChatSessionMeta } from "@/lib/pi/sessions";
 import { getChatStore } from "@/lib/pi/chat";
 import { getPiStore } from "@/lib/pi/store";
+import { useRemoteConversations } from "@/lib/remote-conversations/store";
+import type { RemoteConversationSnapshot } from "@pi/remote-control-contracts";
 import { useT } from "@/lib/i18n";
 import { SectionLabel } from "./primitives";
 
@@ -404,6 +408,9 @@ export function Sidebar() {
             </motion.button>
           )}
 
+          {/* conversations started on a paired phone — same list, own section */}
+          <RemoteSection />
+
           {/* Explorer header — label + hover-revealed new-file / new-folder buttons */}
           <div
             onMouseEnter={() => setExplorerHover(true)}
@@ -524,6 +531,234 @@ export function Sidebar() {
     </TreeEditCtx.Provider>
   );
 }
+
+//─── RemoteSection ────────────────────────────────────────────────────────────
+
+/**
+ * Conversations started from a paired phone, listed under the local sessions so
+ * picking one up on the desktop is the same gesture as switching sessions.
+ *
+ * Kept as its own section rather than interleaved with local rows, because the
+ * two have different operations: local rows rename/delete and steer a live
+ * turn, remote rows archive/cancel and can only append to a gateway queue.
+ * Merging them would make half the affordances conditional on a distinction the
+ * user cannot see.
+ *
+ * Renders nothing at all when there are no remote conversations — a machine
+ * that has never paired a phone should not grow an empty section, and a gateway
+ * that is switched off surfaces its error on the settings page that owns it,
+ * not here.
+ */
+function RemoteSection() {
+  const t = useT();
+  const acquire = useRemoteConversations((s) => s.acquire);
+  const conversations = useRemoteConversations((s) => s.conversations);
+  const selectedId = useRemoteConversations((s) => s.selectedId);
+  const refresh = useRemoteConversations((s) => s.refresh);
+  const [expanded, setExpanded] = useState(false);
+
+  // Poll for as long as the sidebar is mounted; the store decides the cadence.
+  useEffect(() => acquire(), [acquire]);
+
+  const visible = useMemo(() => {
+    if (expanded || conversations.length <= SESSION_COLLAPSE_THRESHOLD) {
+      return conversations;
+    }
+    const head = conversations.slice(0, SESSION_COLLAPSE_THRESHOLD);
+    if (selectedId && !head.some((c) => c.conversationId === selectedId)) {
+      const active = conversations.find((c) => c.conversationId === selectedId);
+      if (active) return [...head, active];
+    }
+    return head;
+  }, [conversations, expanded, selectedId]);
+
+  if (conversations.length === 0) return null;
+
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "14px 10px 6px 16px",
+        }}
+      >
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            color: "var(--text-tertiary)",
+          }}
+        >
+          <Smartphone size={11} />
+          {t("sidebar.remote")}
+        </span>
+        <motion.button
+          title={t("remoteTasks.refresh")}
+          aria-label={t("remoteTasks.refresh")}
+          onClick={() => void refresh()}
+          whileTap={{ scale: 0.85 }}
+          transition={{ type: "spring", stiffness: 500, damping: 24 }}
+          className="pi-row"
+          style={{
+            display: "grid",
+            placeItems: "center",
+            width: 22,
+            height: 22,
+            border: "none",
+            borderRadius: 6,
+            background: "transparent",
+            color: "var(--text-tertiary)",
+            cursor: "pointer",
+          }}
+        >
+          <RefreshCw size={13} />
+        </motion.button>
+      </div>
+      {visible.map((conversation) => (
+        <RemoteRow
+          key={conversation.conversationId}
+          conversation={conversation}
+          active={conversation.conversationId === selectedId}
+        />
+      ))}
+      {conversations.length > SESSION_COLLAPSE_THRESHOLD && (
+        <motion.button
+          whileTap={{ scale: 0.97 }}
+          transition={{ type: "spring", stiffness: 500, damping: 30 }}
+          onClick={() => setExpanded((v) => !v)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            width: "calc(100% - 12px)",
+            margin: "2px 6px",
+            padding: "6px 10px",
+            fontSize: 12,
+            textAlign: "left",
+            border: "none",
+            borderRadius: 8,
+            background: "transparent",
+            color: "var(--text-tertiary)",
+            cursor: "pointer",
+          }}
+        >
+          <ChevronRight
+            size={12}
+            style={{
+              display: "inline-block",
+              transform: expanded ? "rotate(90deg)" : "none",
+              transition: "transform 0.15s ease",
+            }}
+          />
+          <span>
+            {expanded
+              ? t("sidebar.collapseSessions")
+              : t("sidebar.showAllRemote", { count: conversations.length })}
+          </span>
+        </motion.button>
+      )}
+    </>
+  );
+}
+
+/** Status values that mean the host is mid-turn on this conversation. */
+const REMOTE_BUSY_STATUSES = new Set(["queued", "starting", "running"]);
+
+/**
+ * One remote conversation row. Click focuses it on the chat surface. No rename
+ * (the gateway derives titles) and no delete — archive is the remote-side
+ * equivalent and lives in the panel header, where the conversation it applies
+ * to is unambiguous.
+ */
+const RemoteRow = memo(function RemoteRow({
+  conversation,
+  active,
+}: {
+  conversation: RemoteConversationSnapshot;
+  active: boolean;
+}) {
+  const t = useT();
+  const select = useRemoteConversations((s) => s.select);
+  const name = conversation.title?.trim() || t("remoteTasks.untitled");
+  const awaiting = conversation.status === "awaiting_input";
+  const busy = REMOTE_BUSY_STATUSES.has(conversation.status);
+  const queued = conversation.queuedTurnCount;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        className="pi-row"
+        onClick={() => void select(conversation.conversationId)}
+        title={name}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          width: "calc(100% - 12px)",
+          margin: "1px 6px",
+          padding: "7px 10px",
+          fontSize: 13,
+          textAlign: "left",
+          border: "none",
+          borderRadius: 8,
+          cursor: "pointer",
+          color: active ? "var(--text-primary)" : "var(--text-secondary)",
+          background: active ? "var(--accent-muted)" : "transparent",
+        }}
+      >
+        <span style={{ opacity: 0.7, width: 15, display: "grid", placeItems: "center" }}>
+          <Smartphone size={13} />
+        </span>
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            paddingRight: busy || awaiting ? 16 : 0,
+          }}
+        >
+          {name}
+          {queued > 0 && (
+            <span style={{ opacity: 0.6, fontSize: 11 }}>
+              {` · ${queued} ${t("remoteTasks.queued")}`}
+            </span>
+          )}
+        </span>
+      </button>
+      {(busy || awaiting) && (
+        <motion.span
+          initial={{ opacity: 0.4 }}
+          animate={{ opacity: [0.4, 1, 0.4] }}
+          transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+          title={t(`remoteTasks.status.${conversation.status}`)}
+          style={{
+            position: "absolute",
+            right: 16,
+            top: "50%",
+            transform: "translateY(-50%)",
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: awaiting ? "var(--warning)" : "var(--accent)",
+            boxShadow: awaiting
+              ? "0 0 0 2px color-mix(in srgb, var(--warning) 35%, transparent)"
+              : "0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent)",
+            pointerEvents: "none",
+          }}
+        />
+      )}
+    </div>
+  );
+});
 
 //─── SessionRow ───────────────────────────────────────────────────────────────
 

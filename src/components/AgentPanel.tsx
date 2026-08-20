@@ -9,11 +9,12 @@ import {
   CollapsibleContent,
 } from "@appica/ui-react/collapsible";
 import { Spinner } from "@appica/ui-react/spinner";
-import { useUI } from "@/lib/store";
+import { AGENT_PANEL_WIDTH_DEFAULT, useUI } from "@/lib/store";
 import { useChat, getChatStore, type ChatMessage, type DeliveryMode } from "@/lib/pi/chat";
 import { usePi, getPiStore } from "@/lib/pi/store";
 import { useSessions, type ChatSessionMeta } from "@/lib/pi/sessions";
 import { focusSession } from "@/lib/pi/task-context";
+import { useRemoteConversations } from "@/lib/remote-conversations/store";
 import { useSubagents } from "@/lib/pi/subagents";
 import { useExtUi } from "@/lib/pi/ext-ui";
 import { useT } from "@/lib/i18n";
@@ -25,6 +26,7 @@ import {
 import { SubagentDeck } from "./Subagents";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 import { MessageBubble } from "./MessageBubble";
+import { RemoteConversationPanel } from "./RemoteConversationPanel";
 import { ActivityLine, PiSpark, ShimmerText } from "./ActivityLine";
 import { ComposerInput } from "./ComposerInput";
 import { RetryBanner } from "./RetryBanner";
@@ -42,8 +44,23 @@ import {
 
 const DEMO_TASK_IDS = new Set(["read", "reason", "edit", "test"]);
 
-/** Right rail — real pi conversation stream + demo task strip. */
-export function AgentPanel() {
+/**
+ * Right rail — the chat surface.
+ *
+ * There is one surface and two kinds of conversation on it: local sessions
+ * (this component) and conversations started on a paired phone
+ * (`RemoteConversationPanel`). The sidebar owns which one is focused; a remote
+ * selection wins because it can only be set by an explicit click, and it is
+ * cleared the moment a local session takes focus back.
+ */
+export function AgentPanel({ width }: { width?: number } = {}) {
+  const remoteSelectedId = useRemoteConversations((s) => s.selectedId);
+  if (remoteSelectedId !== null) return <RemoteConversationPanel width={width} />;
+  return <LocalAgentPanel width={width} />;
+}
+
+/** The local pi conversation stream + demo task strip. */
+function LocalAgentPanel({ width }: { width?: number }) {
   const { agentTasks, agentRunning, startDemo } = useUI();
   const { messages, streaming, send, steer, followUp, abort, queue } = useChat();
   /** how ⌘⏎ delivers a message typed while a turn is already running */
@@ -221,7 +238,10 @@ export function AgentPanel() {
       className="material"
       tabIndex={-1}
       style={{
-        width: 320,
+        /* An explicit px width, not 100%: the wrapper animates its own width to
+           open and close the rail, and a percentage would make the transcript
+           reflow through every frame of that instead of being clipped. */
+        width: width ?? AGENT_PANEL_WIDTH_DEFAULT,
         height: "100%",
         borderLeft: "1px solid var(--separator)",
         display: "flex",

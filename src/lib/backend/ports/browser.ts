@@ -30,6 +30,8 @@ export interface AgentBrowserStatusDto {
   installed: boolean;
   version?: string | null;
   expected: string;
+  /** True only when the installed CLI is older than `expected`. */
+  outdated: boolean;
   error?: string | null;
 }
 
@@ -130,13 +132,19 @@ export function createMockBrowserPort(): BrowserPort {
       installed: agentInstalled,
       version: agentInstalled ? "0.33.0" : null,
       expected: "0.33.0",
+      outdated: false,
     }),
     installAgentBrowser: async () => {
       agentInstalled = true;
       return {
         ok: true,
         log: "mock: installed agent-browser",
-        status: { installed: true, version: "0.33.0", expected: "0.33.0" },
+        status: {
+          installed: true,
+          version: "0.33.0",
+          expected: "0.33.0",
+          outdated: false,
+        },
       };
     },
     onState: async () => () => {},

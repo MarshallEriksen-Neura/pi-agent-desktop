@@ -27,7 +27,41 @@ pub struct AgentBrowserStatus {
     pub installed: bool,
     pub version: Option<String>,
     pub expected: String,
+    /// True only when the installed version is *older* than `EXPECTED_VERSION`.
+    /// A newer CLI satisfies the capability baseline, so it must not warn.
+    pub outdated: bool,
     pub error: Option<String>,
+}
+
+/// Compare dotted numeric versions (`0.34.0` vs `0.33.0`).
+///
+/// Non-numeric segments (pre-release suffixes like `1.0.0-beta.2`) compare as
+/// their leading number, which is enough for a "is this older than the
+/// baseline" gate.
+fn is_older(version: &str, baseline: &str) -> bool {
+    let segments = |value: &str| -> Vec<u64> {
+        value
+            .split(['.', '-', '+'])
+            .map(|part| {
+                part.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0)
+            })
+            .collect()
+    };
+    let left = segments(version);
+    let right = segments(baseline);
+    let width = left.len().max(right.len());
+    for index in 0..width {
+        let a = left.get(index).copied().unwrap_or(0);
+        let b = right.get(index).copied().unwrap_or(0);
+        if a != b {
+            return a < b;
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,16 +89,23 @@ fn check_sync() -> AgentBrowserStatus {
             installed: false,
             version: None,
             expected: EXPECTED_VERSION.to_owned(),
+            outdated: false,
             error: None,
         };
     };
     match Command::new(&binary).arg("--version").output() {
         Ok(output) => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let version = parse_version(&text);
+            let outdated = version
+                .as_deref()
+                .map(|value| is_older(value, EXPECTED_VERSION))
+                .unwrap_or(false);
             AgentBrowserStatus {
                 installed: output.status.success(),
-                version: parse_version(&text),
+                version,
                 expected: EXPECTED_VERSION.to_owned(),
+                outdated,
                 error: None,
             }
         }
@@ -72,6 +113,7 @@ fn check_sync() -> AgentBrowserStatus {
             installed: false,
             version: None,
             expected: EXPECTED_VERSION.to_owned(),
+            outdated: false,
             error: Some(error.to_string()),
         },
     }
@@ -178,7 +220,24 @@ pub async fn agent_browser_install() -> Result<AgentBrowserInstallResult, String
 
 #[cfg(test)]
 mod tests {
-    use super::parse_version;
+    use super::{is_older, parse_version};
+
+    #[test]
+    fn flags_only_versions_below_the_baseline() {
+        assert!(is_older("0.32.9", "0.33.0"));
+        assert!(is_older("0.9.0", "0.33.0"));
+        // Equal or newer satisfies the baseline — this was the false positive.
+        assert!(!is_older("0.33.0", "0.33.0"));
+        assert!(!is_older("0.34.0", "0.33.0"));
+        assert!(!is_older("1.0.0", "0.33.0"));
+    }
+
+    #[test]
+    fn tolerates_short_and_prerelease_versions() {
+        assert!(is_older("0.33", "0.33.1"));
+        assert!(!is_older("0.33.0-beta.1", "0.33.0"));
+        assert!(!is_older("garbage", "0.0.0"));
+    }
 
     #[test]
     fn parses_bare_version() {

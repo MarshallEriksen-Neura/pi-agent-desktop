@@ -3,6 +3,7 @@ export const en = {
   // common
   "common.cancel": "Cancel",
   "common.confirm": "Confirm",
+  "common.delete": "Delete",
   "common.done": "Done",
   "common.close": "Close",
   "common.loading": "Loading…",
@@ -10,7 +11,6 @@ export const en = {
 
   // nav rail
   "nav.workspace": "Workspace",
-  "nav.remoteTasks": "Remote tasks",
   "nav.models": "Models",
   "nav.plugins": "Plugins",
   "nav.skills": "Skills",
@@ -19,21 +19,16 @@ export const en = {
   "nav.settings": "Settings",
   "nav.piStatus": "pi: {status}",
 
-  // remote tasks
-  "remoteTasks.title": "Remote tasks",
-  "remoteTasks.subtitle": "Conversations running from paired devices",
-  "remoteTasks.refresh": "Refresh remote tasks",
-  "remoteTasks.listLabel": "Remote conversation list",
-  "remoteTasks.empty": "No remote tasks yet",
-  "remoteTasks.emptyDetail": "Tasks sent from a paired phone will appear here.",
+  // remote conversations (started on a paired phone, continued here)
+  "remoteTasks.title": "From phone",
+  "remoteTasks.refresh": "Refresh remote conversations",
   "remoteTasks.untitled": "Untitled task",
   "remoteTasks.queued": "queued",
-  "remoteTasks.device": "Device",
-  "remoteTasks.project": "Project",
-  "remoteTasks.turns": "turns",
-  "remoteTasks.user": "You",
-  "remoteTasks.assistant": "Pi",
   "remoteTasks.waiting": "Waiting for output…",
+  "remoteTasks.fromPhone": "Started on phone",
+  "remoteTasks.backToLocal": "Back to local session",
+  "remoteTasks.textOnlyNote":
+    "Transcript is text only — tool steps and thinking stay on the phone.",
   "remoteTasks.status.idle": "Idle",
   "remoteTasks.status.queued": "Queued",
   "remoteTasks.status.starting": "Starting",
@@ -101,9 +96,11 @@ export const en = {
 
   // sidebar
   "sidebar.sessions": "Sessions",
+  "sidebar.remote": "From phone",
   "sidebar.explorer": "Explorer",
   "sidebar.newSession": "New session",
   "sidebar.showAllSessions": "Show all ({count})",
+  "sidebar.showAllRemote": "Show all ({count})",
   "sidebar.collapseSessions": "Show less",
   "session.untitled": "New chat",
   "session.delete": "Delete session",
@@ -112,6 +109,7 @@ export const en = {
   "palette.newSession": "New chat session",
 
   // agent panel
+  "agent.resize": "Drag to resize chat · double-click to reset",
   "agent.working": "Pi is working",
   "agent.statusLine": "Pi is {status}",
   "agent.emptyAsk": "Ask Pi to code. Type ",
@@ -560,6 +558,8 @@ export const en = {
   "models.customEmpty": "No custom models yet",
   "models.addModel": "Add model",
   "models.removeModel": "Remove model",
+  "models.removeModel.message":
+    "This model will be removed from models.json. You can add it back at any time.",
   "models.providerId": "Provider ID",
   "models.apiType": "API type",
   "models.baseUrl": "Base URL",
@@ -596,6 +596,8 @@ export const en = {
   "models.invertSelection": "Invert",
   "models.clearSearch": "Clear search",
   "models.removeProvider": "Remove provider",
+  "models.removeProvider.message":
+    "This provider and its {count} model(s) will be removed from models.json, along with the stored API key.",
   "models.manualAdd": "Add model manually",
   "models.enabledInChat": "Models shown in chat",
   "models.enabledInChatFooter":
@@ -923,5 +925,5 @@ export const en = {
   "browser.agentMissing": "The agent-browser CLI that powers pi's browser tool is not installed.",
   "browser.agentInstall": "Install",
   "browser.agentInstalling": "Installing…",
-  "browser.agentVersionMismatch": "agent-browser {version} detected — pi expects {expected}.",
+  "browser.agentVersionMismatch": "agent-browser {version} is older than the {expected} pi expects — some browser tools may fail.",
 } as const;

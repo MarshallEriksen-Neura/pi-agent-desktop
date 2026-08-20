@@ -6,6 +6,9 @@
 //!     user-data dir. All control flows over CDP WebSocket JSON-RPC.
 //!   - `BrowserState` owns the running browser, the origin allowlist, and any
 //!     pending origin-approval request.
+//!   - The MCP bridge is armed once at app startup (`arm_mcp_bridge`) on a fixed
+//!     port, not on pane open, and outlives the Chrome engine. Chrome itself
+//!     starts lazily on the first tool call or pane open (`ensure_engine`).
 //!   - Navigating to a host outside the allowlist parks the navigation and
 //!     emits `browser://approval`; the UI confirms, then `browser_approve_origin`
 //!     completes the navigation (Codex's `access_browser_origin` pattern).
@@ -328,41 +331,69 @@ pub async fn browser_start(
     app: AppHandle,
     state: State<'_, BrowserState>,
 ) -> Result<BrowserStatus, String> {
-    {
-        let guard = state.inner.lock().await;
-        if guard.is_some() {
-            return Ok(browser_status_snapshot(&state).await);
-        }
-    }
-    let browser = start_browser_engine().await?;
-    {
-        let mut guard = state.inner.lock().await;
-        *guard = Some(browser);
-    }
-
-    // Bring up the local MCP server exposing browser_* tools to pi, and
-    // register it in the global mcp.json so the agent can connect.
-    if state.mcp.lock().await.is_none() {
-        match mcp::start_mcp_server(app.clone()) {
-            Ok(running) => {
-                let endpoint = running.endpoint();
-                let mut mcp_guard = state.mcp.lock().await;
-                *mcp_guard = Some(running);
-                drop(mcp_guard);
-                let _ = register_mcp_in_pi_config(&app, &endpoint);
-                let _ = app.emit("browser://mcp", endpoint);
-            }
-            Err(error) => {
-                eprintln!("[browser-mcp] failed to start MCP server: {error}");
-            }
-        }
-    }
-
+    ensure_engine(&app).await?;
     Ok(browser_status_snapshot(&state).await)
 }
 
+/// Start the Chrome engine if it isn't already running (idempotent).
+///
+/// Shared by the `browser_start` command and the MCP tool dispatcher, so an
+/// agent tool call works even when the user never opened the browser pane.
+pub(crate) async fn ensure_engine(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<BrowserState>();
+    {
+        let guard = state.inner.lock().await;
+        if guard.is_some() {
+            return Ok(());
+        }
+    }
+    let browser = start_browser_engine().await?;
+    let mut guard = state.inner.lock().await;
+    // Lost a concurrent race — keep the engine that landed first and discard ours
+    // so we never leak a Chrome tree or its profile dir.
+    if guard.is_some() {
+        drop(guard);
+        let mut browser = browser;
+        chrome::kill_tree(&mut browser.child);
+        let _ = fs::remove_dir_all(&browser.user_data_dir);
+        return Ok(());
+    }
+    *guard = Some(browser);
+    Ok(())
+}
+
+/// Arm the browser MCP bridge: start the local server and register its endpoint
+/// in pi's global `mcp.json`.
+///
+/// Called once from the app `setup` hook — deliberately *before* any pi process
+/// is spawned, because pi reads `mcp.json` only at startup and cannot reload it.
+/// Registering on pane open (as this used to) meant pi booted with a stale port
+/// from the previous run and every `browser_*` call failed for the whole session.
+pub fn arm_mcp_bridge(app: &AppHandle) {
+    let state = app.state::<BrowserState>();
+    let running = match mcp::start_mcp_server(app.clone()) {
+        Ok(running) => running,
+        Err(error) => {
+            eprintln!("[browser-mcp] failed to start MCP server: {error}");
+            return;
+        }
+    };
+    let endpoint = running.endpoint();
+
+    // Write the config synchronously: the frontend calls `pi_start` as soon as
+    // the webview loads, so this must land before pi reads the file.
+    if let Err(error) = register_mcp_in_pi_config(&endpoint) {
+        eprintln!("[browser-mcp] failed to register endpoint in mcp.json: {error}");
+    }
+
+    tauri::async_runtime::block_on(async {
+        *state.mcp.lock().await = Some(running);
+    });
+    let _ = app.emit("browser://mcp", endpoint);
+}
+
 /// Write the `browser` server entry into the global pi MCP config (~/.pi/agent/mcp.json).
-fn register_mcp_in_pi_config(_app: &AppHandle, endpoint: &str) -> Result<(), String> {
+fn register_mcp_in_pi_config(endpoint: &str) -> Result<(), String> {
     let scope = "global";
     let read = crate::mcp_config::mcp_config_read(scope.to_owned(), None)?;
     let mut config: serde_json::Value = if read.exists && !read.content.trim().is_empty() {
@@ -397,7 +428,10 @@ pub async fn browser_stop(state: State<'_, BrowserState>) -> Result<(), String> 
         let _ = fs::remove_dir_all(&browser.user_data_dir);
     }
     *state.pending.lock().await = None;
-    *state.mcp.lock().await = None; // drops RunningMcp → graceful shutdown
+    // The MCP server deliberately outlives the engine: its endpoint is what pi
+    // holds for the whole session, and tearing it down here would make every
+    // later `browser_*` tool call fail with a dead port. A tool call restarts
+    // the engine on demand via `ensure_engine`.
     Ok(())
 }
 
@@ -736,7 +770,8 @@ pub fn start_event_forwarder(app: AppHandle) {
                     let _ = fs::remove_dir_all(&browser.user_data_dir);
                 }
                 *state.pending.lock().await = None;
-                *state.mcp.lock().await = None;
+                // Keep the MCP server up — see `browser_stop`. A crashed Chrome is
+                // recovered on the next tool call, not by dropping the endpoint.
                 drop(guard);
                 let _ = app.emit("browser://state", browser_status_snapshot(&state).await);
                 continue;

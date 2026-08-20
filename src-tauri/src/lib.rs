@@ -307,6 +307,9 @@ pub fn run() {
                 eprintln!("[tray] failed to create system tray: {e}");
             }
             browser::start_event_forwarder(app.handle().clone());
+            // Register the browser MCP endpoint before the frontend can spawn pi:
+            // pi reads mcp.json once at startup and cannot reload it.
+            browser::arm_mcp_bridge(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

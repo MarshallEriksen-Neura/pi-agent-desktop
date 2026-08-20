@@ -183,30 +183,28 @@ export function BrowserPanel() {
           </Button>
         </div>
       )}
-      {agentStatus?.installed &&
-        agentStatus.version &&
-        agentStatus.version !== agentStatus.expected && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "6px 12px",
-              borderBottom: "1px solid var(--separator)",
-              background: "var(--surface)",
-              fontSize: 11.5,
-              color: "var(--text-tertiary)",
-            }}
-          >
-            <Shield size={13} style={{ flexShrink: 0 }} />
-            <span>
-              {t("browser.agentVersionMismatch", {
-                version: agentStatus.version,
-                expected: agentStatus.expected,
-              })}
-            </span>
-          </div>
-        )}
+      {agentStatus?.installed && agentStatus.version && agentStatus.outdated && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "6px 12px",
+            borderBottom: "1px solid var(--separator)",
+            background: "var(--surface)",
+            fontSize: 11.5,
+            color: "var(--text-tertiary)",
+          }}
+        >
+          <Shield size={13} style={{ flexShrink: 0 }} />
+          <span>
+            {t("browser.agentVersionMismatch", {
+              version: agentStatus.version,
+              expected: agentStatus.expected,
+            })}
+          </span>
+        </div>
+      )}
 
       {/* Live view */}
       <div

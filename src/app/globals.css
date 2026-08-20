@@ -667,6 +667,55 @@ body {
   margin: 12px 0;
 }
 
+/* ── Panel divider: drag to resize the chat rail ─────────────────────────── */
+/* Sits on top of the panel's own 1px border rather than replacing it, so the
+   seam looks identical until pointed at. The hit area is wider than the line
+   it draws — a 1px target is unhittable in practice. */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  z-index: 3;
+  cursor: col-resize;
+  /* keep the drag from selecting transcript text as the pointer sweeps over it */
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  outline: none;
+}
+.panel-resizer[data-edge="left"] { left: 0; }
+.panel-resizer[data-edge="right"] { right: 0; }
+
+/* the visible line — a hairline that thickens into the accent on hover/drag */
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  translate: -50% 0;
+  width: 1px;
+  background: transparent;
+  transition:
+    background var(--duration-fast) var(--spring-smooth),
+    width var(--duration-fast) var(--spring-smooth);
+}
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after,
+.panel-resizer:active::after {
+  width: 2px;
+  background: var(--accent);
+}
+.panel-resizer:focus-visible::after { opacity: 0.85; }
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-resizer::after { transition: none; }
+}
+
 /* ── Work mode: chat is centered in a comfortable reading column ── */
 .sd-work {
   height: 100%;
@@ -676,8 +725,9 @@ body {
   margin-left: auto;
   margin-right: auto;
 }
-/* AgentPanel's <aside> hardcodes width:320 — force it to fill its flex container
-   in work mode so the chat actually spans the reading column. */
+/* AgentPanel's <aside> carries an explicit px width (the docked rail's dragged
+   width) — force it to fill its flex container in work mode so the chat spans
+   the reading column instead. The rail width is a docked-mode concept only. */
 .sd-work > aside {
   width: 100% !important;
   max-width: none !important;

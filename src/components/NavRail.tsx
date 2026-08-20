@@ -10,7 +10,6 @@ import {
   Wand2,
   Download,
   Settings,
-  ListTodo,
   Plug,
   Globe,
 } from "lucide-react";
@@ -22,7 +21,6 @@ import { PiMark } from "@/components/PiMark";
 const ITEMS: { href: string; icon: React.ReactNode; labelKey: MsgKey }[] = [
   { href: "/", icon: <Sparkles size={17} />, labelKey: "nav.workspace" },
   { href: "/browser/", icon: <Globe size={17} />, labelKey: "nav.browser" },
-  { href: "/remote-tasks/", icon: <ListTodo size={17} />, labelKey: "nav.remoteTasks" },
   { href: "/models/", icon: <Boxes size={17} />, labelKey: "nav.models" },
   { href: "/plugins/", icon: <Puzzle size={17} />, labelKey: "nav.plugins" },
   { href: "/skills/", icon: <Wand2 size={17} />, labelKey: "nav.skills" },

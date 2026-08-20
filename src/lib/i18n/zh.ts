@@ -5,6 +5,7 @@ export const zh: Record<keyof typeof en, string> = {
   // common
   "common.cancel": "取消",
   "common.confirm": "确认",
+  "common.delete": "删除",
   "common.done": "完成",
   "common.close": "关闭",
   "common.loading": "加载中…",
@@ -12,7 +13,6 @@ export const zh: Record<keyof typeof en, string> = {
 
   // nav rail
   "nav.workspace": "工作区",
-  "nav.remoteTasks": "远程任务",
   "nav.models": "模型",
   "nav.plugins": "插件",
   "nav.skills": "技能",
@@ -21,21 +21,15 @@ export const zh: Record<keyof typeof en, string> = {
   "nav.settings": "设置",
   "nav.piStatus": "pi：{status}",
 
-  // remote tasks
-  "remoteTasks.title": "远程任务",
-  "remoteTasks.subtitle": "来自已配对设备的任务对话",
-  "remoteTasks.refresh": "刷新远程任务",
-  "remoteTasks.listLabel": "远程对话列表",
-  "remoteTasks.empty": "暂无远程任务",
-  "remoteTasks.emptyDetail": "手机发送的任务会显示在这里。",
+  // remote conversations (started on a paired phone, continued here)
+  "remoteTasks.title": "来自手机",
+  "remoteTasks.refresh": "刷新手机对话",
   "remoteTasks.untitled": "未命名任务",
   "remoteTasks.queued": "排队",
-  "remoteTasks.device": "设备",
-  "remoteTasks.project": "项目",
-  "remoteTasks.turns": "轮",
-  "remoteTasks.user": "你",
-  "remoteTasks.assistant": "Pi",
   "remoteTasks.waiting": "等待输出…",
+  "remoteTasks.fromPhone": "手机发起",
+  "remoteTasks.backToLocal": "返回本地会话",
+  "remoteTasks.textOnlyNote": "此处只显示文本，工具步骤与思考过程留在手机端。",
   "remoteTasks.status.idle": "空闲",
   "remoteTasks.status.queued": "排队中",
   "remoteTasks.status.starting": "启动中",
@@ -102,9 +96,11 @@ export const zh: Record<keyof typeof en, string> = {
 
   // sidebar
   "sidebar.sessions": "会话",
+  "sidebar.remote": "来自手机",
   "sidebar.explorer": "文件浏览",
   "sidebar.newSession": "新建会话",
   "sidebar.showAllSessions": "显示全部（共 {count} 条）",
+  "sidebar.showAllRemote": "显示全部（共 {count} 条）",
   "sidebar.collapseSessions": "收起",
   "session.untitled": "新会话",
   "session.delete": "删除会话",
@@ -113,6 +109,7 @@ export const zh: Record<keyof typeof en, string> = {
   "palette.newSession": "新建聊天会话",
 
   // agent panel
+  "agent.resize": "拖动调整聊天面板宽度 · 双击恢复默认",
   "agent.working": "Pi 正在工作",
   "agent.statusLine": "Pi 状态：{status}",
   "agent.emptyAsk": "让 Pi 写代码。输入 ",
@@ -550,6 +547,7 @@ export const zh: Record<keyof typeof en, string> = {
   "models.customEmpty": "还没有自定义模型",
   "models.addModel": "添加模型",
   "models.removeModel": "移除模型",
+  "models.removeModel.message": "该模型将从 models.json 中移除，之后可以随时重新添加。",
   "models.providerId": "提供商 ID",
   "models.apiType": "API 类型",
   "models.baseUrl": "Base URL",
@@ -584,6 +582,8 @@ export const zh: Record<keyof typeof en, string> = {
   "models.invertSelection": "反选",
   "models.clearSearch": "清除搜索",
   "models.removeProvider": "删除提供商",
+  "models.removeProvider.message":
+    "该提供商及其 {count} 个模型将从 models.json 中移除，已保存的 API Key 也会一并删除。",
   "models.manualAdd": "手动添加模型",
   "models.enabledInChat": "聊天中显示的模型",
   "models.enabledInChatFooter":
@@ -890,5 +890,5 @@ export const zh: Record<keyof typeof en, string> = {
   "browser.agentMissing": "agent-browser 命令行未安装 — pi 的浏览器工具将无法使用。",
   "browser.agentInstall": "一键安装",
   "browser.agentInstalling": "安装中…",
-  "browser.agentVersionMismatch": "agent-browser 版本 {version},pi 期望 {expected}。",
+  "browser.agentVersionMismatch": "agent-browser {version} 低于 pi 期望的 {expected}，部分浏览器工具可能失效。",
 };

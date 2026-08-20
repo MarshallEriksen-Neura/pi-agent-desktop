@@ -22,11 +22,11 @@ import {
   InsetGroup,
   SettingsPage,
 } from "@/components/settings-ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProviderMeta, PROVIDER_META } from "@/components/provider-meta";
 import { ModelIcon } from "@/components/icons";
 import { resolveModelMetaOrFallback } from "@/lib/model-icon";
 import { useT } from "@/lib/i18n";
-import { getPort } from "@/lib/backend/composition/container";
 import { usePi } from "@/lib/pi/store";
 import { usePiSettings } from "@/lib/pi/settings";
 import {
@@ -63,13 +63,14 @@ function providerLetterIndex(models: CustomModelDef[]): string[] {
   return ALPHA_INDEX.filter((l) => set.has(l));
 }
 
-async function confirmRemoval(message: string): Promise<boolean> {
-  try {
-    return await getPort("window").confirm(message);
-  } catch {
-    return window.confirm(message);
-  }
-}
+/**
+ * What the confirm dialog is currently asking about. `null` = closed. Kept as
+ * one piece of state so provider and model removal share a single dialog
+ * instance instead of racing two.
+ */
+type PendingRemoval =
+  | { kind: "provider"; providerId: string }
+  | { kind: "model"; providerId: string; modelId: string };
 
 export default function ModelsPage() {
   const t = useT();
@@ -106,6 +107,7 @@ export default function ModelsPage() {
   const [cardFilter, setCardFilter] = useState<Record<string, string>>({});
   // Left rail: which provider is in view + element refs for scroll targets.
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
   const providerEls = useRef<Record<string, HTMLElement | null>>({});
   const modelRowEls = useRef<Record<string, (HTMLElement | null)[]>>({});
   const allModelsEl = useRef<HTMLDivElement | null>(null);
@@ -226,9 +228,15 @@ export default function ModelsPage() {
     setEditingProvider(null);
   };
 
-  const handleRemoveProvider = async (providerId: string) => {
-    if (!(await confirmRemoval(t("models.removeProvider") + "?"))) return;
-    await piModelsStore.removeProvider(providerId);
+  const confirmRemoval = async () => {
+    const target = pendingRemoval;
+    if (!target) return;
+    if (target.kind === "provider") {
+      await piModelsStore.removeProvider(target.providerId);
+    } else {
+      await piModelsStore.removeModel(target.providerId, target.modelId);
+    }
+    setPendingRemoval(null);
   };
 
   const handleSaveModel = async (
@@ -259,10 +267,11 @@ export default function ModelsPage() {
     setEditingModel(null);
   };
 
-  const handleRemoveModel = async (providerId: string, modelId: string) => {
-    if (!(await confirmRemoval(t("models.removeModel") + "?"))) return;
-    await piModelsStore.removeModel(providerId, modelId);
-  };
+  /** Model count of the provider queued for removal — drives the warning copy. */
+  const pendingProviderModelCount =
+    pendingRemoval?.kind === "provider"
+      ? customProviders[pendingRemoval.providerId]?.models?.length ?? 0
+      : 0;
 
   const handleFetch = async (providerId: string) => {
     const provider = customProviders[providerId];
@@ -567,7 +576,9 @@ export default function ModelsPage() {
                               {t("models.addModel")}
                             </button>
                             <button
-                              onClick={() => handleRemoveProvider(providerId)}
+                              onClick={() =>
+                                setPendingRemoval({ kind: "provider", providerId })
+                              }
                               className="ml-auto inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors"
                               style={{
                                 background: "rgba(196,92,72,0.08)",
@@ -671,7 +682,13 @@ export default function ModelsPage() {
                                       </p>
                                     </div>
                                     <button
-                                      onClick={() => handleRemoveModel(providerId, model.id)}
+                                      onClick={() =>
+                                        setPendingRemoval({
+                                          kind: "model",
+                                          providerId,
+                                          modelId: model.id,
+                                        })
+                                      }
                                       className="opacity-0 transition-opacity group-hover:opacity-100"
                                       style={{ color: "var(--muted-foreground)" }}
                                     >
@@ -831,6 +848,31 @@ export default function ModelsPage() {
           </p>
         </Dialog>
       )}
+
+      <ConfirmDialog
+        open={pendingRemoval !== null}
+        title={
+          pendingRemoval?.kind === "model"
+            ? t("models.removeModel")
+            : t("models.removeProvider")
+        }
+        message={
+          pendingRemoval?.kind === "model"
+            ? t("models.removeModel.message")
+            : t("models.removeProvider.message", {
+                count: String(pendingProviderModelCount),
+              })
+        }
+        detail={
+          pendingRemoval?.kind === "model"
+            ? pendingRemoval.modelId
+            : pendingRemoval?.providerId
+        }
+        confirmLabel={t("common.delete")}
+        icon={<Trash2 size={22} color="var(--danger)" />}
+        onConfirm={confirmRemoval}
+        onCancel={() => setPendingRemoval(null)}
+      />
     </SettingsPage>
   );
 }

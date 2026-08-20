@@ -22,6 +22,33 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 /// navigations are usually fast; this only fires on a wedged browser.
 const TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Fixed loopback port for the browser MCP server.
+///
+/// Deliberately fixed rather than OS-assigned: pi reads `mcp.json` exactly once
+/// at process startup and its RPC protocol exposes no way to reload MCP
+/// servers. An OS-assigned port therefore changes between runs and leaves every
+/// `browser_*` tool call pointed at a dead endpoint for the whole session.
+const DEFAULT_PORT: u16 = 51999;
+
+/// How many ports from `DEFAULT_PORT` up to try before letting the OS pick.
+const PORT_SCAN: u16 = 16;
+
+/// Bind the MCP listener, preferring a stable port so the `mcp.json` entry
+/// stays valid across app restarts.
+fn bind_listener() -> Result<std::net::TcpListener, String> {
+    for offset in 0..PORT_SCAN {
+        let port = DEFAULT_PORT.saturating_add(offset);
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+            return Ok(listener);
+        }
+    }
+    // Every candidate is occupied (another desktop instance, or unrelated
+    // software). Fall back to an OS-assigned port: this run still works because
+    // the endpoint is written to mcp.json before pi starts — only cross-run
+    // stability is lost.
+    std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("mcp bind: {e}"))
+}
+
 struct McpRuntime {
     app: AppHandle,
 }
@@ -29,6 +56,7 @@ struct McpRuntime {
 pub struct RunningMcp {
     pub port: u16,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tauri::async_runtime::JoinHandle<()>,
 }
 
 impl RunningMcp {
@@ -37,15 +65,17 @@ impl RunningMcp {
     }
 }
 
-/// Start the local MCP server on a random loopback port.
+/// Start the local MCP server on a stable loopback port.
+///
+/// Spawned on Tauri's async runtime rather than via `tokio::spawn` so this is
+/// callable from the synchronous `setup` hook, before any pi process exists.
 pub fn start_mcp_server(app: AppHandle) -> Result<RunningMcp, String> {
     let runtime = Arc::new(Mutex::new(McpRuntime { app }));
     let router = axum::Router::new()
         .route("/mcp", post(handle_mcp))
         .with_state(runtime);
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("mcp bind: {e}"))?;
+    let listener = bind_listener()?;
     let port = listener
         .local_addr()
         .map_err(|e| format!("mcp local addr: {e}"))?
@@ -55,26 +85,26 @@ pub fn start_mcp_server(app: AppHandle) -> Result<RunningMcp, String> {
         .map_err(|e| format!("mcp nonblocking: {e}"))?;
 
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(async move {
-        let server = axum::serve(
-            tokio::net::TcpListener::from_std(listener)
-                .map_err(|e| eprintln!("[browser-mcp] listener: {e}"))
-                .ok()
-                .unwrap_or_else(|| panic!("browser mcp listener init")),
-            router,
-        )
-        .with_graceful_shutdown(async move {
+    let task = tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!("[browser-mcp] listener: {error}");
+                return;
+            }
+        };
+        let server = axum::serve(listener, router).with_graceful_shutdown(async move {
             let _ = stop_rx.await;
         });
         if let Err(error) = server.await {
             eprintln!("[browser-mcp] server error: {error}");
         }
     });
-    std::mem::forget(server); // owned by the runtime; graceful shutdown via stop_tx
 
     Ok(RunningMcp {
         port,
         stop: Some(stop_tx),
+        task,
     })
 }
 
@@ -83,6 +113,9 @@ impl Drop for RunningMcp {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
+        // The graceful-shutdown signal above is best-effort; abort guarantees the
+        // port is released even if the serve future is wedged on a live request.
+        self.task.abort();
     }
 }
 
@@ -238,13 +271,30 @@ fn error_content(message: String) -> Value {
     json!({ "content": [{ "type": "text", "text": message }], "isError": true })
 }
 
+/// Tools that need a live browser engine. `browser_status` is excluded so the
+/// agent can probe state without side effects.
+fn needs_engine(name: &str) -> bool {
+    name != "browser_status"
+}
+
 async fn call_tool(
     runtime: &Arc<Mutex<McpRuntime>>,
     name: &str,
     args: &Value,
 ) -> Value {
-    let runtime_guard = runtime.lock().await;
-    let app = runtime_guard.app.clone();
+    let app = {
+        let runtime_guard = runtime.lock().await;
+        runtime_guard.app.clone()
+    };
+
+    // Lazily bring up Chrome on first use. The MCP server is armed at app
+    // startup (so pi always sees a live endpoint), which means a tool call can
+    // arrive before the user has ever opened the browser pane.
+    if needs_engine(name) {
+        if let Err(error) = super::ensure_engine(&app).await {
+            return error_content(format!("cannot start the browser: {error}"));
+        }
+    }
 
     let str_arg = |key: &str| args.get(key).and_then(Value::as_str).map(ToOwned::to_owned);
     let num_arg = |key: &str| args.get(key).and_then(Value::as_f64);
