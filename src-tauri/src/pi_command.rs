@@ -96,7 +96,7 @@ fn resolve_windows_program_from(
 }
 
 /// Best-effort location of npm's global bin directory, where `npm install -g`
-/// drops CLI shims (e.g. `agent-browser.cmd` on Windows).
+/// drops CLI shims (`.cmd` wrappers on Windows).
 fn npm_bin_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -126,9 +126,10 @@ fn with_npm_bin_prepended(path: &std::ffi::OsStr, npm_bin: &Path) -> Option<OsSt
 }
 
 /// Prepend npm's global bin directory to `cmd`'s PATH so pi and the processes
-/// it spawns (e.g. the `pi-agent-browser-native` wrapper launching
-/// `agent-browser.cmd` through PowerShell) can resolve npm-installed CLIs even
-/// when the npm prefix is missing from the inherited PATH.
+/// it spawns can resolve npm-installed CLIs even when the npm prefix is missing
+/// from the inherited PATH. pi extensions that shell out to a globally installed
+/// binary rely on this; on Windows such shims are `.cmd` files that a bare
+/// `Command::new` lookup would otherwise miss.
 pub fn prepend_npm_bin_to_path(cmd: &mut Command) {
     let Some(npm_bin) = npm_bin_dir() else { return };
     let Some(path) = std::env::var_os("PATH") else { return };

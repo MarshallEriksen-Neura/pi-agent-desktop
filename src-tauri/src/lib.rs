@@ -1,6 +1,4 @@
-mod agent_browser;
 mod chat_store;
-mod browser;
 mod fs_bridge;
 mod mcp_config;
 mod pet_window;
@@ -30,11 +28,6 @@ use remote_control::RemoteControlState;
 #[cfg(feature = "remote-control-smoke")]
 pub fn run_remote_control_command_smoke() {
     remote_control::run_command_smoke();
-}
-
-#[cfg(feature = "browser-smoke")]
-pub fn run_browser_smoke() {
-    browser::run_smoke();
 }
 
 #[derive(Default)]
@@ -212,7 +205,6 @@ pub fn run() {
         .manage(PiProc::default())
         .manage(BackendLifecycle::default())
         .manage(RemoteControlState::default())
-        .manage(browser::BrowserState::default())
         .manage(chat_store::ChatDb::default())
         .invoke_handler(tauri::generate_handler![
             chat_store::chat_sessions_list,
@@ -274,24 +266,7 @@ pub fn run() {
             remote_control::remote_conversation_append,
             remote_control::remote_conversation_cancel,
             remote_control::remote_conversation_archive,
-            remote_control::remote_control_set_model_admin,
-            browser::browser_start,
-            browser::browser_stop,
-            browser::browser_status,
-            browser::browser_navigate,
-            browser::browser_approve_origin,
-            browser::browser_screenshot,
-            browser::browser_click,
-            browser::browser_type,
-            browser::browser_press_key,
-            browser::browser_back,
-            browser::browser_forward,
-            browser::browser_reload,
-            browser::browser_eval,
-            browser::browser_allowlist,
-            browser::browser_remove_origin,
-            agent_browser::agent_browser_check,
-            agent_browser::agent_browser_install
+            remote_control::remote_control_set_model_admin
         ])
         .setup(|app| {
             if let Err(e) = app
@@ -306,10 +281,15 @@ pub fn run() {
             if let Err(e) = create_tray(app) {
                 eprintln!("[tray] failed to create system tray: {e}");
             }
-            browser::start_event_forwarder(app.handle().clone());
-            // Register the browser MCP endpoint before the frontend can spawn pi:
-            // pi reads mcp.json once at startup and cannot reload it.
-            browser::arm_mcp_bridge(app.handle());
+            // One-shot migration for installs that ran the removed in-app
+            // browser pane: it registered a loopback MCP server on every launch,
+            // and a leftover entry would point pi at a dead port for the whole
+            // session. Non-fatal — a malformed mcp.json must not block startup.
+            match mcp_config::deregister_retired_browser_server() {
+                Ok(true) => eprintln!("[mcp-config] removed the retired browser MCP entry"),
+                Ok(false) => {}
+                Err(error) => eprintln!("[mcp-config] browser MCP cleanup skipped: {error}"),
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

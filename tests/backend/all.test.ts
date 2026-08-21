@@ -11,3 +11,5 @@ import "./project-switch.test";
 import "./session-lifecycle.test";
 import "./backend-provider.test";
 import "./mcp-import.test";
+import "./model-scope.test";
+import "./model-sync.test";

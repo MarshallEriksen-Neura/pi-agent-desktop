@@ -28,7 +28,7 @@ import { ModelIcon } from "@/components/icons";
 import { resolveModelMetaOrFallback } from "@/lib/model-icon";
 import { useT } from "@/lib/i18n";
 import { usePi } from "@/lib/pi/store";
-import { usePiSettings } from "@/lib/pi/settings";
+import { type SettingsScope, usePiSettings } from "@/lib/pi/settings";
 import {
   API_TYPES,
   type CustomModelDef,
@@ -39,6 +39,7 @@ import {
   type ModelRefLike,
   isModelEnabled,
   modelRef,
+  pruneModelsFromScope,
   toggleModelEnabled,
 } from "@/lib/pi/model-scope";
 
@@ -72,6 +73,23 @@ type PendingRemoval =
   | { kind: "provider"; providerId: string }
   | { kind: "model"; providerId: string; modelId: string };
 
+/**
+ * A fetched list diffed against what models.json already holds for the
+ * provider. `stale` is the half that used to have nowhere to go: models we
+ * store that the endpoint no longer serves.
+ */
+interface FetchDiff {
+  providerId: string;
+  /** how many models the endpoint reported — 0 means "don't trust the diff" */
+  upstreamCount: number;
+  /** upstream ids we don't store yet */
+  fresh: string[];
+  /** stored ids upstream no longer lists */
+  stale: string[];
+  selectedAdd: string[];
+  selectedRemove: string[];
+}
+
 export default function ModelsPage() {
   const t = useT();
 
@@ -95,11 +113,7 @@ export default function ModelsPage() {
     { providerId: string; model: CustomModelDef } | null
   >(null);
   const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null);
-  const [fetchResult, setFetchResult] = useState<{
-    providerId: string;
-    models: string[];
-    selected: string[];
-  } | null>(null);
+  const [fetchResult, setFetchResult] = useState<FetchDiff | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   // Per-provider inline model filter (handles the single-provider-with-hundreds
@@ -215,6 +229,27 @@ export default function ModelsPage() {
     );
   };
 
+  /**
+   * Drop deleted models out of `enabledModels`. Both scope files are swept, not
+   * just the global one we write toggles to — a project-level list can name the
+   * same model, and a ref left behind there is just as invisible.
+   *
+   * Reads the store fresh per scope: the second write must see the first one's
+   * result, not the snapshot this render closed over.
+   */
+  const pruneEnabled = async (removed: ModelRefLike[]) => {
+    if (removed.length === 0) return;
+    for (const scope of ["global", "project"] as SettingsScope[]) {
+      const current = usePiSettings.getState()[scope].data?.enabledModels;
+      if (!Array.isArray(current) || current.length === 0) continue;
+      const next = pruneModelsFromScope(current, removed, scopeModels);
+      if (next.length === current.length) continue; // nothing named here
+      await usePiSettings
+        .getState()
+        .setKey(scope, "enabledModels", next.length > 0 ? next : undefined);
+    }
+  };
+
   const toggleExpanded = (providerId: string) => {
     setExpanded((prev) => ({ ...prev, [providerId]: !prev[providerId] }));
   };
@@ -232,9 +267,15 @@ export default function ModelsPage() {
     const target = pendingRemoval;
     if (!target) return;
     if (target.kind === "provider") {
+      const gone = (customProviders[target.providerId]?.models ?? []).map((m) => ({
+        provider: target.providerId,
+        id: m.id,
+      }));
       await piModelsStore.removeProvider(target.providerId);
+      await pruneEnabled(gone);
     } else {
       await piModelsStore.removeModel(target.providerId, target.modelId);
+      await pruneEnabled([{ provider: target.providerId, id: target.modelId }]);
     }
     setPendingRemoval(null);
   };
@@ -280,12 +321,26 @@ export default function ModelsPage() {
     setFetchError(null);
     try {
       const list = await piModelsStore.fetchModels(provider.baseUrl, provider.api, provider.apiKey);
+      const upstream = new Set(list);
       const existing = new Set(provider.models.map((m) => m.id));
-      const selectable = list.filter((id) => !existing.has(id));
+      const fresh = list.filter((id) => !existing.has(id));
+      // An empty upstream list is far more often a bad key or a proxy that
+      // doesn't implement /models than a provider that really dropped
+      // everything — diffing against it would offer to delete the lot.
+      const stale =
+        list.length > 0
+          ? provider.models.map((m) => m.id).filter((id) => !upstream.has(id))
+          : [];
       setFetchResult({
         providerId,
-        models: selectable,
-        selected: selectable,
+        upstreamCount: list.length,
+        fresh,
+        stale,
+        selectedAdd: fresh,
+        // Removal is opt-in: plenty of endpoints under-report (per-key model
+        // allowlists, gateways that only list what's warm), and a stale entry
+        // may be a hand-tuned one worth keeping.
+        selectedRemove: [],
       });
     } catch (e) {
       setFetchError(String(e));
@@ -294,19 +349,22 @@ export default function ModelsPage() {
     }
   };
 
-  const handleAddFetched = async () => {
+  const handleApplyFetch = async () => {
     if (!fetchResult) return;
-    const provider = customProviders[fetchResult.providerId];
+    const { providerId, selectedAdd, selectedRemove } = fetchResult;
+    const provider = customProviders[providerId];
     if (!provider) return;
-    await piModelsStore.addModels(
-      fetchResult.providerId,
+    await piModelsStore.syncModels(
+      providerId,
       {
         baseUrl: provider.baseUrl,
         api: provider.api,
         apiKey: provider.apiKey,
       },
-      fetchResult.selected.map((id) => ({ id, name: id }))
+      selectedAdd.map((id) => ({ id, name: id })),
+      selectedRemove
     );
+    await pruneEnabled(selectedRemove.map((id) => ({ provider: providerId, id })));
     setFetchResult(null);
   };
 
@@ -830,8 +888,9 @@ export default function ModelsPage() {
         <FetchDialog
           result={fetchResult}
           onClose={() => setFetchResult(null)}
-          onChangeSelected={(ids) => setFetchResult({ ...fetchResult, selected: ids })}
-          onAdd={handleAddFetched}
+          onChangeAdd={(ids) => setFetchResult({ ...fetchResult, selectedAdd: ids })}
+          onChangeRemove={(ids) => setFetchResult({ ...fetchResult, selectedRemove: ids })}
+          onApply={handleApplyFetch}
         />
       )}
       {fetchError && (
@@ -1302,135 +1361,255 @@ function ModelDialog({
 function FetchDialog({
   result,
   onClose,
-  onChangeSelected,
-  onAdd,
+  onChangeAdd,
+  onChangeRemove,
+  onApply,
 }: {
-  result: { providerId: string; models: string[]; selected: string[] };
+  result: FetchDiff;
   onClose: () => void;
-  onChangeSelected: (ids: string[]) => void;
-  onAdd: () => void;
+  onChangeAdd: (ids: string[]) => void;
+  onChangeRemove: (ids: string[]) => void;
+  onApply: () => void;
 }) {
   const t = useT();
   const [search, setSearch] = useState("");
-  const selected = useMemo(() => new Set(result.selected), [result.selected]);
-  const filteredModels = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return result.models;
-    return result.models.filter((id) => id.toLowerCase().includes(query));
-  }, [result.models, search]);
+  const query = search.trim().toLowerCase();
+  const match = (ids: string[]) =>
+    query ? ids.filter((id) => id.toLowerCase().includes(query)) : ids;
+  const visibleFresh = useMemo(() => match(result.fresh), [result.fresh, query]);
+  const visibleStale = useMemo(() => match(result.stale), [result.stale, query]);
 
-  const toggle = (id: string) => {
-    const next = new Set(selected);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    onChangeSelected(Array.from(next));
-  };
-
-  const selectVisible = () => {
-    const next = new Set(selected);
-    filteredModels.forEach((id) => next.add(id));
-    onChangeSelected(Array.from(next));
-  };
-
-  const invertVisible = () => {
-    const next = new Set(selected);
-    filteredModels.forEach((id) => {
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-    });
-    onChangeSelected(Array.from(next));
-  };
+  const addCount = result.selectedAdd.length;
+  const removeCount = result.selectedRemove.length;
+  const inSync = result.fresh.length === 0 && result.stale.length === 0;
 
   return (
     <Dialog
       open
-      title={t("models.selectModelsToAdd")}
+      title={t("models.reviewFetched")}
+      maxWidth={520}
       onClose={onClose}
       actions={
         <>
           <GroupButton onClick={onClose}>{t("models.cancel")}</GroupButton>
-          <GroupButton primary onClick={onAdd} disabled={result.selected.length === 0}>
-            {t("models.addAllSelected", { n: result.selected.length })}
+          <GroupButton
+            primary
+            onClick={onApply}
+            disabled={addCount === 0 && removeCount === 0}
+          >
+            {t("models.applyChanges", { add: addCount, remove: removeCount })}
           </GroupButton>
         </>
       }
     >
-      <div className="mb-3 flex items-center gap-2">
-        <div
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-3 py-2"
-          style={{
-            background: "var(--input-bg)",
-            border: "1px solid var(--ink-border)",
-          }}
-        >
-          <Search size={15} className="shrink-0" style={{ color: "var(--muted-foreground)" }} />
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder={t("models.searchModels")}
-            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--muted-foreground)]"
-            style={{ color: "var(--foreground)" }}
-          />
-          {search && (
-            <button
-              type="button"
-              onClick={() => setSearch("")}
-              aria-label={t("models.clearSearch")}
-              className="shrink-0"
-              style={{ color: "var(--muted-foreground)" }}
-            >
-              <X size={14} />
-            </button>
-          )}
-        </div>
-        <GroupButton onClick={selectVisible} disabled={filteredModels.length === 0}>
-          {t("models.selectAll")}
-        </GroupButton>
-        <GroupButton onClick={invertVisible} disabled={filteredModels.length === 0}>
-          {t("models.invertSelection")}
-        </GroupButton>
-      </div>
-      <div className="max-h-72 overflow-y-auto pr-1">
-        {filteredModels.length === 0 ? (
-          <p className="py-4 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
-            {t("models.noSearchResults")}
-          </p>
-        ) : (
-          <InsetGroup>
-            {filteredModels.map((id) => (
-              <GroupRow
-                key={id}
-                onClick={() => toggle(id)}
-                title={
-                  <span className="text-sm" style={{ color: "var(--foreground)" }}>
-                    {id}
-                  </span>
-                }
-                trailing={
-                  <div
-                    className="flex items-center justify-center rounded-md"
-                    style={{
-                      width: 20,
-                      height: 20,
-                      background: selected.has(id)
-                        ? "var(--ink-accent)"
-                        : "transparent",
-                      border: "1.5px solid",
-                      borderColor: selected.has(id)
-                        ? "var(--ink-accent)"
-                        : "var(--ink-border)",
-                      color: "#fff",
-                    }}
-                  >
-                    {selected.has(id) && <Check size={12} strokeWidth={3} />}
-                  </div>
-                }
+      <p className="mb-3 text-xs" style={{ color: "var(--muted-foreground)" }}>
+        {t("models.fetchSummary", {
+          upstream: result.upstreamCount,
+          fresh: result.fresh.length,
+          stale: result.stale.length,
+        })}
+      </p>
+
+      {inSync ? (
+        <p className="py-6 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
+          {t("models.alreadyInSync")}
+        </p>
+      ) : (
+        <>
+          <div
+            className="mb-3 flex items-center gap-2 rounded-xl px-3 py-2"
+            style={{
+              background: "var(--input-bg)",
+              border: "1px solid var(--ink-border)",
+            }}
+          >
+            <Search size={15} className="shrink-0" style={{ color: "var(--muted-foreground)" }} />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t("models.searchModels")}
+              className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--muted-foreground)]"
+              style={{ color: "var(--foreground)" }}
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                aria-label={t("models.clearSearch")}
+                className="shrink-0"
+                style={{ color: "var(--muted-foreground)" }}
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+
+          <div className="max-h-[46vh] overflow-y-auto pr-1">
+            {result.fresh.length > 0 && (
+              <FetchSection
+                heading={t("models.newUpstream", { n: result.fresh.length })}
+                ids={visibleFresh}
+                selected={result.selectedAdd}
+                onChange={onChangeAdd}
+                tint="var(--ink-accent)"
               />
-            ))}
-          </InsetGroup>
-        )}
-      </div>
+            )}
+
+            {result.stale.length > 0 && (
+              <FetchSection
+                heading={t("models.staleLocal", { n: result.stale.length })}
+                hint={t("models.staleLocalHint")}
+                ids={visibleStale}
+                selected={result.selectedRemove}
+                onChange={onChangeRemove}
+                tint="#c45c48"
+              />
+            )}
+          </div>
+        </>
+      )}
     </Dialog>
+  );
+}
+
+/**
+ * One checkbox list inside the fetch dialog. `tint` is what separates the
+ * additive half from the destructive one — same interaction, different weight.
+ */
+function FetchSection({
+  heading,
+  hint,
+  ids,
+  selected,
+  onChange,
+  tint,
+}: {
+  heading: string;
+  hint?: string;
+  ids: string[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+  tint: string;
+}) {
+  const t = useT();
+  const picked = useMemo(() => new Set(selected), [selected]);
+
+  const toggle = (id: string) => {
+    const next = new Set(picked);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange(Array.from(next));
+  };
+
+  const selectVisible = () => {
+    const next = new Set(picked);
+    ids.forEach((id) => next.add(id));
+    onChange(Array.from(next));
+  };
+
+  const invertVisible = () => {
+    const next = new Set(picked);
+    ids.forEach((id) => {
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+    });
+    onChange(Array.from(next));
+  };
+
+  return (
+    <section className="mb-4 last:mb-0">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-xs font-semibold" style={{ color: tint }}>
+          {heading}
+        </span>
+        <div className="ml-auto flex items-center gap-1.5">
+          <MiniButton onClick={selectVisible} disabled={ids.length === 0}>
+            {t("models.selectAll")}
+          </MiniButton>
+          <MiniButton onClick={invertVisible} disabled={ids.length === 0}>
+            {t("models.invertSelection")}
+          </MiniButton>
+        </div>
+      </div>
+      {hint && (
+        <p className="mb-2 text-[11px] leading-snug" style={{ color: "var(--muted-foreground)" }}>
+          {hint}
+        </p>
+      )}
+      {ids.length === 0 ? (
+        <p className="py-3 text-center text-xs" style={{ color: "var(--muted-foreground)" }}>
+          {t("models.noSearchResults")}
+        </p>
+      ) : (
+        <div
+          className="overflow-hidden rounded-xl"
+          style={{ border: "1px solid var(--ink-border)" }}
+        >
+          {ids.map((id, i) => {
+            const on = picked.has(id);
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => toggle(id)}
+                className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors"
+                style={{
+                  background: on ? "var(--ink-row-open-bg)" : "transparent",
+                  borderTop: i === 0 ? "none" : "1px solid var(--ink-border)",
+                }}
+              >
+                <span
+                  className="flex shrink-0 items-center justify-center rounded-md"
+                  style={{
+                    width: 19,
+                    height: 19,
+                    background: on ? tint : "transparent",
+                    border: "1.5px solid",
+                    borderColor: on ? tint : "var(--ink-border)",
+                    color: "#fff",
+                  }}
+                >
+                  {on && <Check size={11} strokeWidth={3} />}
+                </span>
+                <span
+                  className="min-w-0 flex-1 truncate text-[13px]"
+                  style={{ color: "var(--foreground)" }}
+                  title={id}
+                >
+                  {id}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MiniButton({
+  onClick,
+  disabled,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="rounded-lg px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-40"
+      style={{
+        background: "var(--input-bg)",
+        border: "1px solid var(--ink-border)",
+        color: "var(--foreground)",
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -1549,12 +1728,14 @@ function Dialog({
   title,
   onClose,
   actions,
+  maxWidth = 420,
   children,
 }: {
   open: boolean;
   title: string;
   onClose: () => void;
   actions?: React.ReactNode;
+  maxWidth?: number;
   children: React.ReactNode;
 }) {
   return (
@@ -1578,7 +1759,7 @@ function Dialog({
             onClick={(e) => e.stopPropagation()}
             style={{
               width: "100%",
-              maxWidth: 420,
+              maxWidth,
               maxHeight: "80vh",
               overflow: "hidden",
               borderRadius: 22,

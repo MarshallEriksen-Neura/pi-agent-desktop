@@ -91,6 +91,18 @@ interface PiModelsStore {
     cfg: ProviderConfig,
     models: CustomModelDef[]
   ) => Promise<void>;
+  /**
+   * Reconcile a provider against a fetched list: add `add`, delete `remove`,
+   * one save. Unlike `removeModel` this keeps a provider that ends up with no
+   * models — the baseUrl/apiKey are still worth something, and an upstream that
+   * momentarily lists nothing shouldn't cost the user their credentials.
+   */
+  syncModels: (
+    providerId: string,
+    cfg: ProviderConfig,
+    add: CustomModelDef[],
+    remove: string[]
+  ) => Promise<void>;
   /** Update a provider's connection settings (baseUrl/api/apiKey); creates the
    * provider with no models if it doesn't exist yet. Models are preserved. */
   updateProvider: (providerId: string, cfg: ProviderConfig) => Promise<void>;
@@ -222,6 +234,33 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
           ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
           models: [],
         };
+    const seen = new Set(provider.models.map((m) => m.id));
+    for (const m of clean) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      provider.models.push(m);
+    }
+    data.providers[providerId] = provider;
+    await save(data, set, get);
+  },
+
+  syncModels: async (providerId, cfg, add, remove) => {
+    const st = get();
+    if (st.parseError) return; // never overwrite a file we couldn't parse
+    const clean = add.filter((m) => m.id && m.id.trim());
+    const drop = new Set(remove);
+    if (clean.length === 0 && drop.size === 0) return;
+
+    const data = structuredClone(st.data);
+    const existing = data.providers[providerId];
+    if (!existing) return; // sync only reconciles a provider that already exists
+    const provider: CustomProvider = {
+      ...existing,
+      ...(cfg.baseUrl ? { baseUrl: cfg.baseUrl } : {}),
+      ...(cfg.api ? { api: cfg.api } : {}),
+      ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+      models: (existing.models ?? []).filter((m) => !drop.has(m.id)),
+    };
     const seen = new Set(provider.models.map((m) => m.id));
     for (const m of clean) {
       if (seen.has(m.id)) continue;

@@ -1,5 +1,4 @@
 import { mockAssetUrlPort } from "../mock/asset-url";
-import { createMockBrowserPort } from "../ports/browser";
 import { mockExternalNavigationPort } from "../mock/external-navigation";
 import { mockNotificationPort } from "../mock/notification";
 import { mockPetWindowPort } from "../mock/pet-window";
@@ -35,7 +34,6 @@ export function createBrowserBackendPorts(): BackendPorts {
     assetUrl: mockAssetUrlPort,
     petWindow: mockPetWindowPort,
     externalNavigation: mockExternalNavigationPort,
-    browser: createMockBrowserPort(),
   };
 }
 

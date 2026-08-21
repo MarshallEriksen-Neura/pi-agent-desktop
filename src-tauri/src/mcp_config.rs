@@ -347,9 +347,70 @@ pub fn mcp_adapter_check(root: Option<String>) -> Result<McpAdapterStatus, Strin
     })
 }
 
+/// True when `entry` is the loopback MCP endpoint the removed in-app browser
+/// pane used to register for itself.
+///
+/// Deliberately narrow: the port was OS-assigned on fallback, so it cannot be
+/// matched exactly, but requiring the `http` type plus a
+/// `http://127.0.0.1:<port>/mcp` URL keeps a user-authored server that merely
+/// happens to be named `browser` from being deleted.
+fn is_retired_browser_entry(entry: &Value) -> bool {
+    let Some(object) = entry.as_object() else { return false };
+    if object.get("type").and_then(Value::as_str) != Some("http") {
+        return false;
+    }
+    let Some(url) = object.get("url").and_then(Value::as_str) else { return false };
+    let Some(port) = url
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|rest| rest.strip_suffix("/mcp"))
+    else {
+        return false;
+    };
+    !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Drop the retired `browser` server from the global pi MCP config.
+///
+/// The in-app browser pane wrote this entry into the user's real `mcp.json` on
+/// every launch. Deleting the pane's code alone would strand it there pointing
+/// at a port nothing binds again, and pi reads `mcp.json` once at startup with
+/// no way to reload — so every later session would boot with a dead server.
+///
+/// Returns `true` when an entry was removed. Safe to call on every startup;
+/// once the key is gone this is a pure read. Can be deleted once shipped
+/// installs have all run it at least once.
+pub fn deregister_retired_browser_server() -> Result<bool, String> {
+    let scope = "global";
+    let read = mcp_config_read(scope.to_owned(), None)?;
+    if !read.exists || read.content.trim().is_empty() {
+        return Ok(false);
+    }
+    let mut config: Value =
+        serde_json::from_str(&read.content).map_err(|e| format!("invalid mcp.json: {e}"))?;
+    let Some(servers) = config
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(false);
+    };
+    match servers.get("browser") {
+        Some(entry) if is_retired_browser_entry(entry) => {}
+        // Absent, or a user-authored server that merely shares the name.
+        _ => return Ok(false),
+    }
+    servers.remove("browser");
+    let serialized =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("cannot serialize mcp.json: {e}"))?;
+    mcp_config_write(scope.to_owned(), serialized, None)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{adapter_installed, filter_codex_mcp_toml, mcp_directory};
+    use super::{
+        adapter_installed, filter_codex_mcp_toml, is_retired_browser_entry, mcp_directory,
+    };
+    use serde_json::json;
     use std::path::Path;
 
     #[test]
@@ -384,5 +445,42 @@ mod tests {
         assert!(filtered.contains("[mcp_servers.docs]"));
         assert!(!filtered.contains("private-model"));
         assert!(!filtered.contains("not imported"));
+    }
+
+    #[test]
+    fn recognizes_the_retired_browser_endpoint() {
+        // The stable default port and the OS-assigned fallback both qualify.
+        assert!(is_retired_browser_entry(&json!({
+            "type": "http",
+            "url": "http://127.0.0.1:51999/mcp",
+            "enabled": true
+        })));
+        assert!(is_retired_browser_entry(&json!({
+            "type": "http",
+            "url": "http://127.0.0.1:0/mcp"
+        })));
+    }
+
+    #[test]
+    fn preserves_a_user_server_that_merely_shares_the_name() {
+        // Remote host, stdio transport, non-loopback, or a different path are
+        // all somebody else's `browser` server — never delete these.
+        assert!(!is_retired_browser_entry(&json!({
+            "type": "http",
+            "url": "https://browser.example.com/mcp"
+        })));
+        assert!(!is_retired_browser_entry(&json!({
+            "command": "npx",
+            "args": ["-y", "some-browser-mcp"]
+        })));
+        assert!(!is_retired_browser_entry(&json!({
+            "type": "http",
+            "url": "http://127.0.0.1:51999/sse"
+        })));
+        assert!(!is_retired_browser_entry(&json!({
+            "type": "http",
+            "url": "http://127.0.0.1:abc/mcp"
+        })));
+        assert!(!is_retired_browser_entry(&json!("not an object")));
     }
 }

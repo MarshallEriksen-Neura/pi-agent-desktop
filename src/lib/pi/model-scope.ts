@@ -85,3 +85,30 @@ export function toggleModelEnabled(
   }
   return out;
 }
+
+/**
+ * Drop scope entries naming models that no longer exist.
+ *
+ * `enabledModels` is a plain string list, so a model deleted from models.json —
+ * or dropped upstream and pruned by a fetch — leaves an entry behind that no UI
+ * can see or uncheck. Those dead refs are not harmless: pi still counts them
+ * when deciding whether the scope list is non-empty, so a list that has decayed
+ * to nothing but dead refs hides *every* live model from the picker.
+ *
+ * `allModels` must be the model list from **before** the removal, so a legacy
+ * bare id can still expand into canonical refs for the providers that keep
+ * serving it. Glob entries are left alone — matching them is pi's job.
+ */
+export function pruneModelsFromScope(
+  entries: readonly string[],
+  removed: readonly ModelRefLike[],
+  allModels: readonly ModelRefLike[] = []
+): string[] {
+  let out = [...entries];
+  for (const m of removed) {
+    // toggle *adds* when absent, so only flip the ones actually named
+    if (!isModelEnabled(out, m.provider, m.id)) continue;
+    out = toggleModelEnabled(out, m.provider, m.id, allModels);
+  }
+  return out;
+}

@@ -1,12 +1,4 @@
 export type { AssetUrlPort } from "./asset-url";
-export type {
-  AgentBrowserInstallResultDto,
-  AgentBrowserStatusDto,
-  ApprovalInfoDto,
-  BrowserPort,
-  BrowserStatusDto,
-  NavigateResultDto,
-} from "./browser";
 export type { ExternalNavigationPort } from "./external-navigation";
 export type { NotificationPort, ShowNotificationInput } from "./notification";
 export type {

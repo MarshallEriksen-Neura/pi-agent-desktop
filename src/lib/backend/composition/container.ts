@@ -1,6 +1,5 @@
 import type {
   AssetUrlPort,
-  BrowserPort,
   ExternalNavigationPort,
   NotificationPort,
   PetWindowPort,
@@ -35,7 +34,6 @@ export interface BackendPorts {
   assetUrl: AssetUrlPort;
   petWindow: PetWindowPort;
   externalNavigation: ExternalNavigationPort;
-  browser: BrowserPort;
 }
 
 export type BackendPortName = keyof BackendPorts;

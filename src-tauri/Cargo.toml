@@ -9,17 +9,11 @@ rust-version = "1.77.2"
 
 [features]
 remote-control-smoke = []
-browser-smoke = []
 
 [[bin]]
 name = "remote-control-command-smoke"
 path = "src/bin/remote-control-command-smoke.rs"
 required-features = ["remote-control-smoke"]
-
-[[bin]]
-name = "browser-smoke"
-path = "src/bin/browser-smoke.rs"
-required-features = ["browser-smoke"]
 
 [lib]
 name = "pi_desktop_lib"

@@ -613,6 +613,15 @@ export const en = {
   "models.collapseAll": "Collapse all",
   "models.filterModels": "Filter models…",
   "models.backToTop": "Back to top",
+  "models.reviewFetched": "Review fetched models",
+  "models.fetchSummary":
+    "Endpoint reported {upstream} models · {fresh} new · {stale} no longer listed",
+  "models.newUpstream": "New upstream ({n})",
+  "models.staleLocal": "No longer listed upstream ({n})",
+  "models.staleLocalHint":
+    "Stored in models.json but missing from this fetch. Select the ones to delete — some endpoints only list a subset, so nothing is removed unless you check it.",
+  "models.applyChanges": "Add {add} · remove {remove}",
+  "models.alreadyInSync": "Your model list already matches the endpoint.",
 
   // plugins page
   "plugins.title": "Plugins",
@@ -898,32 +907,4 @@ export const en = {
   "settings.remoteControl.reset.typeHint": "Type “{phrase}” to confirm",
   "settings.remoteControl.reset.confirmPhrase": "reset",
   "settings.remoteControl.reset.confirm": "Reset identity",
-
-  // browser pane
-  "nav.browser": "Browser",
-  "browser.back": "Back",
-  "browser.forward": "Forward",
-  "browser.reload": "Reload",
-  "browser.stop": "Stop",
-  "browser.start": "Start browser",
-  "browser.starting": "Starting…",
-  "browser.addressPlaceholder": "Search or enter a URL",
-  "browser.liveView": "Live browser view",
-  "browser.loading": "Loading browser…",
-  "browser.waitingFrame": "Waiting for the first frame…",
-  "browser.frameStale": "Showing the last good frame — connection may be slow.",
-  "browser.allowlistTitle": "Approved sites",
-  "browser.allowlistHint": "pi can navigate to these sites without asking. Remove one to require approval again.",
-  "browser.allowlistEmpty": "No sites approved yet.",
-  "browser.allowlistRemove": "Remove from approved",
-  "browser.idleTitle": "Browser pane is idle",
-  "browser.idleHint": "Start the in-app browser to give pi a live, controllable Chrome. Sites you visit ask for approval once, then are remembered.",
-  "browser.approveTitle": "Allow pi to open this site?",
-  "browser.approveBody": "pi is about to navigate the in-app browser to {origin}. This site is not approved yet.",
-  "browser.approveAllow": "Allow",
-  "browser.approveDeny": "Deny",
-  "browser.agentMissing": "The agent-browser CLI that powers pi's browser tool is not installed.",
-  "browser.agentInstall": "Install",
-  "browser.agentInstalling": "Installing…",
-  "browser.agentVersionMismatch": "agent-browser {version} is older than the {expected} pi expects — some browser tools may fail.",
 } as const;
