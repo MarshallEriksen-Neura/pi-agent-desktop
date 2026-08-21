@@ -27,7 +27,9 @@ import {
   Palette,
   Bot,
   SquareTerminal,
+  CornerDownLeft,
 } from "lucide-react";
+import { SEND_SHORTCUTS } from "@/lib/composer-shortcut";
 import { APP_VERSION } from "@/lib/update";
 import { usePiSettings, type SettingsScope, type PiSettings } from "@/lib/pi/settings";
 import { usePi, THINKING_LEVELS } from "@/lib/pi/store";
@@ -173,8 +175,14 @@ export default function PiSettingsPage() {
   const ap = useAppearance();
   const t = useT();
   const router = useRouter();
-  const { notificationSettings, setNotificationEnabled, closeBehavior, setCloseBehavior } =
-    useUI();
+  const {
+    notificationSettings,
+    setNotificationEnabled,
+    closeBehavior,
+    setCloseBehavior,
+    sendShortcut,
+    setSendShortcut,
+  } = useUI();
   const [notifPermission, setNotifPermission] =
     useState<NotificationPermissionState>("default");
   const [category, setCategory] = useState<SettingsCategory>("general");
@@ -978,6 +986,30 @@ export default function PiSettingsPage() {
                 }
               />
             </div>
+          </InsetGroup>
+
+          {/* which key sends a chat message — app-local, not in pi's settings.json */}
+          <InsetGroup
+            header={t("settings.sendShortcut")}
+            footer={t("settings.sendShortcutFooter")}
+          >
+            <GroupRow
+              first
+              icon={<CornerDownLeft size={15} />}
+              iconBg="var(--accent)"
+              title={t("settings.sendShortcut")}
+              detail={t(`settings.sendShortcut.${sendShortcut}.detail`)}
+              trailing={
+                <div style={{ width: 300, flexShrink: 0 }}>
+                  <Segmented
+                    options={SEND_SHORTCUTS}
+                    value={sendShortcut}
+                    onChange={setSendShortcut}
+                    labelOf={(v) => t(`settings.sendShortcut.${v}`)}
+                  />
+                </div>
+              }
+            />
           </InsetGroup>
 
           {/* what happens when the main window is closed */}

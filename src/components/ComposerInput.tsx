@@ -7,6 +7,8 @@ import { ModelPicker } from "./ModelPicker";
 import { ImageLightbox } from "./ImageLightbox";
 import type { DeliveryMode, QueueEntry } from "@/lib/pi/chat";
 import { useT } from "@/lib/i18n";
+import { useUI } from "@/lib/store";
+import { formatSendShortcut, matchSendIntent } from "@/lib/composer-shortcut";
 
 interface ComposerInputProps {
   draft: string;
@@ -31,7 +33,8 @@ interface ComposerInputProps {
 
 /**
  * Elegant multi-line composer with embedded model picker.
- * Warm cream background, auto-expanding textarea (2-12 lines), Cmd+Enter to send.
+ * Warm cream background, auto-expanding textarea (2-12 lines). The send key
+ * follows the user's `sendShortcut` preference (⌘↩ by default).
  */
 export function ComposerInput({
   draft,
@@ -52,6 +55,10 @@ export function ComposerInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const t = useT();
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const sendShortcut = useUI((s) => s.sendShortcut);
+  // Resolved after mount on purpose: the static export prerenders without a
+  // navigator, so reading it during render would mismatch on hydration.
+  const [isMac, setIsMac] = useState(false);
   const steerCount = queue.filter((q) => q.kind === "steer").length;
   const queuedCount = queue.filter((q) => q.kind === "followUp").length;
 
@@ -75,16 +82,20 @@ export function ComposerInput({
   // Focus on mount
   useEffect(() => {
     textareaRef.current?.focus();
+    setIsMac(/mac/i.test(navigator.platform || navigator.userAgent));
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Cmd/Ctrl+Enter to submit; adding Shift flips steer↔queue for this send
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
-      onSubmit(e.shiftKey);
-      return;
-    }
+    // Parent first: with the ↩ preference the slash menu is bound to the same
+    // key we send on, and picking a command has to win over sending. It signals
+    // that it consumed the key by calling preventDefault().
     onKeyDown(e);
+    if (e.defaultPrevented) return;
+
+    const intent = matchSendIntent(e, sendShortcut);
+    if (!intent) return; // e.g. a bare ↩ under ⌘↩ — let it insert a newline
+    e.preventDefault();
+    onSubmit(intent === "altSend"); // altSend flips steer↔queue for this send
   };
 
   return (
@@ -434,7 +445,7 @@ export function ComposerInput({
             pointerEvents: "none",
           }}
         >
-          ⌘↩
+          {formatSendShortcut(sendShortcut, isMac)}
         </div>
       </div>
 

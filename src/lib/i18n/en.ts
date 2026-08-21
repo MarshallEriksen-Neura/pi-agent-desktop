@@ -521,6 +521,15 @@ export const en = {
   "settings.notifications.denied":
     "Blocked — allow notifications for Pi in your system settings",
   "settings.notifications.unsupported": "Not supported in this environment",
+  "settings.sendShortcut": "Send message with",
+  "settings.sendShortcutFooter":
+    "Which key sends a chat message. The other one inserts a line break. ⌘/Ctrl+Enter always sends, whichever you pick.",
+  "settings.sendShortcut.mod-enter": "⌘/Ctrl+Enter",
+  "settings.sendShortcut.enter": "Enter",
+  "settings.sendShortcut.shift-enter": "Shift+Enter",
+  "settings.sendShortcut.mod-enter.detail": "Enter inserts a line break",
+  "settings.sendShortcut.enter.detail": "Shift+Enter inserts a line break",
+  "settings.sendShortcut.shift-enter.detail": "Enter inserts a line break",
   "settings.closeBehavior": "When closing the window",
   "settings.closeBehaviorFooter":
     'What happens when you click the close button. "Ask" shows this prompt every time; the other choices act immediately and you can change them here anytime.',

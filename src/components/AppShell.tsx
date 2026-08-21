@@ -64,6 +64,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initCloseBehavior();
     // restore the user's dragged chat-rail width
     useUI.getState().initAgentPanelWidth();
+    // restore the composer's send shortcut (⌘↩ / ↩ / ⇧↩)
+    useUI.getState().initSendShortcut();
     // restore user-customized appearance (colors, background, text scale)
     useAppearance.getState().init();
     try {

@@ -13,3 +13,5 @@ import "./backend-provider.test";
 import "./mcp-import.test";
 import "./model-scope.test";
 import "./model-sync.test";
+import "./composer-shortcut.test";
+import "./pet-animator.test";

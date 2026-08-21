@@ -17,6 +17,16 @@ import { PetBubble } from "@/components/PetBubble";
  */
 export const DEFAULT_PET_SCALE = 0.65;
 
+/**
+ * Floor on the scheduled gap between sprite frames.
+ *
+ * The animator's `delay` comes straight from the authored frame durations, so a
+ * hand-written pet manifest with a 0ms frame would otherwise spin setTimeout as
+ * fast as the event loop allows. 16ms caps that at roughly one frame of a 60Hz
+ * display, which is already far finer than any real sprite timing.
+ */
+const MIN_FRAME_DELAY_MS = 16;
+
 interface PetSpriteProps {
   pet: Pet;
   state: PetState;
@@ -41,16 +51,27 @@ export function PetSprite({
 }: PetSpriteProps) {
   const [currentFrame, setCurrentFrame] = useState<number>(0);
   const [broken, setBroken] = useState<boolean>(false);
-  const rafRef = useRef<number | undefined>(undefined);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Detect when the spritesheet asset itself fails to load (invalid dimensions,
   // corrupt file, or offline CDN fallback) so we can show a visible placeholder
   // instead of a silently transparent — and thus invisible — pet window.
   useEffect(() => {
     const img = new Image();
-    img.onload = () => setBroken(false);
-    img.onerror = () => setBroken(true);
+    let cancelled = false;
+    img.onload = () => {
+      if (!cancelled) setBroken(false);
+    };
+    img.onerror = () => {
+      if (!cancelled) setBroken(true);
+    };
     img.src = pet.spritesheetPath;
+    return () => {
+      // A decode in flight when the pet is swapped must not report back.
+      cancelled = true;
+      img.onload = null;
+      img.onerror = null;
+    };
   }, [pet.spritesheetPath]);
 
   const animationName = stateToAnimation(state);
@@ -72,25 +93,37 @@ export function PetSprite({
   useEffect(() => {
     if (!animation) return;
 
+    let cancelled = false;
+
     const tick = () => {
+      if (cancelled) return;
+
+      // Always derived from wall-clock elapsed time, so a coalesced or delayed
+      // timer resumes on the correct frame instead of drifting.
       const elapsed = Date.now() - animationStartedAt;
       const frame = currentAnimationFrame(animation, elapsed);
       setCurrentFrame(frame.spriteIndex);
 
-      if (frame.delay !== null) {
-        // Schedule next frame precisely
-        rafRef.current = window.requestAnimationFrame(tick);
-      } else {
-        // Static frame, no more updates needed
-        rafRef.current = undefined;
+      if (frame.delay === null) {
+        // Static frame — nothing will change until the animation itself does.
+        timerRef.current = undefined;
+        return;
       }
+
+      // Sleep exactly as long as the animator says this frame lasts. The old
+      // code computed `delay` and then threw it away, driving the loop from
+      // requestAnimationFrame instead: 300 wakeups/second on a 300Hz display to
+      // service an idle animation that changes frame 0.91 times/second.
+      timerRef.current = setTimeout(tick, Math.max(frame.delay, MIN_FRAME_DELAY_MS));
     };
 
     tick();
 
     return () => {
-      if (rafRef.current !== undefined) {
-        cancelAnimationFrame(rafRef.current);
+      cancelled = true;
+      if (timerRef.current !== undefined) {
+        clearTimeout(timerRef.current);
+        timerRef.current = undefined;
       }
     };
   }, [animation, animationStartedAt]);

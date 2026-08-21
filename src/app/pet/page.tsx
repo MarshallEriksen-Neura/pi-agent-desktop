@@ -19,12 +19,21 @@ import { getPort } from "@/lib/backend/composition/container";
 import type { PetConfigUpdate, PetStateUpdate } from "@/lib/pet/types";
 
 export default function PetWindow() {
-  const { activePet, state, body, animationStartedAt, checkExpiry } = usePet();
+  // Granular selectors: subscribing to the whole store re-rendered the sprite
+  // on unrelated writes (windowVisible, stateTimestamp).
+  const activePet = usePet((s) => s.activePet);
+  const state = usePet((s) => s.state);
+  const body = usePet((s) => s.body);
+  const animationStartedAt = usePet((s) => s.animationStartedAt);
+  const checkExpiry = usePet((s) => s.checkExpiry);
+
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [lastUpdate, setLastUpdate] = useState<number>(0);
+  // A ref, not state: nothing renders it, and as state every inbound agent
+  // update re-rendered the window and tore down the health-check interval.
+  const lastUpdateRef = useRef<number>(0);
 
   useLayoutEffect(() => {
-    setLastUpdate(Date.now());
+    lastUpdateRef.current = Date.now();
     // Belt-and-suspenders transparency; the <style> tag in render also handles it
     // from the very first paint, so the pet window never looks opaque.
     document.documentElement.style.background = "transparent";
@@ -62,7 +71,7 @@ export default function PetWindow() {
           (event: PetStateUpdate) => {
             const { state, body } = event;
             usePet.getState().setState(state, body);
-            setLastUpdate(Date.now());
+            lastUpdateRef.current = Date.now();
             setConnectionError(null); // Clear error on successful update
           }
         );
@@ -112,19 +121,21 @@ export default function PetWindow() {
     return () => clearInterval(interval);
   }, [checkExpiry]);
 
-  // Connection health check (detect if main window stopped sending updates)
+  // Connection health check (detect if main window stopped sending updates).
+  // Created once — it reads the latest values off the ref and the store rather
+  // than closing over render-scoped state, so no inbound update rebuilds it.
   useEffect(() => {
-    if (lastUpdate === 0) return;
     const healthCheck = setInterval(() => {
-      const timeSinceLastUpdate = Date.now() - lastUpdate;
+      const lastUpdate = lastUpdateRef.current;
+      if (lastUpdate === 0) return;
       // If no update in 30 seconds and not idle, show warning
-      if (timeSinceLastUpdate > 30000 && state !== "idle") {
+      if (Date.now() - lastUpdate > 30000 && usePet.getState().state !== "idle") {
         setConnectionError("Main window may be unresponsive");
       }
     }, 10000);
 
     return () => clearInterval(healthCheck);
-  }, [lastUpdate, state]);
+  }, []);
 
   // Draggable window — but also detect click (vs drag) so a simple
   // click on the pet can emit an event to restore the main window.

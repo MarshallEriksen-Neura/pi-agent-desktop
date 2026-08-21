@@ -9,6 +9,52 @@ export interface AnimationTick {
   delay: number | null; // ms until next frame, null if static
 }
 
+/** Frame-count-invariant sums for one animation. */
+interface AnimationTimings {
+  /** Sum of every frame duration. */
+  totalDuration: number;
+  /** Sum of the frames before `loopStart` (0 when the animation does not loop). */
+  prefixDuration: number;
+  /** Sum of the frames from `loopStart` onward (0 when the animation does not loop). */
+  loopDuration: number;
+}
+
+/**
+ * These three sums depend only on the animation's frame list, which never
+ * changes once a pet is loaded — but they used to be recomputed on every tick
+ * via three `reduce` passes and two `slice` allocations. The pet window ticks
+ * for as long as it is open, so that was ~600 throwaway arrays per second on a
+ * 300Hz display. Keyed weakly so the entry dies with the pet that owns it.
+ */
+const timingCache = new WeakMap<Animation, AnimationTimings>();
+
+function timingsFor(animation: Animation): AnimationTimings {
+  const cached = timingCache.get(animation);
+  if (cached) return cached;
+
+  const { frames, loopStart } = animation;
+  const loops = loopStart !== null && loopStart < frames.length;
+
+  let totalDuration = 0;
+  let prefixDuration = 0;
+  let loopDuration = 0;
+
+  for (let i = 0; i < frames.length; i++) {
+    // Raw `duration` on purpose: frameAtElapsed clamps to >=1 per frame but
+    // these sums never did, and that asymmetry is load-bearing for any
+    // animation carrying a zero-duration frame.
+    const duration = frames[i].duration;
+    totalDuration += duration;
+    if (!loops) continue;
+    if (i < loopStart!) prefixDuration += duration;
+    else loopDuration += duration;
+  }
+
+  const timings: AnimationTimings = { totalDuration, prefixDuration, loopDuration };
+  timingCache.set(animation, timings);
+  return timings;
+}
+
 /**
  * Current frame + next-frame delay for a given animation at elapsed time
  * Implements the Codex animation model: loop from loopStart, fallback on exhaust
@@ -25,17 +71,10 @@ export function currentAnimationFrame(
     return { spriteIndex: animation.frames[0].spriteIndex, delay: null };
   }
 
-  const totalDuration = animation.frames.reduce((sum, f) => sum + f.duration, 0);
+  const { totalDuration, prefixDuration, loopDuration } = timingsFor(animation);
 
   // Handle looping
   if (animation.loopStart !== null && animation.loopStart < animation.frames.length) {
-    const prefixDuration = animation.frames
-      .slice(0, animation.loopStart)
-      .reduce((sum, f) => sum + f.duration, 0);
-    const loopDuration = animation.frames
-      .slice(animation.loopStart)
-      .reduce((sum, f) => sum + f.duration, 0);
-
     let effectiveElapsed = elapsedMs;
     if (elapsedMs >= totalDuration && loopDuration > 0) {
       // We're past the initial sequence, loop from loopStart
@@ -76,5 +115,6 @@ function frameAtElapsed(animation: Animation, elapsedMs: number): AnimationTick 
  * Total duration of an animation (before looping)
  */
 export function animationDuration(animation: Animation): number {
-  return animation.frames.reduce((sum, f) => sum + f.duration, 0);
+  if (animation.frames.length === 0) return 0;
+  return timingsFor(animation).totalDuration;
 }

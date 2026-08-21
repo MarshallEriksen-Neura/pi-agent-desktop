@@ -512,6 +512,15 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.notifications.prompt": "点击开启",
   "settings.notifications.denied": "已被阻止 — 请在系统设置中允许 Pi 发送通知",
   "settings.notifications.unsupported": "当前环境不支持",
+  "settings.sendShortcut": "发送消息的快捷键",
+  "settings.sendShortcutFooter":
+    "用哪个键发送消息，另一个键则换行。无论选择哪种，⌘/Ctrl+Enter 始终可以发送。",
+  "settings.sendShortcut.mod-enter": "⌘/Ctrl+Enter",
+  "settings.sendShortcut.enter": "Enter",
+  "settings.sendShortcut.shift-enter": "Shift+Enter",
+  "settings.sendShortcut.mod-enter.detail": "Enter 换行",
+  "settings.sendShortcut.enter.detail": "Shift+Enter 换行",
+  "settings.sendShortcut.shift-enter.detail": "Enter 换行",
   "settings.closeBehavior": "关闭窗口时",
   "settings.closeBehaviorFooter":
     "点击关闭按钮时的行为。“每次询问”会弹出本提示；其他选项直接生效，可随时在此修改。",

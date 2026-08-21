@@ -2,6 +2,11 @@
 
 import { create } from "zustand";
 import { useAppearance } from "./appearance";
+import {
+  SEND_SHORTCUT_DEFAULT,
+  isSendShortcut,
+  type SendShortcut,
+} from "./composer-shortcut";
 
 export type Theme = "light" | "dark";
 export type TaskStatus = "done" | "running" | "queued" | "error";
@@ -9,6 +14,7 @@ export type TaskStatus = "done" | "running" | "queued" | "error";
 const THEME_STORAGE_KEY = "pi-desktop.theme";
 const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";
 const AGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.agentPanelWidth";
+const SEND_SHORTCUT_STORAGE_KEY = "pi-desktop.sendShortcut";
 
 /** Docked chat rail width, in px. Only applies in the default layout —
  *  work mode stretches the panel to a centered reading column, zen mode hides it. */
@@ -107,6 +113,9 @@ interface UIState {
   closeBehavior: CloseBehavior;
   closeDialogOpen: boolean;
 
+  /** which key combination sends a message from the chat composer */
+  sendShortcut: SendShortcut;
+
   toggleTheme: () => void;
   /** adopt an explicit theme (pins it as the user's choice) */
   setTheme: (theme: Theme) => void;
@@ -150,6 +159,9 @@ interface UIState {
   /** restore the saved close behavior — call once on mount */
   initCloseBehavior: () => void;
   setCloseDialogOpen: (open: boolean) => void;
+  setSendShortcut: (s: SendShortcut) => void;
+  /** restore the saved composer send shortcut — call once on mount */
+  initSendShortcut: () => void;
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -173,6 +185,7 @@ export const useUI = create<UIState>((set) => ({
   notificationSettings: { enabled: true },
   closeBehavior: "ask",
   closeDialogOpen: false,
+  sendShortcut: SEND_SHORTCUT_DEFAULT,
 
   /**
    * system → light → dark → system. Three-way rather than a plain flip because
@@ -370,4 +383,23 @@ export const useUI = create<UIState>((set) => ({
       return { closeBehavior: saved as CloseBehavior };
     }),
   setCloseDialogOpen: (open) => set({ closeDialogOpen: open }),
+  setSendShortcut: (s) =>
+    set(() => {
+      try {
+        localStorage.setItem(SEND_SHORTCUT_STORAGE_KEY, s);
+      } catch {
+        // storage unavailable — keep the choice in-memory only
+      }
+      return { sendShortcut: s };
+    }),
+  initSendShortcut: () =>
+    set(() => {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(SEND_SHORTCUT_STORAGE_KEY);
+      } catch {
+        // storage unavailable — stay on the default
+      }
+      return isSendShortcut(saved) ? { sendShortcut: saved } : {};
+    }),
 }));

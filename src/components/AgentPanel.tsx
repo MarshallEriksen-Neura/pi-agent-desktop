@@ -210,7 +210,9 @@ function LocalAgentPanel({ width }: { width?: number }) {
         setSlashIndex((i) => (i - 1 + slashItems.length) % slashItems.length);
         return;
       }
-      if (e.key === "Enter" || e.key === "Tab") {
+      // ⌘/Ctrl+↩ always sends, even with the menu open — the menu only claims
+      // the plain Enter family so it can win over an `Enter`-to-send preference.
+      if ((e.key === "Enter" && !e.metaKey && !e.ctrlKey) || e.key === "Tab") {
         e.preventDefault();
         pickSlash(slashItems[slashIndex] ?? slashItems[0]);
         return;
@@ -220,7 +222,8 @@ function LocalAgentPanel({ width }: { width?: number }) {
         return;
       }
     }
-    // Note: Cmd+Enter is handled in ComposerInput component
+    // Note: the send shortcut itself is handled in ComposerInput, which runs
+    // this handler first and stands down if it called preventDefault().
   };
 
   const busy = streaming || agentRunning || retrying;
