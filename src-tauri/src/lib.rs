@@ -7,6 +7,7 @@ mod pi_command;
 mod pi_models;
 mod pi_settings;
 mod projects;
+mod provider_auth;
 mod remote_control;
 mod updater;
 mod wsl;
@@ -50,6 +51,9 @@ fn shutdown_backend(app: &tauri::AppHandle) {
     // Stop the remote listener and cancel remote runtimes before the desktop
     // Pi process is terminated by the coordinator below.
     app.state::<RemoteControlState>().shutdown();
+    // Kill any browser-pending login so its loopback callback server dies with
+    // the app instead of lingering on a bound port.
+    app.state::<provider_auth::ProviderAuthState>().shutdown();
     let mut coordinator = ShutdownCoordinator::new();
     coordinator.push(ShutdownStage::StopAccepting, |_| Ok(()));
     coordinator.push(ShutdownStage::CloseInputs, |_| Ok(()));
@@ -205,6 +209,7 @@ pub fn run() {
         .manage(PiProc::default())
         .manage(BackendLifecycle::default())
         .manage(RemoteControlState::default())
+        .manage(provider_auth::ProviderAuthState::default())
         .manage(chat_store::ChatDb::default())
         .invoke_handler(tauri::generate_handler![
             chat_store::chat_sessions_list,
@@ -253,6 +258,11 @@ pub fn run() {
             pet_window::list_custom_pets,
             open_external,
             pi_models::pi_fetch_models,
+            provider_auth::provider_auth_list,
+            provider_auth::provider_auth_begin,
+            provider_auth::provider_auth_answer,
+            provider_auth::provider_auth_cancel,
+            provider_auth::provider_auth_logout,
             remote_control::remote_control_status,
             remote_control::remote_control_private_addresses,
             remote_control::remote_control_enable,

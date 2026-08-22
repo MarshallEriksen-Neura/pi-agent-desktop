@@ -24,6 +24,17 @@ export type {
 } from "./pi-process";
 export type { ProjectCatalogPort } from "./project-catalog";
 export type {
+  AuthInfoLinkDto,
+  AuthNotifyDto,
+  AuthPromptDto,
+  AuthProviderDto,
+  ProviderApiKeyInfoDto,
+  ProviderAuthEventDto,
+  ProviderAuthMethod,
+  ProviderAuthPort,
+  ProviderOAuthInfoDto,
+} from "./provider-auth";
+export type {
   RemoteControlEnableInput,
   RemoteControlPort,
   RemoteControlStatusDto,

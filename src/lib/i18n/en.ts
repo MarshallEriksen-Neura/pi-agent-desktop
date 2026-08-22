@@ -296,6 +296,8 @@ export const en = {
   "settings.category.runtimeDetail": "WSL, shell, sessions, proxy, and transport environment.",
   "settings.category.remote": "Remote Control",
   "settings.category.remoteDetail": "LAN gateway, paired devices, and the current desktop project.",
+  "settings.category.accounts": "Accounts",
+  "settings.category.accountsDetail": "Sign in to model providers with a subscription or API key.",
   "settings.category.advanced": "Advanced",
   "settings.category.advancedDetail": "Project trust and direct settings-file diagnostics.",
   "mcp.section": "MCP servers",
@@ -543,6 +545,47 @@ export const en = {
   "closeDialog.minimize": "Minimize to tray",
   "closeDialog.quit": "Quit",
 
+  // provider login — subscriptions (OAuth) and API keys, stored in pi's auth.json
+  "providerAuth.subscriptions": "Subscriptions",
+  "providerAuth.subscriptionsFooter":
+    "Sign in with a plan you already pay for. Tokens are stored by pi and refreshed automatically.",
+  "providerAuth.apiKeys": "API keys",
+  "providerAuth.apiKeysFooter":
+    "Saved to pi's auth file. Providers configured through environment variables keep working and are not listed as signed in.",
+  "providerAuth.signedIn": "Signed in",
+  "providerAuth.keySaved": "Key saved",
+  "providerAuth.notSignedIn": "Not signed in",
+  "providerAuth.signIn": "Sign in",
+  "providerAuth.signOut": "Sign out",
+  "providerAuth.useApiKey": "Use an API key",
+  "providerAuth.subscriptionBadge": "Subscription",
+  "providerAuth.empty": "No providers support an interactive login.",
+  "providerAuth.loadFailed": "Could not load providers: {message}",
+  // login dialog
+  "providerAuth.dialogTitle": "Sign in to {provider}",
+  "providerAuth.starting": "Starting…",
+  "providerAuth.openedBrowser": "Opened your browser. Complete the login there.",
+  "providerAuth.openAgain": "Open the page again",
+  "providerAuth.copyUrl": "Copy link",
+  "providerAuth.copied": "Copied",
+  "providerAuth.deviceCodeHint": "Enter this code at {url}:",
+  "providerAuth.submit": "Continue",
+  "providerAuth.finishing": "Finishing…",
+  "providerAuth.success": "Signed in to {provider}.",
+  "providerAuth.successHint":
+    "Credentials take effect right away. Restart pi if you want this provider's models in the picker.",
+  "providerAuth.failed": "Sign-in failed: {message}",
+  "providerAuth.timedOut": "Sign-in timed out. Nothing was saved.",
+  "providerAuth.manualHint":
+    "If the browser is on another machine, paste the authorization code or the final redirect URL here.",
+  // per-provider caveats — only providers listed in PROVIDER_NOTE_KEYS render one
+  "providerAuth.note.anthropic":
+    "Third-party harness usage is billed per token as extra usage, not against your Claude plan limits.",
+  // WSL — pi runs inside the distro against its own auth file
+  "providerAuth.wslTitle": "Signing in from the app is unavailable in WSL mode",
+  "providerAuth.wslDetail":
+    "pi runs inside your WSL distro and reads a credential file in its home directory, so a login started here would be written to the wrong place. Run this inside the distro, then use /login:",
+
   // models page
   "models.title": "Models",
   "models.subtitleMock":
@@ -587,8 +630,9 @@ export const en = {
   "models.namePlaceholder": "optional display name",
   "models.apiKeyPlaceholder": "optional — !cmd or $ENV also works",
   "models.customModels": "Custom models",
-  "models.allModels": "All models",
-  "models.allModelsFooter": "Every model pi knows about, grouped by provider.",
+  "models.builtinBadge": "Built-in",
+  "models.builtinProviderNote":
+    "pi ships this provider's model list, so it cannot be edited here. Tick a model to make it selectable in chat. Sign in under Settings → Accounts.",
   "models.modelCount": "{n} models",
   "models.addProvider": "Add provider",
   "models.createProvider": "Create",

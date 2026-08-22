@@ -5,6 +5,7 @@ import { mockPetWindowPort } from "../mock/pet-window";
 import { createMockPiConfigurationPort } from "../mock/pi-configuration";
 import { createMockPiProcessPort } from "../mock/pi-process";
 import { createMockProjectCatalogPort } from "../mock/project-catalog";
+import { mockProviderAuthPort } from "../mock/provider-auth";
 import { createMockRemoteControlPort } from "../mock/remote-control";
 import { mockRemoteConversationsPort } from "../mock/remote-conversations";
 import { createMockRuntimeConfigPort } from "../mock/runtime-config";
@@ -24,6 +25,7 @@ export function createBrowserBackendPorts(): BackendPorts {
     sessionRepository: createMockSessionRepositoryPort(),
     workspaceFs: createMockWorkspaceFsPort(),
     projectCatalog: createMockProjectCatalogPort(),
+    providerAuth: mockProviderAuthPort,
     remoteControl: createMockRemoteControlPort(),
     remoteConversations: mockRemoteConversationsPort,
     runtimeConfig: createMockRuntimeConfigPort(),

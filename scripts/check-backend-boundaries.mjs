@@ -17,6 +17,8 @@ const EXPECTED_COMMAND_NAMES = [
   "mcp_adapter_check", "mcp_config_discover", "mcp_config_open_dir", "mcp_config_read", "mcp_config_write",
   "project_resolve",
   "project_pick", "project_remove_recent", "projects_recent", "runtime_config_read",
+  "provider_auth_answer", "provider_auth_begin", "provider_auth_cancel",
+  "provider_auth_list", "provider_auth_logout",
   "runtime_config_write", "workspace_root", "wsl_list_distros",
   "wsl_runtime_validate", "wsl_shell_bridge_path",
   "remote_control_disable", "remote_control_enable", "remote_control_pairing_payload",

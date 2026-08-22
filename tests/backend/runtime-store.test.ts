@@ -54,6 +54,14 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
       listRecent: async () => [],
       removeRecent: async () => [],
     },
+    providerAuth: {
+      listProviders: async () => [],
+      beginLogin: async () => undefined,
+      answerPrompt: async () => undefined,
+      cancelLogin: async () => undefined,
+      logout: async () => undefined,
+      onEvent: () => () => undefined,
+    },
     runtimeConfig,
     piConfiguration: {
       readSettings: async () => ({ path: "", exists: false, content: "" }),

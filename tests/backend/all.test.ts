@@ -15,3 +15,4 @@ import "./model-scope.test";
 import "./model-sync.test";
 import "./composer-shortcut.test";
 import "./pet-animator.test";
+import "./provider-auth.test";

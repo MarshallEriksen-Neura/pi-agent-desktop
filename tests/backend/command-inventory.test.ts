@@ -36,8 +36,8 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   assert.equal(result.inventory.legacyTauriFileCount, 0);
   assert.equal(result.inventory.legacyTauriRefCount, 0);
   assert.ok(result.inventory.tauriRefCount > 0);
-  assert.ok(result.inventory.commandCallCount >= 59);
-  assert.equal(result.inventory.commandUniqueCount, 57);
+  assert.ok(result.inventory.commandCallCount >= 64);
+  assert.equal(result.inventory.commandUniqueCount, 62);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -82,6 +82,11 @@ test("locks the desktop command names and Pi process event names", () => {
     "project_remove_recent",
     "project_resolve",
     "projects_recent",
+    "provider_auth_answer",
+    "provider_auth_begin",
+    "provider_auth_cancel",
+    "provider_auth_list",
+    "provider_auth_logout",
     "remote_control_disable",
     "remote_control_enable",
     "remote_control_pairing_payload",

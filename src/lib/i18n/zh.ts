@@ -296,6 +296,8 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.category.runtimeDetail": "WSL、Shell、会话、代理与传输环境。",
   "settings.category.remote": "远程控制",
   "settings.category.remoteDetail": "局域网网关、已配对设备与桌面当前项目。",
+  "settings.category.accounts": "账号",
+  "settings.category.accountsDetail": "用订阅或 API key 登录模型提供方。",
   "settings.category.advanced": "高级",
   "settings.category.advancedDetail": "项目信任与设置文件诊断。",
   "mcp.section": "MCP 服务器",
@@ -533,6 +535,47 @@ export const zh: Record<keyof typeof en, string> = {
   "closeDialog.minimize": "最小化到托盘",
   "closeDialog.quit": "退出",
 
+  // provider login — subscriptions (OAuth) and API keys, stored in pi's auth.json
+  "providerAuth.subscriptions": "订阅登录",
+  "providerAuth.subscriptionsFooter":
+    "用你已付费的套餐登录。令牌由 pi 保存并自动刷新。",
+  "providerAuth.apiKeys": "API key",
+  "providerAuth.apiKeysFooter":
+    "保存到 pi 的凭据文件。通过环境变量配置的提供方照常可用，但不会显示为已登录。",
+  "providerAuth.signedIn": "已登录",
+  "providerAuth.keySaved": "已保存 key",
+  "providerAuth.notSignedIn": "未登录",
+  "providerAuth.signIn": "登录",
+  "providerAuth.signOut": "退出登录",
+  "providerAuth.useApiKey": "使用 API key",
+  "providerAuth.subscriptionBadge": "订阅",
+  "providerAuth.empty": "没有支持交互式登录的提供方。",
+  "providerAuth.loadFailed": "无法加载提供方列表：{message}",
+  // login dialog
+  "providerAuth.dialogTitle": "登录 {provider}",
+  "providerAuth.starting": "正在启动…",
+  "providerAuth.openedBrowser": "已打开浏览器，请在其中完成登录。",
+  "providerAuth.openAgain": "重新打开页面",
+  "providerAuth.copyUrl": "复制链接",
+  "providerAuth.copied": "已复制",
+  "providerAuth.deviceCodeHint": "在 {url} 输入此代码：",
+  "providerAuth.submit": "继续",
+  "providerAuth.finishing": "正在完成…",
+  "providerAuth.success": "已登录 {provider}。",
+  "providerAuth.successHint":
+    "凭据立即生效。若要在模型选择器里看到该提供方的模型，请重启 pi。",
+  "providerAuth.failed": "登录失败：{message}",
+  "providerAuth.timedOut": "登录超时，未保存任何凭据。",
+  "providerAuth.manualHint":
+    "如果浏览器在另一台机器上，把授权码或最终跳转 URL 粘贴到这里。",
+  // per-provider caveats — only providers listed in PROVIDER_NOTE_KEYS render one
+  "providerAuth.note.anthropic":
+    "第三方 harness 的用量按 token 计入 extra usage 单独计费，不占用 Claude 套餐额度。",
+  // WSL — pi runs inside the distro against its own auth file
+  "providerAuth.wslTitle": "WSL 模式下无法在应用内登录",
+  "providerAuth.wslDetail":
+    "pi 运行在 WSL 发行版内，读取的是发行版家目录里的凭据文件，从这里发起的登录会写错位置。请在发行版内运行下面的命令，然后使用 /login：",
+
   // models page
   "models.title": "模型",
   "models.subtitleMock":
@@ -574,8 +617,9 @@ export const zh: Record<keyof typeof en, string> = {
   "models.namePlaceholder": "可选显示名称",
   "models.apiKeyPlaceholder": "可选 — 也支持 !cmd 或 $ENV",
   "models.customModels": "自定义模型",
-  "models.allModels": "全部模型",
-  "models.allModelsFooter": "pi 所知的每一个模型，按提供商分组。",
+  "models.builtinBadge": "内置",
+  "models.builtinProviderNote":
+    "该提供商的模型列表由 pi 内置，无法在此编辑。勾选后即可在对话中选用。登录请前往 设置 → 账号。",
   "models.modelCount": "{n} 个模型",
   "models.addProvider": "添加提供商",
   "models.createProvider": "创建",

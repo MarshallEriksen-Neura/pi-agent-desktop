@@ -28,6 +28,7 @@ import {
   Bot,
   SquareTerminal,
   CornerDownLeft,
+  KeyRound,
 } from "lucide-react";
 import { SEND_SHORTCUTS } from "@/lib/composer-shortcut";
 import { APP_VERSION } from "@/lib/update";
@@ -66,6 +67,7 @@ import {
 } from "@/components/settings-ui";
 import { PetSettings } from "@/components/PetSettings";
 import { RemoteControlSection } from "@/components/remote-control/RemoteControlSection";
+import { ProviderAuthSection } from "@/components/provider-auth/ProviderAuthSection";
 
 const TRUST_OPTIONS = ["ask", "always", "never"] as const;
 const BUILTIN_THEMES = ["dark", "light"] as const;
@@ -99,6 +101,7 @@ type SettingsCategory =
   | "appearance"
   | "agent"
   | "runtime"
+  | "accounts"
   | "remote"
   | "advanced";
 
@@ -211,6 +214,12 @@ export default function PiSettingsPage() {
       title: t("settings.category.runtime"),
       detail: t("settings.category.runtimeDetail"),
       icon: <SquareTerminal size={15} />,
+    },
+    {
+      id: "accounts",
+      title: t("settings.category.accounts"),
+      detail: t("settings.category.accountsDetail"),
+      icon: <KeyRound size={15} />,
     },
     {
       id: "remote",
@@ -567,6 +576,8 @@ export default function PiSettingsPage() {
 
       {category === "remote" ? (
         <RemoteControlSection />
+      ) : category === "accounts" ? (
+        <ProviderAuthSection />
       ) : file.parseError ? (
         <InsetGroup header={t("settings.problem")}>
           <GroupRow

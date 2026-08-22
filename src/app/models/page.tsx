@@ -124,7 +124,6 @@ export default function ModelsPage() {
   const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
   const providerEls = useRef<Record<string, HTMLElement | null>>({});
   const modelRowEls = useRef<Record<string, (HTMLElement | null)[]>>({});
-  const allModelsEl = useRef<HTMLDivElement | null>(null);
   const scrollerEl = useRef<HTMLDivElement | null>(null);
 
   const setCardFilterFor = useCallback((providerId: string, value: string) => {
@@ -141,10 +140,6 @@ export default function ModelsPage() {
         block: "start",
       });
     });
-  }, []);
-
-  const jumpToAllModels = useCallback(() => {
-    allModelsEl.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
   const scrollToTop = useCallback(() => {
@@ -368,10 +363,49 @@ export default function ModelsPage() {
     setFetchResult(null);
   };
 
+  /**
+   * Built-in providers rendered as provider cards alongside the models.json
+   * ones, so a subscription signed in under Settings → Accounts is visible where
+   * users already look instead of only in the list at the foot of the page.
+   *
+   * pi reports models.json providers too, so anything already in
+   * `customProviders` is skipped — otherwise every custom provider would render
+   * twice, and the editable card is the one worth keeping. That also settles the
+   * overlap case (a provider both built in and overridden in models.json, like
+   * `openrouter`): the override wins, matching pi's own resolution order.
+   */
+  const builtinProviders = useMemo<Record<string, CustomProvider>>(() => {
+    const out: Record<string, CustomProvider> = {};
+    for (const model of piModels) {
+      if (customProviders[model.provider]) continue;
+      const entry = (out[model.provider] ??= {
+        // Built-in catalogs live in pi, not models.json: there is no baseUrl or
+        // api to show, and nothing here is editable.
+        baseUrl: "",
+        api: "",
+        models: [],
+      });
+      entry.models.push({
+        id: model.id,
+        name: model.name,
+        reasoning: model.reasoning,
+        contextWindow: model.contextWindow,
+      });
+    }
+    return out;
+  }, [piModels, customProviders]);
+
   const filteredProviderEntries = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return Object.entries(customProviders)
-      .map(([providerId, provider]) => {
+    const entries: Array<{
+      providerId: string;
+      provider: CustomProvider;
+      matchedModels: CustomModelDef[];
+      providerMatch: boolean;
+      builtin: boolean;
+    }> = [];
+    const collect = (source: Record<string, CustomProvider>, builtin: boolean) => {
+      for (const [providerId, provider] of Object.entries(source)) {
         const providerMatch = providerId.toLowerCase().includes(term);
         const matchedModels = provider.models.filter(
           (m) =>
@@ -379,10 +413,16 @@ export default function ModelsPage() {
             m.id.toLowerCase().includes(term) ||
             (m.name && m.name.toLowerCase().includes(term))
         );
-        return { providerId, provider, matchedModels, providerMatch };
-      })
-      .filter(({ matchedModels, providerMatch }) => providerMatch || matchedModels.length > 0);
-  }, [customProviders, search]);
+        entries.push({ providerId, provider, matchedModels, providerMatch, builtin });
+      }
+    };
+    // Custom first: these are the ones the user configured by hand.
+    collect(customProviders, false);
+    collect(builtinProviders, true);
+    return entries.filter(
+      ({ matchedModels, providerMatch }) => providerMatch || matchedModels.length > 0
+    );
+  }, [customProviders, builtinProviders, search]);
 
   // Scroll-spy: highlight the provider whose card is nearest the top of the
   // viewport — the rail's "where am I" cue (Wayfinding).
@@ -436,9 +476,7 @@ export default function ModelsPage() {
             <ProviderRail
               entries={filteredProviderEntries}
               activeProvider={activeProvider}
-              allModelsVisible={piStatus === "ready"}
               onJump={jumpToProvider}
-              onJumpAllModels={jumpToAllModels}
               onExpandAll={expandAll}
               onCollapseAll={collapseAll}
               onBackTop={scrollToTop}
@@ -496,7 +534,7 @@ export default function ModelsPage() {
             transition={{ ...spring, delay: 0.1 }}
             style={{ display: "grid", gap: 14 }}
           >
-            {filteredProviderEntries.map(({ providerId, provider, matchedModels }) => {
+            {filteredProviderEntries.map(({ providerId, provider, matchedModels, builtin }) => {
               const isOpen = !!expanded[providerId];
               const enabledCount = provider.models.filter((m) =>
                 isModelEnabled(enabledModels, providerId, m.id)
@@ -537,10 +575,23 @@ export default function ModelsPage() {
                       <ProviderMeta provider={providerId} size={22} />
                       <div className="min-w-0">
                         <p
-                          className="truncate text-[15px] font-semibold"
+                          className="flex items-center gap-1.5 truncate text-[15px] font-semibold"
                           style={{ color: "var(--ink-title)" }}
                         >
-                          {PROVIDER_META[providerId]?.label ?? providerId}
+                          <span className="truncate">
+                            {PROVIDER_META[providerId]?.label ?? providerId}
+                          </span>
+                          {builtin && (
+                            <span
+                              className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+                              style={{
+                                background: "rgba(44,90,160,0.1)",
+                                color: "var(--ink-accent)",
+                              }}
+                            >
+                              {t("models.builtinBadge")}
+                            </span>
+                          )}
                         </p>
                         <p
                           className="truncate text-xs"
@@ -591,7 +642,20 @@ export default function ModelsPage() {
                             background: "var(--ink-row-open-bg)",
                           }}
                         >
-                          {/* Provider actions */}
+                          {/* Provider actions — none apply to a built-in catalog,
+                              which pi owns and models.json cannot edit. */}
+                          {builtin ? (
+                            <div
+                              className="mb-4 rounded-xl px-3 py-2 text-xs"
+                              style={{
+                                background: "var(--input-bg)",
+                                border: "1px solid var(--ink-border)",
+                                color: "var(--muted-foreground)",
+                              }}
+                            >
+                              {t("models.builtinProviderNote")}
+                            </div>
+                          ) : (
                           <div className="mb-4 flex flex-wrap gap-2">
                             <button
                               onClick={() => setEditingProvider({ id: providerId, provider })}
@@ -648,6 +712,7 @@ export default function ModelsPage() {
                               {t("models.removeProvider")}
                             </button>
                           </div>
+                          )}
 
                           {/* In-card filter + A–Z jump — keeps large providers navigable */}
                           {provider.models.length > 12 && (
@@ -720,10 +785,16 @@ export default function ModelsPage() {
                                       <ModelIcon iconKey={meta.iconKey} size={13} color={meta.color} />
                                     </span>
                                     <div
-                                      className="min-w-0 flex-1 cursor-pointer"
+                                      className={
+                                        builtin
+                                          ? "min-w-0 flex-1"
+                                          : "min-w-0 flex-1 cursor-pointer"
+                                      }
                                       title={model.id}
-                                      onClick={() =>
-                                        setEditingModel({ providerId, model })
+                                      onClick={
+                                        builtin
+                                          ? undefined
+                                          : () => setEditingModel({ providerId, model })
                                       }
                                     >
                                       <p
@@ -739,19 +810,21 @@ export default function ModelsPage() {
                                         {model.id}
                                       </p>
                                     </div>
-                                    <button
-                                      onClick={() =>
-                                        setPendingRemoval({
-                                          kind: "model",
-                                          providerId,
-                                          modelId: model.id,
-                                        })
-                                      }
-                                      className="opacity-0 transition-opacity group-hover:opacity-100"
-                                      style={{ color: "var(--muted-foreground)" }}
-                                    >
-                                      <X size={13} />
-                                    </button>
+                                    {!builtin && (
+                                      <button
+                                        onClick={() =>
+                                          setPendingRemoval({
+                                            kind: "model",
+                                            providerId,
+                                            modelId: model.id,
+                                          })
+                                        }
+                                        className="opacity-0 transition-opacity group-hover:opacity-100"
+                                        style={{ color: "var(--muted-foreground)" }}
+                                      >
+                                        <X size={13} />
+                                      </button>
+                                    )}
                                   </div>
                                 );
                               })}
@@ -765,7 +838,11 @@ export default function ModelsPage() {
               );
             })}
 
-            {filteredProviderEntries.length === 0 && customLoaded && (
+            {filteredProviderEntries.length === 0 &&
+              customLoaded &&
+              // Built-ins arrive with pi's model list; claiming "no providers"
+              // before it lands would be wrong, not just early.
+              piStatus === "ready" && (
               <div
                 className="rounded-3xl border py-12 text-center"
                 style={{
@@ -818,15 +895,6 @@ export default function ModelsPage() {
           >
             {t("models.enabledInChatFooter")}
           </motion.div>
-
-          {/* All models reported by pi */}
-          {piStatus === "ready" && (
-            <AllModelsSection
-              innerRef={allModelsEl}
-              enabledModels={enabledModels}
-              onToggle={setEnabled}
-            />
-          )}
 
           {/* Restart hint */}
           {dirtyRestart && (
@@ -939,9 +1007,7 @@ export default function ModelsPage() {
 function ProviderRail({
   entries,
   activeProvider,
-  allModelsVisible,
   onJump,
-  onJumpAllModels,
   onExpandAll,
   onCollapseAll,
   onBackTop,
@@ -951,11 +1017,10 @@ function ProviderRail({
     provider: CustomProvider;
     matchedModels: CustomModelDef[];
     providerMatch: boolean;
+    builtin: boolean;
   }>;
   activeProvider: string | null;
-  allModelsVisible: boolean;
   onJump: (id: string) => void;
-  onJumpAllModels: () => void;
   onExpandAll: () => void;
   onCollapseAll: () => void;
   onBackTop: () => void;
@@ -1043,22 +1108,6 @@ function ProviderRail({
         className="mt-2 border-t pt-2"
         style={{ borderColor: "var(--ink-border)" }}
       >
-        {allModelsVisible && (
-          <motion.button
-            whileTap={{ scale: 0.98 }}
-            onClick={onJumpAllModels}
-            className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors"
-            style={{ cursor: "pointer" }}
-          >
-            <Bot size={15} style={{ color: "var(--muted-foreground)" }} />
-            <span
-              className="min-w-0 flex-1 truncate text-[12.5px] font-medium"
-              style={{ color: "var(--foreground)" }}
-            >
-              {t("models.allModels")}
-            </span>
-          </motion.button>
-        )}
         <motion.button
           whileTap={{ scale: 0.98 }}
           onClick={onBackTop}
@@ -1610,96 +1659,6 @@ function MiniButton({
     >
       {children}
     </button>
-  );
-}
-
-function AllModelsSection({
-  innerRef,
-  enabledModels,
-  onToggle,
-}: {
-  innerRef?: React.Ref<HTMLDivElement>;
-  enabledModels: string[];
-  onToggle: (providerId: string, modelId: string) => void | Promise<void>;
-}) {
-  const t = useT();
-  const piModels = usePi((s) => s.models);
-
-  const groups = useMemo(() => {
-    const map = new Map<string, string[]>();
-    piModels.forEach((m) => {
-      const list = map.get(m.provider) ?? [];
-      list.push(m.id);
-      map.set(m.provider, list);
-    });
-    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [piModels]);
-
-  return (
-    <motion.div
-      ref={innerRef}
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ ...spring, delay: 0.25 }}
-      className="overflow-hidden"
-      style={{
-        borderRadius: 24,
-        background: "var(--card-bg)",
-        border: "1px solid var(--ink-border)",
-        scrollMarginTop: 88,
-      }}
-    >
-      <div className="border-b px-5 py-4" style={{ borderColor: "var(--ink-border)" }}>
-        <h3 className="font-semibold" style={{ color: "var(--ink-title)" }}>
-          {t("models.allModels")}
-        </h3>
-        <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-          {t("models.allModelsFooter")}
-        </p>
-      </div>
-      <div className="p-4">
-        {groups.map(([providerId, modelIds]) => (
-          <div key={providerId} className="mb-4 last:mb-0">
-            <div className="mb-2 flex items-center gap-2">
-              <ProviderMeta provider={providerId} />
-              <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-                {t("models.modelCount", { n: modelIds.length })}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {modelIds.map((id) => {
-                const enabled = isModelEnabled(enabledModels, providerId, id);
-                return (
-                  <button
-                    key={modelRef(providerId, id)}
-                    onClick={() => onToggle(providerId, id)}
-                    className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors"
-                    style={{
-                      background: enabled
-                        ? "rgba(44,90,160,0.12)"
-                        : "var(--input-bg)",
-                      color: enabled ? "var(--ink-accent)" : "var(--foreground)",
-                      border: "1px solid",
-                      borderColor: enabled
-                        ? "rgba(44,90,160,0.3)"
-                        : "var(--ink-border)",
-                    }}
-                  >
-                    {enabled && <Check size={11} strokeWidth={3} />}
-                    {id}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-        {groups.length === 0 && (
-          <p className="py-4 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
-            {t("models.noSearchResults")}
-          </p>
-        )}
-      </div>
-    </motion.div>
   );
 }
 

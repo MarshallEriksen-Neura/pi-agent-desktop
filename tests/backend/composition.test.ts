@@ -60,6 +60,14 @@ function fakePorts(label = "fake"): BackendPorts {
       listRecent: async () => [],
       removeRecent: async () => [],
     },
+    providerAuth: {
+      listProviders: async () => [],
+      beginLogin: async () => undefined,
+      answerPrompt: async () => undefined,
+      cancelLogin: async () => undefined,
+      logout: async () => undefined,
+      onEvent: () => () => undefined,
+    },
     runtimeConfig: {
       read: async () => ({ mode: "native", distro: "" }),
       write: async () => undefined,
