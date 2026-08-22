@@ -2,6 +2,48 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
+## [0.6.0] — 2026-08-22
+
+### Added
+- **Provider 登录（设置 → 账号）** — 在应用内完成 pi 的 provider 认证，不再需要开终端跑 `/login`。订阅制 OAuth 支持 ChatGPT Plus/Pro (Codex)、Claude Pro/Max、GitHub Copilot、xAI、Kimi For Coding、OpenRouter、Radius，另可为任意 provider 保存 API key。实现方式是复用 pi 自己导出的 `ModelRuntime.login()`：PKCE、回调服务器、device code、token 交换、写 `auth.json` 全部仍由 pi 负责，桌面端只实现它的 `AuthInteraction` 并通过 sidecar 转发，因此 pi 更换 client id 或新增 provider 时无需同步改动
+- **多任务并行对话** — 每个会话拥有独立的 `pi --mode rpc` 进程（按 `task_id` 索引），可同时跑多个对话；新增后台任务条显示非焦点任务的运行/等待/失败状态与当前工具名，支持点击切换与停止
+- **MCP 配置管理页** — 读写、发现全局与项目级 MCP 配置，适配器检查，一键打开配置目录
+- **远程控制** — 设备配对（QR）、已配对设备管理与吊销、网络地址与端口配置、身份重置
+- **发送快捷键偏好** — 可在设置中选择 ⌘↩ / ↩ / ⇧↩ 作为聊天发送键，⌘/Ctrl+Enter 始终可用
+- **三路主题切换** — 跟随系统 → 浅色 → 深色，并通过首屏内联脚本消除 SSR 主题闪烁
+- **聊天面板宽度可拖拽** — 新增面板调整器，含最小/最大宽度限制
+- **扩展交互支持自由文本** — 选择题在预设选项之外可直接输入自定义答案
+- 消息气泡悬停显示复制按钮
+
+### Changed
+- **模型页展示内置 provider** — pi 内置的 provider（如已登录的 Kimi For Coding、Anthropic）现在与自定义 provider 一样以卡片形式出现在页面上方，带「内置」徽章，勾选即可在对话中选用。由于 pi 上报的模型列表本身包含 models.json 的 provider，合并时按 provider id 去重，models.json 的覆写优先——与 pi 自身的解析顺序一致
+- 模型与 provider 的删除确认统一为一个确认对话框组件
+- 会话生命周期：项目切换不再重启 pi，改为按任务释放客户端
+- 消息列表滚动改为即时跟随（`followOutput: "auto"`），避免平滑动画跟不上流式输出
+- pi 子进程的 PATH 前置 npm 全局 bin 目录，使 npm 安装的 CLI 在扩展中可被解析
+
+### Removed
+- **模型页底部「全部模型」区块** — 内置 provider 进入卡片区后，该区块会让每个内置模型重复出现两次，故连同左侧导航的跳转入口一并移除
+- 远程任务页面及其样式（未被引用）
+
+### Fixed
+- 模型页在 pi 尚未连接时误报「没有提供商」——空状态改为同时要求 pi 就绪
+- 桌面宠物精灵动画的 CPU 占用与内存泄漏：改用精确 `setTimeout` 调度替代 `requestAnimationFrame` 轮询、加入最小帧间隔、缓存动画时序、修正图片加载错误处理
+- 宠物窗口因订阅整个 store 导致的无关重渲染——改为细粒度选择器
+- 虚拟滚动中的外边距塌陷（`flow-root`）
+- 聊天恢复服务重复配置
+
+### Mobile
+- **交互回答改为底部弹层** — `AwaitingCard` 收敛为状态卡片与入口，新增全局唯一的 `InteractionSheet`：支持下拉关闭、左右滑动切题、长按确认等手势；`AndroidManifest` 加入软键盘适配模式
+- 底部导航栏改用 Lucide 图标并调整样式
+
+### Internal
+- 版本号统一：`package.json` 此前停留在 0.4.1，而 Tauri 侧已是 0.5.0，导致设置页显示的版本号（`APP_VERSION` 读自 `package.json`）与实际不符。现已与 `tauri.conf.json`、`Cargo.toml` 对齐
+- 后端边界检查纳入 provider-auth、MCP、远程控制命令（命令清单 57 → 62）
+- 新增 `tests/backend/provider-auth.test.ts`（8 个用例，覆盖 sidecar JSONL 解析与登录状态机）
+
+---
+
 ## [0.5.0] — 2026-08-17
 
 ### Added
