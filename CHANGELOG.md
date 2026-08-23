@@ -2,6 +2,30 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
+## [0.7.0] — 2026-08-23
+
+### Added
+- **首屏骨架屏** — 应用窗口在 JS 执行前就画出外壳形状（56px 侧栏 + 48px 顶栏 + 呼吸的 π 标记）。此前 `BackendProvider` 要等客户端 effect 解析完容器才渲染，预渲染的 `<body>` 是空的，整个 bundle 解析 + hydrate 期间窗口一片空白。骨架屏是预渲染 HTML 里的静态标记，随样式表一起绘制，几何数值抄自 `NavRail` / `TopBar`，因此真实外壳接管时不会有位移
+
+### Changed
+- **宠物窗口不再阻塞首屏** — 此前 `setup()` 无条件预创建宠物窗口，而宠物默认是关闭的（`enabled: false`）。它是加载同一份 Next bundle 的第二个 webview，与主窗口争抢渲染预算（dev 下还要抢 Next 的按需编译），所有用户都为此付费，包括从不开启宠物的多数人。现在改由主窗口在首帧绘制完、主线程空闲后调用 `pet_window_prewarm` 隐藏预热，且仅在用户确实启用了宠物时才做；窗口保持隐藏直到 `/pet` 上报就绪，避免闪出预渲染的「No pet selected」占位
+- **宠物窗口显示时不再抢焦点** — 移除 `pet_window_show` / `pet_window_toggle` 里的 `set_focus()`。它是 200x250 的置顶浮层，抢焦点只会打断用户正在输入的内容；开机自动唤起那条路径上它甚至会从主窗口手里抢走焦点。`always_on_top` 已足够保证它可见
+- **宠物窗口 devtools 改为按需** — dev 下不再自动打开：那会在启动期再拉起一个 webview，正是本次要避开的开销。调试宠物本身时设 `PI_PET_DEVTOOLS=1`
+- **MCP 配置页支持深浅色** — `mcp-tokens.ts` 原本是一份刻意写死的 light-only 调色板（注释即写着「in any theme」），因此深色模式下整页仍是亮白宣纸。现在取值搬到 `globals.css` 的 `:root` / `:root[data-theme="dark"]`，token 模块只做 `var()` 转发，消费方 JSX 一行未改。同一套设计两种纸：宣纸（白天）/ 墨夜（夜间），墨与纸两端对调，但 `elevated` / `sunken` 的语义不翻转。浅色取值与原调色板逐字节一致，白天观感无变化
+  - 关键点：印章红必须拆成两个角色。`--mcp-seal` 是「墨」（错误文字、警示图标、caret），深色下要提亮才读得清；`--mcp-seal-fill` 是「地」（主按钮底，上压纸白色标签），必须保持够深否则标签对比度不足。因此 hover 方向相反：浅色变深，深色变浅
+
+### Fixed
+- **路由切换时的加载态不再闪底色，也不再漏出窗口材质** — `app/loading.tsx` 原先只给三个点上色，容器自身没有背景，于是最近的有底色祖先是 `<body>`（`--bg-base`）；而每个目标页各画自己的底（`/settings/`、`/skills/` 是 `--bg-elevated`，`/models/` 是渐变，`/mcp/` 是水墨宣纸），所以每次跳转都闪一下页面底色（实测深色 `rgb(0,0,0)` → `rgb(28,28,30)`，浅色 `rgb(255,255,255)` → `rgb(242,242,247)`）。更要紧的是靠 `<body>` 并不安全：用户设了背景图时 `appearance.ts` 会打 `body { background: transparent !important }`，而 Tauri 主窗口是 `transparent: true` + mica/acrylic，此时没有自身底色的 fallback 会直接漏出系统材质 —— Windows 浅色主题下就是一片亮的，与 app 自身是否深色无关。现在 fallback 自绘 `--bg-elevated` 并补上 48px 顶栏（含拖拽区），并对宠物窗口加了守卫（`data-shell="pet"` 下保持透明），否则那个透明浮层会在导航瞬间变成实心方块
+- **在子路由上刷新会白屏** — `NavRail` 的 `pathname.startsWith()` 未判空。`usePathname()` 类型标注是 `string`，但 App Router 客户端挂载前会返回 `null`，因此硬加载子路由（在 `/mcp/` 上按刷新，或直接打开该地址）会在 render 中抛异常，整个外壳落入 `GlobalErrorBoundary`
+- **MCP 页三处对比度不达标**（用脚本从实际生效样式表读值实测，非目测）：浅色占位符文字在输入框填充上仅 2.35:1（占位符底线 3:1）→ 3.19:1；浅色迁移警告文字在卡片上仅 2.61:1，而它承载正文信息 → 4.89:1；深色印章按钮 hover 态 3.99:1 → 4.63:1。最终 20 组文字/底色配对在双主题下全部通过
+- 宠物窗口的显示状态现在会同步回 store 与持久化偏好，此前 `windowVisible` 始终停在默认值，导致「从未显示过」与「用户主动隐藏」无法区分，PetSettings 的显示/隐藏按钮文案也是错的
+
+### Internal
+- 新增 `runWhenIdle()`（`src/lib/idle.ts`）：把非关键启动工作推到首帧绘制之后的空闲间隙，附 rAF 双帧 + `requestIdleCallback` 回退（WKWebView 在 Safari 17.4 前没有该 API）
+- `PetWindowPort` 新增 `prewarm()`，desktop / mock / 测试三处实现同步
+
+---
+
 ## [0.6.0] — 2026-08-22
 
 ### Added
