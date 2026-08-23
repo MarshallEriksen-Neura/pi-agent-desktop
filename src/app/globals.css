@@ -892,3 +892,219 @@ body {
     animation: none;
   }
 }
+
+/* ── Boot screen ────────────────────────────────────────────────────────────
+   The window paints nothing until BackendProvider resolves and React hydrates,
+   so this static stand-in ships in the prerendered HTML (see BootScreen) and
+   holds the chrome's shape until the real shell lands. Numbers are copied from
+   NavRail (56 wide, 52 top inset, 38x38 r11 tabs, gap 6) and TopBar (48 tall)
+   so nothing shifts on the swap. */
+#pi-boot {
+  position: fixed;
+  inset: 0;
+  /* above the shell it covers — NavRail is 15, TopBar 20 */
+  z-index: 100;
+  display: flex;
+  background: var(--bg-base);
+  /* An exit, so faster than --duration-base: this must get out of the way the
+     moment the real shell is on screen, not linger over it. */
+  transition: opacity var(--duration-fast) var(--spring-smooth);
+}
+
+/* Set by MainShell once the real shell has painted. Kept in the DOM but inert:
+   removing it would need a client component around markup that must be static. */
+html[data-app-ready] #pi-boot {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* The pet companion shares this layout but is a 200x250 transparent overlay. */
+html[data-shell="pet"] #pi-boot {
+  display: none;
+}
+
+.pi-boot-rail {
+  width: 56px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-top: 52px; /* below the traffic lights, like NavRail */
+  border-right: 1px solid var(--separator);
+  background: var(--material-thin);
+}
+
+.pi-boot-slot {
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: var(--separator);
+}
+
+.pi-boot-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pi-boot-topbar {
+  height: 48px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--separator);
+  background: var(--material-thin);
+}
+
+.pi-boot-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+.pi-boot-dots {
+  display: flex;
+  gap: 6px;
+}
+
+/* A watermark, not a logo reveal: the π breathes quietly so the window reads as
+   "starting" without a splash screen's minimum airtime. Its own keyframes rather
+   than pi-icon-breathe — that one troughs at 0.45, which on top of a tertiary
+   fill left the mark all but invisible on black. */
+@keyframes pi-boot-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.pi-boot-mark {
+  display: block;
+  color: var(--text-secondary);
+  animation: pi-boot-breathe 2.2s ease-in-out infinite;
+}
+
+/* ── Route-transition fallback (app/loading.tsx) ─────────────────────────────
+   Sibling to the boot screen: same top band, same dots, so booting and
+   navigating read as one language. It fills the content column only — the rail
+   belongs to the shell, which stays mounted across a route change.
+
+   `background` is the point. This fallback used to paint nothing, so it fell
+   through to `<body>`, which (a) differs from what every destination page paints,
+   flashing the ground color on each hop, and (b) is not reliably opaque —
+   appearance.ts sets `body { background: transparent !important }` when a
+   background image is configured, and in the Tauri window (transparent + mica)
+   that let the OS material show through the fallback. --bg-elevated is the
+   surface the settings-family pages land on, so those hops now paint flat. */
+.pi-route-loading {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+}
+
+.pi-route-loading-topbar {
+  height: 48px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--separator);
+  background: var(--material-thin);
+}
+
+.pi-route-loading-stage {
+  flex: 1;
+  display: grid;
+  place-items: center;
+}
+
+.pi-route-loading-dots {
+  display: flex;
+  gap: 6px;
+}
+
+/* The pet window shares this layout; an opaque fill would turn its 200x250
+   transparent overlay into a solid square mid-navigation. */
+html[data-shell="pet"] .pi-route-loading {
+  background: transparent;
+}
+
+html[data-shell="pet"] .pi-route-loading-topbar {
+  display: none;
+}
+
+/* ── MCP page — Shuimò (水墨) ink wash ───────────────────────────────────────
+   The MCP page speaks its own dialect instead of the app's iOS palette: warm
+   rice paper, a five-step ink ladder, and one seal-red accent used like a stamp.
+   That palette used to be hardcoded light-only in mcp-tokens.ts, so the page
+   stayed bright white while the rest of the app went dark.
+
+   Same design, two papers — 宣纸 by day, 墨夜 by night. Ink and paper swap ends of
+   the ladder; elevation keeps its meaning (elevated lifts toward the light,
+   sunken recedes) rather than flipping with it.
+
+   The seal splits into two jobs because one red cannot do both on dark ground:
+   `--mcp-seal` is ink (error text, icons, caret) and must brighten to stay
+   legible, while `--mcp-seal-fill` is a button ground carrying paper-white text
+   and must stay deep enough to keep that text readable. Hence the hover
+   direction inverts: darker on paper, lighter on night. */
+:root {
+  --mcp-ink-900: #262420;
+  --mcp-ink-700: #3a3630;
+  --mcp-ink-500: #6b655c;
+  /* was #9b948a — 2.35:1 as a placeholder on sunken paper, under the 3:1 floor
+     for disabled/hint text. #847d70 reads the same weight and clears it. */
+  --mcp-ink-300: #847d70;
+  --mcp-ink-100: #c9c2b7;
+
+  --mcp-paper-top: #f7f4ec;
+  --mcp-paper-bottom: #efe9dd;
+  --mcp-paper-elevated: #fbf9f3;
+  --mcp-paper-sunken: #e9e3d5;
+
+  --mcp-seal: #b23a2f;
+  --mcp-seal-fill: #b23a2f;
+  --mcp-seal-fill-hover: #962d24;
+  --mcp-seal-muted: rgba(178, 58, 47, 0.1);
+  --mcp-seal-on: #f7f4ec;
+
+  --mcp-hairline: rgba(58, 54, 48, 0.14);
+  --mcp-backdrop: rgba(38, 36, 32, 0.25);
+  --mcp-knob-shadow: 0 1px 3px rgba(38, 36, 32, 0.25);
+  /* Aged-gold caution note — the one warm signal that is not the seal. Darker
+     than the #c9922f this page shipped: that was 2.61:1 body text on card paper,
+     and it carries the migration warning, which has to be readable. */
+  --mcp-amber: #8f6617;
+}
+
+:root[data-theme="dark"] {
+  --mcp-ink-900: #f1ece0;
+  --mcp-ink-700: #d5cebf;
+  --mcp-ink-500: #9e9686;
+  --mcp-ink-300: #6b6459;
+  --mcp-ink-100: #3a362d;
+
+  --mcp-paper-top: #15130e;
+  --mcp-paper-bottom: #0d0c09;
+  --mcp-paper-elevated: #1d1b15;
+  --mcp-paper-sunken: #100e0b;
+
+  --mcp-seal: #e4594a;
+  --mcp-seal-fill: #c0392c;
+  /* Only ~6% toward white: the fill is already near the ceiling where the paper
+     label still clears 4.5:1, so a livelier hover would cost legibility. The
+     brightening is small but reads, because it lands on 42px of saturated red. */
+  --mcp-seal-fill-hover: #c34134;
+  --mcp-seal-muted: rgba(228, 89, 74, 0.16);
+  --mcp-seal-on: #f7f4ec;
+
+  --mcp-hairline: rgba(241, 236, 224, 0.14);
+  --mcp-backdrop: rgba(5, 4, 3, 0.55);
+  --mcp-knob-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+  --mcp-amber: #e0ae52;
+}

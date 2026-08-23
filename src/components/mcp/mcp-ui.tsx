@@ -1,6 +1,6 @@
 "use client";
 
-import { HAIRLINE, INK, PAPER, SEAL, SANS } from "./mcp-tokens";
+import { HAIRLINE, INK, KNOB_SHADOW, PAPER, SEAL, SANS } from "./mcp-tokens";
 
 /** ink-wash iOS switch — ON is seal red (朱砂). */
 export function InkSwitch({
@@ -39,7 +39,7 @@ export function InkSwitch({
           borderRadius: 99,
           background: PAPER.elevated,
           transition: "left 200ms",
-          boxShadow: "0 1px 3px rgba(38,36,32,0.25)",
+          boxShadow: KNOB_SHADOW,
         }}
       />
     </button>

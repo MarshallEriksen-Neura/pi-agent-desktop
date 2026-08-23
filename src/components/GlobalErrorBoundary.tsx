@@ -35,6 +35,13 @@ export class GlobalErrorBoundary extends Component<
 
   componentDidCatch(error: Error) {
     console.error(error);
+    // The shell never mounted, so nothing else will dismiss the boot screen —
+    // and it would sit on top of this message (see BootScreen).
+    try {
+      document.documentElement.dataset.appReady = "1";
+    } catch {
+      // no DOM — nothing to uncover
+    }
     try {
       const pref =
         localStorage.getItem("pi-desktop.locale") ?? navigator.language;

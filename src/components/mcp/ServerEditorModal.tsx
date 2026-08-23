@@ -434,7 +434,7 @@ export function ServerEditorModal({
                 height: 42,
                 borderRadius: 99,
                 border: "none",
-                background: SEAL.red,
+                background: SEAL.fill,
                 color: SEAL.onSeal,
                 fontFamily: SANS,
                 fontSize: 14,
@@ -443,10 +443,10 @@ export function ServerEditorModal({
                 transition: "background 180ms",
               }}
               onMouseEnter={(event) => {
-                if (!saving) event.currentTarget.style.background = SEAL.hover;
+                if (!saving) event.currentTarget.style.background = SEAL.fillHover;
               }}
               onMouseLeave={(event) => {
-                event.currentTarget.style.background = SEAL.red;
+                event.currentTarget.style.background = SEAL.fill;
               }}
             >
               {saving ? t("mcp.saving") : t("mcp.save")}

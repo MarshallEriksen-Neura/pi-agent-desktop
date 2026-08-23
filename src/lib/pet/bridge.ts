@@ -11,6 +11,7 @@ import { usePet } from "./store";
 import type { PetState, PetStateUpdate } from "./types";
 import { sessionManager } from "./session-manager";
 import { loadPetPreferences } from "./persistence";
+import { showPetWindow } from "./commands";
 import { STATE_FALLBACK_BODIES } from "./state-lifetimes";
 import type { PiEvent } from "@/lib/pi/protocol";
 import type { PetConfigUpdate } from "./types";
@@ -162,9 +163,19 @@ export function initPetBridge(taskId?: string) {
       Promise.all([
         petWindow.emitConfigUpdate(config),
         petWindow.emitStateUpdate(update),
-      ]).catch((err) => {
-        console.error("[PetBridge] Failed to answer pet-window-ready:", err);
-      });
+      ])
+        .then(() => {
+          // Reveal the window only now. Startup pre-warms it hidden (see the pet
+          // effect in AppShell) so its Next boot never competes with the main
+          // window's first paint; showing it any earlier would flash the
+          // prerendered "No pet selected" placeholder. Hidden stays hidden when
+          // the user turned the window off, and when no pet is configured.
+          if (!config.petId || !prefs.enabled || !prefs.windowVisible) return;
+          return showPetWindow();
+        })
+        .catch((err) => {
+          console.error("[PetBridge] Failed to answer pet-window-ready:", err);
+        });
     })
     .then((unlisten) => {
       if (!bridged) unlisten();

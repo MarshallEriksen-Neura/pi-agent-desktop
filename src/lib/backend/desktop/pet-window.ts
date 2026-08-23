@@ -4,6 +4,7 @@ import type { PetWindowPort } from "../ports/pet-window";
 import type { CustomPetEntry, PetConfigUpdate, PetStateUpdate } from "../../pet/types";
 
 export const desktopPetWindowPort = {
+  prewarm: () => desktopInvoke<void>("pet_window_prewarm"),
   show: () => desktopInvoke<void>("pet_window_show"),
   hide: () => desktopInvoke<void>("pet_window_hide"),
   toggle: () => desktopInvoke<boolean>("pet_window_toggle"),

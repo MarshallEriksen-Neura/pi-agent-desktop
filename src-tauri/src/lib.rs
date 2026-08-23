@@ -251,6 +251,7 @@ pub fn run() {
             updater::update_check,
             updater::update_apply,
             updater::pi_cli_update_check,
+            pet_window::pet_window_prewarm,
             pet_window::pet_window_show,
             pet_window::pet_window_hide,
             pet_window::pet_window_toggle,
@@ -285,9 +286,12 @@ pub fn run() {
             {
                 eprintln!("[remote-control] startup restore failed: {e}");
             }
-            if let Err(e) = pet_window::create_pet_window(app.handle()) {
-                eprintln!("[pet-window] failed to pre-create pet window: {e}");
-            }
+            // The pet window is intentionally NOT created here. It is a second
+            // webview loading the same Next bundle as the main window, so
+            // booting it during setup delayed the first screen for everyone,
+            // pets enabled or not. The main window pre-warms it (hidden) once it
+            // has painted and gone idle — see the pet auto-launch effect in
+            // AppShell and pet_window::pet_window_prewarm.
             if let Err(e) = create_tray(app) {
                 eprintln!("[tray] failed to create system tray: {e}");
             }

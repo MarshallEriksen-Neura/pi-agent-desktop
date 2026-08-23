@@ -1,6 +1,11 @@
 import type { CustomPetEntry, PetConfigUpdate, PetStateUpdate } from "../../pet/types";
 
 export interface PetWindowPort {
+  /**
+   * Load the pet window in the background without revealing it. Idempotent, and
+   * a no-op when the window already exists.
+   */
+  prewarm(): Promise<void>;
   show(): Promise<void>;
   hide(): Promise<void>;
   toggle(): Promise<boolean>;

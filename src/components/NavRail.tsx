@@ -43,8 +43,17 @@ export function NavRail() {
 
   if (zenMode) return null;
 
-  const isActive = (href: string) =>
-    href === "/" ? pathname === "/" : pathname.startsWith(href.replace(/\/$/, ""));
+  // usePathname() is typed as string but resolves to null before the App Router
+  // client has mounted — which is what a hard load of a subroute does (reloading
+  // while on /mcp/, or opening it directly). Dereferencing it there threw inside
+  // render and took the entire shell down to GlobalErrorBoundary; no tab is
+  // active for one paint instead.
+  const isActive = (href: string) => {
+    if (!pathname) return false;
+    return href === "/"
+      ? pathname === "/"
+      : pathname.startsWith(href.replace(/\/$/, ""));
+  };
 
   return (
     <nav

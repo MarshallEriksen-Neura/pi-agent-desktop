@@ -24,7 +24,8 @@ import { useUI } from "@/lib/store";
 import { usePet } from "@/lib/pet/store";
 import { loadBuiltinPet } from "@/lib/pet/index";
 import { loadPetPreferences } from "@/lib/pet/persistence";
-import { showPetWindow } from "@/lib/pet/commands";
+import { prewarmPetWindow, showPetWindow } from "@/lib/pet/commands";
+import { runWhenIdle } from "@/lib/idle";
 import { requestClose } from "@/lib/window-close";
 import { CloseConfirmDialog } from "./CloseConfirmDialog";
 import type { PetConfigUpdate } from "@/lib/pet/types";
@@ -147,22 +148,79 @@ function MainShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Dismiss the boot screen once the real shell has actually painted (see
+  // BootScreen). Two frames, not one: the first callback still runs *before* the
+  // paint that puts this tree on screen, so dismissing there would uncover an
+  // empty window for a frame.
+  useEffect(() => {
+    let cancelled = false;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!cancelled) document.documentElement.dataset.appReady = "1";
+      }),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Auto-launch the pet companion on startup when the user previously enabled
   // it — instead of waiting until they open PetSettings. (PetSettings also does
   // this on its own mount, but it only mounts when the settings page is open.)
+  //
+  // Everything here is deferred past first paint. The pet runs in a second
+  // webview that loads this same bundle, so kicking it off during mount made the
+  // two windows compete for the renderer (and, in dev, for the Next compiler)
+  // and pushed the main window's first screen out. The window is pre-warmed
+  // *hidden* and revealed by the pet bridge once /pet reports it has content
+  // (see lib/pet/bridge.ts), so the background load stays invisible.
   useEffect(() => {
     if (getBackendKind() !== "desktop-tauri") return;
     const prefs = loadPetPreferences();
     if (!prefs.enabled || !prefs.petId) return;
-    void loadBuiltinPet(prefs.petId)
-      .then((pet) => {
-        usePet.getState().loadPet(pet);
-        void showPetWindow();
-        getPort("petWindow")
-          .emitConfigUpdate({ petId: prefs.petId } satisfies PetConfigUpdate)
-          .catch(() => {});
-      })
-      .catch((e) => console.error("[AppShell] failed to auto-launch pet:", e));
+    const petId = prefs.petId;
+    let cancelled = false;
+    let revealFallback: number | undefined;
+
+    const cancelIdle = runWhenIdle(
+      () => {
+        // Start the hidden webview and the manifest load in parallel: the pet
+        // window loads its own copy of the pet, and the main window needs one
+        // too for PetSettings and the state bridge.
+        void prewarmPetWindow().catch((e) =>
+          console.error("[AppShell] failed to prewarm pet window:", e),
+        );
+        void loadBuiltinPet(petId)
+          .then((pet) => {
+            if (cancelled) return;
+            usePet.getState().loadPet(pet);
+            return getPort("petWindow")
+              .emitConfigUpdate({ petId } satisfies PetConfigUpdate)
+              .catch(() => {});
+          })
+          .catch((e) =>
+            console.error("[AppShell] failed to auto-launch pet:", e),
+          );
+
+        // Safety net: the reveal rides on the pet window's ready event. If that
+        // never lands (a listen() failure inside the pet webview, say), show it
+        // anyway — an enabled pet that stays invisible with no explanation is
+        // worse than one that renders its own error.
+        revealFallback = window.setTimeout(() => {
+          if (cancelled || usePet.getState().windowVisible) return;
+          const current = loadPetPreferences();
+          if (!current.enabled || !current.windowVisible) return;
+          void showPetWindow().catch(() => {});
+        }, 6000);
+      },
+      { timeout: 4000 },
+    );
+
+    return () => {
+      cancelled = true;
+      cancelIdle();
+      if (revealFallback !== undefined) window.clearTimeout(revealFallback);
+    };
   }, []);
 
   return (

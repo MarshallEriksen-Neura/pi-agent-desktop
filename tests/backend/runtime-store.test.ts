@@ -124,6 +124,7 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
       convertFileSrc: (path) => path,
     },
     petWindow: {
+      prewarm: async () => undefined,
       show: async () => undefined,
       hide: async () => undefined,
       toggle: async () => false,

@@ -5,18 +5,25 @@ const PET_WINDOW_LABEL: &str = "pet";
 const PET_WINDOW_WIDTH: f64 = 200.0;
 const PET_WINDOW_HEIGHT: f64 = 250.0;
 
-/// Pre-create the pet window (hidden) at app startup, mirroring deeting's
-/// `create_island_window` for its Dynamic Island. Using a *relative*
-/// `WebviewUrl::App("pet")` (no trailing slash) lets Tauri resolve it through
-/// the dev server in dev (`http://localhost:3000/pet`, which Next redirects to
-/// `/pet/`) and the bundled `tauri://` asset protocol in release — no external
-/// http scope (e.g. `http:default`) is required, which is exactly why the
-/// earlier `WebviewUrl::External(...)` approach stayed blank.
+/// Create the pet window (hidden) so a later `show` is instant. Using a
+/// *relative* `WebviewUrl::App("pet")` (no trailing slash) lets Tauri resolve it
+/// through the dev server in dev (`http://localhost:3000/pet`, which Next
+/// redirects to `/pet/`) and the bundled `tauri://` asset protocol in release —
+/// no external http scope (e.g. `http:default`) is required, which is exactly
+/// why the earlier `WebviewUrl::External(...)` approach stayed blank.
+///
+/// Deliberately NOT called from `setup()` any more. The pet is a second webview
+/// loading the same Next bundle as the main window, so booting it next to the
+/// main window made the two fight over the same renderer budget (and, in dev,
+/// the same on-demand Next compile) and visibly delayed the first screen — for
+/// every user, including the majority who never enable a pet. The main window
+/// now calls `pet_window_prewarm` once it has painted and gone idle, and only
+/// when a pet is actually enabled (see `AppShell`).
 pub fn create_pet_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     if app.get_webview_window(PET_WINDOW_LABEL).is_some() {
         return Ok(());
     }
-    let window = WebviewWindowBuilder::new(app, PET_WINDOW_LABEL, WebviewUrl::App("pet".into()))
+    let _window = WebviewWindowBuilder::new(app, PET_WINDOW_LABEL, WebviewUrl::App("pet".into()))
         .title("Pi Pet")
         .inner_size(PET_WINDOW_WIDTH, PET_WINDOW_HEIGHT)
         .decorations(false)
@@ -35,13 +42,35 @@ pub fn create_pet_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Erro
         })
         .build()?;
 
-    // In dev, open devtools so the real URL / console errors are directly visible.
+    // Dev diagnostics are opt-in: auto-opening devtools spins up yet another
+    // webview during startup, which is exactly the cost this window is trying
+    // to stay out of. Set PI_PET_DEVTOOLS=1 when debugging the pet itself.
     #[cfg(debug_assertions)]
     {
-        let _ = window.open_devtools();
+        let want_devtools = std::env::var("PI_PET_DEVTOOLS")
+            .map(|value| value == "1" || value == "true")
+            .unwrap_or(false);
+        if want_devtools {
+            _window.open_devtools();
+        }
     }
 
     Ok(())
+}
+
+/// Load the pet window in the background without showing it.
+///
+/// Idempotent, and cheap when the window already exists — the main window calls
+/// this once it is idle so the pet's boot never competes with the first screen.
+/// The window stays hidden until `/pet` reports it has content (the
+/// `pet-window-ready` event), which keeps the silent load invisible instead of
+/// flashing the prerendered "No pet selected" placeholder.
+#[tauri::command]
+pub fn pet_window_prewarm(app: AppHandle) -> Result<(), String> {
+    if app.get_webview_window(PET_WINDOW_LABEL).is_some() {
+        return Ok(());
+    }
+    create_pet_window(&app).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -57,8 +86,11 @@ pub fn pet_window_show(app: AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window(PET_WINDOW_LABEL)
         .ok_or_else(|| "pet window missing after create".to_string())?;
+    // No set_focus(): the pet is a 200x250 always-on-top overlay, so focusing it
+    // only steals the caret from whatever the user was typing in — and on the
+    // startup auto-launch path it stole focus from the main window itself.
+    // always_on_top already guarantees it is visible above the main window.
     window.show().map_err(|e| e.to_string())?;
-    window.set_focus().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -78,8 +110,8 @@ pub fn pet_window_toggle(app: AppHandle) -> Result<bool, String> {
             window.hide().map_err(|e| e.to_string())?;
             Ok(false)
         } else {
+            // See pet_window_show: revealing the overlay must not take focus.
             window.show().map_err(|e| e.to_string())?;
-            window.set_focus().map_err(|e| e.to_string())?;
             Ok(true)
         }
     } else {

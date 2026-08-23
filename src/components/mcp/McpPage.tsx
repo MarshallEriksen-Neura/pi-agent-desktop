@@ -31,7 +31,7 @@ import {
   toConfig,
   type ServerForm,
 } from "./ServerEditorModal";
-import { HAIRLINE, INK, PAPER, SEAL, SANS } from "./mcp-tokens";
+import { AMBER, HAIRLINE, INK, PAPER, SEAL, SANS } from "./mcp-tokens";
 import { InkSwitch, PillSegmented } from "./mcp-ui";
 
 const EMPTY_MCP_JSON = '{\n  "mcpServers": {}\n}\n';
@@ -335,7 +335,7 @@ export function McpPage() {
       {/* servers card */}
       <PaperCard header={t("mcp.serverList")}>
         {file.migrationWarning && (
-          <div style={{ padding: "11px 16px", fontSize: 12.5, color: "#C9922F", lineHeight: 1.5 }}>
+          <div style={{ padding: "11px 16px", fontSize: 12.5, color: AMBER, lineHeight: 1.5 }}>
             {t("mcp.migrationWarning")}
           </div>
         )}
@@ -603,7 +603,7 @@ export function McpPage() {
                 border: "none",
                 borderRadius: 99,
                 padding: "7px 20px",
-                background: SEAL.red,
+                background: SEAL.fill,
                 color: SEAL.onSeal,
                 fontFamily: SANS,
                 fontSize: 12.5,
@@ -650,7 +650,7 @@ export function McpPage() {
               height: 42,
               borderRadius: 99,
               border: "none",
-              background: SEAL.red,
+              background: SEAL.fill,
               color: SEAL.onSeal,
               fontFamily: SANS,
               fontSize: 14,
@@ -659,10 +659,10 @@ export function McpPage() {
               transition: "background 180ms",
             }}
             onMouseEnter={(event) => {
-              if (!mcp.busy) event.currentTarget.style.background = SEAL.hover;
+              if (!mcp.busy) event.currentTarget.style.background = SEAL.fillHover;
             }}
             onMouseLeave={(event) => {
-              event.currentTarget.style.background = SEAL.red;
+              event.currentTarget.style.background = SEAL.fill;
             }}
           >
             {mcp.busy ? t("mcp.restarting") : t("mcp.restartRequired")}

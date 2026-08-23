@@ -3,6 +3,7 @@ import type { PetWindowPort } from "../ports/pet-window";
 const noop = async () => undefined;
 
 export const mockPetWindowPort = {
+  prewarm: noop,
   show: noop,
   hide: noop,
   toggle: async () => false,
