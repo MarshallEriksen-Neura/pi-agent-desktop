@@ -10,6 +10,7 @@ import { piRequestErrorText } from "./request-error";
 import { getBackendKind } from "../backend/composition/container";
 import { getActiveTaskId, useTaskContext } from "./task-context";
 import { DEFAULT_TASK_ID } from "../backend/ports/pi-process";
+import { getChatRecoveryTarget } from "../orchestration/chat-recovery";
 
 // Re-export so `usePiSettings` resolves whether imported from here or from
 // "@/lib/pi/settings" — guards against stale bundler graphs.
@@ -160,6 +161,12 @@ export function createPiStore(taskId: string) {
           clearTimeout(retryTimer);
           retryTimer = null;
         }
+        // Callers that restart pi *in place* (settings applied, CLI updated)
+        // only pass a cwd. Without a resume path pi boots blank and opens a new
+        // session file, so the conversation on screen silently loses its context
+        // mid-flight. Fall back to this task's own pinned session.
+        const resume =
+          resumePath?.trim() || getChatRecoveryTarget(taskId)?.resumePath || undefined;
         try {
           await client.stop();
         } catch (error) {
@@ -168,7 +175,7 @@ export function createPiStore(taskId: string) {
           throw error;
         }
         set({ status: "disconnected", lastError: null });
-        await get().connect({ cwd, resumePath });
+        await get().connect({ cwd, resumePath: resume });
         if (get().status === "disconnected") {
           throw new Error(get().lastError || t("agent.piUnavailable"));
         }

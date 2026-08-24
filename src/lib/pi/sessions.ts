@@ -187,8 +187,10 @@ const autosaved = new Set<string>();
 const restoringTasks = new Set<string>();
 /** Tasks whose `session` listener is registered for sessionPath re-sync. */
 const syncListenerHooked = new Set<string>();
-/** Tasks that successfully pinned pi's sessionPath. */
+/** Tasks that pinned pi's sessionPath at least once (gates the warning toast). */
 const sessionPathSynced = new Set<string>();
+/** Tasks with a syncSessionPath call in flight — prevents stacked retry loops. */
+const sessionPathSyncing = new Set<string>();
 /** Tasks warned about a missing sessionPath (avoid spam). */
 const sessionPathWarningFor = new Set<string>();
 /** Debounced save timers, one per task. */
@@ -307,43 +309,64 @@ export const flushActiveSession = () => flushSave();
  * Without one of these, sessionPath stays empty in SQLite and the next app
  * launch spawns pi without `--session` — the agent loses all prior context
  * while the UI still shows history (the "AI forgot" symptom).
+ *
+ * This must run again every time pi announces a session, not just once per task:
+ * pi moves to a **new session file** whenever it starts without `--session`, and
+ * on `fork`/`clone`. A pin that never follows leaves SQLite pointing at a file
+ * pi no longer writes to, and the next launch resumes that stale file. Worse,
+ * pi's `--session <path>` creates a fresh session *at that path* when the file
+ * is missing or empty — truncating it — so a stale pin can also destroy a
+ * transcript. Re-pinning on every announcement is what keeps the row honest.
  */
 async function syncSessionPath(taskId: string): Promise<void> {
   if (!sessionDependencies().desktopFeatures) return;
-  let lastFailure = "";
-  for (let attempt = 0; attempt <= SYNC_DELAYS_MS.length; attempt++) {
-    let path = "";
-    const result = await readCurrentPiSessionPath(taskId);
-    path = result.path;
-    lastFailure = result.failure;
+  // Retries sleep for seconds; a second caller arriving meanwhile (connect +
+  // `session` event both fire) must not start a competing loop.
+  if (sessionPathSyncing.has(taskId)) return;
+  sessionPathSyncing.add(taskId);
+  try {
+    let lastFailure = "";
+    for (let attempt = 0; attempt <= SYNC_DELAYS_MS.length; attempt++) {
+      const result = await readCurrentPiSessionPath(taskId);
+      const path = result.path;
+      lastFailure = result.failure;
 
-    if (path && useSessions.getState().activeId) {
-      sessionPathSynced.add(taskId);
-      sessionPathWarningFor.delete(taskId);
-      useSessions.setState((s) => ({
-        sessions: s.sessions.map((x) =>
-          x.id === taskId ? { ...x, sessionPath: path } : x
-        ),
-      }));
-      const meta = useSessions
-        .getState()
-        .sessions.find((x) => x.id === taskId);
-      if (meta) await backendSave(meta, getChatStore(taskId).getState().messages);
-      return; // success
-    }
-    // Nothing yet — pi may still be booting. Retry.
-    if (attempt < SYNC_DELAYS_MS.length) {
-      await new Promise((r) => setTimeout(r, SYNC_DELAYS_MS[attempt]));
-    } else {
-      console.warn(
-        "[syncSessionPath] failed after retries — no sessionFile/sessionId from get_state. " +
-          `Next launch will start pi without --session.${lastFailure ? ` ${lastFailure}` : ""}`,
-      );
-      if (!sessionPathWarningFor.has(taskId)) {
-        sessionPathWarningFor.add(taskId);
-        useExtUi.getState().pushToast(t("session.noPath"), "warning", 8000);
+      if (path && useSessions.getState().activeId) {
+        sessionPathSynced.add(taskId);
+        sessionPathWarningFor.delete(taskId);
+        const current = useSessions
+          .getState()
+          .sessions.find((x) => x.id === taskId);
+        // Unchanged is the common case (a plain resume reuses the same file) —
+        // skip the write rather than churning SQLite on every announcement.
+        if (!current || current.sessionPath === path) return;
+        useSessions.setState((s) => ({
+          sessions: s.sessions.map((x) =>
+            x.id === taskId ? { ...x, sessionPath: path } : x
+          ),
+        }));
+        const meta = useSessions
+          .getState()
+          .sessions.find((x) => x.id === taskId);
+        if (meta) await backendSave(meta, getChatStore(taskId).getState().messages);
+        return; // success
+      }
+      // Nothing yet — pi may still be booting. Retry.
+      if (attempt < SYNC_DELAYS_MS.length) {
+        await new Promise((r) => setTimeout(r, SYNC_DELAYS_MS[attempt]));
+      } else {
+        console.warn(
+          "[syncSessionPath] failed after retries — no sessionFile/sessionId from get_state. " +
+            `Next launch will start pi without --session.${lastFailure ? ` ${lastFailure}` : ""}`,
+        );
+        if (!sessionPathSynced.has(taskId) && !sessionPathWarningFor.has(taskId)) {
+          sessionPathWarningFor.add(taskId);
+          useExtUi.getState().pushToast(t("session.noPath"), "warning", 8000);
+        }
       }
     }
+  } finally {
+    sessionPathSyncing.delete(taskId);
   }
 }
 
@@ -388,12 +411,14 @@ async function ensureTaskStarted(
 
   liveTasks.add(taskId);
 
-  // Re-sync sessionPath when pi announces it's ready — the initial call may run
-  // before pi can answer get_state (slow boot, session resume, WSL hop).
+  // Re-sync sessionPath on every `session` announcement. This covers both a
+  // slow first boot (the initial call can land before pi answers get_state) and
+  // every later move to a different session file — restart-without-resume,
+  // fork, clone. The client outlives process restarts, so this stays attached.
   if (!syncListenerHooked.has(taskId)) {
     syncListenerHooked.add(taskId);
     getPiClient(taskId).on("session", () => {
-      if (!sessionPathSynced.has(taskId)) void syncSessionPath(taskId);
+      void syncSessionPath(taskId);
     });
   }
   void syncSessionPath(taskId);
@@ -407,6 +432,7 @@ function resetTaskRegistry(): void {
   restoringTasks.clear();
   syncListenerHooked.clear();
   sessionPathSynced.clear();
+  sessionPathSyncing.clear();
   sessionPathWarningFor.clear();
   for (const timer of saveTimers.values()) clearTimeout(timer);
   saveTimers.clear();
@@ -567,6 +593,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     restoringTasks.delete(id);
     syncListenerHooked.delete(id);
     sessionPathSynced.delete(id);
+    sessionPathSyncing.delete(id);
     sessionPathWarningFor.delete(id);
     const timer = saveTimers.get(id);
     if (timer) {

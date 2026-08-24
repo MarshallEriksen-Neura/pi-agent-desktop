@@ -225,13 +225,28 @@ export const zh: Record<keyof typeof en, string> = {
   "demoTask.test": "运行测试套件",
 
   // subagents
-  "subagents.title": "子智能体",
-  "subagents.running": "{n} 个运行中",
   "subagents.working": "工作中…",
   "subagents.project": "项目",
   "subagents.projectHint":
     "该智能体由仓库提供，指令来自当前项目。仅在可信仓库中运行。",
   "subagents.usage": "{tokens} tok · ${cost} · {turns} 轮",
+  "subagents.drawerTitle": "子智能体进度",
+  "subagents.resize": "调整子智能体面板宽度",
+  "subagents.starting": "正在启动 —— 尚未上报任何活动。",
+  "subagents.rowLabelSteps": "{title} —— {n} 步，点击查看进度",
+  "subagents.currentAction": "正在执行",
+  "subagents.lastAction": "最后一步",
+  "subagents.steps": "步骤",
+  "subagents.recentTools": "最近工具调用",
+  "subagents.outputTail": "最新输出",
+  "subagents.timeline": "时间线",
+  "subagents.artifacts": "产出文件",
+  "subagents.result": "结果",
+  "subagents.tokens": "{tokens} tok",
+  "subagents.turnsTools": "{turns} 轮 · {tools} 次工具",
+  "subagents.runId": "运行 {id}",
+  "subagents.modeHint": "该运行的启动方式",
+  "subagents.stale": "已 {ago} 无更新 — 可能正卡在某个长步骤",
 
   // command palette
   "palette.ask": "让 Pi 实现…",

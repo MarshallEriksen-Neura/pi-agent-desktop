@@ -9,6 +9,7 @@ import "./chat-recovery.test";
 import "./remote-contracts.test";
 import "./project-switch.test";
 import "./session-lifecycle.test";
+import "./session-pin.test";
 import "./backend-provider.test";
 import "./mcp-import.test";
 import "./model-scope.test";

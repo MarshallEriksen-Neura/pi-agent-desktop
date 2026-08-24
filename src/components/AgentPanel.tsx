@@ -23,7 +23,6 @@ import {
   runBuiltinCommand,
   type SlashItem,
 } from "@/lib/pi/commands";
-import { SubagentDeck } from "./Subagents";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 import { MessageBubble } from "./MessageBubble";
 import { RemoteConversationPanel } from "./RemoteConversationPanel";
@@ -314,8 +313,9 @@ function LocalAgentPanel({ width }: { width?: number }) {
               // own bottom margin would otherwise collapse out of the measured box
               // and shorten Virtuoso's idea of the header height.
               <div style={{ display: "flow-root", padding: "4px 12px 0" }}>
-                {/* subagent deck — parallel workers, tap a card for detail */}
-                <SubagentDeck />
+                {/* Subagents deliberately have no separate surface here: each
+                    one is followed and opened from its own tool row in the
+                    transcript (see ToolRow in MessageBubble). */}
 
                 {/* task strip — live pi tool activity (agent-bridge) or the local showcase */}
                 {agentRunning &&

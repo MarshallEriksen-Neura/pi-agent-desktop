@@ -6,8 +6,11 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   AGENT_PANEL_WIDTH_MAX,
   AGENT_PANEL_WIDTH_MIN,
+  SUBAGENT_PANEL_WIDTH_MAX,
+  SUBAGENT_PANEL_WIDTH_MIN,
   useUI,
 } from "@/lib/store";
+import { SubagentPanel, useSubagentPanelOpen } from "@/components/Subagents";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
 import { EditorCanvas } from "@/components/EditorCanvas";
@@ -44,6 +47,12 @@ export default function Home() {
     persistAgentPanelWidth,
     setAgentPanelResizing,
     resetAgentPanelWidth,
+    subagentPanelWidth,
+    subagentPanelResizing,
+    setSubagentPanelWidth,
+    persistSubagentPanelWidth,
+    setSubagentPanelResizing,
+    resetSubagentPanelWidth,
     zenMode,
     workMode,
     setCommandPalette,
@@ -87,6 +96,11 @@ export default function Home() {
   const showSidebar = sidebarOpen && !zenMode && !workMode;
   const showAgent = !zenMode && (workMode || agentPanelOpen);
   const showEditor = !zenMode && !workMode;
+  /* The inspector follows the chat: it belongs to a conversation, so it appears
+     wherever that conversation is and is meaningless without it. Zen mode shows
+     nothing but the composer, so it stays out of the way there. */
+  const subagentOpen = useSubagentPanelOpen();
+  const showSubagent = subagentOpen && showAgent;
 
   // Track the row's width so the rail can be capped against what's actually
   // available. An observer rather than a window resize listener: the row is also
@@ -107,14 +121,40 @@ export default function Home() {
    * editor's floor. Measuring the row means the nav rail is already excluded;
    * the sidebar is subtracted because it doesn't shrink.
    */
+  /**
+   * The inspector's ceiling. It yields to the rail rather than the other way
+   * round: the chat is the primary surface, and an inspector wide enough to
+   * squeeze the conversation would defeat the point of docking it beside one.
+   */
+  const subagentMaxWidth = useMemo(() => {
+    if (!rowWidth) return SUBAGENT_PANEL_WIDTH_MAX;
+    const room = rowWidth - (showSidebar ? 248 : 0) - AGENT_PANEL_WIDTH_MIN - EDITOR_MIN_WIDTH;
+    return Math.max(
+      SUBAGENT_PANEL_WIDTH_MIN,
+      Math.min(SUBAGENT_PANEL_WIDTH_MAX, room),
+    );
+  }, [rowWidth, showSidebar]);
+
+  const subagentEffectiveWidth = Math.min(subagentPanelWidth, subagentMaxWidth);
+
+  const subagentPanelBounds = useCallback(
+    () => ({ min: SUBAGENT_PANEL_WIDTH_MIN, max: subagentMaxWidth }),
+    [subagentMaxWidth],
+  );
+
   const agentMaxWidth = useMemo(() => {
     if (!rowWidth) return AGENT_PANEL_WIDTH_MAX;
-    const room = rowWidth - (showSidebar ? 248 : 0) - EDITOR_MIN_WIDTH;
+    const room =
+      rowWidth -
+      (showSidebar ? 248 : 0) -
+      // the inspector is a column too, so the rail cannot claim its space
+      (showSubagent ? subagentEffectiveWidth : 0) -
+      EDITOR_MIN_WIDTH;
     // A minimum-size window can leave less room than the rail's own floor.
     // Clamping up rather than inverting the range keeps the rail usable and
     // lets the editor be the one that gives.
     return Math.max(AGENT_PANEL_WIDTH_MIN, Math.min(AGENT_PANEL_WIDTH_MAX, room));
-  }, [rowWidth, showSidebar]);
+  }, [rowWidth, showSidebar, showSubagent, subagentEffectiveWidth]);
 
   /**
    * The rendered width, which is not the same as the saved one. A rail dragged
@@ -161,6 +201,33 @@ export default function Home() {
         </AnimatePresence>
 
         {showEditor && <EditorCanvas />}
+
+        {/* Subagent inspector — left of the chat, so the conversation that
+            spawned it stays visible and answerable while it runs. */}
+        <AnimatePresence initial={false}>
+          {showSubagent && (
+            <motion.div
+              key="subagent"
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: subagentEffectiveWidth, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={subagentPanelResizing ? { duration: 0 } : springPanel}
+              style={{ position: "relative", overflow: "hidden", flexShrink: 0 }}
+            >
+              <PanelResizer
+                edge="left"
+                width={subagentEffectiveWidth}
+                bounds={subagentPanelBounds}
+                onResize={setSubagentPanelWidth}
+                onResizeStateChange={setSubagentPanelResizing}
+                onCommit={persistSubagentPanelWidth}
+                onReset={resetSubagentPanelWidth}
+                label={t("subagents.resize")}
+              />
+              <SubagentPanel width={subagentEffectiveWidth} />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {showAgent &&
           (workMode ? (

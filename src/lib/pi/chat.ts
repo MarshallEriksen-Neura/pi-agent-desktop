@@ -596,7 +596,9 @@ export function createChatStore(taskId: string) {
             if (piStore().getState().status !== "disconnected") return; // already reconnected
             void (async () => {
               try {
-                const target = getChatRecoveryTarget();
+                // This task's own session — a background task must not be
+                // reconnected against the focused conversation's session file.
+                const target = getChatRecoveryTarget(taskId);
                 if (!target) return;
                 useExtUi.getState().pushToast(t("agent.reconnecting"), "info", 4000);
                 await piStore().getState().connect({

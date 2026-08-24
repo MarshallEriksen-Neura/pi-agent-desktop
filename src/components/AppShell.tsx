@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { TooltipProvider } from "@appica/ui-react/tooltip";
 import { NavRail } from "./NavRail";
 import { ExtensionSheet } from "./ExtensionSheet";
-import { SubagentDetail } from "./Subagents";
 import { CliUpdateToast } from "./CliUpdateToast";
 import { useCliUpdate } from "@/lib/pi/cli-update";
 import { usePi } from "@/lib/pi/store";
@@ -36,10 +35,11 @@ import {
 import { configureChatRecovery } from "@/lib/orchestration/chat-recovery";
 
 const chatRecoveryService = {
-  getTarget() {
+  getTarget(taskId?: string) {
     const root = useWorkspace.getState().root ?? undefined;
     const state = useSessions.getState();
-    const session = state.sessions.find((item) => item.id === state.activeId);
+    const id = taskId || state.activeId;
+    const session = state.sessions.find((item) => item.id === id);
     return { cwd: root, resumePath: session?.sessionPath || undefined };
   },
 };
@@ -67,6 +67,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initAgentPanelWidth();
     // restore the composer's send shortcut (⌘↩ / ↩ / ⇧↩)
     useUI.getState().initSendShortcut();
+    // restore the dragged width of the subagent inspector column
+    useUI.getState().initSubagentPanelWidth();
     // restore user-customized appearance (colors, background, text scale)
     useAppearance.getState().init();
     try {
@@ -106,14 +108,24 @@ function MainShell({ children }: { children: React.ReactNode }) {
         console.error("[AppShell] backend bootstrap failed:", error);
       });
 
-    // Esc collapses the subagent detail back into its card
+    /**
+     * Esc closes the subagent inspector — but it is a docked panel, not a modal,
+     * so it does not own the key. While the caret is in a field, Esc belongs to
+     * whatever is being typed into (the composer's slash menu, an inline rename).
+     * Bubbling and without stopPropagation for the same reason: more local
+     * handlers get their turn.
+     */
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && useSubagents.getState().focusedId) {
-        e.stopPropagation();
-        useSubagents.getState().focus(null);
-      }
+      if (e.key !== "Escape" || !useSubagents.getState().focusedId) return;
+      const el = e.target as HTMLElement | null;
+      const typing =
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        el?.isContentEditable === true;
+      if (typing) return;
+      useSubagents.getState().focus(null);
     };
-    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keydown", onKey);
 
     // Disable the browser's native context menu so custom menus can show
     const preventDefaultCtx = (e: MouseEvent) => e.preventDefault();
@@ -141,7 +153,7 @@ function MainShell({ children }: { children: React.ReactNode }) {
 
     return () => {
       disposed = true;
-      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keydown", onKey);
       document.removeEventListener("contextmenu", preventDefaultCtx);
       destroyAgentBridge();
       closeUnlisten?.();
@@ -229,7 +241,6 @@ function MainShell({ children }: { children: React.ReactNode }) {
         <NavRail />
         <div style={{ flex: 1, minWidth: 0, height: "100%" }}>{children}</div>
         <ExtensionSheet />
-        <SubagentDetail />
         <CliUpdateToast />
         <CloseConfirmDialog />
       </div>

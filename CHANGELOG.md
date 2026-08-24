@@ -2,6 +2,39 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
+## [0.8.0] — 2026-08-24
+
+### Added
+- **子智能体检查面板** — AI 派遣 subagent 后，可以点开看它此刻在做什么。入口是对话里 subagent 那一行工具调用本身：运行时该行在自己的 detail 槽显示 worker **当前**在跑的工具与已耗时，面板打开时该行带一道 accent 左边框，因此始终能看出面板属于哪一行；再点一次收起
+  - 面板是**停靠的一列**，不是浮层。聊天栏本来就是最右一列，浮层会盖住派生这个 subagent 的那段对话，backdrop 还会挡住你回复。它现在是侧栏与聊天栏的同级：同一条 `springPanel`、同一层 `material`、可拖宽且宽度持久化，开合是重排工作区而非遮住它；位置在聊天栏**左侧**，所以对话始终可见可回复
+  - 阅读顺序按提问顺序排：**当前动作**（卡顿提示就贴在这个动作旁边，不塞进页脚）→ 任务 → 各步骤（workflow / chain 多 worker 时可点选切换）→ 工具流 → 结果 → 产出文件 → token/费用/轮次放最后。跑完后同一块面板就地显示结果，不需要重新打开任何东西；切换兄弟 step 时只换内容、框架不动
+  - 产出文件（`context.md`、child transcript 等）可点击直接在编辑器打开 —— 走 `workspaceFs.readFile`，仓外路径同样能开
+  - 前台与后台两种 run 走**同一套渲染**，因为两者的实时字段形状恰好一致（见下）；本地 `agents` 演示也复用这块面板
+
+### Changed
+- **移除聊天栏顶部的 subagent 卡片区** — 每个 subagent 由它自己在对话流里的那一行承载，不再需要一块常驻区域重复同一批信息
+- **`Esc` 不再全局抢占** — 面板是停靠列而非模态，可能开着好几分钟。原实现是 `capture: true` + `stopPropagation()`，于是在输入框里按 `Esc` 想关 slash 菜单会先把面板关掉。现在光标在输入类元素中时 `Esc` 归输入方
+
+### Fixed
+- **会话上下文丢失，以及 transcript 被截断的风险** — `sessionPath` 的钉定（pin）此前每个任务只做一次（`session` 监听被 `if (!sessionPathSynced.has(taskId))` 挡住）。但 pi 在**不带 `--session` 启动**时会转到一个新的 session 文件，`fork` / `clone` 同样如此，因此 SQLite 里那行会一直指向 pi 已经不再写入的文件，下次启动就恢复到这个陈旧文件 —— 即用户看到的「AI 忘了前面聊的」。更严重的是：pi 的 `--session <path>` 在目标文件缺失或为空时会**在该路径新建 session**，也就是把它截断，所以一个陈旧的 pin 还可能毁掉一份 transcript。现在每次 pi 宣告 session 都重新钉定
+  - 同时修掉三处相关问题：`connect` 与 `session` 事件会同时触发同步，而重试之间要睡数秒，于是会叠出并发的重试循环（加 `sessionPathSyncing` 互斥）；路径未变是常态（普通 resume 复用同一文件），此前每次宣告都往 SQLite 写一遍；警告 toast 的判据改为「从未成功钉定过」，成功过的任务不再因一次瞬时失败而弹窗
+- **后台任务重连会串到别的对话的 session 文件** — 每个对话拥有各自的 pi 进程与各自的 session 文件，而 `getChatRecoveryTarget()` 取的是**当前聚焦**的对话，于是后台任务断线重连会拿到别人的 resume 路径，两个进程指向同一个文件。现在按 `taskId` 解析
+- **就地重启 pi 会丢掉当前对话的上下文** — 「设置已应用」「CLI 已更新」这类调用方只传 `cwd`，不传 resume 路径，于是 pi 空载启动并新开一个 session 文件，屏幕上的对话在进行中就静默失去了上下文。现在回退到该任务自己钉定的 session
+- **subagent 卡片从来不出现，那一行也点不动** — 桥接监听的是错误的 pi 进程。每个对话跑各自的 `pi --mode rpc` 进程、按 task id 索引，而 store 调的是不带参数的 `getPiClient()`，落到 `DEFAULT_TASK_ID` —— 一个没有任何对话在用的进程。因此 `tool_execution_start` 从未到达，卡片从未创建。现在按 `agent-bridge` 既有写法绑定活动 task 并在切换时补绑，且保留旧绑定（后台对话里派的 subagent 要继续被跟踪）；卡片按 `toolCallId` 索引，共用 store 不会串对话
+- **后台 subagent 在 worker 还在跑时就显示「已完成」** — 装的是 `pi-subagents`，不是 pi 参考实现。它的后台模式 fork 完 worker 立刻返回 `details: { asyncDir, runId, results: [] }`，`results` 是**空数组**，于是解析落进降级分支；紧接着 `tool_execution_end` 立即触发（run 本来就是 detached 的），卡片被判 `done`，下一次 `agent_start` 再被清掉 —— 实测一个跑了 369 秒的 `scout`，卡片在几秒内就"成功"了。现在带 `asyncDir` 且 `results` 为空的 payload 被识别为 detached：改为轮询生产方自己的 `<asyncDir>/status.json`（它每几秒重写一次，扩展文档也正是指引 companion UI 读这些产物），且收尾事件不再结算这类卡片
+- **前台 run 的内容整体在结束后才出现** — 生产方一直在流式推送（`fireUpdate()` 有 13 个调用点），漏掉的是**读哪个字段**。原本只读 `results[].toolCalls`，那是 `boundStreamedToolCalls()` 的产物：已完成调用的、预渲染成字符串的、截断到最后 N 条的尾巴，不表达"现在在跑什么"。真正为此设计的是 `details.progress[]`（其 `AgentProgress`）——带 `currentTool` / `currentToolArgs` / `currentToolStartedAt`、`recentTools`、`recentOutput`、`toolCount` / `turnCount`、token 拆分与耗时
+  - 关键点：`recentTools` 只记录**已返回**的调用（每条带 `endMs`），所以慢调用进行中时它的最后一条是**上一个**工具。现在各处优先取 `currentTool` 并显示这一个调用自己的计时 —— 「刚读完一个文件」与「已经 grep 了 40 秒」得以区分
+  - 生产方强加的一处不对称：收尾 result 会丢掉 `progress`（除非调用方要了 `includeProgress`），否则最后一份快照会永远停在 `running`。现在由 tool call 结束定性，并把收尾 payload 合进来取产物路径 —— 那是唯一带 `savedOutputPath` / `transcriptPath` 的一份
+- **同步 run 的时间线与结果为空** — 卡片映射读的是 `result.messages`，那是**参考实现**的字段，`pi-subagents` 没有。它给的是 `toolCalls: [{ text, expandedText }]` 与 `finalOutput`。两种形状现在都做特性检测
+- **`action: "list" / "status" / "stop"` 产生幽灵 subagent** — `subagent` 一个工具干两件事，管理调用返回 `details: { mode: "management", results: [] }`，被降级分支做成了一张名为 "subagent"、任务为空的卡片。问一句「有哪些 agent」就会在对话里留下一个空 subagent。这类调用现在直接忽略
+
+### Internal
+- 新增 `src/lib/pi/async-runs.ts`：`status.json` 的防御式解析与轮询，外加把前台 `progress[]` 映射到同一模型的 `readSyncProgress()`。所有字段特性检测，未知字段忽略（生产方是用户可改的扩展，其文档明确要求前向兼容）；读到半截 JSON 或读不到时返回 `null`，保留上一份好快照而不是清空视图。轮询在窗口隐藏时降频、终态停表、对 15 分钟不再推进的 run 放弃继续问 —— 但**不**据此判定失败，生产方文档明确警告不可从产物缺失推断进程退出
+- `ActivityLine` 新增可选 `onClick` / `active` / `trailing` / `ariaLabel`：拥有检查面板的工具调用让整行成为控件（渲染为可聚焦的 role=button），未传 `onClick` 的调用点行为与几何完全不变
+- `useUI` 新增 `subagentPanelWidth` 及其 set/persist/reset/init，沿用聊天栏宽度既有约定；面板宽度对聊天栏让步（以聊天栏**下限常量**而非其实时宽度计算，避免两列互相追逐）
+
+---
+
 ## [0.7.0] — 2026-08-23
 
 ### Added

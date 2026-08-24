@@ -10,6 +10,7 @@
  * (iOS-style 8-spoke indicator, CSS-animated so it costs nothing at 13px).
  */
 
+import type { ReactNode } from "react";
 import { motion } from "motion/react";
 import {
   Bot,
@@ -103,6 +104,10 @@ export function ActivityLine({
   toolName,
   delay = 0,
   animateIn = true,
+  onClick,
+  active = false,
+  trailing,
+  ariaLabel,
 }: {
   status: TaskStatus;
   title: string;
@@ -113,12 +118,40 @@ export function ActivityLine({
   /** stagger, in seconds, when several rows appear at once */
   delay?: number;
   animateIn?: boolean;
+  /**
+   * Makes the row itself the control — used by tool calls that own an inspector.
+   * Renders as a real button so the row stays keyboard-reachable.
+   */
+  onClick?: () => void;
+  /** this row's inspector is the one currently open — ties the two together */
+  active?: boolean;
+  /** pinned to the right edge: elapsed time, a chevron, a count */
+  trailing?: ReactNode;
+  ariaLabel?: string;
 }) {
   const Icon = KIND_ICON[toolName ? toolKind(toolName) : "other"];
   const running = status === "running";
+  const interactive = onClick !== undefined;
 
   return (
     <motion.div
+      {...(interactive
+        ? {
+            role: "button" as const,
+            tabIndex: 0,
+            "aria-pressed": active,
+            "aria-label": ariaLabel ?? title,
+            onClick,
+            onKeyDown: (e: React.KeyboardEvent) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick();
+              }
+            },
+            whileHover: { x: 1 },
+            whileTap: { scale: 0.995 },
+          }
+        : {})}
       initial={animateIn ? { opacity: 0, y: -3 } : false}
       animate={{ opacity: status === "queued" ? 0.5 : 1, y: 0 }}
       transition={{ type: "spring", stiffness: 420, damping: 32, delay }}
@@ -126,10 +159,23 @@ export function ActivityLine({
         display: "flex",
         alignItems: "center",
         gap: 7,
-        padding: "3px 2px",
         minWidth: 0,
         fontSize: 12,
         lineHeight: 1.45,
+        // an inactive clickable row keeps the plain row's geometry, so a
+        // transcript of tool calls does not turn into a column of boxes
+        padding: interactive ? "3px 6px 3px 5px" : "3px 2px",
+        ...(interactive
+          ? {
+              cursor: "pointer",
+              borderRadius: "var(--radius-sm)",
+              borderLeft: `2px solid ${active ? "var(--accent)" : "transparent"}`,
+              background: active
+                ? "color-mix(in srgb, var(--accent) 9%, transparent)"
+                : "transparent",
+              transition: "background var(--duration-fast) ease, border-color var(--duration-fast) ease",
+            }
+          : {}),
       }}
     >
       <span
@@ -166,6 +212,22 @@ export function ActivityLine({
           }}
         >
           {detail}
+        </span>
+      )}
+      {trailing !== undefined && (
+        <span
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            flexShrink: 0,
+            color: "var(--text-tertiary)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 10.5,
+          }}
+        >
+          {trailing}
         </span>
       )}
     </motion.div>

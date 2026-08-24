@@ -2,6 +2,15 @@
 
 import { create } from "zustand";
 import { getPiClient } from "./client";
+import { getActiveTaskId, useTaskContext } from "./task-context";
+import type { PiEvent } from "./protocol";
+import {
+  asyncStateToStatus,
+  pollAsyncRun,
+  readSyncOutcome,
+  readSyncProgress,
+  type AsyncRunStatus,
+} from "./async-runs";
 
 /**
  * Subagent model — worker agents spawned by the main pi session.
@@ -67,6 +76,14 @@ export interface Subagent {
   total?: number;
   /** failure detail (errorMessage / stderr / stopReason) */
   errorText?: string;
+  /**
+   * Detached run: the producer's lifecycle-artifact directory. Its presence is
+   * what marks a card as background work whose progress comes from disk rather
+   * than from the tool call, so the tool ending must not settle it.
+   */
+  asyncDir?: string;
+  /** the producer's own run id for a detached run */
+  runId?: string;
 }
 
 /* ── which tool names count as a subagent producer ──
@@ -82,7 +99,8 @@ export function setSubagentTools(names: string[]) {
   if (cleaned.length > 0) SUBAGENT_TOOLS = cleaned;
 }
 
-function isSubagentTool(toolName: string): boolean {
+/** true when a tool call is a subagent producer — gates the transcript's drawer link */
+export function isSubagentTool(toolName: string): boolean {
   return SUBAGENT_TOOLS.includes(toolName.toLowerCase());
 }
 
@@ -121,6 +139,18 @@ function summarizeArgs(v: unknown): string | undefined {
 /** the extension's sentinel for "this worker has not finished yet" */
 const RUNNING_EXIT_CODE = -1;
 
+/**
+ * `subagent` is one tool for two unrelated jobs: running workers, and managing
+ * them. `action: "list" | "status" | "stop"` returns
+ * `details: { mode: "management", results: [] }` — no worker was launched, so
+ * there is nothing to track. Without this check the degraded path below invents
+ * a card for every such call, and asking "which agents exist?" leaves a blank
+ * subagent sitting in the transcript.
+ */
+function isManagementCall(payload: unknown): boolean {
+  return str(asRecord(asRecord(payload)?.details)?.mode) === "management";
+}
+
 /** `{content, details}` → the `details.results[]` array, or null if absent */
 function readResults(payload: unknown): Record<string, unknown>[] | null {
   const details = asRecord(asRecord(payload)?.details);
@@ -132,6 +162,29 @@ function readResults(payload: unknown): Record<string, unknown>[] | null {
 
 function readMode(payload: unknown): string | undefined {
   return str(asRecord(asRecord(payload)?.details)?.mode);
+}
+
+/**
+ * A *detached* run's details: `asyncDir` present while `results[]` is still
+ * empty. `pi-subagents` returns this the instant it forks the worker — the tool
+ * call then ends immediately while the real work runs for minutes in another
+ * process, which is why such a call must not be read as a finished run.
+ *
+ * The empty-`results` guard matters: a synchronous run carries `asyncDir` too
+ * once it completes, and that one really is done.
+ */
+function readDetached(
+  payload: unknown
+): { asyncDir: string; runId?: string; mode?: string } | null {
+  const details = asRecord(asRecord(payload)?.details);
+  if (!details) return null;
+  const asyncDir = str(details.asyncDir);
+  if (!asyncDir) return null;
+  const results = details.results;
+  if (Array.isArray(results) && results.length > 0) return null;
+  const runId = str(details.runId) ?? str(details.asyncId);
+  const mode = str(details.mode);
+  return { asyncDir, ...(runId ? { runId } : {}), ...(mode ? { mode } : {}) };
 }
 
 /** first text part of the last assistant message — the worker's answer */
@@ -185,6 +238,43 @@ function timeline(messages: unknown, cardId: string): SubagentEvent[] {
   return events;
 }
 
+/**
+ * `toolCalls[]` → a timeline, for producers that report the worker's steps
+ * instead of its raw messages.
+ *
+ * `pi-subagents` has no `messages` field at all: a finished worker reports
+ * `toolCalls: [{ text, expandedText }]`, where `text` is a pre-rendered
+ * `"<tool> <args>"` line. Splitting on the first space recovers the tool name so
+ * the row reads like every other tool line, and `expandedText` supplies the
+ * untruncated arguments underneath.
+ */
+function toolCallsTimeline(v: unknown, cardId: string): SubagentEvent[] {
+  if (!Array.isArray(v)) return [];
+  const events: SubagentEvent[] = [];
+  for (const item of v) {
+    const rec = asRecord(item);
+    const text = str(rec?.text) ?? str(rec?.expandedText);
+    if (!text) continue;
+    const space = text.indexOf(" ");
+    const label = space === -1 ? text : text.slice(0, space);
+    const args = space === -1 ? undefined : text.slice(space + 1).trim();
+    // the expanded form is only worth showing when it says more than `text` did
+    const expanded = str(rec?.expandedText);
+    const detail =
+      expanded && expanded !== text
+        ? expanded.slice(label.length + 1).trim() || expanded
+        : args;
+    events.push({
+      id: `${cardId}-tc-${events.length}`,
+      kind: "tool",
+      label: label.slice(0, 200),
+      ...(detail ? { detail: detail.slice(0, 300) } : {}),
+      at: 0, // the producer reports no per-step timing
+    });
+  }
+  return events;
+}
+
 function readUsage(v: unknown): SubagentUsage | undefined {
   const u = asRecord(v);
   if (!u) return undefined;
@@ -224,7 +314,16 @@ function toCard(
   const exitCode = num(result.exitCode);
   const stopReason = str(result.stopReason);
   const status = statusOf(exitCode, stopReason);
-  const events = timeline(result.messages, cardId);
+  // two producers, two shapes: assistant `messages[]` (reference extension) or
+  // pre-rendered `toolCalls[]` (pi-subagents). Whichever one is present wins;
+  // keep the previous timeline if an update arrives carrying neither.
+  const events = (() => {
+    const fromMessages = timeline(result.messages, cardId);
+    if (fromMessages.length > 0) return fromMessages;
+    const fromToolCalls = toolCallsTimeline(result.toolCalls, cardId);
+    if (fromToolCalls.length > 0) return fromToolCalls;
+    return previous?.events ?? [];
+  })();
   const step = num(result.step);
   const chained = mode === "chain" && total > 1;
 
@@ -244,7 +343,13 @@ function toCard(
     // interpolate, so the card shows elapsed time instead of a fake bar
     progress: chained && step !== undefined ? Math.min(1, step / total) : status === "done" || status === "error" ? 1 : 0,
     events,
-    result: status === "done" ? finalOutput(result.messages) : undefined,
+    result:
+      status === "done"
+        ? // `finalOutput` is pi-subagents' own field; `messages` is the
+          // reference extension's. Bounded for the same reason the async
+          // snapshot bounds it — a worker's report runs to tens of KB.
+          (str(result.finalOutput)?.slice(0, 4000) ?? finalOutput(result.messages))
+        : undefined,
     startedAtLabel: previous?.startedAtLabel ?? timeLabel(now),
     startedAt: previous?.startedAt ?? now,
     model: str(result.model) ?? previous?.model,
@@ -303,8 +408,17 @@ function contentText(payload: unknown): string | undefined {
 
 interface SubagentStore {
   agents: Subagent[];
-  /** id currently expanded into the detail layer; null = deck view */
+  /** card id currently open in the drawer; null = closed */
   focusedId: string | null;
+  /**
+   * Live snapshots of detached runs, keyed by toolCallId — the drawer's data
+   * source for background work.
+   *
+   * Kept even after `clearFinished()` drops the card, so clicking a subagent
+   * row further up the transcript still opens its run instead of an empty
+   * drawer. One bounded snapshot per subagent call per session.
+   */
+  asyncRuns: Record<string, AsyncRunStatus>;
 
   focus: (id: string | null) => void;
   upsert: (a: Subagent) => void;
@@ -312,6 +426,8 @@ interface SubagentStore {
   pushEvent: (id: string, e: Omit<SubagentEvent, "id">) => void;
   /** replace every card belonging to one tool call, in place */
   syncFromTool: (toolCallId: string, cards: Subagent[]) => void;
+  /** fold one polled `status.json` snapshot into the cards + snapshot map */
+  syncAsyncRun: (toolCallId: string, status: AsyncRunStatus) => void;
   clearFinished: () => void;
 
   /** local showcase: spawn N mock subagents working in parallel */
@@ -325,16 +441,24 @@ interface SubagentStore {
 
 let evSeq = 0;
 
+/**
+ * Cancellers for the file pollers of live detached runs, keyed by toolCallId.
+ * Module-level: these are subscriptions, not rendered state, and one run must
+ * never be polled twice.
+ */
+const asyncPollers = new Map<string, () => void>();
+
 export const useSubagents = create<SubagentStore>((set, get) => ({
   agents: [],
   focusedId: null,
+  asyncRuns: {},
   demoRunning: false,
   bridged: false,
 
   initPiBridge: () => {
     if (get().bridged) return;
     set({ bridged: true });
-    const client = getPiClient();
+
     /** toolCallIds we recognized at start — updates for anything else are ignored */
     const owned = new Set<string>();
     /**
@@ -344,10 +468,10 @@ export const useSubagents = create<SubagentStore>((set, get) => ({
      */
     const declaredTotal = new Map<string, number>();
 
-    // a new run supersedes finished workers; keep in-flight ones visible
-    client.on("agent_start", () => get().clearFinished());
+    /** the tool-call handlers, bound per pi process (see `bind` at the end) */
+    const onAgentStart = () => get().clearFinished();
 
-    client.on("tool_execution_start", (e) => {
+    const onToolStart = (e: PiEvent) => {
       if (e.type !== "tool_execution_start" || !isSubagentTool(e.toolName)) return;
       owned.add(e.toolCallId);
       const seeded = seedFromArgs(e.args, e.toolCallId, Date.now());
@@ -355,14 +479,137 @@ export const useSubagents = create<SubagentStore>((set, get) => ({
         declaredTotal.set(e.toolCallId, seeded.length);
         get().syncFromTool(e.toolCallId, seeded);
       }
-    });
+    };
+
+    /**
+     * Begin tracking a detached run: keep its card alive as running and poll
+     * the producer's `status.json` for the progress the RPC stream never sends.
+     */
+    const trackDetached = (
+      toolCallId: string,
+      detached: { asyncDir: string; runId?: string; mode?: string }
+    ) => {
+      const prefix = `${toolCallId}#`;
+      const now = Date.now();
+      const { asyncDir, runId } = detached;
+
+      if (get().agents.some((a) => a.id.startsWith(prefix))) {
+        // seeded from the tool args — adopt it as background work
+        set((s) => ({
+          agents: s.agents.map((a) =>
+            a.id.startsWith(prefix)
+              ? {
+                  ...a,
+                  status: a.status === "queued" ? "running" : a.status,
+                  asyncDir,
+                  ...(runId ? { runId } : {}),
+                }
+              : a
+          ),
+        }));
+      } else {
+        // workflow args carry no recognizable task list — hold one card until
+        // the first snapshot names the real steps
+        get().syncFromTool(toolCallId, [
+          {
+            id: `${toolCallId}#0`,
+            name: "subagent",
+            task: "…",
+            status: "running",
+            progress: 0,
+            events: [],
+            startedAtLabel: timeLabel(now),
+            startedAt: now,
+            asyncDir,
+            ...(runId ? { runId } : {}),
+          },
+        ]);
+      }
+
+      if (asyncPollers.has(toolCallId)) return; // already watching this run
+      asyncPollers.set(
+        toolCallId,
+        pollAsyncRun(asyncDir, (status) => get().syncAsyncRun(toolCallId, status))
+      );
+    };
 
     /** shared by update + end: rebuild this call's cards from the payload */
     const absorb = (toolCallId: string, payload: unknown, finalIsError?: boolean) => {
+      // A management call launched nothing — leave the transcript alone.
+      if (isManagementCall(payload)) {
+        get().syncFromTool(toolCallId, []);
+        return;
+      }
+
+      // Detached next: such a call returns instantly with an empty results[],
+      // so every path below would misread it as a run that produced nothing.
+      const detached = readDetached(payload);
+      if (detached) {
+        trackDetached(toolCallId, detached);
+        return;
+      }
+
       const results = readResults(payload);
       const now = Date.now();
       const existing = get().agents;
       const prev = (id: string) => existing.find((a) => a.id === id);
+
+      /*
+       * A foreground run streams `details.progress[]` on every step. Recording it
+       * is what makes such a run live: the panel's rich view is driven by these
+       * snapshots, so it reports the current tool as the worker moves instead of
+       * only the pre-rendered tail that lands with the final result.
+       */
+      const streamed = readSyncProgress(payload);
+      if (streamed) {
+        set((s) => ({
+          asyncRuns: {
+            ...s.asyncRuns,
+            [toolCallId]: {
+              ...streamed,
+              // the tool call ending is what settles a foreground run
+              terminal: finalIsError !== undefined,
+            },
+          },
+        }));
+      } else if (finalIsError !== undefined && get().asyncRuns[toolCallId]) {
+        /*
+         * The final result drops `progress` unless the call asked for it, so the
+         * last snapshot we hold still says "running". Settle it here rather than
+         * leaving a finished worker spinning: the tool call ending is proof
+         * enough, and the streamed steps are otherwise the record we want to keep.
+         */
+        const settled = finalIsError ? "failed" : "completed";
+        const outcome = readSyncOutcome(payload);
+        set((s) => {
+          const held = s.asyncRuns[toolCallId];
+          if (!held) return {};
+          return {
+            asyncRuns: {
+              ...s.asyncRuns,
+              [toolCallId]: {
+                ...held,
+                // the closing payload is the only one carrying saved output paths
+                ...outcome,
+                artifacts:
+                  outcome.artifacts.length > 0 ? outcome.artifacts : held.artifacts,
+                terminal: true,
+                steps: held.steps.map((step) => ({
+                  ...step,
+                  status:
+                    step.status === "completed" || step.status === "failed"
+                      ? step.status
+                      : settled,
+                  // nothing is in flight once the call has returned
+                  currentTool: undefined,
+                  currentToolArgs: undefined,
+                  currentToolStartedAt: undefined,
+                })),
+              },
+            },
+          };
+        });
+      }
 
       if (results && results.length > 0) {
         const mode = readMode(payload);
@@ -411,25 +658,57 @@ export const useSubagents = create<SubagentStore>((set, get) => ({
       get().syncFromTool(toolCallId, [card]);
     };
 
-    client.on("tool_execution_update", (e) => {
+    const onToolUpdate = (e: PiEvent) => {
       if (e.type !== "tool_execution_update" || !owned.has(e.toolCallId)) return;
       absorb(e.toolCallId, e.partialResult);
-    });
+    };
 
-    client.on("tool_execution_end", (e) => {
+    const onToolEnd = (e: PiEvent) => {
       if (e.type !== "tool_execution_end" || !owned.has(e.toolCallId)) return;
       owned.delete(e.toolCallId);
       absorb(e.toolCallId, e.result, e.isError === true);
       declaredTotal.delete(e.toolCallId); // after absorb — it reads the total
-      // a worker still marked running after the call ended never reported a
-      // terminal exitCode — settle it rather than spinning forever
+      // A worker still marked running after the call ended never reported a
+      // terminal exitCode — settle it rather than spinning forever. Detached
+      // runs are the exception: their tool call always ends early by design,
+      // and the worker keeps going. Settling those is what used to make a
+      // background subagent look finished seconds after it started.
       set((s) => ({
         agents: s.agents.map((a) =>
-          a.id.startsWith(`${e.toolCallId}#`) && a.status === "running"
+          a.id.startsWith(`${e.toolCallId}#`) &&
+          a.status === "running" &&
+          a.asyncDir === undefined
             ? { ...a, status: e.isError ? "error" : "done", progress: 1 }
             : a
         ),
       }));
+    };
+
+    /**
+     * Subscribe to one conversation's pi process.
+     *
+     * Each conversation runs its own pi process, keyed by task id — so the
+     * default client this used to listen on belongs to no conversation at all,
+     * and no subagent event ever arrived. Bindings for previously seen tasks are
+     * deliberately kept rather than swapped out: a subagent launched in a
+     * background conversation must keep being tracked while you look at another
+     * one. Cards are keyed by toolCallId, so a row only ever resolves its own
+     * call and the shared store cannot cross conversations.
+     */
+    const bound = new Set<string>();
+    const bind = (taskId: string) => {
+      if (bound.has(taskId)) return;
+      bound.add(taskId);
+      const client = getPiClient(taskId);
+      client.on("agent_start", onAgentStart);
+      client.on("tool_execution_start", onToolStart);
+      client.on("tool_execution_update", onToolUpdate);
+      client.on("tool_execution_end", onToolEnd);
+    };
+
+    bind(getActiveTaskId());
+    useTaskContext.subscribe((s, prev) => {
+      if (s.activeTaskId !== prev.activeTaskId) bind(s.activeTaskId);
     });
   },
 
@@ -478,6 +757,54 @@ export const useSubagents = create<SubagentStore>((set, get) => ({
       if (!inserted) out.push(...cards);
       return { agents: out };
     }),
+
+  syncAsyncRun: (toolCallId, status) => {
+    const now = Date.now();
+    const prefix = `${toolCallId}#`;
+    const before = get().agents;
+    const prev = (id: string) => before.find((a) => a.id === id);
+    // the seeded card, kept as the fallback for fields the snapshot lacks
+    const seed = before.find((a) => a.id.startsWith(prefix));
+
+    // One card per reported step. Before the runner has written any, hold the
+    // single placeholder so the run does not vanish between fork and first write.
+    const steps = status.steps.length > 0 ? status.steps : [undefined];
+
+    const cards: Subagent[] = steps.map((step, i) => {
+      const id = `${prefix}${i}`;
+      const earlier = prev(id);
+      // a step with no state of its own inherits the run's
+      const cardStatus = asyncStateToStatus(step?.status ?? status.state);
+      const startedAt = step?.startedAt ?? earlier?.startedAt ?? status.startedAt ?? now;
+      return {
+        id,
+        name: step?.agent ?? earlier?.name ?? seed?.name ?? "subagent",
+        // status.json redacts the prompt, so the task text only ever comes from
+        // the tool args captured at seed time
+        task: earlier?.task ?? seed?.task ?? "…",
+        status: cardStatus,
+        progress: cardStatus === "done" || cardStatus === "error" ? 1 : 0,
+        events: [], // the drawer reads the richer feed off the snapshot
+        startedAtLabel: earlier?.startedAtLabel ?? timeLabel(startedAt),
+        startedAt,
+        ...(step?.model ?? earlier?.model ? { model: step?.model ?? earlier?.model } : {}),
+        ...(earlier?.source ? { source: earlier.source } : {}),
+        ...(seed?.asyncDir ?? earlier?.asyncDir
+          ? { asyncDir: (earlier?.asyncDir ?? seed?.asyncDir) as string }
+          : {}),
+        ...(status.runId ?? earlier?.runId
+          ? { runId: (status.runId ?? earlier?.runId) as string }
+          : {}),
+      };
+    });
+
+    get().syncFromTool(toolCallId, cards);
+    set((s) => ({ asyncRuns: { ...s.asyncRuns, [toolCallId]: status } }));
+
+    // terminal snapshots are final: the poller has already stopped itself, so
+    // drop its canceller rather than leaving a dead entry behind
+    if (status.terminal) asyncPollers.delete(toolCallId);
+  },
 
   clearFinished: () =>
     set((s) => ({
@@ -541,9 +868,12 @@ export const useSubagents = create<SubagentStore>((set, get) => ({
 
     const now = Date.now();
     const { upsert, patch, pushEvent } = get();
+    // share one synthetic "tool call" prefix so the drawer lists all three as
+    // siblings, the same way a real parallel fan-out does
+    const call = `demo-${now}`;
 
     specs.forEach((spec, i) => {
-      const id = `sub-${now}-${i}`;
+      const id = `${call}#${i}`;
       const total = spec.script.length;
       upsert({
         id,
@@ -562,6 +892,9 @@ export const useSubagents = create<SubagentStore>((set, get) => ({
 
       // stagger the starts like a real fan-out
       setTimeout(() => patch(id, () => ({ status: "running" })), 250 + i * 350);
+
+      // the demo has no transcript row to click, so open the drawer on it
+      if (i === 0) set({ focusedId: id });
 
       spec.script.forEach(([at, kind, lbl, detail], j) => {
         setTimeout(() => {

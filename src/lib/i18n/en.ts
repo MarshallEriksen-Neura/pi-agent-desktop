@@ -225,13 +225,28 @@ export const en = {
   "demoTask.test": "Run test suite",
 
   // subagents
-  "subagents.title": "Subagents",
-  "subagents.running": "{n} running",
   "subagents.working": "working…",
   "subagents.project": "project",
   "subagents.projectHint":
     "Repo-controlled agent — its instructions come from this repository. Only run in repos you trust.",
   "subagents.usage": "{tokens} tok · ${cost} · {turns} turns",
+  "subagents.drawerTitle": "Subagent progress",
+  "subagents.resize": "Resize subagent inspector",
+  "subagents.starting": "Starting up — no activity reported yet.",
+  "subagents.rowLabelSteps": "{title} — {n} steps, open progress",
+  "subagents.currentAction": "Running now",
+  "subagents.lastAction": "Last action",
+  "subagents.steps": "Steps",
+  "subagents.recentTools": "Recent tools",
+  "subagents.outputTail": "Latest output",
+  "subagents.timeline": "Timeline",
+  "subagents.artifacts": "Files produced",
+  "subagents.result": "Result",
+  "subagents.tokens": "{tokens} tok",
+  "subagents.turnsTools": "{turns} turns · {tools} tools",
+  "subagents.runId": "Run {id}",
+  "subagents.modeHint": "How the run was launched",
+  "subagents.stale": "no update for {ago} — may be inside a long step",
 
   // command palette
   "palette.ask": "Ask Pi to implement…",

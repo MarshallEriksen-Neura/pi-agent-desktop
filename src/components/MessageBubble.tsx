@@ -17,6 +17,9 @@ import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n";
 import { useMessageActions } from "@/lib/pi/message-actions";
 import { mcpAuthCompleteExample, toolDetail, toolTitle } from "@/lib/pi/tool-label";
+import { isSubagentTool } from "@/lib/pi/subagents";
+import { useSubagentRow } from "./Subagents";
+import type { ChatToolCall } from "@/lib/pi/chat";
 import { openExternal } from "@/lib/open-external";
 import { ActivityLine } from "./ActivityLine";
 import { ImageLightbox } from "./ImageLightbox";
@@ -270,11 +273,8 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
 
       {m.tools.map((tool, i) => (
         <div key={tool.id}>
-          <ActivityLine
-            status={tool.status}
-            toolName={tool.name}
-            title={toolTitle(tool.name, tool.args)}
-            detail={toolDetail(tool.args)}
+          <ToolRow
+            tool={tool}
             // only the freshly-started row slides in; earlier rows are already
             // settled, so a virtualized re-mount must not replay the whole list
             animateIn={animateIn && i === m.tools.length - 1}
@@ -413,6 +413,64 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
         />
       )}
     </motion.div>
+  );
+}
+
+/**
+ * One tool call in the transcript. Subagents get the interactive variant: their
+ * call returns the moment the worker is forked, so this row — not the tool
+ * result — is where the real work is followed and opened.
+ *
+ * Branching on the tool *name* rather than inside one component keeps the store
+ * subscription off the ordinary rows, and the branch is stable for a given call.
+ */
+function ToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
+  if (isSubagentTool(tool.name)) {
+    return <SubagentToolRow tool={tool} animateIn={animateIn} />;
+  }
+  return (
+    <ActivityLine
+      status={tool.status}
+      toolName={tool.name}
+      title={toolTitle(tool.name, tool.args)}
+      detail={toolDetail(tool.args)}
+      animateIn={animateIn}
+    />
+  );
+}
+
+function SubagentToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
+  const title = toolTitle(tool.name, tool.args);
+  const row = useSubagentRow(tool.id, title);
+
+  // Nothing tracked for this call — a transcript restored from history has no
+  // snapshot to open, so it stays a plain row rather than a dead control.
+  if (!row) {
+    return (
+      <ActivityLine
+        status={tool.status}
+        toolName={tool.name}
+        title={title}
+        detail={toolDetail(tool.args)}
+        animateIn={animateIn}
+      />
+    );
+  }
+
+  return (
+    <ActivityLine
+      status={tool.status}
+      toolName={tool.name}
+      title={title}
+      // while it works, the row reports the worker's current tool instead of the
+      // arguments it was launched with
+      detail={row.detail ?? toolDetail(tool.args)}
+      animateIn={animateIn}
+      onClick={row.open}
+      active={row.active}
+      trailing={row.trailing}
+      ariaLabel={row.label}
+    />
   );
 }
 

@@ -14,6 +14,7 @@ export type TaskStatus = "done" | "running" | "queued" | "error";
 const THEME_STORAGE_KEY = "pi-desktop.theme";
 const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";
 const AGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.agentPanelWidth";
+const SUBAGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.subagentPanelWidth";
 const SEND_SHORTCUT_STORAGE_KEY = "pi-desktop.sendShortcut";
 
 /** Docked chat rail width, in px. Only applies in the default layout —
@@ -22,6 +23,12 @@ export const AGENT_PANEL_WIDTH_DEFAULT = 320;
 /** Narrower than this and the composer + model picker stop fitting on one row. */
 export const AGENT_PANEL_WIDTH_MIN = 280;
 export const AGENT_PANEL_WIDTH_MAX = 900;
+
+/** Subagent inspector column width, in px — a docked panel, same as the rail. */
+export const SUBAGENT_PANEL_WIDTH_DEFAULT = 420;
+/** Below this the tool feed's `name + args` rows stop being readable. */
+export const SUBAGENT_PANEL_WIDTH_MIN = 320;
+export const SUBAGENT_PANEL_WIDTH_MAX = 720;
 
 // what happens when the user closes the main window
 export type CloseBehavior = "ask" | "minimize" | "quit";
@@ -55,6 +62,11 @@ let stopThemeWatch: (() => void) | null = null;
 
 const clampAgentPanelWidth = (px: number) =>
   Math.round(Math.min(AGENT_PANEL_WIDTH_MAX, Math.max(AGENT_PANEL_WIDTH_MIN, px)));
+
+const clampSubagentPanelWidth = (px: number) =>
+  Math.round(
+    Math.min(SUBAGENT_PANEL_WIDTH_MAX, Math.max(SUBAGENT_PANEL_WIDTH_MIN, px)),
+  );
 
 export interface AgentTask {
   id: string;
@@ -96,6 +108,9 @@ interface UIState {
   agentPanelWidth: number;
   /** true only while the divider is being dragged — suppresses the width spring */
   agentPanelResizing: boolean;
+  /** user-dragged width of the docked subagent inspector (px) */
+  subagentPanelWidth: number;
+  subagentPanelResizing: boolean;
   commandPaletteOpen: boolean;
   terminalOpen: boolean;
   activeFile: string;
@@ -139,6 +154,11 @@ interface UIState {
   resetAgentPanelWidth: () => void;
   /** restore the saved rail width — call once on mount */
   initAgentPanelWidth: () => void;
+  setSubagentPanelWidth: (px: number) => void;
+  persistSubagentPanelWidth: () => void;
+  setSubagentPanelResizing: (resizing: boolean) => void;
+  resetSubagentPanelWidth: () => void;
+  initSubagentPanelWidth: () => void;
   toggleTerminal: () => void;
   setTerminalOpen: (open: boolean) => void;
   setCommandPalette: (open: boolean) => void;
@@ -173,6 +193,8 @@ export const useUI = create<UIState>((set) => ({
   sidebarOpen: true,
   agentPanelOpen: true,
   agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
+  subagentPanelWidth: SUBAGENT_PANEL_WIDTH_DEFAULT,
+  subagentPanelResizing: false,
   agentPanelResizing: false,
   commandPaletteOpen: false,
   activeFile: "src/lib/agent.ts",
@@ -302,6 +324,47 @@ export const useUI = create<UIState>((set) => ({
       if (!Number.isFinite(px)) return {};
       return { agentPanelWidth: clampAgentPanelWidth(px) };
     }),
+
+  /* subagent inspector — same contract as the rail above: drag updates in
+     memory, the caller persists once on pointer release */
+  setSubagentPanelWidth: (px) =>
+    set((s) => {
+      const width = clampSubagentPanelWidth(px);
+      return width === s.subagentPanelWidth ? {} : { subagentPanelWidth: width };
+    }),
+  persistSubagentPanelWidth: () => {
+    try {
+      localStorage.setItem(
+        SUBAGENT_PANEL_WIDTH_STORAGE_KEY,
+        String(useUI.getState().subagentPanelWidth),
+      );
+    } catch {
+      // storage unavailable (private mode) — the width stays for this session only
+    }
+  },
+  setSubagentPanelResizing: (resizing) => set({ subagentPanelResizing: resizing }),
+  resetSubagentPanelWidth: () =>
+    set(() => {
+      try {
+        localStorage.removeItem(SUBAGENT_PANEL_WIDTH_STORAGE_KEY);
+      } catch {
+        // storage unavailable — the in-memory reset still applies
+      }
+      return { subagentPanelWidth: SUBAGENT_PANEL_WIDTH_DEFAULT };
+    }),
+  initSubagentPanelWidth: () =>
+    set(() => {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(SUBAGENT_PANEL_WIDTH_STORAGE_KEY);
+      } catch {
+        // storage unavailable — stay on the default inspector width
+      }
+      const px = saved === null ? NaN : Number(saved);
+      if (!Number.isFinite(px)) return {};
+      return { subagentPanelWidth: clampSubagentPanelWidth(px) };
+    }),
+
   setCommandPalette: (open) => set({ commandPaletteOpen: open }),
   setActiveFile: (file) => set({ activeFile: file }),
 

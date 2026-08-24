@@ -4,7 +4,14 @@ export interface ChatRecoveryTarget {
 }
 
 export interface ChatRecoveryService {
-  getTarget(): ChatRecoveryTarget;
+  /**
+   * Recovery target for `taskId`, or the focused conversation when omitted.
+   *
+   * Per-task resolution matters because every conversation owns its own pi
+   * process and its own session file: recovering a background task against the
+   * *active* conversation's path would point two processes at one file.
+   */
+  getTarget(taskId?: string): ChatRecoveryTarget;
 }
 
 let service: ChatRecoveryService | null = null;
@@ -21,8 +28,8 @@ export function configureChatRecovery(serviceImpl: ChatRecoveryService): void {
   service = serviceImpl;
 }
 
-export function getChatRecoveryTarget(): ChatRecoveryTarget | null {
-  return service?.getTarget() ?? null;
+export function getChatRecoveryTarget(taskId?: string): ChatRecoveryTarget | null {
+  return service?.getTarget(taskId) ?? null;
 }
 
 export function resetChatRecoveryForTests(): void {
