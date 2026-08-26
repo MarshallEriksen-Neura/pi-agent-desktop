@@ -56,6 +56,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 }
 
 function MainShell({ children }: { children: React.ReactNode }) {
+  const closeBehavior = useUI((s) => s.closeBehavior);
   useEffect(() => {
     // restore the saved UI language (or detect from the system) before first paint settles
     useI18n.getState().initLocale();
@@ -63,6 +64,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initTheme();
     // restore the saved window close behavior (ask / minimize / quit)
     useUI.getState().initCloseBehavior();
+    // restore startup layout + IDE preference before EditorCanvas may mount
+    useUI.getState().initLayoutPreferences();
     // restore the user's dragged chat-rail width
     useUI.getState().initAgentPanelWidth();
     // restore the composer's send shortcut (⌘↩ / ↩ / ⇧↩)
@@ -134,31 +137,37 @@ function MainShell({ children }: { children: React.ReactNode }) {
       document.addEventListener("contextmenu", preventDefaultCtx);
     }
 
-    // Intercept the window close request (caption button, Alt+F4, native close)
-    // so we can honor the user's saved behavior instead of always quitting.
-    let closeUnlisten: (() => void) | undefined;
-    let disposed = false;
-    if (isDesktop) {
-      getPort("window")
-        .onCloseRequested((event) => {
-          event.preventDefault();
-          requestClose();
-        })
-        .then((fn) => {
-          if (disposed) fn();
-          else closeUnlisten = fn;
-        })
-        .catch(() => {});
-    }
-
     return () => {
-      disposed = true;
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("contextmenu", preventDefaultCtx);
       destroyAgentBridge();
-      closeUnlisten?.();
     };
   }, []);
+
+  // Only ask/minimize needs a WebView close listener. In quit mode there must
+  // be no JS listener at all: if the renderer is hung, a registered listener
+  // can stall the native close before Rust ever sees ExitRequested.
+  useEffect(() => {
+    if (getBackendKind() !== "desktop-tauri" || closeBehavior === "quit") return;
+
+    let closeUnlisten: (() => void) | undefined;
+    let disposed = false;
+    getPort("window")
+      .onCloseRequested((event) => {
+        event.preventDefault();
+        requestClose();
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else closeUnlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      closeUnlisten?.();
+    };
+  }, [closeBehavior]);
 
   // Dismiss the boot screen once the real shell has actually painted (see
   // BootScreen). Two frames, not one: the first callback still runs *before* the

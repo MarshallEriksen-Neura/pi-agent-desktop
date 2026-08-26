@@ -10,12 +10,15 @@ import {
 
 export type Theme = "light" | "dark";
 export type TaskStatus = "done" | "running" | "queued" | "error";
+export type StartupInterface = "default" | "work";
 
 const THEME_STORAGE_KEY = "pi-desktop.theme";
 const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";
 const AGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.agentPanelWidth";
 const SUBAGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.subagentPanelWidth";
 const SEND_SHORTCUT_STORAGE_KEY = "pi-desktop.sendShortcut";
+const STARTUP_INTERFACE_STORAGE_KEY = "pi-desktop.startupInterface";
+const IDE_ENABLED_STORAGE_KEY = "pi-desktop.ideEnabled";
 
 /** Docked chat rail width, in px. Only applies in the default layout —
  *  work mode stretches the panel to a centered reading column, zen mode hides it. */
@@ -102,6 +105,9 @@ interface UIState {
   themeSource: ThemeSource;
   zenMode: boolean;
   workMode: boolean;
+  startupInterface: StartupInterface;
+  ideEnabled: boolean;
+  layoutPreferencesReady: boolean;
   sidebarOpen: boolean;
   agentPanelOpen: boolean;
   /** user-dragged width of the docked chat rail (px) */
@@ -143,6 +149,10 @@ interface UIState {
   initTheme: () => void;
   toggleZen: () => void;
   toggleWork: () => void;
+  setStartupInterface: (mode: StartupInterface) => void;
+  setIdeEnabled: (enabled: boolean) => void;
+  /** restore startup layout + IDE preference before the editor is allowed to mount */
+  initLayoutPreferences: () => void;
   toggleSidebar: () => void;
   toggleAgentPanel: () => void;
   /** live width during a drag — clamped, not persisted (call persist on release) */
@@ -190,6 +200,9 @@ export const useUI = create<UIState>((set) => ({
   themeSource: "system",
   zenMode: false,
   workMode: false,
+  startupInterface: "default",
+  ideEnabled: true,
+  layoutPreferencesReady: false,
   sidebarOpen: true,
   agentPanelOpen: true,
   agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
@@ -279,7 +292,48 @@ export const useUI = create<UIState>((set) => ({
       return { theme, themeSource: pinned ? ("user" as const) : ("system" as const) };
     }),
   toggleZen: () => set((s) => ({ zenMode: !s.zenMode })),
-  toggleWork: () => set((s) => ({ workMode: !s.workMode })),
+  toggleWork: () =>
+    set((s) => (s.ideEnabled ? { workMode: !s.workMode } : {})),
+  setStartupInterface: (mode) =>
+    set(() => {
+      try {
+        localStorage.setItem(STARTUP_INTERFACE_STORAGE_KEY, mode);
+      } catch {
+        // storage unavailable — keep the choice in-memory only
+      }
+      return { startupInterface: mode };
+    }),
+  setIdeEnabled: (enabled) =>
+    set((s) => {
+      try {
+        localStorage.setItem(IDE_ENABLED_STORAGE_KEY, String(enabled));
+      } catch {
+        // storage unavailable — keep the choice in-memory only
+      }
+      return {
+        ideEnabled: enabled,
+        workMode: enabled ? s.startupInterface === "work" : true,
+      };
+    }),
+  initLayoutPreferences: () =>
+    set(() => {
+      let savedStartup: string | null = null;
+      let savedIde: string | null = null;
+      try {
+        savedStartup = localStorage.getItem(STARTUP_INTERFACE_STORAGE_KEY);
+        savedIde = localStorage.getItem(IDE_ENABLED_STORAGE_KEY);
+      } catch {
+        // storage unavailable — keep backward-compatible defaults
+      }
+      const startupInterface: StartupInterface = savedStartup === "work" ? "work" : "default";
+      const ideEnabled = savedIde !== "false";
+      return {
+        startupInterface,
+        ideEnabled,
+        workMode: !ideEnabled || startupInterface === "work",
+        layoutPreferencesReady: true,
+      };
+    }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
   /**

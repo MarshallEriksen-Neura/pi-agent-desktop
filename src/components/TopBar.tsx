@@ -40,6 +40,7 @@ export function TopBar() {
     terminalOpen,
     zenMode,
     workMode,
+    ideEnabled,
     theme,
     themeSource,
     setCommandPalette,
@@ -60,6 +61,7 @@ export function TopBar() {
   }, []);
 
   const showUpdate = updatePhase === "available" && !updateDismissed;
+  const effectiveWorkMode = !ideEnabled || workMode;
 
   return (
     <header
@@ -77,7 +79,7 @@ export function TopBar() {
         zIndex: 20,
       }}
     >
-      {!zenMode && !workMode && (
+      {!zenMode && !effectiveWorkMode && (
         <IconButton label={t("topbar.toggleSidebar")} onClick={toggleSidebar}>
           <PanelLeft size={16} />
         </IconButton>
@@ -199,10 +201,12 @@ export function TopBar() {
       <IconButton label={t("topbar.zenMode")} onClick={toggleZen} active={zenMode}>
         <Focus size={16} />
       </IconButton>
-      <IconButton label={t("topbar.workMode")} onClick={toggleWork} active={workMode}>
-        <MessagesSquare size={16} />
-      </IconButton>
-      {!zenMode && !workMode && (
+      {ideEnabled && (
+        <IconButton label={t("topbar.workMode")} onClick={toggleWork} active={workMode}>
+          <MessagesSquare size={16} />
+        </IconButton>
+      )}
+      {!zenMode && !effectiveWorkMode && (
         <IconButton label={t("topbar.toggleAgentPanel")} onClick={toggleAgentPanel}>
           <Sparkles size={16} />
         </IconButton>

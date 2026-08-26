@@ -55,6 +55,8 @@ export default function Home() {
     resetSubagentPanelWidth,
     zenMode,
     workMode,
+    ideEnabled,
+    layoutPreferencesReady,
     setCommandPalette,
     toggleZen,
     toggleWork,
@@ -79,7 +81,7 @@ export default function Home() {
         e.preventDefault();
         toggleZen();
       }
-      if (mod && e.key === "/") {
+      if (mod && e.key === "/" && ideEnabled) {
         e.preventDefault();
         toggleWork();
       }
@@ -91,11 +93,12 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setCommandPalette, toggleZen]);
+  }, [ideEnabled, setCommandPalette, toggleWork, toggleZen]);
 
-  const showSidebar = sidebarOpen && !zenMode && !workMode;
-  const showAgent = !zenMode && (workMode || agentPanelOpen);
-  const showEditor = !zenMode && !workMode;
+  const effectiveWorkMode = !ideEnabled || workMode;
+  const showSidebar = layoutPreferencesReady && sidebarOpen && !zenMode;
+  const showAgent = layoutPreferencesReady && !zenMode && (effectiveWorkMode || agentPanelOpen);
+  const showEditor = layoutPreferencesReady && ideEnabled && !zenMode && !workMode;
   /* The inspector follows the chat: it belongs to a conversation, so it appears
      wherever that conversation is and is meaningless without it. Zen mode shows
      nothing but the composer, so it stays out of the way there. */
@@ -230,7 +233,7 @@ export default function Home() {
         </AnimatePresence>
 
         {showAgent &&
-          (workMode ? (
+          (effectiveWorkMode ? (
             <motion.div
               key="agent-work"
               initial={{ opacity: 0 }}
