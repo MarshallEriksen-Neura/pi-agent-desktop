@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DESKTOP_DIR = "src/lib/backend/desktop/";
 const EXPECTED_COMMAND_NAMES = [
+  "app_quit",
   "chat_session_delete", "chat_session_load", "chat_session_rename",
   "chat_session_save", "chat_sessions_list", "fs_create_dir", "fs_create_file",
   "fs_delete", "fs_list_dir", "fs_read_file", "fs_read_file_base64", "fs_rename",
   "fs_write_file", "list_custom_pets", "open_external", "pet_window_hide",
+  "pet_window_prewarm",
   "pet_window_set_position", "pet_window_show", "pet_window_toggle", "pi_cli",
   "pi_cli_update_check", "pi_fetch_models", "pi_generate_title", "pi_send",
   "pi_settings_read", "pi_settings_write", "pi_start", "pi_stop", "project_open",
@@ -72,8 +74,25 @@ export function collectBackendInventory(repoRoot = REPO_ROOT) {
     }
 
     if (/^src\/lib\/(?:pi|workspace\.ts|store\.ts)/.test(file)) {
-      for (const marker of ["isTauri(", "__TAURI_INTERNALS__", "typeof window"]) {
+      for (const marker of ["isTauri(", "__TAURI_INTERNALS__"]) {
         if (content.includes(marker)) forbiddenPlatformGuesses.push({ file, marker });
+      }
+      /*
+       * `typeof window` is only a platform guess when it stands in for "am I in
+       * Tauri?" — that question belongs to the backend ports, which is what this
+       * rule protects. Comparing against "undefined" asks a different one: "has
+       * the DOM been created yet?" This app static-exports, so core stores are
+       * evaluated in Node during prerender and a theme default or a matchMedia
+       * read has to survive that. Banning the whole spelling made the rule
+       * unsatisfiable for SSR-safe code and left a standing violation instead of
+       * a signal, so match the bare form only.
+       */
+      const withoutSsrGuards = content.replace(
+        /typeof\s+window\s*[!=]==\s*["']undefined["']/g,
+        "",
+      );
+      if (withoutSsrGuards.includes("typeof window")) {
+        forbiddenPlatformGuesses.push({ file, marker: "typeof window" });
       }
     }
 

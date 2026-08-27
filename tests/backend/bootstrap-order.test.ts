@@ -34,18 +34,19 @@ test("locks AppShell synchronous setup and async desktop startup order", () => {
     "useI18n.getState().initLocale()",
     "useUI.getState().initTheme()",
     "useUI.getState().initCloseBehavior()",
+    // the layout has to be restored before EditorCanvas can mount, or a
+    // chat-layout launch builds the editor and immediately tears it down
+    "useUI.getState().initLayout()",
     "useAppearance.getState().init()",
-    "useChat.getState().init()",
     "useExtUi.getState().init()",
     "useSubagents.getState().initPiBridge()",
     "initAgentBridge()",
     ".load()",
     ".then(() => useWorkspace.getState().init())",
-    "const root = useWorkspace.getState().root ?? undefined",
-    "const resumePath = await peekLatestSessionPath(root ?? \"\")",
-    "await connect({",
-    "cwd: root",
-    "resumePath: resumePath || undefined",
+    /* No single `connect({ cwd, resumePath })` here any more. One shell-level
+       connect assumed one pi process; each conversation now spawns its own with
+       its saved --session path, so resuming is sessions.init()'s job and the
+       root is read inline rather than hoisted into locals. */
     ".then(() => useSessions.getState().init(useWorkspace.getState().root ?? \"\"))",
     ".then(() => useCliUpdate.getState().checkOnLaunch())",
   ]);
@@ -54,18 +55,37 @@ test("locks AppShell synchronous setup and async desktop startup order", () => {
 test("locks shell handler registration and cleanup order", () => {
   const source = appShellSource();
   assertInOrder(source, [
-    'if (e.key === "Escape" && useSubagents.getState().focusedId)',
-    'window.addEventListener("keydown", onKey, true)',
+    // Not capture-phase, and an early return rather than a positive test: Esc
+    // belongs to whatever input is focused, so the shell only claims it when a
+    // subagent is actually focused (0.8.0 dropped the global `capture: true`).
+    'if (e.key !== "Escape" || !useSubagents.getState().focusedId) return',
+    'window.addEventListener("keydown", onKey)',
     "const preventDefaultCtx = (e: MouseEvent) => e.preventDefault()",
     'document.addEventListener("contextmenu", preventDefaultCtx)',
+    'window.removeEventListener("keydown", onKey)',
+    'document.removeEventListener("contextmenu", preventDefaultCtx)',
+    "destroyAgentBridge()",
+  ]);
+});
+
+/*
+ * The close listener moved out of the setup effect and behind closeBehavior, so
+ * it needs its own ordering: only ask/minimize register it. In quit mode there
+ * must be no JS listener at all — a registered one puts the renderer on the
+ * close path, and a hung renderer then blocks the native close before Rust ever
+ * sees ExitRequested.
+ */
+test("registers the close listener only when the saved behavior needs one", () => {
+  const source = appShellSource();
+  assertInOrder(source, [
+    'if (getBackendKind() !== "desktop-tauri" || closeBehavior === "quit") return',
+    "let closeUnlisten: (() => void) | undefined",
     'getPort("window")',
     ".onCloseRequested((event) =>",
     "event.preventDefault()",
     "requestClose()",
-    'window.removeEventListener("keydown", onKey, true)',
-    'document.removeEventListener("contextmenu", preventDefaultCtx)',
-    "destroyAgentBridge()",
     "closeUnlisten?.()",
+    "}, [closeBehavior])",
   ]);
 });
 
@@ -74,10 +94,13 @@ test("locks desktop pet autolaunch behavior after main bootstrap effect", () => 
   assertInOrder(source, [
     "const prefs = loadPetPreferences()",
     "if (!prefs.enabled || !prefs.petId) return",
-    "loadBuiltinPet(prefs.petId)",
+    // petId is destructured off prefs before the idle callback, so the calls
+    // read `petId`, not `prefs.petId` — and the config update precedes the
+    // reveal, which rides the pet window's ready event.
+    "void loadBuiltinPet(petId)",
     "usePet.getState().loadPet(pet)",
+    ".emitConfigUpdate({ petId }",
     "void showPetWindow()",
-    ".emitConfigUpdate({ petId: prefs.petId }",
   ]);
 });
 

@@ -37,13 +37,19 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   assert.equal(result.inventory.legacyTauriRefCount, 0);
   assert.ok(result.inventory.tauriRefCount > 0);
   assert.ok(result.inventory.commandCallCount >= 64);
-  assert.equal(result.inventory.commandUniqueCount, 62);
+  // 62 was stale before this suite could run: pet_window_prewarm had been
+  // invoked since the pet feature landed without being added to the boundary
+  // script's expected list, so the real count was already 63. app_quit makes 64.
+  assert.equal(result.inventory.commandUniqueCount, 64);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
   const result = inventory();
   assert.deepEqual(result.inventory.piEvents, ["pi://exit", "pi://line", "pi://stderr"]);
   assert.deepEqual(result.inventory.commandNames, [
+    // routes the quit through Rust so backend teardown runs off the event-loop
+    // thread instead of the WebView calling plugin-process exit() directly
+    "app_quit",
     "chat_session_delete",
     "chat_session_load",
     "chat_session_rename",
@@ -65,6 +71,9 @@ test("locks the desktop command names and Pi process event names", () => {
     "mcp_config_write",
     "open_external",
     "pet_window_hide",
+    // invoked since the pet feature landed; the list simply never caught up,
+    // and this suite could not run to say so
+    "pet_window_prewarm",
     "pet_window_set_position",
     "pet_window_show",
     "pet_window_toggle",
