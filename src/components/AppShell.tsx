@@ -56,6 +56,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 }
 
 function MainShell({ children }: { children: React.ReactNode }) {
+  // drives the close-request listener below; initCloseBehavior() reconciles it
+  const closeBehavior = useUI((s) => s.closeBehavior);
   useEffect(() => {
     // restore the saved UI language (or detect from the system) before first paint settles
     useI18n.getState().initLocale();
@@ -134,31 +136,42 @@ function MainShell({ children }: { children: React.ReactNode }) {
       document.addEventListener("contextmenu", preventDefaultCtx);
     }
 
-    // Intercept the window close request (caption button, Alt+F4, native close)
-    // so we can honor the user's saved behavior instead of always quitting.
-    let closeUnlisten: (() => void) | undefined;
-    let disposed = false;
-    if (isDesktop) {
-      getPort("window")
-        .onCloseRequested((event) => {
-          event.preventDefault();
-          requestClose();
-        })
-        .then((fn) => {
-          if (disposed) fn();
-          else closeUnlisten = fn;
-        })
-        .catch(() => {});
-    }
-
     return () => {
-      disposed = true;
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("contextmenu", preventDefaultCtx);
       destroyAgentBridge();
-      closeUnlisten?.();
     };
   }, []);
+
+  // Intercept the window close request (caption button, Alt+F4, native close) so
+  // the user's saved behavior is honored instead of always quitting.
+  //
+  // Only ask/minimize needs the listener. In quit mode there must be none at
+  // all: a registered JS handler puts the renderer on the close path, so a hung
+  // WebView stalls the close before Rust ever sees ExitRequested. With no
+  // listener the request goes straight to the event loop, which tears the
+  // backend down itself.
+  useEffect(() => {
+    if (getBackendKind() !== "desktop-tauri" || closeBehavior === "quit") return;
+
+    let closeUnlisten: (() => void) | undefined;
+    let disposed = false;
+    getPort("window")
+      .onCloseRequested((event) => {
+        event.preventDefault();
+        requestClose();
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else closeUnlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      closeUnlisten?.();
+    };
+  }, [closeBehavior]);
 
   // Dismiss the boot screen once the real shell has actually painted (see
   // BootScreen). Two frames, not one: the first callback still runs *before* the
