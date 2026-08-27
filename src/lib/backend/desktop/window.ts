@@ -1,12 +1,12 @@
-import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { WindowPort } from "../ports/window";
+import { desktopInvoke } from "./invoke";
 
 export const desktopWindowPort = {
   close: () => getCurrentWindow().close(),
-  quit: (exitCode = 0) => invoke<void>("app_quit", { exitCode }),
+  quit: (exitCode = 0) => desktopInvoke<void>("app_quit", { exitCode }),
   focus: () => getCurrentWindow().setFocus(),
   setFocus: () => getCurrentWindow().setFocus(),
   show: () => getCurrentWindow().show(),
