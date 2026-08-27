@@ -11,11 +11,37 @@ import {
 export type Theme = "light" | "dark";
 export type TaskStatus = "done" | "running" | "queued" | "error";
 
+/**
+ * Which layout the app lives in. One setting rather than two orthogonal-looking
+ * knobs: "IDE off" *is* permanent work mode, so a separate boolean would leave a
+ * dead combination (IDE off + startup "default") that the user can select and
+ * that means nothing. A third enum value also keeps room for future layouts —
+ * add a variant, not a dimension.
+ *
+ * - `default`   — sidebar + editor + docked chat rail; work mode is a toggle
+ * - `work`      — opens in the centered chat column, ⌘/ still returns to the IDE
+ * - `work-only` — permanent chat column; the editor never mounts and every IDE
+ *                 entry point (top-bar toggle, ⌘/, palette command) is hidden
+ */
+export type LayoutMode = "default" | "work" | "work-only";
+
+const LAYOUT_MODES: readonly LayoutMode[] = ["default", "work", "work-only"];
+
+/**
+ * Guards the value read back from storage. Anything unrecognized — a key written
+ * by an older build, or hand-edited — falls back to `default` rather than putting
+ * the app in a layout no branch handles.
+ */
+function isLayoutMode(v: string | null): v is LayoutMode {
+  return v !== null && (LAYOUT_MODES as readonly string[]).includes(v);
+}
+
 const THEME_STORAGE_KEY = "pi-desktop.theme";
 const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";
 const AGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.agentPanelWidth";
 const SUBAGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.subagentPanelWidth";
 const SEND_SHORTCUT_STORAGE_KEY = "pi-desktop.sendShortcut";
+const LAYOUT_MODE_STORAGE_KEY = "pi-desktop.layoutMode";
 
 /** Docked chat rail width, in px. Only applies in the default layout —
  *  work mode stretches the panel to a centered reading column, zen mode hides it. */
@@ -90,6 +116,14 @@ interface UIState {
   themeSource: ThemeSource;
   zenMode: boolean;
   workMode: boolean;
+  /** persisted layout choice; `workMode` is the live state derived from it */
+  layoutMode: LayoutMode;
+  /**
+   * False until the saved layout has been read back. The panels stay unmounted
+   * until then so the editor is never mounted-then-torn-down on a work-mode
+   * launch. The boot screen covers this — it lifts two frames after mount.
+   */
+  layoutReady: boolean;
   sidebarOpen: boolean;
   agentPanelOpen: boolean;
   /** user-dragged width of the docked chat rail (px) */
@@ -129,7 +163,12 @@ interface UIState {
    */
   initTheme: () => void;
   toggleZen: () => void;
+  /** no-op in `work-only`, where the chat column is the only layout */
   toggleWork: () => void;
+  /** persist the layout choice and switch to it now */
+  setLayoutMode: (mode: LayoutMode) => void;
+  /** restore the saved layout before the editor is allowed to mount */
+  initLayout: () => void;
   toggleSidebar: () => void;
   toggleAgentPanel: () => void;
   /** live width during a drag — clamped, not persisted (call persist on release) */
@@ -174,6 +213,8 @@ export const useUI = create<UIState>((set) => ({
   themeSource: "system",
   zenMode: false,
   workMode: false,
+  layoutMode: "default",
+  layoutReady: false,
   sidebarOpen: true,
   agentPanelOpen: true,
   agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
@@ -262,7 +303,30 @@ export const useUI = create<UIState>((set) => ({
       return { theme, themeSource: pinned ? ("user" as const) : ("system" as const) };
     }),
   toggleZen: () => set((s) => ({ zenMode: !s.zenMode })),
-  toggleWork: () => set((s) => ({ workMode: !s.workMode })),
+  toggleWork: () =>
+    set((s) => (s.layoutMode === "work-only" ? {} : { workMode: !s.workMode })),
+  setLayoutMode: (mode) =>
+    set(() => {
+      try {
+        localStorage.setItem(LAYOUT_MODE_STORAGE_KEY, mode);
+      } catch {
+        // storage unavailable — keep the choice in-memory only
+      }
+      // Apply immediately rather than only on next launch: picking a layout in
+      // settings and seeing nothing happen reads as a broken control.
+      return { layoutMode: mode, workMode: mode !== "default" };
+    }),
+  initLayout: () =>
+    set(() => {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(LAYOUT_MODE_STORAGE_KEY);
+      } catch {
+        // storage unavailable — fall back to the pre-setting default layout
+      }
+      const layoutMode: LayoutMode = isLayoutMode(saved) ? saved : "default";
+      return { layoutMode, workMode: layoutMode !== "default", layoutReady: true };
+    }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),
   /**

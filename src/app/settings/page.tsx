@@ -15,6 +15,7 @@ import {
   RotateCcw,
   Braces,
   Activity,
+  Columns3,
   GitBranch,
   Image as ImageIcon,
   ImageOff,
@@ -53,7 +54,11 @@ import {
   refreshNotificationPermission,
   type NotificationPermissionState,
 } from "@/lib/notifications";
-import { useUI } from "@/lib/store";
+import { useUI, type LayoutMode } from "@/lib/store";
+
+/** Editor first: it is the historical default, so the order matches how much
+ *  of the IDE each choice keeps. */
+const LAYOUT_MODE_OPTIONS: readonly LayoutMode[] = ["default", "work", "work-only"];
 import {
   SettingsPage,
   InsetGroup,
@@ -204,6 +209,8 @@ export default function PiSettingsPage() {
     setCloseBehavior,
     sendShortcut,
     setSendShortcut,
+    layoutMode,
+    setLayoutMode,
   } = useUI();
   const [notifPermission, setNotifPermission] =
     useState<NotificationPermissionState>("default");
@@ -389,6 +396,34 @@ export default function PiSettingsPage() {
               onChange={(v) => setLocale(v === "中文" ? "zh" : "en")}
             />
           </div>
+        </InsetGroup>
+      )}
+
+      {/* layout — app-local, not part of pi's settings.json */}
+      {category === "general" && (
+        <InsetGroup
+          header={t("settings.interface")}
+          footer={t("settings.interfaceFooter")}
+        >
+          <GroupRow
+            first
+            icon={<Columns3 size={15} />}
+            iconBg="var(--accent)"
+            title={t("settings.layoutMode")}
+            /* the detail line doubles as the explanation of the active choice —
+               three-way segmented labels are too short to carry the meaning */
+            detail={t(`settings.layoutMode.${layoutMode}Hint`)}
+            trailing={
+              <div style={{ width: 240, flexShrink: 0 }}>
+                <Segmented
+                  options={LAYOUT_MODE_OPTIONS}
+                  value={layoutMode}
+                  onChange={setLayoutMode}
+                  labelOf={(v) => t(`settings.layoutMode.${v}`)}
+                />
+              </div>
+            }
+          />
         </InsetGroup>
       )}
 

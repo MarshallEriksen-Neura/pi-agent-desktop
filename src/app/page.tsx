@@ -55,6 +55,8 @@ export default function Home() {
     resetSubagentPanelWidth,
     zenMode,
     workMode,
+    layoutMode,
+    layoutReady,
     setCommandPalette,
     toggleZen,
     toggleWork,
@@ -81,7 +83,7 @@ export default function Home() {
       }
       if (mod && e.key === "/") {
         e.preventDefault();
-        toggleWork();
+        toggleWork(); // no-op in work-only — there is no other layout to reach
       }
       if (mod && e.key.toLowerCase() === "j") {
         e.preventDefault();
@@ -91,11 +93,16 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setCommandPalette, toggleZen]);
+  }, [setCommandPalette, toggleWork, toggleZen]);
 
-  const showSidebar = sidebarOpen && !zenMode && !workMode;
-  const showAgent = !zenMode && (workMode || agentPanelOpen);
-  const showEditor = !zenMode && !workMode;
+  /* Nothing mounts until the saved layout is known, so a work-mode launch never
+     builds the editor just to tear it down. The boot screen covers the gap. */
+  // work-only has no way back to the IDE, so the session list has to stay
+  // reachable from the chat column — it would otherwise have no entry point.
+  const showSidebar =
+    layoutReady && sidebarOpen && !zenMode && (!workMode || layoutMode === "work-only");
+  const showAgent = layoutReady && !zenMode && (workMode || agentPanelOpen);
+  const showEditor = layoutReady && !zenMode && !workMode;
   /* The inspector follows the chat: it belongs to a conversation, so it appears
      wherever that conversation is and is meaningless without it. Zen mode shows
      nothing but the composer, so it stays out of the way there. */

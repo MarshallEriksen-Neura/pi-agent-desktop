@@ -63,6 +63,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initTheme();
     // restore the saved window close behavior (ask / minimize / quit)
     useUI.getState().initCloseBehavior();
+    // restore the saved layout before EditorCanvas may mount
+    useUI.getState().initLayout();
     // restore the user's dragged chat-rail width
     useUI.getState().initAgentPanelWidth();
     // restore the composer's send shortcut (⌘↩ / ↩ / ⇧↩)
