@@ -79,7 +79,7 @@ export function TopBar() {
         zIndex: 20,
       }}
     >
-      {!zenMode && !effectiveWorkMode && (
+      {!zenMode && (
         <IconButton label={t("topbar.toggleSidebar")} onClick={toggleSidebar}>
           <PanelLeft size={16} />
         </IconButton>

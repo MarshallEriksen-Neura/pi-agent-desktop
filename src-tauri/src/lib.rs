@@ -39,8 +39,7 @@ struct BackendLifecycle {
 const SHUTDOWN_WATCHDOG: Duration = Duration::from_secs(8);
 
 fn begin_shutdown(app: &AppHandle) -> bool {
-    !app
-        .state::<BackendLifecycle>()
+    !app.state::<BackendLifecycle>()
         .shutting_down
         .swap(true, Ordering::AcqRel)
 }
