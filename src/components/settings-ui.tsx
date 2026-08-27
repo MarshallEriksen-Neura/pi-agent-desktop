@@ -773,12 +773,15 @@ export function Segmented<T extends string>({
   value,
   onChange,
   labelOf,
+  disabled,
 }: {
   options: readonly T[];
   value: T;
   onChange: (v: T) => void;
   /** optional display label mapper — falls back to the raw option value */
   labelOf?: (opt: T) => string;
+  /** dim and stop responding — for a choice another control has overridden */
+  disabled?: boolean;
 }) {
   // layoutId must be unique per instance or thumbs animate across controls
   const thumbId = useId();
@@ -789,6 +792,7 @@ export function Segmented<T extends string>({
         const next = groupValue[0] as T | undefined;
         if (next) onChange(next); // ignore deselect — segmented always has one active
       }}
+      aria-disabled={disabled || undefined}
       style={{
         display: "flex",
         gap: 2,
@@ -797,6 +801,9 @@ export function Segmented<T extends string>({
         background: "var(--bg-sunken)",
         border: "1px solid var(--separator)",
         width: "100%",
+        // the thumb keeps its own contrast, so dim the whole control rather than
+        // each label — a half-faded thumb reads as a rendering bug
+        opacity: disabled ? 0.45 : 1,
       }}
     >
       {options.map((opt) => {
@@ -807,6 +814,7 @@ export function Segmented<T extends string>({
             key={opt}
             value={opt}
             aria-label={label}
+            disabled={disabled}
             style={{
               position: "relative",
               flex: 1,
@@ -815,7 +823,7 @@ export function Segmented<T extends string>({
               fontWeight: active ? 600 : 400,
               border: "none",
               borderRadius: 8,
-              cursor: "pointer",
+              cursor: disabled ? "default" : "pointer",
               background: "transparent",
               color: active ? "var(--text-primary)" : "var(--text-secondary)",
               zIndex: 1,

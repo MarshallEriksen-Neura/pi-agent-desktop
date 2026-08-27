@@ -16,6 +16,7 @@ import {
   Braces,
   Activity,
   Columns3,
+  SquareSlash,
   GitBranch,
   Image as ImageIcon,
   ImageOff,
@@ -56,9 +57,10 @@ import {
 } from "@/lib/notifications";
 import { useUI, type LayoutMode } from "@/lib/store";
 
-/** Editor first: it is the historical default, so the order matches how much
- *  of the IDE each choice keeps. */
-const LAYOUT_MODE_OPTIONS: readonly LayoutMode[] = ["default", "work", "work-only"];
+/** The two layouts you can *start* in. `work-only` is not here — it is the
+ *  "remove the editor" switch, which overrides this choice rather than
+ *  extending it. Editor first: it is the historical default. */
+const STARTUP_INTERFACE_OPTIONS = ["default", "work"] as const satisfies readonly LayoutMode[];
 import {
   SettingsPage,
   InsetGroup,
@@ -212,6 +214,7 @@ export default function PiSettingsPage() {
     layoutMode,
     setLayoutMode,
   } = useUI();
+  const editorRemoved = layoutMode === "work-only";
   const [notifPermission, setNotifPermission] =
     useState<NotificationPermissionState>("default");
   const [category, setCategory] = useState<SettingsCategory>("general");
@@ -399,7 +402,10 @@ export default function PiSettingsPage() {
         </InsetGroup>
       )}
 
-      {/* layout — app-local, not part of pi's settings.json */}
+      {/* layout — app-local, not part of pi's settings.json.
+          Two controls over one stored enum. They answer different questions —
+          "where do I start" and "do I want the editor at all" — and a single
+          three-way control could not say which of its options can be left. */}
       {category === "general" && (
         <InsetGroup
           header={t("settings.interface")}
@@ -409,19 +415,33 @@ export default function PiSettingsPage() {
             first
             icon={<Columns3 size={15} />}
             iconBg="var(--accent)"
-            title={t("settings.layoutMode")}
-            /* the detail line doubles as the explanation of the active choice —
-               three-way segmented labels are too short to carry the meaning */
-            detail={t(`settings.layoutMode.${layoutMode}Hint`)}
+            title={t("settings.startupInterface")}
+            detail={t("settings.startupInterfaceDetail")}
             trailing={
-              <div style={{ width: 240, flexShrink: 0 }}>
+              <div style={{ width: 190, flexShrink: 0 }}>
                 <Segmented
-                  options={LAYOUT_MODE_OPTIONS}
-                  value={layoutMode}
+                  options={STARTUP_INTERFACE_OPTIONS}
+                  /* work-only has no startup choice left to make; it shows the
+                     chat column because that is what it launches into */
+                  value={layoutMode === "default" ? "default" : "work"}
                   onChange={setLayoutMode}
-                  labelOf={(v) => t(`settings.layoutMode.${v}`)}
+                  labelOf={(v) => t(`settings.startupInterface.${v}`)}
+                  disabled={editorRemoved}
                 />
               </div>
+            }
+          />
+          <GroupRow
+            icon={<SquareSlash size={15} />}
+            title={t("settings.removeEditor")}
+            detail={t("settings.removeEditorDetail")}
+            trailing={
+              <IOSSwitch
+                checked={editorRemoved}
+                /* back on → work, not default: you were in the chat column, and
+                   regaining the editor should not also throw you out of it */
+                onChange={(on) => setLayoutMode(on ? "work-only" : "work")}
+              />
             }
           />
         </InsetGroup>

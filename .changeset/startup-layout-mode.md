@@ -12,25 +12,37 @@ and the editor still owned the middle of the window by default.
 Requested in [#1](https://github.com/MarshallEriksen-Neura/pi-agent-desktop/issues/1),
 first implemented in [#2](https://github.com/MarshallEriksen-Neura/pi-agent-desktop/pull/2).
 
-## One setting, not two
+## One stored value, two controls
 
-The original proposal was a startup-layout picker *plus* an "enable IDE editor"
-switch. Those are not orthogonal: turning the IDE off **is** permanent work mode,
-so the pair admits a combination the user can select that means nothing (IDE off
-+ startup "Editor"). It also grows the wrong way — a future layout would add a
-dimension rather than a choice.
-
-`layoutMode` is therefore a single three-way enum:
+Three layouts exist:
 
 - **Editor** (`default`) — sidebar, editor, docked chat rail; ⌘/ still switches
 - **Chat** (`work`) — opens in the centered chat column; ⌘/ returns to the editor
-- **Chat only** (`work-only`) — permanent chat column; the editor never mounts and
-  every entry point to it (top-bar toggle, ⌘/, palette command) is hidden
+- `work-only` — permanent chat column; the editor never mounts and every entry
+  point to it (top-bar toggle, ⌘/, palette command) is hidden
+
+They are stored as one `layoutMode` enum, not as a startup preference plus an
+independent "enable IDE" boolean. Those two would not be orthogonal — turning the
+IDE off *is* permanent chat mode — so as separate persisted values they admit a
+state that means nothing: IDE off, startup "Editor".
+
+But a single three-way control cannot present them either. The difference between
+`work` and `work-only` is not how much chat you get, it is whether you can leave —
+and no segment label that short can say so. "Chat" next to "Chat only" reads as a
+distinction about the chat column, which it is not.
+
+So the settings surface is two rows over the one stored value:
+
+- **Startup interface** — `Editor | Chat`, the layout Pi opens in
+- **Remove the editor** — a switch; when on, the startup segment greys out
+
+Each row answers one question — *where do I start*, and *do I want the editor at
+all* — and the dead combination is visibly disabled rather than selectable.
+Turning the switch back off lands on `work`, not `default`: you were in the chat
+column, and regaining the editor should not also throw you out of it.
 
 Picking a layout applies it immediately rather than only on next launch — a
-settings control that visibly does nothing reads as broken. The segmented labels
-are too short to carry the difference, so the row's detail line describes the
-selected mode.
+settings control that visibly does nothing reads as broken.
 
 ## Not mounting the editor was already true
 
