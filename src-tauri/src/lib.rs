@@ -20,7 +20,7 @@ use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    App, Manager, RunEvent,
+    App, AppHandle, Manager, RunEvent,
 };
 
 use pi_bridge::PiProc;
@@ -34,14 +34,47 @@ pub fn run_remote_control_command_smoke() {
 #[derive(Default)]
 struct BackendLifecycle {
     shutting_down: AtomicBool,
+    /// Set once teardown has finished (or the watchdog gave up on it). Until
+    /// then every exit request is held, so a second quit action cannot cut a
+    /// running teardown short.
+    cleanup_settled: AtomicBool,
 }
 
-fn shutdown_backend(app: &tauri::AppHandle) {
-    let lifecycle = app.state::<BackendLifecycle>();
-    if lifecycle.shutting_down.swap(true, Ordering::AcqRel) {
-        return;
-    }
+const SHUTDOWN_WATCHDOG: Duration = Duration::from_secs(8);
 
+/// True for the caller that claims teardown; false for everyone after it.
+fn begin_shutdown(app: &AppHandle) -> bool {
+    !app.state::<BackendLifecycle>()
+        .shutting_down
+        .swap(true, Ordering::AcqRel)
+}
+
+/// Whether teardown has finished (or been abandoned by the watchdog). While this
+/// is false the process must not be allowed to exit — see the `ExitRequested`
+/// handler in [`run`].
+fn cleanup_settled(app: &AppHandle) -> bool {
+    app.state::<BackendLifecycle>()
+        .cleanup_settled
+        .load(Ordering::Acquire)
+}
+
+/// Mark teardown finished and let the process go. Ordering matters: the flag has
+/// to be visible to the event loop *before* the exit it will observe, or the
+/// handler could hold the very exit this is requesting.
+fn settle_and_exit(app: &AppHandle, exit_code: i32) {
+    app.state::<BackendLifecycle>()
+        .cleanup_settled
+        .store(true, Ordering::Release);
+    app.exit(exit_code);
+}
+
+/// Tear the backend down, in order: remote control, pending provider logins, then
+/// the pi child process itself.
+///
+/// Blocks for as long as the coordinator's 6s budget allows, so it must not run
+/// on the event-loop thread — the caller is expected to have claimed teardown via
+/// [`begin_shutdown`] and to be running on a worker.
+fn shutdown_backend_claimed(app: &AppHandle) {
     let pi = app.state::<PiProc>();
     let mut health = backend_health_snapshot(&pi);
     health.shutdown_in_progress = true;
@@ -66,6 +99,59 @@ fn shutdown_backend(app: &tauri::AppHandle) {
     if let Err(error) = coordinator.run(Duration::from_secs(6)) {
         eprintln!("[backend-shutdown] {error}");
     }
+}
+
+/// Run teardown on a worker thread and exit when it finishes, with a
+/// [`SHUTDOWN_WATCHDOG`] deadline as a second exit path.
+///
+/// Only call after [`begin_shutdown`] returns true: this spawns the one teardown
+/// that owns the process exit.
+fn schedule_shutdown_and_exit(app: AppHandle, exit_code: i32) {
+    let cleanup_app = app.clone();
+    if std::thread::Builder::new()
+        .name("pi-shutdown".to_owned())
+        .spawn(move || {
+            shutdown_backend_claimed(&cleanup_app);
+            settle_and_exit(&cleanup_app, exit_code);
+        })
+        .is_err()
+    {
+        // No thread to clean up on — exiting dirty beats never exiting.
+        settle_and_exit(&app, exit_code);
+        return;
+    }
+
+    // Backend teardown includes remote-control waits and child-process joins.
+    // Never let those keep a WebView window visibly stuck forever.
+    let watchdog_app = app;
+    let _ = std::thread::Builder::new()
+        .name("pi-exit-watchdog".to_owned())
+        .spawn(move || {
+            std::thread::sleep(SHUTDOWN_WATCHDOG);
+            settle_and_exit(&watchdog_app, exit_code);
+        });
+}
+
+/// Quit from a menu, the tray, or the frontend. A second call while teardown is
+/// running is deliberately dropped rather than forwarded to `AppHandle::exit`:
+/// `exit` ignores `prevent_exit`, so forwarding it would kill the process
+/// mid-teardown. The in-flight cleanup — or the watchdog — owns the exit.
+fn request_shutdown_and_exit(app: AppHandle, exit_code: i32) {
+    if begin_shutdown(&app) {
+        schedule_shutdown_and_exit(app, exit_code);
+    } else if cleanup_settled(&app) {
+        app.exit(exit_code);
+    }
+}
+
+/// Quit from the frontend. Replaces `@tauri-apps/plugin-process`'s `exit()`, which
+/// terminates without running any backend teardown.
+///
+/// Returns as soon as teardown is scheduled — the window is already on its way
+/// out, so the caller has nothing to await.
+#[tauri::command]
+fn app_quit(app: AppHandle, exit_code: i32) {
+    request_shutdown_and_exit(app, exit_code);
 }
 
 fn backend_health_snapshot(pi: &PiProc) -> BackendHealthSnapshot {
@@ -137,8 +223,7 @@ fn create_tray(app: &App) -> tauri::Result<()> {
                 }
             }
             "quit" => {
-                shutdown_backend(app);
-                app.exit(0);
+                request_shutdown_and_exit(app.clone(), 0);
             }
             _ => {}
         })
@@ -277,7 +362,8 @@ pub fn run() {
             remote_control::remote_conversation_append,
             remote_control::remote_conversation_cancel,
             remote_control::remote_conversation_archive,
-            remote_control::remote_control_set_model_admin
+            remote_control::remote_control_set_model_admin,
+            app_quit
         ])
         .setup(|app| {
             if let Err(e) = app
@@ -309,8 +395,23 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Pi desktop");
     app.run(|app, event| {
-        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-            shutdown_backend(app);
+        if let RunEvent::ExitRequested { api, .. } = event {
+            // Native close / Alt+F4 reaches Rust even when the WebView is sick.
+            // Hold the exit, tear down off the event-loop thread, then exit from
+            // there — doing it inline would block the loop that has to paint the
+            // window closing.
+            //
+            // Every request is held until teardown settles, not just the first:
+            // a tray quit arriving mid-teardown would otherwise be let through
+            // and kill the process with the pi child still running. The exit
+            // that finally lands is the one from `settle_and_exit`, which sets
+            // the flag first and is ignored by `prevent_exit` regardless.
+            if !cleanup_settled(app) {
+                api.prevent_exit();
+                if begin_shutdown(app) {
+                    schedule_shutdown_and_exit(app.clone(), 0);
+                }
+            }
         }
     });
 }
