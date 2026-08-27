@@ -27,6 +27,11 @@ export type LayoutMode = "default" | "work" | "work-only";
 
 const LAYOUT_MODES: readonly LayoutMode[] = ["default", "work", "work-only"];
 
+/**
+ * Guards the value read back from storage. Anything unrecognized — a key written
+ * by an older build, or hand-edited — falls back to `default` rather than putting
+ * the app in a layout no branch handles.
+ */
 function isLayoutMode(v: string | null): v is LayoutMode {
   return v !== null && (LAYOUT_MODES as readonly string[]).includes(v);
 }
