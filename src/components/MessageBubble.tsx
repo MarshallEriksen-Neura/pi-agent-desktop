@@ -36,9 +36,47 @@ interface MessageBubbleProps {
   /** Play the entrance animation. Set false for historical messages so
    *  virtualized re-mounts don't replay the entrance on scroll. */
   animateIn?: boolean;
+  /**
+   * This message continues the previous one's turn (the message before it is
+   * also from the assistant), so it drops its leading margin and the two read
+   * as one list instead of two blocks.
+   */
+  tight?: boolean;
 }
 
-export function MessageBubble({ m, animateIn = true }: MessageBubbleProps) {
+/**
+ * Does this message put anything on screen?
+ *
+ * pi opens a new assistant message on every `message_start`, and some of those
+ * carry nothing we render — a turn's tool results are fed back as their own
+ * message, and providers may bracket a no-op with start/end. Those arrive with
+ * empty text, empty thinking and no tool calls. Rendering one still costs its
+ * vertical margin, so a few in a row show up as unexplained dead space between
+ * two groups of tool rows. Callers filter with this instead, which also keeps
+ * Virtuoso from reserving a row per invisible message.
+ *
+ * `streaming` is deliberately not a reason to render. An empty streaming message
+ * is precisely the state AgentPanel's footer loader covers, so counting it here
+ * would stack an empty message's margin on top of that loader; it becomes
+ * renderable the moment its first token, tool call or error lands.
+ */
+export function hasRenderableContent(m: ChatMessage): boolean {
+  // Written to tolerate a partial message even though the type says otherwise:
+  // `load()` restores persisted transcripts and only normalizes `tools`, and
+  // remote rows are mapped from a gateway payload. The render paths below use
+  // truthy checks for the same reason, so a field this predicate would trip on
+  // is a field they would have simply skipped.
+  return Boolean(
+    m.text ||
+      m.thinking ||
+      m.tools?.length ||
+      m.isError ||
+      m.images?.length ||
+      m.delivery
+  );
+}
+
+export function MessageBubble({ m, animateIn = true, tight = false }: MessageBubbleProps) {
   const t = useT();
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [showCopy, showCopyOn, hideCopySoon, keepCopy] = useHoverReveal();
@@ -147,7 +185,7 @@ export function MessageBubble({ m, animateIn = true }: MessageBubbleProps) {
   }
 
   return (
-    <AssistantMessage m={m} animateIn={animateIn} />
+    <AssistantMessage m={m} animateIn={animateIn} tight={tight} />
   );
 }
 
@@ -239,7 +277,15 @@ function BubbleCopyButton({
   );
 }
 
-function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean }) {
+function AssistantMessage({
+  m,
+  animateIn,
+  tight,
+}: {
+  m: ChatMessage;
+  animateIn: boolean;
+  tight: boolean;
+}) {
   const t = useT();
   const [menuOpen, setMenuOpen] = useState(false);
   const [showCopy, showCopyOn, hideCopySoon, keepCopy] = useHoverReveal();
@@ -260,7 +306,14 @@ function AssistantMessage({ m, animateIn }: { m: ChatMessage; animateIn: boolean
       initial={animateIn ? { opacity: 0, y: 8 } : false}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 400, damping: 28 }}
-      style={{ margin: "6px 0 10px", position: "relative" }}
+      style={{
+        /* One pi turn arrives as several assistant messages (text, then a batch
+           of tool calls, then more text). Only the first pays the leading
+           margin, so a run of tool rows keeps a single rhythm instead of
+           gaining a 16px seam wherever pi happened to split the turn. */
+        margin: tight ? "0 0 4px" : "6px 0 10px",
+        position: "relative",
+      }}
       onMouseEnter={() => {
         setMenuOpen(false);
         showCopyOn();

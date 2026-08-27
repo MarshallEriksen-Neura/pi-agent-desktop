@@ -11,7 +11,13 @@ import { useWorkspace } from "@/lib/workspace";
 
 export const EDIT_TOOL =
   /^(edit|write|multi[_-]?edit|str[_-]?replace(?:[_-]?editor)?|create[_-]?file|apply[_-]?patch)$/i;
-export const BASH_TOOL = /^(bash|shell|run[_-]?command|exec)$/i;
+/**
+ * Shell-family tools. pi's `powershell` tool (opt-in on Windows via
+ * `defaultTools`) is built from the same definition as `bash` and takes the same
+ * `command` argument, so it belongs in this bucket — and must be: agent-bridge
+ * only streams tool output to the terminal for `kind === "bash"`.
+ */
+export const BASH_TOOL = /^(bash|shell|power[_-]?shell|pwsh|run[_-]?command|exec)$/i;
 const READ_TOOL = /^(read|view|cat|open[_-]?file|read[_-]?file)$/i;
 const SEARCH_TOOL = /^(grep|search|glob|find|rg|ls|list[_-]?(dir|files)?)$/i;
 const WEB_TOOL = /^(web[_-]?(search|fetch)|fetch|http|browse|curl)$/i;
@@ -80,6 +86,16 @@ export function relPath(p: string): string {
   return n;
 }
 
+const POWERSHELL_TOOL = /^(power[_-]?shell|pwsh)$/i;
+
+/**
+ * Prompt shown before a shell command — matches the prompt pi's own TUI renders
+ * for that tool, so a PowerShell call doesn't read as a POSIX one on Windows.
+ */
+export function shellPrompt(toolName: string): string {
+  return POWERSHELL_TOOL.test(toolName) ? "PS>" : "$";
+}
+
 /** headline for a tool call: `$ pnpm build`, `Read src/lib/pi/chat.ts`, `Grep` */
 export function toolTitle(toolName: string, rawArgs: unknown): string {
   const args = asRecord(rawArgs);
@@ -97,7 +113,7 @@ export function toolTitle(toolName: string, rawArgs: unknown): string {
   }
   if (BASH_TOOL.test(toolName)) {
     const cmd = argCommand(args) ?? "";
-    return `$ ${cmd}`.trim();
+    return `${shellPrompt(toolName)} ${cmd}`.trim();
   }
   const p = argPath(args);
   const name = toolName.charAt(0).toUpperCase() + toolName.slice(1);
@@ -167,6 +183,24 @@ export function toolDetail(rawArgs: unknown): string {
   const rest = keys.filter((k) => !skip.has(k));
   return rest
     .slice(0, 3)
-    .map((k) => `${k}: ${String(args[k]).slice(0, 40)}`)
+    .map((k) => `${k}: ${argPreview(args[k]).slice(0, 40)}`)
     .join(" · ");
+}
+
+/**
+ * One argument value as a short string. `String()` alone turns any object or
+ * array into `[object Object]`, which is what a structured-argument tool used to
+ * render as — `plan_mode_question` showed `questions: [object Object]` instead of
+ * anything about the questions. Objects go through JSON so the preview carries
+ * real content; primitives keep their plain form (no quotes around strings).
+ */
+function argPreview(value: unknown): string {
+  if (typeof value === "object" && value !== null) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "…"; // circular or otherwise unserializable
+    }
+  }
+  return String(value);
 }

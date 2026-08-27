@@ -29,11 +29,12 @@ import {
   SquareTerminal,
   CornerDownLeft,
   KeyRound,
+  Wrench,
 } from "lucide-react";
 import { SEND_SHORTCUTS } from "@/lib/composer-shortcut";
 import { APP_VERSION } from "@/lib/update";
 import { usePiSettings, type SettingsScope, type PiSettings } from "@/lib/pi/settings";
-import { usePi, THINKING_LEVELS } from "@/lib/pi/store";
+import { usePi, THINKING_LEVELS, clearRememberedThinking } from "@/lib/pi/store";
 import { useRuntime } from "@/lib/pi/runtime";
 import { getBackendKind, getPort } from "@/lib/backend/composition/container";
 import { useWorkspace } from "@/lib/workspace";
@@ -64,6 +65,7 @@ import {
   NumberRow,
   SliderRow,
   CodeArea,
+  ChipMultiSelect,
 } from "@/components/settings-ui";
 import { PetSettings } from "@/components/PetSettings";
 import { RemoteControlSection } from "@/components/remote-control/RemoteControlSection";
@@ -74,6 +76,23 @@ const BUILTIN_THEMES = ["dark", "light"] as const;
 const THEME_OPTIONS = ["dark", "light", "custom"] as const;
 const DELIVERY_OPTIONS = ["one-at-a-time", "all"] as const;
 const TRANSPORT_OPTIONS = ["auto", "sse", "websocket", "websocket-cached"] as const;
+/**
+ * Built-in tools selectable through `defaultTools` (pi docs/settings.md), in the
+ * order pi itself documents them. `powershell` is Windows-only at runtime; pi
+ * accepts it in the array on any platform, so it stays listed everywhere.
+ */
+const BUILTIN_TOOL_OPTIONS = [
+  "read",
+  "bash",
+  "powershell",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+] as const;
+/** pi's own startup set when `defaultTools` is absent (core/sdk.js). */
+const PI_DEFAULT_TOOLS = ["read", "bash", "edit", "write"] as const;
 /** thinkingBudgets levels with pi's built-in defaults (docs/settings.md) */
 const THINKING_BUDGET_DEFAULTS = {
   minimal: 1024,
@@ -638,7 +657,14 @@ export default function PiSettingsPage() {
               <Segmented
                 options={THINKING_LEVELS}
                 value={(effective.defaultThinkingLevel as ThinkingLevel) ?? "medium"}
-                onChange={(v) => s.setKey(scope, "defaultThinkingLevel", v)}
+                onChange={(v) => {
+                  // The composer chip remembers the last level the user picked and
+                  // re-applies it to every new pi process. Leaving that in place
+                  // would make this control look inert, so the newer intent —
+                  // setting the default here — clears it.
+                  clearRememberedThinking();
+                  void s.setKey(scope, "defaultThinkingLevel", v);
+                }}
               />
             </div>
             <div style={dim("showCacheMissNotices")}>
@@ -1110,6 +1136,73 @@ export default function PiSettingsPage() {
             />
           </InsetGroup>
           </>}
+
+          {/* built-in tools */}
+          {category === "runtime" && <InsetGroup
+            header={t("settings.tools")}
+            footer={t("settings.toolsFooter")}
+          >
+            {(() => {
+              // Three states must stay distinguishable: key absent (pi's own
+              // defaults), [] (no built-ins), and a non-empty list. The switch
+              // owns absent-vs-present; the chips only edit a present list.
+              const ownTools = Array.isArray(own.defaultTools)
+                ? (own.defaultTools as string[])
+                : undefined;
+              const effectiveTools = Array.isArray(effective.defaultTools)
+                ? (effective.defaultTools as string[])
+                : undefined;
+              const customized = ownTools !== undefined;
+              // What pi would actually start with right now — the inherited
+              // array when this scope defines none, else pi's built-in default.
+              const shown = ownTools ?? effectiveTools ?? [...PI_DEFAULT_TOOLS];
+              return (
+                <>
+                  <div style={dim("defaultTools")}>
+                    <GroupRow
+                      first
+                      icon={<Wrench size={15} />}
+                      title={t("settings.defaultTools")}
+                      detail={
+                        customized
+                          ? shown.length === 0
+                            ? t("settings.defaultToolsNone")
+                            : t("settings.defaultToolsCount", { count: shown.length })
+                          : inherited("defaultTools")
+                            ? t("settings.defaultToolsFromGlobal", {
+                                tools: shown.join(", ") || "—",
+                              })
+                            : t("settings.defaultToolsInherited", {
+                                tools: shown.join(", "),
+                              })
+                      }
+                      trailing={
+                        <IOSSwitch
+                          checked={customized}
+                          onChange={(v) =>
+                            s.setKey(
+                              scope,
+                              "defaultTools",
+                              // Seed from what pi is using now, so turning this
+                              // on never silently changes the active tool set.
+                              v ? [...shown] : undefined
+                            )
+                          }
+                        />
+                      }
+                    />
+                  </div>
+                  {customized && (
+                    <ChipMultiSelect
+                      options={BUILTIN_TOOL_OPTIONS}
+                      value={shown}
+                      onChange={(next) => s.setKey(scope, "defaultTools", next)}
+                    />
+                  )}
+                </>
+              );
+            })()}
+          </InsetGroup>}
 
           {/* shell & sessions */}
           {category === "runtime" && <InsetGroup

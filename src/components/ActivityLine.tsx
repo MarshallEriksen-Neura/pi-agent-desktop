@@ -164,7 +164,7 @@ export function ActivityLine({
         lineHeight: 1.45,
         // an inactive clickable row keeps the plain row's geometry, so a
         // transcript of tool calls does not turn into a column of boxes
-        padding: interactive ? "3px 6px 3px 5px" : "3px 2px",
+        padding: interactive ? "2px 6px 2px 5px" : "2px 2px",
         ...(interactive
           ? {
               cursor: "pointer",

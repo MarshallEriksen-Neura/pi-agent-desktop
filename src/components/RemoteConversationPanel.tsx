@@ -8,7 +8,7 @@ import { useRemoteConversations } from "@/lib/remote-conversations/store";
 import { useT } from "@/lib/i18n";
 import { AGENT_PANEL_WIDTH_DEFAULT } from "@/lib/store";
 import type { ChatMessage } from "@/lib/pi/chat";
-import { MessageBubble } from "./MessageBubble";
+import { MessageBubble, hasRenderableContent } from "./MessageBubble";
 import { IconButton, SectionLabel } from "./primitives";
 
 /**
@@ -49,7 +49,7 @@ export function RemoteConversationPanel({ width }: { width?: number } = {}) {
      the local shape anyway so bubbles, markdown and code blocks look the same
      on both surfaces — the empty tools/thinking fields simply render nothing. */
   const bubbles = useMemo<ChatMessage[]>(
-    () => messages.map(toChatMessage),
+    () => messages.map(toChatMessage).filter(hasRenderableContent),
     [messages],
   );
 
@@ -174,7 +174,11 @@ export function RemoteConversationPanel({ width }: { width?: number } = {}) {
         )}
         {bubbles.map((m, i) => (
           <div key={m.id} style={{ display: "flow-root" }}>
-            <MessageBubble m={m} animateIn={i === bubbles.length - 1} />
+            <MessageBubble
+              m={m}
+              animateIn={i === bubbles.length - 1}
+              tight={bubbles[i - 1]?.role === "assistant"}
+            />
           </div>
         ))}
         {/* Fidelity is a real difference, not a bug — say so once, at the end of

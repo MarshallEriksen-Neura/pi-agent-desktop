@@ -24,9 +24,9 @@ import {
   type SlashItem,
 } from "@/lib/pi/commands";
 import { SlashCommandMenu } from "./SlashCommandMenu";
-import { MessageBubble } from "./MessageBubble";
+import { MessageBubble, hasRenderableContent } from "./MessageBubble";
 import { RemoteConversationPanel } from "./RemoteConversationPanel";
-import { ActivityLine, PiSpark, ShimmerText } from "./ActivityLine";
+import { PiSpark, ShimmerText } from "./ActivityLine";
 import { ComposerInput } from "./ComposerInput";
 import { RetryBanner } from "./RetryBanner";
 import { ExtStatusLine, ExtWidgets } from "./ExtensionSurfaces";
@@ -40,8 +40,6 @@ import {
   SquarePen,
   X,
 } from "lucide-react";
-
-const DEMO_TASK_IDS = new Set(["read", "reason", "edit", "test"]);
 
 /**
  * Right rail — the chat surface.
@@ -58,9 +56,9 @@ export function AgentPanel({ width }: { width?: number } = {}) {
   return <LocalAgentPanel width={width} />;
 }
 
-/** The local pi conversation stream + demo task strip. */
+/** The local pi conversation stream. */
 function LocalAgentPanel({ width }: { width?: number }) {
-  const { agentTasks, agentRunning, startDemo } = useUI();
+  const { agentRunning, startDemo } = useUI();
   const { messages, streaming, send, steer, followUp, abort, queue } = useChat();
   /** how ⌘⏎ delivers a message typed while a turn is already running */
   const [delivery, setDelivery] = useState<DeliveryMode>("steer");
@@ -87,6 +85,52 @@ function LocalAgentPanel({ width }: { width?: number }) {
     return !last.text && !last.thinking && last.tools.length === 0 && !last.isError;
   })();
   const t = useT();
+
+  /* What the transcript actually shows. pi opens an assistant message per
+     `message_start` and several of them render nothing (tool-result carriers,
+     no-op start/end pairs) — each one still cost its own Virtuoso row and its
+     own vertical margin, which is what put unexplained dead space between two
+     groups of tool rows. Dropping them here also keeps `animateIn` pointed at
+     the last *visible* message rather than an invisible one. */
+  const visible = useMemo(() => messages.filter(hasRenderableContent), [messages]);
+
+  /* Sending pins the transcript to the bottom, whatever it was showing before.
+     `followOutput` can't cover this: it only follows a view that is *already* at
+     the bottom, and typing is exactly what takes the view off it — the composer
+     grows from 2 rows to 12 as the draft wraps, each row shrinking the scroller
+     above it while its scrollTop stays put, so a few lines of typing is enough to
+     push the last message under the fold. Submitting then appended the reply into
+     that gap and left it there.
+
+     Keyed on the last *user* message id, so every path that hands pi a prompt is
+     covered (composer, palette, zen mode, steer, follow-up) without each having to
+     remember to scroll — and a plain token arriving mid-reply doesn't re-pin a
+     reader who has deliberately scrolled away. */
+  const lastUserId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return messages[i].id;
+    }
+    return null;
+  }, [messages]);
+
+  useEffect(() => {
+    if (lastUserId === null) return;
+    /* Three jumps across successive frames, not one: this commit only adds the
+       bubble. The row's real height lands when Virtuoso measures it, and the
+       composer collapsing back to 2 rows (its own effect, on the cleared draft)
+       grows the scroller again — both move the bottom after we would have hit it. */
+    const jump = () => virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER });
+    jump();
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      jump();
+      second = requestAnimationFrame(jump);
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, [lastUserId]);
 
   /* an extension pushed text into the editor (set_editor_text) — pi treats this
      as replacing the draft, so mirror that and consume it so it applies once. */
@@ -290,15 +334,28 @@ function LocalAgentPanel({ width }: { width?: number }) {
       <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         <Virtuoso<ChatMessage>
           ref={virtuosoRef}
-          data={messages}
+          data={visible}
           atTopStateChange={setIsAtTop}
           atBottomStateChange={setIsAtBottom}
-          // streaming? follow new content only while at the bottom — scrolling up
-          // to read history is never interrupted. `auto` (not `smooth`): a smooth
-          // scroll animates for ~1s, which tokens outpace, so the view falls behind
-          // its own target and drifts off the bottom. An instant jump per chunk is
-          // what actually reads as staying pinned.
-          followOutput={(atBottom) => (streaming && atBottom ? "auto" : false)}
+          // Follow new content only while the view is already at the bottom —
+          // scrolling up to read history is never interrupted. `auto` (not
+          // `smooth`): a smooth scroll animates for ~1s, which tokens outpace, so
+          // the view falls behind its own target and drifts off the bottom. An
+          // instant jump per chunk is what actually reads as staying pinned.
+          //
+          // Deliberately not gated on `streaming` any more. Messages also land
+          // outside a run — a connection error, a queued follow-up's echo, a
+          // transcript restored on session switch — and those used to append below
+          // the fold with nothing to bring them into view.
+          followOutput={(atBottom) => (atBottom ? "auto" : false)}
+          // Virtuoso's stock 4px threshold is too tight for this transcript.
+          // MessageBubble spaces itself with margins that row measurement rounds
+          // off (see the flow-root note in itemContent), so the scroller can sit a
+          // few px short of its own end and report `atBottom: false` while it looks
+          // parked at the bottom — which silently disables the follow above for the
+          // rest of the session. 48px absorbs that drift and is still far under one
+          // message height, so a deliberate scroll up still detaches.
+          atBottomThreshold={48}
           // buffer items above/below the viewport so fast scrolls stay filled.
           increaseViewportBy={{ top: 600, bottom: 600 }}
           computeItemKey={(_index, m) => m.id}
@@ -306,38 +363,25 @@ function LocalAgentPanel({ width }: { width?: number }) {
           style={{ height: "100%" }}
           components={
             {
-              // Top of the scroll area (does NOT stick) — subagents, live task
-              // strip, and the empty-state hint when there are no messages.
-              Header: () => (
-              // flow-root for the same reason as the item wrapper below — the deck's
-              // own bottom margin would otherwise collapse out of the measured box
-              // and shorten Virtuoso's idea of the header height.
-              <div style={{ display: "flow-root", padding: "4px 12px 0" }}>
-                {/* Subagents deliberately have no separate surface here: each
-                    one is followed and opened from its own tool row in the
-                    transcript (see ToolRow in MessageBubble). */}
-
-                {/* task strip — live pi tool activity (agent-bridge) or the local showcase */}
-                {agentRunning &&
-                  agentTasks.map((task, i) => (
-                    <ActivityLine
-                      key={task.id}
-                      status={task.status}
-                      toolName={task.tool}
-                      /* the four demo ids are localized; real pi tool tasks carry their own title */
-                      title={DEMO_TASK_IDS.has(task.id) ? t(`demoTask.${task.id}`) : task.title}
-                      detail={task.detail}
-                      delay={i * 0.04}
-                    />
-                  ))}
-
-                {/* conversation stream — empty state */}
-                {messages.length === 0 && !agentRunning && (
+              // Top of the scroll area (does NOT stick) — only the empty-state
+              // hint. Neither subagents nor tool activity get a surface here:
+              // every tool call is already a row inside the assistant message
+              // that made it (see ToolRow in MessageBubble), and subagents are
+              // followed and opened from those same rows. A strip up here used
+              // to mirror the very same `tool_execution_*` stream, so a running
+              // command was drawn twice — once at the top of the scroll area,
+              // once in place.
+              //
+              // Renders nothing once there is a transcript: an empty wrapper
+              // would still hand Virtuoso its padding as header height, leaving
+              // a dead band above the first message.
+              Header: () =>
+                visible.length === 0 && !agentRunning ? (
                   <div
                     style={{
                       fontSize: 12.5,
                       color: "var(--text-tertiary)",
-                      padding: "12px 6px",
+                      padding: "16px 18px 0",
                       lineHeight: 1.6,
                     }}
                   >
@@ -351,9 +395,7 @@ function LocalAgentPanel({ width }: { width?: number }) {
                     </code>
                     {t("agent.emptyAfter")}
                   </div>
-                )}
-              </div>
-            ),
+                ) : null,
               // Bottom of the scroll area — one compact line while the turn has
               // produced nothing visible yet, so it reads as the first row of the
               // activity list rather than a loading panel.
@@ -400,13 +442,16 @@ function LocalAgentPanel({ width }: { width?: number }) {
               <MessageBubble
                 key={m.id}
                 m={m}
-                animateIn={index === messages.length - 1}
+                animateIn={index === visible.length - 1}
+                // continues the previous assistant message's turn — see the
+                // margin note in AssistantMessage
+                tight={visible[index - 1]?.role === "assistant"}
               />
             </div>
           )}
         />
 
-        {messages.length > 0 && canScroll && (
+        {visible.length > 0 && canScroll && (
           <div
             style={{
               position: "absolute",

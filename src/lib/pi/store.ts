@@ -56,6 +56,47 @@ export const THINKING_LEVELS: ThinkingLevel[] = [
   "max",
 ];
 
+const THINKING_STORAGE_KEY = "pi-desktop.thinkingLevel";
+
+function isThinkingLevel(v: unknown): v is ThinkingLevel {
+  return typeof v === "string" && (THINKING_LEVELS as string[]).includes(v);
+}
+
+/**
+ * The level the user last picked — one value shared by every task, persisted
+ * across launches.
+ *
+ * A pi process has no memory of it: each one boots at the `defaultThinkingLevel`
+ * from settings.json, so without this the composer's choice silently reverted on
+ * every relaunch *and* on every new conversation (a new task spawns its own pi).
+ * `refresh` restores it once per process; see the note there for why only once.
+ */
+function readRememberedThinking(): ThinkingLevel | null {
+  try {
+    const raw = localStorage.getItem(THINKING_STORAGE_KEY);
+    return isThinkingLevel(raw) ? raw : null;
+  } catch {
+    return null; // storage unavailable (private mode) or prerender — use pi's default
+  }
+}
+
+function rememberThinking(level: ThinkingLevel): void {
+  try {
+    localStorage.setItem(THINKING_STORAGE_KEY, level);
+  } catch {
+    // storage unavailable — the level still holds for this session
+  }
+}
+
+/** Forget the remembered level, letting settings.json's default win again. */
+export function clearRememberedThinking(): void {
+  try {
+    localStorage.removeItem(THINKING_STORAGE_KEY);
+  } catch {
+    // nothing to clear
+  }
+}
+
 /**
  * Startup requests get a long leash: pi spawned with `--session <path>` loads the
  * whole prior transcript before it serves RPC, and extensions must finish
@@ -85,6 +126,10 @@ export function createPiStore(taskId: string) {
   let activityHooked = false;
   let modelChangeSeq = 0;
   let thinkingChangeSeq = 0;
+  /** false until the remembered level has been pushed into the current process */
+  let appliedRemembered = false;
+  /** >0 while a set_thinking_level round-trip is open — refresh must not clobber it */
+  let thinkingInFlight = 0;
 
   return create<PiStore>()((set, get) => {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -114,7 +159,9 @@ export function createPiStore(taskId: string) {
       mock: isMockBackend(),
       models: [],
       currentModel: null,
-      thinkingLevel: "medium",
+      // Seeded, not hardcoded: the chip animates on change, so starting at
+      // "medium" made every launch visibly roll to the restored level.
+      thinkingLevel: readRememberedThinking() ?? "medium",
       commands: [],
       modelsError: null,
       lastError: null,
@@ -132,6 +179,10 @@ export function createPiStore(taskId: string) {
           }
 
           await client.start({ cwd: opts?.cwd, resumePath: opts?.resumePath });
+
+          // A new process boots at settings.json's default, so the remembered
+          // level has to be re-applied to this one.
+          appliedRemembered = false;
 
           // The client survives process restarts, so these hooks must be installed
           // once or every project/session switch would multiply status updates.
@@ -227,7 +278,30 @@ export function createPiStore(taskId: string) {
         if (stateFailure) errors.push(stateFailure);
         else if (state.status === "fulfilled") {
           patch.currentModel = state.value.data?.model ?? null;
-          patch.thinkingLevel = state.value.data?.thinkingLevel ?? "medium";
+          const piLevel = state.value.data?.thinkingLevel ?? "medium";
+
+          if (thinkingInFlight > 0) {
+            // A change is mid-flight; pi is still reporting the old level. Adopting
+            // it here would flicker the chip back and re-persist the stale value.
+          } else if (!appliedRemembered) {
+            appliedRemembered = true;
+            const remembered = readRememberedThinking();
+            patch.thinkingLevel = remembered ?? piLevel;
+            if (remembered && remembered !== piLevel) {
+              void client
+                .request({ type: "set_thinking_level", level: remembered })
+                .then((r) => {
+                  // pi refused (e.g. this model has no such level) — show the truth
+                  if (!r.success) set({ thinkingLevel: piLevel });
+                })
+                .catch(() => set({ thinkingLevel: piLevel }));
+            }
+          } else {
+            // Past the first refresh pi owns the level: `/thinking` cycles it
+            // there, so mirror it back into storage to keep the two in step.
+            patch.thinkingLevel = piLevel;
+            rememberThinking(piLevel);
+          }
         }
         const commandsFailure = failure("get_commands", commands);
         if (commandsFailure) errors.push(commandsFailure);
@@ -268,9 +342,15 @@ export function createPiStore(taskId: string) {
         const prev = get().thinkingLevel;
         const requestSeq = ++thinkingChangeSeq;
         set({ thinkingLevel: level, lastError: null });
+        thinkingInFlight++;
         try {
           const r = await client.request({ type: "set_thinking_level", level });
-          if (r.success || requestSeq !== thinkingChangeSeq) return;
+          if (requestSeq !== thinkingChangeSeq) return;
+          if (r.success) {
+            // Only after pi agrees: a rejected level must not come back next launch.
+            rememberThinking(level);
+            return;
+          }
           const error = r.error || t("agent.taskFailed");
           set({ thinkingLevel: prev, lastError: error });
           surfaceSettingFailure("thinking.switchFailed", error);
@@ -279,6 +359,8 @@ export function createPiStore(taskId: string) {
           const detail = piRequestErrorText(error);
           set({ thinkingLevel: prev, lastError: detail });
           surfaceSettingFailure("thinking.switchFailed", detail);
+        } finally {
+          thinkingInFlight--;
         }
       },
 
@@ -334,6 +416,7 @@ export const usePi = Object.assign(usePiHook, {
 
 export function resetPiStoreForTests(): void {
   piStores.clear();
+  clearRememberedThinking(); // persisted level would otherwise leak between tests
   usePi.setState({
     status: "disconnected",
     mock: isMockBackend(),

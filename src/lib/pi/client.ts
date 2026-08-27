@@ -15,6 +15,8 @@ import {
 import { getActiveTaskId } from "./task-context";
 
 type EventCb = (e: PiEvent) => void;
+/** Cross-task listener — receives the originating task id alongside the event. */
+type AnyTaskEventCb = (taskId: string, e: PiEvent) => void;
 
 export type PiRequestErrorKind = "send" | "timeout" | "exit" | "stopped";
 
@@ -72,6 +74,13 @@ function exitCode(exit: PiProcessExit): number | null {
 
 export class PiClient {
   readonly process: PiProcessPort;
+  /**
+   * The task (conversation) this client belongs to. Carried on the instance so
+   * every event can be attributed to its task on the cross-task bus below —
+   * consumers that must see *all* tasks (extension UI) need to know which
+   * process to answer.
+   */
+  readonly taskId: string;
   private seq = 0;
   private pending = new Map<string, PendingRequest>();
   private subs = new Map<string, Set<EventCb>>();
@@ -87,7 +96,8 @@ export class PiClient {
    */
   lastSessionId = "";
 
-  constructor(process: PiProcessPort) {
+  constructor(taskId: string, process: PiProcessPort) {
+    this.taskId = taskId;
     this.process = process;
     this.unlisten.push(
       this.process.onLine((line) => this.handleLine(line)),
@@ -133,6 +143,7 @@ export class PiClient {
     }
     this.subs.get(ev.type)?.forEach((cb) => cb(ev));
     this.anySubs.forEach((cb) => cb(ev));
+    dispatchAnyTask(this.taskId, ev);
   }
 
   async start(opts: { cwd?: string; resumePath?: string } = {}) {
@@ -147,6 +158,30 @@ export class PiClient {
       const line = `Pi RPC send failed (${cmd.type}): ${errorDetail(error)}`;
       this.stderrSubs.forEach((listener) => listener(line));
     });
+  }
+
+  /**
+   * Write a command and report whether the *write* succeeded — no response
+   * correlation.
+   *
+   * For commands pi answers, use `request`. Some it deliberately does not:
+   * `extension_ui_response` is intercepted by pi's stdin dispatcher, which
+   * resolves the waiting extension promise and returns before reaching
+   * `handleCommand`, so no `response` is ever emitted. Correlating one would
+   * hang until the timeout — and `extension_ui_response.id` is the dialog's id,
+   * not an RPC id, so it does not belong in the correlation table either.
+   */
+  async write(cmd: PiCommand): Promise<void> {
+    try {
+      await this.process.send(cmd);
+    } catch (error) {
+      throw new PiRequestError({
+        kind: "send",
+        command: cmd.type,
+        requestId: (cmd as { id?: string }).id ?? "-",
+        detail: errorDetail(error),
+      });
+    }
   }
 
   /**
@@ -231,6 +266,50 @@ export class PiClient {
   }
 }
 
+/* ── cross-task event bus ──────────────────────────────────────────────────
+ * `on()` binds to one client, which is right for anything scoped to a single
+ * conversation. Extension UI is not: pi blocks a turn on `ui.select`/`editor`
+ * until the harness answers, so a request from *any* task must reach the sheet
+ * or that task hangs forever. Subscribing at the module level means a consumer
+ * cannot miss clients created after it started, which is the failure a
+ * boot-time `getPiClient()` (no task id, resolves to `"default"`) produced.
+ */
+const anyTaskSubs = new Map<string, Set<AnyTaskEventCb>>();
+
+function dispatchAnyTask(taskId: string, e: PiEvent) {
+  anyTaskSubs.get(e.type)?.forEach((cb) => cb(taskId, e));
+}
+
+/**
+ * Subscribe to one event type across every task, present and future. Prefer
+ * `getPiClient(taskId).on(...)` unless the consumer genuinely spans tasks.
+ */
+export function onAnyTaskEvent(
+  type: PiEvent["type"] | string,
+  cb: AnyTaskEventCb
+): () => void {
+  if (!anyTaskSubs.has(type)) anyTaskSubs.set(type, new Set());
+  anyTaskSubs.get(type)!.add(cb);
+  return () => {
+    const set = anyTaskSubs.get(type);
+    if (!set) return;
+    set.delete(cb);
+    if (set.size === 0) anyTaskSubs.delete(type);
+  };
+}
+
+const disposeSubs = new Set<(taskId: string) => void>();
+
+/**
+ * Notified when a task's client goes away (project switch, deleted session).
+ * Cross-task consumers use this to drop state they were holding for that task —
+ * an unanswered dialog whose process is gone can never be answered.
+ */
+export function onPiClientDisposed(cb: (taskId: string) => void): () => void {
+  disposeSubs.add(cb);
+  return () => disposeSubs.delete(cb);
+}
+
 /**
  * One `PiClient` per task id — each owns its own pi process via a task-scoped
  * port, so parallel conversations stream into their own clients. A client
@@ -254,10 +333,20 @@ export function getPiClient(taskId?: string): PiClient {
   const key = resolveTaskId(taskId);
   let client = clients.get(key);
   if (!client) {
-    client = new PiClient(getPort("createPiProcess")(key));
+    client = new PiClient(key, getPort("createPiProcess")(key));
     clients.set(key, client);
   }
   return client;
+}
+
+/**
+ * The client for a task **without** creating one. Use this when answering
+ * something the task sent us: if its client is already gone, spawning a fresh
+ * pi process just to write a reply nobody is waiting for is worse than dropping
+ * the reply.
+ */
+export function peekPiClient(taskId: string): PiClient | undefined {
+  return clients.get(taskId.trim() || DEFAULT_TASK_ID);
 }
 
 /** Tear down a specific task's client (used when switching projects). */
@@ -267,22 +356,31 @@ export function disposePiClient(taskId: string): void {
   if (!client) return;
   client.dispose();
   clients.delete(key);
+  disposeSubs.forEach((cb) => cb(key));
 }
 
 /** Tear down every task's client (app shutdown / project switch). */
 export function disposeAllPiClients(): void {
+  const keys = [...clients.keys()];
   for (const client of clients.values()) client.dispose();
   clients.clear();
+  for (const key of keys) disposeSubs.forEach((cb) => cb(key));
 }
 
 export function configurePiClientForTests(process: PiProcessPort): PiClient {
   resetPiClientForTests();
-  const client = new PiClient(process);
-  clients.set(resolveTaskId(), client);
+  const key = resolveTaskId();
+  const client = new PiClient(key, process);
+  clients.set(key, client);
   return client;
 }
 
 export function resetPiClientForTests(): void {
   for (const client of clients.values()) client.dispose();
   clients.clear();
+  // `anyTaskSubs` / `disposeSubs` are intentionally left alone. A cross-task
+  // subscription is owned by whoever registered it (ext-ui subscribes once for
+  // the app's lifetime and guards re-entry), so clearing it here would silently
+  // detach a live consumer with no way to re-attach — exactly the failure this
+  // bus exists to prevent.
 }

@@ -182,6 +182,8 @@ export const en = {
   // extension failures / context compaction
   "ext.error": "Extension {name} failed on {event}",
   "ext.responseFailed": "Could not send the extension response: {error}",
+  "ext.fromSession": "Asked by {name}",
+  "ext.morePending": "{count} more waiting",
   "compaction.aborted": "Context compaction was cancelled.",
   "compaction.failed": "Context compaction failed: {error}",
   "summarization.finished": "Context-summary retry finished.",
@@ -217,12 +219,6 @@ export const en = {
   "cmd.thinking": "Cycle the thinking level",
   "cmd.demo": "Run the streaming-edit showcase",
   "cmd.agents": "Run the parallel subagents showcase",
-
-  // demo task strip
-  "demoTask.read": "Read src/lib/agent.ts",
-  "demoTask.reason": "Reason over context",
-  "demoTask.edit": "Edit runAgentLoop()",
-  "demoTask.test": "Run test suite",
 
   // subagents
   "subagents.working": "working…",
@@ -276,6 +272,24 @@ export const en = {
   "modelPicker.allFiltered": "All models are hidden by enabledModels in settings.json.",
   "modelPicker.manage": "Manage models…",
 
+  // composer thinking-level picker (live set_thinking_level, this session)
+  "thinking.select": "Thinking level: {level}",
+  "thinking.setDefault": "Set the default…",
+  "thinking.level.off": "Off",
+  "thinking.level.minimal": "Minimal",
+  "thinking.level.low": "Low",
+  "thinking.level.medium": "Medium",
+  "thinking.level.high": "High",
+  "thinking.level.xhigh": "X-High",
+  "thinking.level.max": "Max",
+  "thinking.hint.off": "no reasoning",
+  "thinking.hint.minimal": "barely any",
+  "thinking.hint.low": "brief",
+  "thinking.hint.medium": "balanced",
+  "thinking.hint.high": "thorough",
+  "thinking.hint.xhigh": "very thorough",
+  "thinking.hint.max": "deepest",
+
   // editor canvas
   "editor.piEditing": "Pi is editing…",
   "editor.imageLoading": "Loading image…",
@@ -295,8 +309,6 @@ export const en = {
 
   // extension sheet
   "ext.request": "Extension request",
-  "ext.selectCustomPlaceholder": "None of these? Type your own answer…",
-  "ext.selectCustomSend": "Send",
 
   // settings page
   "settings.title": "Settings",
@@ -481,6 +493,14 @@ export const en = {
   "settings.branchSkipPromptDetail":
     "Don't ask “Summarize branch?” on /tree navigation (defaults to no summary)",
   "settings.branchReserveTokens": "Reserve tokens",
+  "settings.tools": "Built-in tools",
+  "settings.toolsFooter":
+    "Extension and SDK tools are always enabled and unaffected by this. On Windows, pick powershell instead of bash — or both to compare. A project selection replaces the global one rather than merging.",
+  "settings.defaultTools": "Customize tool set",
+  "settings.defaultToolsInherited": "Using pi's defaults: {tools}",
+  "settings.defaultToolsFromGlobal": "Inherited from global: {tools}",
+  "settings.defaultToolsCount": "{count} built-in tools enabled",
+  "settings.defaultToolsNone": "No built-in tools — extension tools only",
   "settings.shellSessions": "Shell & sessions",
   "settings.shellSessionsFooter":
     "npm command is stored as an argv array — input is split on whitespace, so paths with spaces need direct JSON editing. Session dir precedence: --session-dir > PI_CODING_AGENT_SESSION_DIR > this setting.",

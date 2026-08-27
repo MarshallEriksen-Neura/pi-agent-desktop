@@ -215,12 +215,23 @@ export class MockPiProcessPort implements PiProcessPort {
             mode: armed[2] as "error" | "timeout" | "send",
           };
           if (armed[1] === "extension") {
+            // Only `send` is a real failure mode here. pi's stdin dispatcher
+            // intercepts extension_ui_response, resolves the extension's promise
+            // and returns without ever emitting a `response`, so "rejected" and
+            // "timed out" acks do not exist for this command — the harness fires
+            // and forgets. Force the mode so this scenario keeps testing
+            // something the real process can actually do.
+            this.nextCommandFailure = {
+              command: "extension_ui_response",
+              mode: "send",
+            };
             this.emit({
               type: "extension_ui_request",
               id: `ui-fail-${Date.now()}`,
               method: "confirm",
               title: "Mock extension response failure",
-              message: "This dialog must stay open when Pi rejects the response.",
+              message:
+                "Confirm: the write fails and this dialog must stay open. Cancel: it must dismiss anyway, or a dead pipe would leave no way out.",
             });
           }
           this.emitTextTurn(

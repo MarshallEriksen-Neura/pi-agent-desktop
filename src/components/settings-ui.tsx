@@ -593,6 +593,76 @@ export function StringListEditor({
   );
 }
 
+/**
+ * Chip multi-select over a fixed option set — for settings whose value is a
+ * subset of known keys (`defaultTools`).
+ *
+ * Deliberately does *not* collapse the empty selection to `undefined` the way
+ * `StringListEditor` does: for `defaultTools` an empty array is a meaningful
+ * value (start with no built-in tools), distinct from "key absent" (use pi's
+ * defaults). Callers own that distinction — see the `defaultTools` row.
+ */
+export function ChipMultiSelect({
+  options,
+  value,
+  onChange,
+  labelOf,
+  dimmed = false,
+}: {
+  options: readonly string[];
+  value: readonly string[];
+  onChange: (next: string[]) => void;
+  labelOf?: (opt: string) => string;
+  dimmed?: boolean;
+}) {
+  const toggle = (opt: string) =>
+    onChange(
+      value.includes(opt)
+        ? value.filter((v) => v !== opt)
+        : // keep the canonical option order rather than click order, so the
+          // written array reads the same regardless of how it was assembled
+          options.filter((o) => o === opt || value.includes(o))
+    );
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 6,
+        padding: "10px 16px 12px",
+        opacity: dimmed ? 0.45 : 1,
+      }}
+    >
+      {options.map((opt) => {
+        const active = value.includes(opt);
+        return (
+          <motion.button
+            key={opt}
+            whileTap={{ scale: 0.94 }}
+            role="checkbox"
+            aria-checked={active}
+            onClick={() => toggle(opt)}
+            style={{
+              padding: "4px 11px",
+              fontSize: 12.5,
+              fontWeight: active ? 600 : 400,
+              fontFamily: "var(--font-mono, monospace)",
+              borderRadius: 999,
+              border: `1px solid ${active ? "var(--accent)" : "var(--separator)"}`,
+              background: active ? "var(--accent)" : "var(--bg-base)",
+              color: active ? "#fff" : "var(--text-secondary)",
+              cursor: "pointer",
+            }}
+          >
+            {labelOf ? labelOf(opt) : opt}
+          </motion.button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Labeled range slider with a live value readout. */
 export function SliderRow({
   label,

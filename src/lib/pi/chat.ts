@@ -795,14 +795,20 @@ export function createChatStore(taskId: string) {
           set((s) => ({ queue: reconcileQueue(s.queue, e.steering, e.followUp) }));
         });
 
-        // Waiting on the user: an extension asked for approval/input mid-turn.
-        // This is the signal that drives the amber "needs attention" state.
-        client.on("extension_ui_request", (e: PiEvent) => {
-          if (e.type !== "extension_ui_request" || !MODAL_METHODS.has(e.method)) return;
-          set({ waiting: true });
-        });
-        client.on("extension_ui_response", () => {
-          set({ waiting: false });
+        /* Waiting on the user: an extension asked for approval/input mid-turn —
+           the amber "needs attention" state.
+
+           Derived from the sheet's own queue rather than from pi events. There
+           is no inbound `extension_ui_response`: that type belongs to
+           `PiCommand` (what *we* write to stdin), so the listener that used to
+           clear this flag could never fire and the amber state only ever went
+           away when the turn ended. The queue is the real lifecycle — the entry
+           is removed exactly when pi has been answered. */
+        useExtUi.subscribe((s) => {
+          const pending = s.queue.some(
+            (q) => q.taskId === taskId && MODAL_METHODS.has(q.method)
+          );
+          if (get().waiting !== pending) set({ waiting: pending });
         });
 
         // This is the real channel for transient provider failures (429 / 5xx /

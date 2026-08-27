@@ -268,8 +268,7 @@ export function Editor() {
   /* agent streaming-edit demo: read → reason → edit → review → test */
   useEffect(() => {
     if (demoTick === 0) return;
-    const { setTaskStatus, finishDemo, requestReview, setTerminalOpen } =
-      useUI.getState();
+    const { finishDemo, requestReview, setTerminalOpen } = useUI.getState();
     cancelRef.current = false;
 
     (async () => {
@@ -277,19 +276,14 @@ export function Editor() {
       if (!view) return;
 
       // 1. read
-      setTaskStatus("read", "running");
       await sleep(700);
       if (cancelRef.current) return;
-      setTaskStatus("read", "done");
 
       // 2. reason
-      setTaskStatus("reason", "running");
       await sleep(1000);
       if (cancelRef.current) return;
-      setTaskStatus("reason", "done");
 
       // 3. edit — stream the replacement in, character by character
-      setTaskStatus("edit", "running");
       const doc = view.state.doc.toString();
       const idx = doc.indexOf(DEMO_EDIT.find);
       let edited = false;
@@ -314,7 +308,6 @@ export function Editor() {
       }
       await sleep(300);
       if (cancelRef.current) return;
-      setTaskStatus("edit", "done");
 
       // 3.5 review — spring up the sheet, await the user's verdict
       let accepted = true;
@@ -352,7 +345,6 @@ export function Editor() {
       }
 
       // 4. test — slide the terminal up and stream mock output
-      setTaskStatus("test", "running");
       setTerminalOpen(true);
       await sleep(500);
       termBus.writeln(ansi.dim("$ ") + ansi.bold("pnpm test"));
@@ -374,7 +366,6 @@ export function Editor() {
       termBus.writeln(
         " " + ansi.bold("Tests") + "  " + ansi.green("8 passed") + " (8)"
       );
-      setTaskStatus("test", "done");
 
       // let the highlight breathe, then fade it out softly before clearing
       await sleep(1600);

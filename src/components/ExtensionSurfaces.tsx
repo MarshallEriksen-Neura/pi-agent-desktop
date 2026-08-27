@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { useExtUi } from "@/lib/pi/ext-ui";
+import { useActiveExtStatuses, useActiveExtWidgets } from "@/lib/pi/ext-ui";
 
 /**
  * The two non-modal pi extension surfaces:
@@ -12,7 +12,7 @@ import { useExtUi } from "@/lib/pi/ext-ui";
 
 /** setStatus entries, joined into one dimmed line. Renders nothing when empty. */
 export function ExtStatusLine() {
-  const statuses = useExtUi((s) => s.statuses);
+  const statuses = useActiveExtStatuses();
   const entries = Object.entries(statuses);
 
   return (
@@ -75,7 +75,7 @@ export function ExtWidgets({
 }: {
   placement: "aboveEditor" | "belowEditor";
 }) {
-  const widgets = useExtUi((s) => s.widgets);
+  const widgets = useActiveExtWidgets();
   const entries = Object.entries(widgets).filter(
     ([, w]) => w.placement === placement
   );

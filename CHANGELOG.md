@@ -2,6 +2,48 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
+## [0.9.0] — 2026-08-27
+
+### Added
+- **对话框里的思考等级选择器** — 输入框底栏在模型 chip 旁多了一个思考等级 chip，切换等级不必再去设置页。走的是 pi 的 `set_thinking_level`（当场生效），而不是 settings.json 的 `defaultThinkingLevel` —— 后者会置 `dirtyRestart`、弹出"重启 pi"横幅，而 RPC 已经改好了根本不需要重启
+  - **选择会被记住**：写入 localStorage，一个值全局共享。pi 进程本身不记这件事，每个进程都从 settings.json 的默认值起步，所以此前重启应用会掉回默认，新建对话也会（每个对话自带一个 pi 进程）
+  - 每个进程连上后**只补一次** RPC 把记住的等级推回去。只补一次是关键：`/thinking` 用的是 pi 自己的 `cycle_thinking_level`，每次 refresh 都推会让切换立刻被弹回。第一次之后改为反向同步 —— pi 说什么就记什么，两边不脱节
+  - 优先级是**最后一次明确操作生效**：设置页改默认值时清掉记住的值，否则那个控件会看起来完全失效
+  - `high` / `xhigh` / `max` 时 chip 的脑图标转 accent 色，`off` 时整个 chip 转 tertiary —— 不额外加 badge 也能一眼看出加了推理
+- **内置工具选择**（设置 › 运行时）— 精确指定 pi 启动时启用哪些内置工具（`defaultTools`）。三种状态是有区别的且都保留：键缺失 = pi 自己的默认，`[]` = 不启用任何内置工具（扩展/SDK 工具不受影响），非空 = 恰好这些。开关管"缺失 vs 存在"，chip 只编辑已存在的列表；打开开关时用**当前生效的**工具集播种，所以打开这个开关本身不会改变行为
+- **PowerShell 工具支持** — `powershell` / `pwsh` 归入 shell 家族。这不是图标问题：agent-bridge 只对 `kind === "bash"` 把工具输出送进终端，漏掉的话整个终端输出被静默丢弃。命令提示符按工具区分（`PS>` / `$`），与 pi 自己 TUI 的渲染一致
+
+### Fixed
+- **扩展界面全都是死的，阻塞式调用会永久挂住那个 turn** — ext-ui 在启动时用不带 task id 的 `getPiClient()` 订阅。启动时还没有 task id 可绑，而真实 task id 都是 UUID，于是它静默绑到了 `"default"` —— 一个没有任何对话使用的进程。`extension_ui_request` 从未抵达：`setStatus` / `setWidget` 什么都不渲染，而 `select` / `editor` 会让 pi 一直等一个永远不会来的回答。改为模块级的**跨任务事件总线**，订阅者不会漏掉在它之后创建的 client
+- **已回答的对话框在屏幕上多留 15 秒，然后报一次失败** — `extension_ui_response` 被 pi 的 stdin 分发器截获：它解析完就唤醒扩展的 promise 并返回，从不走到 `handleCommand`，因此**永远不会**发出 `response`。此前在等这个 ack，于是每一个已被 pi 接受、pi 早已继续跑下去的回答，都要卡满整个请求超时再报错。新增 `write()`：只报告写入本身是否成功，不做响应关联
+- **`select` 的自由文本把用户的答案变成了「放弃」** — 那个输入框违反契约：`select` 只能用 `options` 中的一项回答。调用方用 `choices.indexOf(answer)` 回映射，打字的答案落到 `-1`，整个提问被当作 **cancelled** 丢弃 —— 一个认真写下的回答被读成「用户放弃了」。输入框已移除；需要自由文本的扩展本来就有正确做法：提供一个「其它」选项，被选中时再发一个 `editor` 请求（那正是此前选项下方那个输入框的来源 —— 它是第二个请求，不是这一个的一部分）
+- **点一下对话框外面等于取消** — 模态请求持有扩展的 turn，而「关闭」能发出的唯一回答是 `cancelled`；对 Plan 模式的提问来说，这意味着 agent 在一个用户从未做出的假设下继续跑。太具破坏性，不该挂在一次落在 transcript 上的误点上：指针关闭已关掉，`Escape` 与显式的 Cancel 按钮保留为深思熟虑的出口
+- **管道断掉时，用户的出口反而没有出口** — Cancel 走的是同一条写入路径，写失败时若仍留着 sheet 就把它永久卡死。现在取消类回答即便写入失败也照样关闭；一个**答案**保持原行为（sheet 留下以便重试，而不是静默丢失）
+- **下一个提示会继承上一个的草稿** — 队列推进时 sheet 保持挂载，于是新提示带着前一个的文本并忽略自己的 `prefill`。按请求 id 加 key
+- **等待用户的琥珀色状态永不消失** — 清除它的监听器订阅的是 `extension_ui_response`，而那个类型属于 `PiCommand`（**我们**写给 stdin 的东西），不是 pi 发出的事件，所以那个回调永远不可能触发，琥珀色只在 turn 结束时才碰巧消失。现在由 sheet 队列派生：条目在 pi 被回答的那一刻移除。宠物窗口的 "waiting" 同理
+- **两个并行对话跑同一个扩展会互相覆盖界面** — `setStatus` / `setWidget` 此前按 key 全局存放，共用 `statusKey` 的两个对话互相踩。现在按 taskId 分桶，只渲染聚焦对话的那一份。反过来 `setTitle` 与 `set_editor_text` 只允许聚焦对话驱动 —— 它们的目标是唯一的窗口标题和唯一的输入框，后台对话改窗口标题、或往你正在打字的输入框里粘东西，会是回归
+- **进程已消失的对话框一直挂着，挡住后面的提问** — client 被销毁后（切项目、删会话）没人能回答它。销毁时一并清掉该任务的队列条目与界面
+- **跨任务排队的提示看不出是谁在问** — 队列现在跨所有对话，屏幕上那个可能属于用户没在看的对话。sheet 标出来源会话名，并提示还有几个在等
+- **transcript 里成组出现的莫名空白** — pi 每个 `message_start` 都新开一条 assistant 消息，其中若干条什么都不渲染（工具结果的载体、provider 的 no-op start/end 对）。它们仍各自占一个 Virtuoso 行和自己的垂直 margin，几条连在一起就是两组工具行之间无法解释的死白。新增 `hasRenderableContent` 谓词过滤，同时让入场动画指向最后一条**可见**消息而不是一条看不见的
+- **一次回复被 pi 拆开的地方多出一道 16px 接缝** — 一个 turn 会到达成好几条 assistant 消息（先文字、再一批工具调用、再文字）。现在只有第一条付出前导 margin，一串工具行保持单一节奏
+- **送出消息后视图不回到底部** — `followOutput` 覆盖不了这件事：它只跟随一个**已经**在底部的视图，而打字恰恰是把视图带离底部的动作 —— 输入框随草稿换行从 2 行长到 12 行，每一行都在压缩上方的滚动区而它的 `scrollTop` 原地不动，几行字就足以把最后一条消息推到折叠线以下；提交后回复被追加进那个缺口并留在那里。现在按最后一条 **user** 消息的 id 显式置底，覆盖所有把 prompt 交给 pi 的路径（输入框、命令面板、zen 模式、steer、follow-up），而回复中途抵达的普通 token 不会把已主动上滑的读者重新拽回去
+  - 连续三帧各跳一次，不是跳一次：本次提交只添加气泡，真实行高要等 Virtuoso 量完才落定，而输入框塌回 2 行（它自己的 effect，在草稿被清空后）又会把滚动区撑高 —— 两者都发生在我们本该抵达底部之后
+  - `atBottomThreshold` 从默认 4px 抬到 48px：气泡用 margin 撑开自己，而行测量会把它抹掉，于是滚动区可以停在离自己末端几像素的位置、看着停在底部却报 `atBottom: false` —— 一旦如此，上面那条跟随会在本次会话余下时间里静默失效
+  - 跟随不再以 `streaming` 为条件：消息也会在一次运行之外抵达（连接错误、排队 follow-up 的回显、切会话时恢复的 transcript），此前它们被追加到折叠线以下且没有任何东西把它们带进视野
+- **运行中的命令被画了两遍** — 聊天栏顶部的活动条与 transcript 内的工具行镜像同一条 `tool_execution_*` 流，同一个命令同时出现在滚动区顶部和它本来的位置
+- **结构化参数的工具显示 `[object Object]`** — `String()` 会把对象或数组变成那串字符，`plan_mode_question` 于是显示 `questions: [object Object]`，关于问题本身一个字都没有。对象改走 JSON 以便预览带上真实内容；原始类型保持原样（字符串不加引号）
+- **第一条消息上方的死带** — 有了 transcript 之后 Virtuoso 的 Header 不再渲染任何东西，但一个空包装仍会把自己的 padding 当作 header 高度交出去
+
+### Changed
+- **移除演示用的任务条** — 每个工具调用本就是它所属 assistant 消息里的一行，顶部不需要一块常驻区域重复同一批信息。随之从 store 移除 `AgentTask` / `IDLE_TASKS` / `upsertAgentTask` / `patchAgentTask` / `setTaskStatus`，agent-bridge 不再维护卡片，编辑器演示不再上报任务状态
+- 工具行上下 padding 收紧 1px，一列工具调用读起来更紧凑
+
+### Internal
+- `client.ts`：`PiClient` 现在带 `taskId`，每个事件都能在总线上被归因到它的任务；新增 `onAnyTaskEvent` / `onPiClientDisposed` / `peekPiClient`（取已存在的 client 而**不**创建 —— 为一个没人在等的回复新起一个 pi 进程，比丢掉这个回复更糟）。`resetPiClientForTests` 刻意不清跨任务订阅：那是注册方自己的所有权，清掉会静默摘掉一个活着的消费者
+- `ext-ui.ts`：新增 `useActiveExtStatuses` / `useActiveExtWidgets`，用稳定的空引用兜底 —— 每次渲染返回一个新 `{}` 会让选择器在 store 任何变化时都重渲染这些界面
+- `settings-ui.tsx`：新增 `ChipMultiSelect`。刻意**不**像 `StringListEditor` 那样把空选择折叠成 `undefined`：对 `defaultTools` 而言 `[]` 是有意义的值，与「键缺失」不同
+- 新增 3 个后端测试覆盖跨任务总线、`peekPiClient` 与销毁通知、`write` 的无 ack 语义；mock 进程的「扩展响应失败」场景强制为 `send` 模式，因为另外两种 ack 失败对这个命令不存在
+
 ## [0.8.0] — 2026-08-24
 
 ### Added

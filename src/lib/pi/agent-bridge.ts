@@ -3,8 +3,7 @@
 /**
  * Agent bridge — turns the real pi event stream into UI motion:
  *
- *  - agent_start/agent_settled        → task strip visibility (agentRunning)
- *  - tool_execution_start/end         → live task cards (read/edit/bash/…)
+ *  - agent_start/agent_settled        → agentRunning (composer busy state)
  *  - edit-ish tools on workspace files → reload from disk, open in the editor,
  *                                        streaming-diff highlight on changed lines
  *  - bash tool output                 → streamed into the terminal drawer
@@ -27,8 +26,7 @@ import {
   argCommand,
   argPath,
   normPath,
-  toolDetail,
-  toolTitle,
+  shellPrompt,
 } from "./tool-label";
 
 interface ToolRec {
@@ -161,18 +159,13 @@ function bindAgentBridge(taskId: string) {
         });
       } else {
         // classic mode: write to xterm
-        termBus.writeln(ansi.dim("$ ") + ansi.bold(cmd ?? e.toolName));
+        termBus.writeln(
+          ansi.dim(`${shellPrompt(e.toolName)} `) + ansi.bold(cmd ?? e.toolName)
+        );
       }
     }
 
     recs.set(e.toolCallId, rec);
-    ui.upsertAgentTask({
-      id: e.toolCallId,
-      title: toolTitle(e.toolName, args),
-      detail: toolDetail(args),
-      status: "running",
-      tool: e.toolName,
-    });
   }));
 
   bridgeUnlisteners.push(client.on("tool_execution_update", (e) => {
@@ -200,20 +193,10 @@ function bindAgentBridge(taskId: string) {
     if (e.type !== "tool_execution_end") return;
     const rec = recs.get(e.toolCallId);
     recs.delete(e.toolCallId);
-    const ui = useUI.getState();
-
-    const resultText = toText(e.result);
-    ui.patchAgentTask(e.toolCallId, {
-      status: e.isError ? "error" : "done",
-      ...(resultText
-        ? { detail: resultText.replace(/\s+/g, " ").slice(0, 80) }
-        : {}),
-    });
-
     if (!rec) return;
 
     if (rec.kind === "bash") {
-      const text = resultText;
+      const text = toText(e.result);
       const delta = text.slice(rec.streamed);
 
       const blocksStore = useTerminalBlocks.getState();

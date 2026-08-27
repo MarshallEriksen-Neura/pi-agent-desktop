@@ -182,6 +182,8 @@ export const zh: Record<keyof typeof en, string> = {
   // 扩展报错 / 上下文压缩
   "ext.error": "扩展 {name} 在 {event} 阶段出错",
   "ext.responseFailed": "无法向扩展发送响应：{error}",
+  "ext.fromSession": "来自会话 {name}",
+  "ext.morePending": "还有 {count} 个待回答",
   "compaction.aborted": "上下文压缩已取消。",
   "compaction.failed": "上下文压缩失败：{error}",
   "summarization.finished": "上下文摘要重试已结束。",
@@ -217,12 +219,6 @@ export const zh: Record<keyof typeof en, string> = {
   "cmd.thinking": "切换思考等级",
   "cmd.demo": "运行流式编辑演示",
   "cmd.agents": "运行并行子智能体演示",
-
-  // demo task strip
-  "demoTask.read": "读取 src/lib/agent.ts",
-  "demoTask.reason": "结合上下文推理",
-  "demoTask.edit": "编辑 runAgentLoop()",
-  "demoTask.test": "运行测试套件",
 
   // subagents
   "subagents.working": "工作中…",
@@ -276,6 +272,24 @@ export const zh: Record<keyof typeof en, string> = {
   "modelPicker.allFiltered": "settings.json 的 enabledModels 把所有模型都过滤掉了。",
   "modelPicker.manage": "管理模型…",
 
+  // 输入框思考等级选择器（直接调 set_thinking_level，仅影响当前会话）
+  "thinking.select": "思考等级：{level}",
+  "thinking.setDefault": "设置默认等级…",
+  "thinking.level.off": "关闭",
+  "thinking.level.minimal": "极简",
+  "thinking.level.low": "低",
+  "thinking.level.medium": "中",
+  "thinking.level.high": "高",
+  "thinking.level.xhigh": "超高",
+  "thinking.level.max": "最大",
+  "thinking.hint.off": "不思考",
+  "thinking.hint.minimal": "几乎不思考",
+  "thinking.hint.low": "简短思考",
+  "thinking.hint.medium": "均衡",
+  "thinking.hint.high": "充分思考",
+  "thinking.hint.xhigh": "非常充分",
+  "thinking.hint.max": "最深入",
+
   // editor canvas
   "editor.piEditing": "Pi 正在编辑…",
   "editor.imageLoading": "图片加载中…",
@@ -295,8 +309,6 @@ export const zh: Record<keyof typeof en, string> = {
 
   // extension sheet
   "ext.request": "扩展请求",
-  "ext.selectCustomPlaceholder": "都不合适？直接输入你的答案…",
-  "ext.selectCustomSend": "发送",
 
   // settings page
   "settings.title": "设置",
@@ -477,6 +489,14 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.branchSkipPromptDetail":
     "/tree 导航时不再询问「是否摘要分支？」（默认不摘要）",
   "settings.branchReserveTokens": "预留 token",
+  "settings.tools": "内置工具",
+  "settings.toolsFooter":
+    "扩展与 SDK 工具始终启用，不受此设置影响。Windows 上可用 powershell 替代 bash，或同时启用以作对比。项目级选择会替换全局选择，而非合并。",
+  "settings.defaultTools": "自定义工具集",
+  "settings.defaultToolsInherited": "使用 pi 默认值：{tools}",
+  "settings.defaultToolsFromGlobal": "继承自全局：{tools}",
+  "settings.defaultToolsCount": "已启用 {count} 个内置工具",
+  "settings.defaultToolsNone": "不启用内置工具 — 仅保留扩展工具",
   "settings.shellSessions": "Shell 与会话",
   "settings.shellSessionsFooter":
     "npm 命令以 argv 数组存储 — 输入按空白分词，含空格的路径请直接编辑 JSON。会话目录优先级：--session-dir > PI_CODING_AGENT_SESSION_DIR > 此设置。",

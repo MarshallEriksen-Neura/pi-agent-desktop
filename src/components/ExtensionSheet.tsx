@@ -6,9 +6,9 @@ import { Dialog, DialogContent } from "@appica/ui-react/dialog";
 import { Button } from "@appica/ui-react/button";
 import { Input } from "@appica/ui-react/input";
 import { Textarea } from "@appica/ui-react/textarea";
-import { useExtUi } from "@/lib/pi/ext-ui";
+import { useExtUi, type QueuedExtRequest } from "@/lib/pi/ext-ui";
+import { getSessionTitle, useTaskContext } from "@/lib/pi/task-context";
 import { useT } from "@/lib/i18n";
-import type { ExtensionUiRequest } from "@/lib/pi/protocol";
 import { Command } from "lucide-react";
 
 /**
@@ -25,8 +25,23 @@ export function ExtensionSheet() {
     <>
       <Dialog
         open={!!current}
-        onOpenChange={(open) => {
-          if (!open && current) respond(current, { cancelled: true });
+        /* A modal request holds the extension's turn open until we answer, and
+           the only answer a dismissal can send is `cancelled` — for a Plan-mode
+           question that means the agent resumes under an assumption the user
+           never made. Far too destructive to hang off a stray click on the
+           transcript behind the sheet, so pointer dismissal is off; Escape and
+           the explicit Cancel button stay as the deliberate ways out. */
+        disablePointerDismissal
+        onOpenChange={(open, details) => {
+          if (open || !current) return;
+          // Belt and braces: `disablePointerDismissal` should stop these from
+          // ever arriving, but a library default flipping back would silently
+          // reintroduce accidental cancellation, so refuse the reasons that are
+          // not a deliberate act by the user.
+          if (details.reason === "outside-press" || details.reason === "focus-out") {
+            return;
+          }
+          respond(current, { cancelled: true }, { closing: true });
         }}
       >
         {current && (
@@ -43,7 +58,10 @@ export function ExtensionSheet() {
               background: "var(--material-regular)",
             }}
           >
-            <SheetBody req={current} />
+            {/* keyed by request: the sheet stays mounted while the queue
+                advances, so without this the next prompt inherits the previous
+                one's draft text and ignores its own `prefill` */}
+            <SheetBody key={current.id} req={current} />
           </DialogContent>
         )}
       </Dialog>
@@ -52,10 +70,18 @@ export function ExtensionSheet() {
   );
 }
 
-function SheetBody({ req }: { req: ExtensionUiRequest }) {
+function SheetBody({ req }: { req: QueuedExtRequest }) {
   const respond = useExtUi((s) => s.respond);
+  const pending = useExtUi((s) => s.queue.length);
+  const activeTaskId = useTaskContext((s) => s.activeTaskId);
   const [text, setText] = useState(req.prefill ?? "");
   const t = useT();
+
+  /* Requests are queued across every conversation, so the one on screen may
+     belong to a task the user is not looking at. Naming it is the difference
+     between "why am I being asked this" and a legible prompt. */
+  const foreign = req.taskId !== activeTaskId;
+  const askedBy = foreign ? getSessionTitle(req.taskId) : "";
 
   return (
     <div>
@@ -74,6 +100,22 @@ function SheetBody({ req }: { req: ExtensionUiRequest }) {
           <span style={{ color: "var(--agent-thinking)" }}><Command size={14} /></span>
           {req.title ?? t("ext.request")}
         </div>
+        {(askedBy || pending > 1) && (
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              margin: "6px 0 0",
+              fontSize: 11,
+              color: "var(--text-tertiary)",
+            }}
+          >
+            {askedBy && <span>{t("ext.fromSession", { name: askedBy })}</span>}
+            {pending > 1 && (
+              <span>{t("ext.morePending", { count: pending - 1 })}</span>
+            )}
+          </div>
+        )}
         {req.message && (
           <p
             style={{
@@ -88,7 +130,16 @@ function SheetBody({ req }: { req: ExtensionUiRequest }) {
         )}
       </div>
 
-      {/* body per method */}
+      {/* body per method — options only, deliberately no free-text field.
+          `select` answers with one of `options`; anything else violates the
+          contract. Callers reject it rather than accept it: pi-plan-mode maps
+          the reply back with `choices.indexOf(answer)`, so typed text lands on
+          index -1 and the whole question is discarded as *cancelled* — a
+          carefully written answer read as "user gave up". Extensions that want
+          free text already do it correctly, by offering an "Other" option and
+          sending a follow-up `editor` request when it is picked. That follow-up
+          arrives here as its own prompt, which is why an input appeared under
+          the options: it was the second request, not part of this one. */}
       {req.method === "select" && (
         <div style={{ padding: "10px 10px 6px" }}>
           {(req.options ?? []).map((opt) => (
@@ -102,42 +153,6 @@ function SheetBody({ req }: { req: ExtensionUiRequest }) {
               {opt}
             </Button>
           ))}
-
-          {/* Free-text escape hatch. The RPC carries no "this option means type
-              your own" flag — options are plain strings — so rather than
-              pattern-matching a phrase pi might reword or localize, every
-              select offers its own input. An answer the model did not think of
-              goes back as the response value, same as a picked option. */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              margin: "8px 6px 2px",
-              paddingTop: 10,
-              borderTop: "1px solid var(--separator)",
-            }}
-          >
-            <Input
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && text.trim()) {
-                  respond(req, { value: text.trim() });
-                }
-              }}
-              placeholder={t("ext.selectCustomPlaceholder")}
-              style={{ flex: 1, borderRadius: 99, fontSize: 13 }}
-            />
-            <Button
-              variant="primary"
-              disabled={!text.trim()}
-              onClick={() => respond(req, { value: text.trim() })}
-              style={{ borderRadius: 99 }}
-            >
-              {t("ext.selectCustomSend")}
-            </Button>
-          </div>
         </div>
       )}
 
@@ -183,7 +198,10 @@ function SheetBody({ req }: { req: ExtensionUiRequest }) {
               req,
               req.method === "confirm"
                 ? { confirmed: false }
-                : { cancelled: true }
+                : { cancelled: true },
+              // the user's way out: it must dismiss even if the write fails,
+              // otherwise a dead pipe leaves the sheet with no exit at all
+              { closing: true }
             )
           }
           style={{ borderRadius: 99 }}

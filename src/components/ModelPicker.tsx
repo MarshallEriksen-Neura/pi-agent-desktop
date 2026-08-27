@@ -83,6 +83,9 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
               alignItems: "center",
               gap: 5,
               maxWidth: compact ? 140 : 200,
+              // Shrinkable: sharing the composer row with the thinking chip, this
+              // is the item that yields — model names ellipsize legibly.
+              minWidth: 0,
               padding: compact ? "2px 6px" : "3px 9px",
               fontSize: 11.5,
               fontWeight: 500,
@@ -118,6 +121,7 @@ export function ModelPicker({ compact = false }: { compact?: boolean }) {
             transition={{ type: "spring", stiffness: 500, damping: 30 }}
             style={{
               display: "inline-block",
+              minWidth: 0,
               overflow: "hidden",
               textOverflow: "ellipsis",
             }}

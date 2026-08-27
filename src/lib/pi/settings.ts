@@ -69,6 +69,13 @@ export interface PiSettings {
   shellPath?: string;
   shellCommandPrefix?: string;
   npmCommand?: string[];
+  /**
+   * Built-in tools pi enables at startup. Three distinct states:
+   * `undefined` → pi's own defaults, `[]` → no built-ins (extension/SDK tools
+   * survive), non-empty → exactly these. A project array *replaces* the global
+   * one rather than merging, which `mergeSettings` already does for arrays.
+   */
+  defaultTools?: string[];
   sessionDir?: string;
   enabledModels?: string[];
   packages?: PackageEntry[];

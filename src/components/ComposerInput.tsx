@@ -4,6 +4,7 @@ import { useRef, useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { Square, ArrowUp, X, Zap, ListPlus } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
+import { ThinkingPicker } from "./ThinkingPicker";
 import { ImageLightbox } from "./ImageLightbox";
 import type { DeliveryMode, QueueEntry } from "@/lib/pi/chat";
 import { useT } from "@/lib/i18n";
@@ -368,7 +369,10 @@ export function ComposerInput({
           )}
         </div>
 
-        {/* Bottom controls — model picker (left) + delivery mode / char count (right) */}
+        {/* Bottom controls — model + thinking pickers (left), delivery mode /
+            char count (right). The row does not wrap (it is anchored to the
+            composer's bottom edge), so the left cluster absorbs any squeeze by
+            truncating the model name rather than overflowing the send button. */}
         <div
           style={{
             position: "absolute",
@@ -380,7 +384,20 @@ export function ComposerInput({
             justifyContent: "space-between",
           }}
         >
-          <ModelPicker compact />
+          {/* model + thinking level read as one control cluster; both are live
+              per-session switches that used to require a trip to Settings */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              minWidth: 0,
+              overflow: "hidden",
+            }}
+          >
+            <ModelPicker compact />
+            <ThinkingPicker compact />
+          </div>
           {streaming ? (
             <div
               title={t("composer.deliveryHint")}

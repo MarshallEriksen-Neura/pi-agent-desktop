@@ -16,7 +16,7 @@ import { STATE_FALLBACK_BODIES } from "./state-lifetimes";
 import type { PiEvent } from "@/lib/pi/protocol";
 import type { PetConfigUpdate } from "./types";
 import { showNotification } from "@/lib/notifications";
-import { MODAL_METHODS } from "@/lib/pi/ext-ui";
+import { MODAL_METHODS, useExtUi } from "@/lib/pi/ext-ui";
 import { useUI } from "@/lib/store";
 import { restoreFromTray } from "@/lib/window-close";
 import { t } from "@/lib/i18n";
@@ -96,11 +96,29 @@ function bindPetPi(taskId: string) {
   // chatter too (18 within 12s of an idle boot), and treating those as approvals
   // pinned the pet to "waiting" — priority 4, a 24h lifetime — which outranks
   // and hides the running state for the rest of the day.
-  piUnlisteners.push(client.on("extension_ui_request", (e) => {
-    if (e.type !== "extension_ui_request" || !MODAL_METHODS.has(e.method)) return;
-    sessionManager.updateSession(sessionKey(), "waiting", "Needs approval");
-    syncStateToWindow();
-  }));
+  //
+  // Driven by the sheet's queue, not by raw pi events: nothing arrives to say a
+  // dialog was answered (`extension_ui_response` is a command we send, not an
+  // event pi emits), so entering "waiting" from the request alone left the pet
+  // pinned there until some later state change happened to overwrite it.
+  let petWasWaiting = false;
+  piUnlisteners.push(
+    useExtUi.subscribe((s) => {
+      const pending = s.queue.some(
+        (q) => q.taskId === taskId && MODAL_METHODS.has(q.method)
+      );
+      if (pending === petWasWaiting) return;
+      petWasWaiting = pending;
+      if (pending) {
+        sessionManager.updateSession(sessionKey(), "waiting", "Needs approval");
+      } else {
+        // The turn resumes on the answer; let the next tool/agent event describe
+        // it rather than guessing a label here.
+        sessionManager.updateSession(sessionKey(), "running");
+      }
+      syncStateToWindow();
+    })
+  );
 
   // Tool execution events
   piUnlisteners.push(client.on("tool_execution_start", (e) => {
