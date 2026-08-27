@@ -49,6 +49,9 @@ fn begin_shutdown(app: &AppHandle) -> bool {
         .swap(true, Ordering::AcqRel)
 }
 
+/// Whether teardown has finished (or been abandoned by the watchdog). While this
+/// is false the process must not be allowed to exit — see the `ExitRequested`
+/// handler in [`run`].
 fn cleanup_settled(app: &AppHandle) -> bool {
     app.state::<BackendLifecycle>()
         .cleanup_settled
@@ -65,6 +68,12 @@ fn settle_and_exit(app: &AppHandle, exit_code: i32) {
     app.exit(exit_code);
 }
 
+/// Tear the backend down, in order: remote control, pending provider logins, then
+/// the pi child process itself.
+///
+/// Blocks for as long as the coordinator's 6s budget allows, so it must not run
+/// on the event-loop thread — the caller is expected to have claimed teardown via
+/// [`begin_shutdown`] and to be running on a worker.
 fn shutdown_backend_claimed(app: &AppHandle) {
     let pi = app.state::<PiProc>();
     let mut health = backend_health_snapshot(&pi);
@@ -92,6 +101,11 @@ fn shutdown_backend_claimed(app: &AppHandle) {
     }
 }
 
+/// Run teardown on a worker thread and exit when it finishes, with a
+/// [`SHUTDOWN_WATCHDOG`] deadline as a second exit path.
+///
+/// Only call after [`begin_shutdown`] returns true: this spawns the one teardown
+/// that owns the process exit.
 fn schedule_shutdown_and_exit(app: AppHandle, exit_code: i32) {
     let cleanup_app = app.clone();
     if std::thread::Builder::new()
@@ -130,6 +144,11 @@ fn request_shutdown_and_exit(app: AppHandle, exit_code: i32) {
     }
 }
 
+/// Quit from the frontend. Replaces `@tauri-apps/plugin-process`'s `exit()`, which
+/// terminates without running any backend teardown.
+///
+/// Returns as soon as teardown is scheduled — the window is already on its way
+/// out, so the caller has nothing to await.
 #[tauri::command]
 fn app_quit(app: AppHandle, exit_code: i32) {
     request_shutdown_and_exit(app, exit_code);
