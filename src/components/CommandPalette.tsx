@@ -96,7 +96,7 @@ export function CommandPalette() {
 }
 
 function PaletteBody() {
-  const { setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, ideEnabled } = useUI();
+  const { setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode } = useUI();
   const cycleModel = usePi((s) => s.cycleModel);
   const piCommands = usePi((s) => s.commands);
   const refresh = usePi((s) => s.refresh);
@@ -251,9 +251,11 @@ function PaletteBody() {
         useChat.getState().send(`/${c.name}`);
       },
     }));
-    const visibleBase = ideEnabled ? base : base.filter((command) => command.id !== "work");
+    // work-only cannot leave the chat column, so the toggle is not offered
+    const visibleBase =
+      layoutMode === "work-only" ? base.filter((command) => command.id !== "work") : base;
     return [...visibleBase, ...fromProjects, ...fromPi];
-  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, ideEnabled, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t]);
+  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t]);
 
   if (asking) {
     return (

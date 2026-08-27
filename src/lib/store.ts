@@ -10,15 +10,33 @@ import {
 
 export type Theme = "light" | "dark";
 export type TaskStatus = "done" | "running" | "queued" | "error";
-export type StartupInterface = "default" | "work";
+
+/**
+ * Which layout the app lives in. One setting rather than two orthogonal-looking
+ * knobs: "IDE off" *is* permanent work mode, so a separate boolean would leave a
+ * dead combination (IDE off + startup "default") that the user can select and
+ * that means nothing. A third enum value also keeps room for future layouts —
+ * add a variant, not a dimension.
+ *
+ * - `default`   — sidebar + editor + docked chat rail; work mode is a toggle
+ * - `work`      — opens in the centered chat column, ⌘/ still returns to the IDE
+ * - `work-only` — permanent chat column; the editor never mounts and every IDE
+ *                 entry point (top-bar toggle, ⌘/, palette command) is hidden
+ */
+export type LayoutMode = "default" | "work" | "work-only";
+
+const LAYOUT_MODES: readonly LayoutMode[] = ["default", "work", "work-only"];
+
+function isLayoutMode(v: string | null): v is LayoutMode {
+  return v !== null && (LAYOUT_MODES as readonly string[]).includes(v);
+}
 
 const THEME_STORAGE_KEY = "pi-desktop.theme";
 const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";
 const AGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.agentPanelWidth";
 const SUBAGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.subagentPanelWidth";
 const SEND_SHORTCUT_STORAGE_KEY = "pi-desktop.sendShortcut";
-const STARTUP_INTERFACE_STORAGE_KEY = "pi-desktop.startupInterface";
-const IDE_ENABLED_STORAGE_KEY = "pi-desktop.ideEnabled";
+const LAYOUT_MODE_STORAGE_KEY = "pi-desktop.layoutMode";
 
 /** Docked chat rail width, in px. Only applies in the default layout —
  *  work mode stretches the panel to a centered reading column, zen mode hides it. */
@@ -93,9 +111,14 @@ interface UIState {
   themeSource: ThemeSource;
   zenMode: boolean;
   workMode: boolean;
-  startupInterface: StartupInterface;
-  ideEnabled: boolean;
-  layoutPreferencesReady: boolean;
+  /** persisted layout choice; `workMode` is the live state derived from it */
+  layoutMode: LayoutMode;
+  /**
+   * False until the saved layout has been read back. The panels stay unmounted
+   * until then so the editor is never mounted-then-torn-down on a work-mode
+   * launch. The boot screen covers this — it lifts two frames after mount.
+   */
+  layoutReady: boolean;
   sidebarOpen: boolean;
   agentPanelOpen: boolean;
   /** user-dragged width of the docked chat rail (px) */
@@ -135,11 +158,12 @@ interface UIState {
    */
   initTheme: () => void;
   toggleZen: () => void;
+  /** no-op in `work-only`, where the chat column is the only layout */
   toggleWork: () => void;
-  setStartupInterface: (mode: StartupInterface) => void;
-  setIdeEnabled: (enabled: boolean) => void;
-  /** restore startup layout + IDE preference before the editor is allowed to mount */
-  initLayoutPreferences: () => void;
+  /** persist the layout choice and switch to it now */
+  setLayoutMode: (mode: LayoutMode) => void;
+  /** restore the saved layout before the editor is allowed to mount */
+  initLayout: () => void;
   toggleSidebar: () => void;
   toggleAgentPanel: () => void;
   /** live width during a drag — clamped, not persisted (call persist on release) */
@@ -184,9 +208,8 @@ export const useUI = create<UIState>((set) => ({
   themeSource: "system",
   zenMode: false,
   workMode: false,
-  startupInterface: "default",
-  ideEnabled: true,
-  layoutPreferencesReady: false,
+  layoutMode: "default",
+  layoutReady: false,
   sidebarOpen: true,
   agentPanelOpen: true,
   agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
@@ -276,46 +299,28 @@ export const useUI = create<UIState>((set) => ({
     }),
   toggleZen: () => set((s) => ({ zenMode: !s.zenMode })),
   toggleWork: () =>
-    set((s) => (s.ideEnabled ? { workMode: !s.workMode } : {})),
-  setStartupInterface: (mode) =>
+    set((s) => (s.layoutMode === "work-only" ? {} : { workMode: !s.workMode })),
+  setLayoutMode: (mode) =>
     set(() => {
       try {
-        localStorage.setItem(STARTUP_INTERFACE_STORAGE_KEY, mode);
+        localStorage.setItem(LAYOUT_MODE_STORAGE_KEY, mode);
       } catch {
         // storage unavailable — keep the choice in-memory only
       }
-      return { startupInterface: mode };
+      // Apply immediately rather than only on next launch: picking a layout in
+      // settings and seeing nothing happen reads as a broken control.
+      return { layoutMode: mode, workMode: mode !== "default" };
     }),
-  setIdeEnabled: (enabled) =>
-    set((s) => {
-      try {
-        localStorage.setItem(IDE_ENABLED_STORAGE_KEY, String(enabled));
-      } catch {
-        // storage unavailable — keep the choice in-memory only
-      }
-      return {
-        ideEnabled: enabled,
-        workMode: enabled ? s.startupInterface === "work" : true,
-      };
-    }),
-  initLayoutPreferences: () =>
+  initLayout: () =>
     set(() => {
-      let savedStartup: string | null = null;
-      let savedIde: string | null = null;
+      let saved: string | null = null;
       try {
-        savedStartup = localStorage.getItem(STARTUP_INTERFACE_STORAGE_KEY);
-        savedIde = localStorage.getItem(IDE_ENABLED_STORAGE_KEY);
+        saved = localStorage.getItem(LAYOUT_MODE_STORAGE_KEY);
       } catch {
-        // storage unavailable — keep backward-compatible defaults
+        // storage unavailable — fall back to the pre-setting default layout
       }
-      const startupInterface: StartupInterface = savedStartup === "work" ? "work" : "default";
-      const ideEnabled = savedIde !== "false";
-      return {
-        startupInterface,
-        ideEnabled,
-        workMode: !ideEnabled || startupInterface === "work",
-        layoutPreferencesReady: true,
-      };
+      const layoutMode: LayoutMode = isLayoutMode(saved) ? saved : "default";
+      return { layoutMode, workMode: layoutMode !== "default", layoutReady: true };
     }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   toggleAgentPanel: () => set((s) => ({ agentPanelOpen: !s.agentPanelOpen })),

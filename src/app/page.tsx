@@ -55,8 +55,8 @@ export default function Home() {
     resetSubagentPanelWidth,
     zenMode,
     workMode,
-    ideEnabled,
-    layoutPreferencesReady,
+    layoutMode,
+    layoutReady,
     setCommandPalette,
     toggleZen,
     toggleWork,
@@ -81,9 +81,9 @@ export default function Home() {
         e.preventDefault();
         toggleZen();
       }
-      if (mod && e.key === "/" && ideEnabled) {
+      if (mod && e.key === "/") {
         e.preventDefault();
-        toggleWork();
+        toggleWork(); // no-op in work-only — there is no other layout to reach
       }
       if (mod && e.key.toLowerCase() === "j") {
         e.preventDefault();
@@ -93,12 +93,16 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ideEnabled, setCommandPalette, toggleWork, toggleZen]);
+  }, [setCommandPalette, toggleWork, toggleZen]);
 
-  const effectiveWorkMode = !ideEnabled || workMode;
-  const showSidebar = layoutPreferencesReady && sidebarOpen && !zenMode;
-  const showAgent = layoutPreferencesReady && !zenMode && (effectiveWorkMode || agentPanelOpen);
-  const showEditor = layoutPreferencesReady && ideEnabled && !zenMode && !workMode;
+  /* Nothing mounts until the saved layout is known, so a work-mode launch never
+     builds the editor just to tear it down. The boot screen covers the gap. */
+  // work-only has no way back to the IDE, so the session list has to stay
+  // reachable from the chat column — it would otherwise have no entry point.
+  const showSidebar =
+    layoutReady && sidebarOpen && !zenMode && (!workMode || layoutMode === "work-only");
+  const showAgent = layoutReady && !zenMode && (workMode || agentPanelOpen);
+  const showEditor = layoutReady && !zenMode && !workMode;
   /* The inspector follows the chat: it belongs to a conversation, so it appears
      wherever that conversation is and is meaningless without it. Zen mode shows
      nothing but the composer, so it stays out of the way there. */
@@ -233,7 +237,7 @@ export default function Home() {
         </AnimatePresence>
 
         {showAgent &&
-          (effectiveWorkMode ? (
+          (workMode ? (
             <motion.div
               key="agent-work"
               initial={{ opacity: 0 }}

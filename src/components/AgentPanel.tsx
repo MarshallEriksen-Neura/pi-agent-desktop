@@ -30,13 +30,13 @@ import { PiSpark, ShimmerText } from "./ActivityLine";
 import { ComposerInput } from "./ComposerInput";
 import { RetryBanner } from "./RetryBanner";
 import { ExtStatusLine, ExtWidgets } from "./ExtensionSurfaces";
+import { SessionHistoryMenu } from "./SessionHistoryMenu";
 import { IconButton, SectionLabel } from "./primitives";
 import {
   Square,
   ArrowUp,
   ArrowDown,
   ChevronRight,
-  History,
   SquarePen,
   X,
 } from "lucide-react";
@@ -306,15 +306,10 @@ function LocalAgentPanel({ width }: { width?: number }) {
           </SectionLabel>
         </div>
         <div style={{ display: "flex", alignItems: "center", paddingTop: 8 }}>
-          <IconButton
-            label={t("agent.history")}
-            onClick={() => {
-              // history lives in the sidebar sessions list — make sure it shows
-              if (!useUI.getState().sidebarOpen) useUI.getState().toggleSidebar();
-            }}
-          >
-            <History size={14} />
-          </IconButton>
+          {/* Session list in a menu, not a sidebar toggle: work and zen mode
+              can't render the sidebar at all, so a toggle there flips a flag
+              nothing reads and the button reads as dead. */}
+          <SessionHistoryMenu />
           <IconButton
             label={t("agent.newSession")}
             onClick={() => useSessions.getState().newSession()}

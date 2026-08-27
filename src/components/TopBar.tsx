@@ -40,7 +40,7 @@ export function TopBar() {
     terminalOpen,
     zenMode,
     workMode,
-    ideEnabled,
+    layoutMode,
     theme,
     themeSource,
     setCommandPalette,
@@ -61,7 +61,8 @@ export function TopBar() {
   }, []);
 
   const showUpdate = updatePhase === "available" && !updateDismissed;
-  const effectiveWorkMode = !ideEnabled || workMode;
+  /* work-only is a one-layout world: the toggle would have nothing to toggle. */
+  const showWorkToggle = layoutMode !== "work-only";
 
   return (
     <header
@@ -79,7 +80,9 @@ export function TopBar() {
         zIndex: 20,
       }}
     >
-      {!zenMode && (
+      {/* mirrors showSidebar in page.tsx — a toggle for a panel that cannot
+          appear in this layout would be a dead button */}
+      {!zenMode && (!workMode || layoutMode === "work-only") && (
         <IconButton label={t("topbar.toggleSidebar")} onClick={toggleSidebar}>
           <PanelLeft size={16} />
         </IconButton>
@@ -201,12 +204,12 @@ export function TopBar() {
       <IconButton label={t("topbar.zenMode")} onClick={toggleZen} active={zenMode}>
         <Focus size={16} />
       </IconButton>
-      {ideEnabled && (
+      {showWorkToggle && (
         <IconButton label={t("topbar.workMode")} onClick={toggleWork} active={workMode}>
           <MessagesSquare size={16} />
         </IconButton>
       )}
-      {!zenMode && !effectiveWorkMode && (
+      {!zenMode && !workMode && (
         <IconButton label={t("topbar.toggleAgentPanel")} onClick={toggleAgentPanel}>
           <Sparkles size={16} />
         </IconButton>

@@ -20,7 +20,7 @@ use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    App, AppHandle, Manager, RunEvent,
+    App, Manager, RunEvent,
 };
 
 use pi_bridge::PiProc;
@@ -36,15 +36,12 @@ struct BackendLifecycle {
     shutting_down: AtomicBool,
 }
 
-const SHUTDOWN_WATCHDOG: Duration = Duration::from_secs(8);
+fn shutdown_backend(app: &tauri::AppHandle) {
+    let lifecycle = app.state::<BackendLifecycle>();
+    if lifecycle.shutting_down.swap(true, Ordering::AcqRel) {
+        return;
+    }
 
-fn begin_shutdown(app: &AppHandle) -> bool {
-    !app.state::<BackendLifecycle>()
-        .shutting_down
-        .swap(true, Ordering::AcqRel)
-}
-
-fn shutdown_backend_claimed(app: &AppHandle) {
     let pi = app.state::<PiProc>();
     let mut health = backend_health_snapshot(&pi);
     health.shutdown_in_progress = true;
@@ -69,44 +66,6 @@ fn shutdown_backend_claimed(app: &AppHandle) {
     if let Err(error) = coordinator.run(Duration::from_secs(6)) {
         eprintln!("[backend-shutdown] {error}");
     }
-}
-
-fn schedule_shutdown_and_exit(app: AppHandle, exit_code: i32) {
-    let cleanup_app = app.clone();
-    if std::thread::Builder::new()
-        .name("pi-shutdown".to_owned())
-        .spawn(move || {
-            shutdown_backend_claimed(&cleanup_app);
-            cleanup_app.exit(exit_code);
-        })
-        .is_err()
-    {
-        app.exit(exit_code);
-        return;
-    }
-
-    // Backend teardown includes remote-control waits and child-process joins.
-    // Never let those keep a WebView window visibly stuck forever.
-    let watchdog_app = app;
-    let _ = std::thread::Builder::new()
-        .name("pi-exit-watchdog".to_owned())
-        .spawn(move || {
-            std::thread::sleep(SHUTDOWN_WATCHDOG);
-            watchdog_app.exit(exit_code);
-        });
-}
-
-fn request_shutdown_and_exit(app: AppHandle, exit_code: i32) {
-    if begin_shutdown(&app) {
-        schedule_shutdown_and_exit(app, exit_code);
-    } else {
-        app.exit(exit_code);
-    }
-}
-
-#[tauri::command]
-fn app_quit(app: AppHandle, exit_code: i32) {
-    request_shutdown_and_exit(app, exit_code);
 }
 
 fn backend_health_snapshot(pi: &PiProc) -> BackendHealthSnapshot {
@@ -178,7 +137,8 @@ fn create_tray(app: &App) -> tauri::Result<()> {
                 }
             }
             "quit" => {
-                request_shutdown_and_exit(app.clone(), 0);
+                shutdown_backend(app);
+                app.exit(0);
             }
             _ => {}
         })
@@ -317,8 +277,7 @@ pub fn run() {
             remote_control::remote_conversation_append,
             remote_control::remote_conversation_cancel,
             remote_control::remote_conversation_archive,
-            remote_control::remote_control_set_model_admin,
-            app_quit
+            remote_control::remote_control_set_model_admin
         ])
         .setup(|app| {
             if let Err(e) = app
@@ -350,15 +309,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Pi desktop");
     app.run(|app, event| {
-        if let RunEvent::ExitRequested { api, .. } = event {
-            // Native close / Alt+F4 reaches Rust even when the WebView is sick.
-            // Pause this first exit request, clean up off the event-loop thread,
-            // then call app.exit(). The second ExitRequested sees the claimed
-            // lifecycle and is allowed through immediately.
-            if begin_shutdown(app) {
-                api.prevent_exit();
-                schedule_shutdown_and_exit(app.clone(), 0);
-            }
+        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            shutdown_backend(app);
         }
     });
 }
