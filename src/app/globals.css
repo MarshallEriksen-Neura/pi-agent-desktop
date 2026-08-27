@@ -716,14 +716,16 @@ body {
   .panel-resizer::after { transition: none; }
 }
 
-/* ── Work mode: chat is centered in a comfortable reading column ── */
+/* ── Work mode: panel fills the row, prose is capped inside it ──────────────
+   The cap lives on the rows (.sd-measure below), not here. Capping the panel
+   instead left the composer and the separators floating in the middle of the
+   window with unmotivated gutters on both sides — and because the gap on the
+   right met the window edge rather than the sidebar, equal margins read as a
+   panel that had failed to reach the edge. */
 .sd-work {
   height: 100%;
   min-width: 0;
   flex: 1;
-  max-width: 840px;
-  margin-left: auto;
-  margin-right: auto;
 }
 /* AgentPanel's <aside> carries an explicit px width (the docked rail's dragged
    width) — force it to fill its flex container in work mode so the chat spans
@@ -733,6 +735,26 @@ body {
   max-width: none !important;
   border-left: none !important;
   border-radius: 0 !important;
+}
+
+/* Reading measure for work mode. Applied to each transcript row and to the
+   composer block, so the chrome (background, separators, header) spans the full
+   panel while the text stays at a readable width.
+   Only in work mode: the docked rail is already narrower than this cap, where it
+   would do nothing but add a stray max-width to every row.
+   ~72ch at the 13px transcript size. Wider than a prose-only target because the
+   same column carries code, diffs and terminal output; narrow enough that plain
+   answers don't run to 120 characters. */
+.sd-work .sd-measure {
+  /* Load-bearing for the composer. It is a direct flex child of the panel
+     column, and an auto margin on the cross axis cancels align-self: stretch —
+     the box collapses to fit-content (~200px) and gets centered, instead of
+     filling the panel and being capped. A no-op for the transcript rows, which
+     are ordinary blocks inside Virtuoso's wrappers. */
+  width: 100%;
+  max-width: 72ch;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* ── Zen-mode brand title ────────────────────────────────────────────────── */

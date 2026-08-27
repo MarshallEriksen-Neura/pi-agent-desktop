@@ -373,6 +373,7 @@ function LocalAgentPanel({ width }: { width?: number }) {
               Header: () =>
                 visible.length === 0 && !agentRunning ? (
                   <div
+                    className="sd-measure"
                     style={{
                       fontSize: 12.5,
                       color: "var(--text-tertiary)",
@@ -395,7 +396,7 @@ function LocalAgentPanel({ width }: { width?: number }) {
               // produced nothing visible yet, so it reads as the first row of the
               // activity list rather than a loading panel.
               Footer: () => (
-              <div style={{ display: "flow-root", padding: "0 12px 6px" }}>
+              <div className="sd-measure" style={{ display: "flow-root", padding: "0 12px 6px" }}>
                 <AnimatePresence>
                   {waitingForFirstToken && (
                     <motion.div
@@ -433,7 +434,7 @@ function LocalAgentPanel({ width }: { width?: number }) {
             // straight out of the box Virtuoso measures. Every row then under-reports
             // by ~7px: the bottom spacer comes out short, scrollHeight grows as you
             // arrive, and the transcript can never reach its own end.
-            <div style={{ display: "flow-root", padding: "0 12px" }}>
+            <div className="sd-measure" style={{ display: "flow-root", padding: "0 12px" }}>
               <MessageBubble
                 key={m.id}
                 m={m}
@@ -469,8 +470,9 @@ function LocalAgentPanel({ width }: { width?: number }) {
         )}
       </div>
 
-      {/* composer */}
-      <div style={{ position: "relative" }}>
+      {/* composer — measured like the transcript so the input lines up with the
+          messages it answers, while the panel's own surface stays full width */}
+      <div className="sd-measure" style={{ position: "relative" }}>
         {/* "/" surfaces built-in + extension commands; a click fills the input */}
         <SlashCommandMenu
           open={slashOpen}
