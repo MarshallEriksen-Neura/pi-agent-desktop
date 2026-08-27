@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Virtuoso, type VirtuosoHandle, type Components } from "react-virtuoso";
 import {
   Collapsible,
@@ -27,6 +27,7 @@ import { SlashCommandMenu } from "./SlashCommandMenu";
 import { MessageBubble, hasRenderableContent } from "./MessageBubble";
 import { RemoteConversationPanel } from "./RemoteConversationPanel";
 import { PiSpark, ShimmerText } from "./ActivityLine";
+import { PiMark } from "./PiMark";
 import { ComposerInput } from "./ComposerInput";
 import { RetryBanner } from "./RetryBanner";
 import { ExtStatusLine, ExtWidgets } from "./ExtensionSurfaces";
@@ -40,6 +41,17 @@ import {
   SquarePen,
   X,
 } from "lucide-react";
+
+/**
+ * The welcome state settling into a conversation: the two centering spacers
+ * shrink, the brand collapses, and the composer rides down on the space they
+ * give up. One spring shared by all three — separate transitions read as the
+ * pieces arriving at slightly different times rather than as one movement.
+ * Matches `springPanel` in app/page.tsx so panel motion is consistent.
+ */
+const DESCEND_SPRING = { type: "spring" as const, stiffness: 300, damping: 30 };
+/** Same layout change with the motion removed, for reduced-motion users. */
+const DESCEND_INSTANT = { duration: 0 };
 
 /**
  * Right rail — the chat surface.
@@ -93,6 +105,17 @@ function LocalAgentPanel({ width }: { width?: number }) {
      groups of tool rows. Dropping them here also keeps `animateIn` pointed at
      the last *visible* message rather than an invisible one. */
   const visible = useMemo(() => messages.filter(hasRenderableContent), [messages]);
+
+  /* Nothing to show and nothing on the way: the brand block takes the panel and
+     the composer rises to the centerline. `agentRunning` is part of it so a turn
+     that has been dispatched but hasn't rendered its first row yet doesn't flash
+     the welcome state back up. */
+  const isEmpty = visible.length === 0 && !agentRunning && !streaming;
+
+  /* The descent is a position change, which is exactly what vestibular triggers
+     are about — so honor the OS setting and let it cut instead. */
+  const reducedMotion = useReducedMotion();
+  const descend = reducedMotion ? DESCEND_INSTANT : DESCEND_SPRING;
 
   /* Sending pins the transcript to the bottom, whatever it was showing before.
      `followOutput` can't cover this: it only follows a view that is *already* at
@@ -326,7 +349,19 @@ function LocalAgentPanel({ width }: { width?: number }) {
           pills: name + current tool + per-task stop; click to focus. */}
       <BackgroundTasksStrip />
 
-      <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+      {/* Idle: the transcript has nothing to show, so it yields its space to the
+          two spacers that lift the brand + composer to the vertical centerline.
+          `flex: 1` would otherwise keep the empty scroller filling the panel and
+          pin the composer to the bottom. Virtuoso stays mounted either way —
+          unmounting it would drop the scroll position on the first token. */}
+      <div
+        style={{
+          position: "relative",
+          flex: isEmpty ? "0 0 0px" : 1,
+          minHeight: 0,
+          overflow: isEmpty ? "hidden" : undefined,
+        }}
+      >
         <Virtuoso<ChatMessage>
           ref={virtuosoRef}
           data={visible}
@@ -370,28 +405,10 @@ function LocalAgentPanel({ width }: { width?: number }) {
               // Renders nothing once there is a transcript: an empty wrapper
               // would still hand Virtuoso its padding as header height, leaving
               // a dead band above the first message.
-              Header: () =>
-                visible.length === 0 && !agentRunning ? (
-                  <div
-                    className="sd-measure"
-                    style={{
-                      fontSize: 12.5,
-                      color: "var(--text-tertiary)",
-                      padding: "16px 18px 0",
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    {t("agent.emptyAsk")}
-                    <code style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
-                      demo
-                    </code>
-                    {t("agent.emptyOr")}
-                    <code style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
-                      agents
-                    </code>
-                    {t("agent.emptyAfter")}
-                  </div>
-                ) : null,
+              // The empty state is no longer a scroll-area header — it is the
+              // centered brand block below, which sits outside Virtuoso so the
+              // composer can rise to meet it.
+              Header: () => null,
               // Bottom of the scroll area — one compact line while the turn has
               // produced nothing visible yet, so it reads as the first row of the
               // activity list rather than a loading panel.
@@ -470,9 +487,69 @@ function LocalAgentPanel({ width }: { width?: number }) {
         )}
       </div>
 
+      {/* Top half of the idle centering, paired with the spacer below the
+          composer: together they hold the free space that lifts the brand and
+          input to the centerline.
+          Always mounted and animated by flexGrow rather than conditionally
+          rendered. Removing them outright made the composer snap to the bottom
+          in a single frame; shrinking them hands that space to the transcript
+          over one spring, and the composer descends as an ordinary layout
+          result. Deliberately NOT a `layout` prop on the composer itself: it
+          wraps a textarea that changes height whenever the draft wraps, and
+          Framer would spring on every one of those too. */}
+      <motion.div
+        aria-hidden
+        animate={{ flexGrow: isEmpty ? 1 : 0 }}
+        transition={descend}
+        style={{ flexBasis: 0, minHeight: 0 }}
+      />
+
+      <AnimatePresence initial={false}>
+        {isEmpty && (
+          <motion.div
+            key="empty-brand"
+            initial={{ opacity: 0, y: 8, height: 0 }}
+            animate={{ opacity: 1, y: 0, height: "auto" }}
+            /* Collapses its height on the way out, on the same spring as the
+               spacers. Fading alone left it holding its box while the spacers
+               shrank underneath it, so it visibly lurched upward mid-fade —
+               two competing motions in one frame. Height (not transform) for
+               the same reason ExtStatusLine does: the box has to stop
+               occupying flow space, which a transform never does. */
+            exit={{ opacity: 0, height: 0 }}
+            transition={descend}
+            className="sd-measure"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 10,
+              padding: "0 12px 18px",
+              flexShrink: 0,
+              overflow: "hidden",
+            }}
+          >
+            <PiMark size={26} style={{ color: "var(--text-primary)", opacity: 0.9 }} />
+            <span
+              style={{
+                fontFamily: "var(--font-cormorant)",
+                fontStyle: "italic",
+                fontSize: 30,
+                letterSpacing: "0.06em",
+                color: "var(--text-primary)",
+                opacity: 0.85,
+                lineHeight: 1,
+              }}
+            >
+              {t("agent.emptyTitle")}
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* composer — measured like the transcript so the input lines up with the
           messages it answers, while the panel's own surface stays full width */}
-      <div className="sd-measure" style={{ position: "relative" }}>
+      <div className="sd-measure" style={{ position: "relative", flexShrink: 0 }}>
         {/* "/" surfaces built-in + extension commands; a click fills the input */}
         <SlashCommandMenu
           open={slashOpen}
@@ -505,12 +582,23 @@ function LocalAgentPanel({ width }: { width?: number }) {
           queue={queue}
           delivery={delivery}
           onDeliveryChange={setDelivery}
+          seamless={isEmpty}
         />
         {/* extension widgets pinned below the editor */}
         <div style={{ padding: "0 12px 8px" }}>
           <ExtWidgets placement="belowEditor" />
         </div>
       </div>
+
+      {/* Bottom half of the idle centering — see the spacer above the brand.
+          Under 1 so the group sits a little above true center, which is what
+          reads as centered once the composer's own height is in the balance. */}
+      <motion.div
+        aria-hidden
+        animate={{ flexGrow: isEmpty ? 0.85 : 0 }}
+        transition={descend}
+        style={{ flexBasis: 0, minHeight: 0 }}
+      />
     </aside>
   );
 }

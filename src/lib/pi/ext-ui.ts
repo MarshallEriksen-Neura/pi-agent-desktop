@@ -31,6 +31,69 @@ export const MODAL_METHODS = new Set(["confirm", "select", "input", "editor"]);
 const DEFAULT_KEY = "default";
 
 /**
+ * TTY escape sequences in extension status text. Extensions written for a
+ * terminal colorize their output, and the status line is plain DOM text — so an
+ * unstripped `setStatus` printed its escapes as literal glyphs
+ * (`[38;2;138;190;183m`) instead of coloring anything.
+ *
+ * Stripped rather than rendered: ansi_up (used by the terminal surface, where
+ * color is the point) emits HTML, and this text comes from an extension. A dimmed
+ * status line is not worth an HTML injection path.
+ *
+ * Not the `strip-ansi` package: it is not already in the tree, and it would not
+ * close the hole that actually showed up here — a lone control byte that matches
+ * no sequence shape at all still reached the DOM as a box glyph. The catch-all
+ * below is what guarantees that, so the dependency would buy a second regex and
+ * still need this one.
+ *
+ * Written with \x escapes on purpose: literal ESC/BEL bytes are invisible in an
+ * editor and do not survive every encoding pass.
+ */
+const ANSI_SEQUENCE = new RegExp(
+  [
+    // CSI — ESC [ params intermediates final, the SGR colors and cursor moves
+    '\\x1b\\[[0-9;?]*[ -/]*[@-~]',
+    // OSC — ESC ] text, terminated by BEL or ST (ESC backslash)
+    '\\x1b\\][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)?',
+    // Charset selection — three bytes, so it has to be tried before the
+    // two-byte rule below, which would otherwise match `ESC (` and leave the
+    // `B` behind as visible text.
+    '\\x1b[()#][0-9A-Za-z]',
+    // Two-byte escapes with no parameters, spanning ECMA-48 Fp (0x30-0x3F:
+    // keypad mode, save/restore cursor) through Fs (0x60-0x7E: RIS and
+    // friends). `[` and `]` fall inside this range, but the CSI and OSC
+    // alternatives above claim them first — alternation is ordered.
+    '\\x1b[0-~]',
+  ].join('|'),
+  'g',
+);
+
+/**
+ * Whatever the shapes above did not claim. This is the part that fixes the
+ * visible bug: a bare ESC, BEL, SO or U+009B carries no meaning outside a
+ * terminal but still renders as a box.
+ *
+ * U+009B is deliberately handled here and not as a CSI introducer. It is the
+ * single-byte form of `ESC [`, so parsing it as one means a stray occurrence
+ * swallows the text after it (` MCP` parses as a complete sequence). Dropping
+ * the character is the safer failure: real TTY output uses `ESC [`.
+ */
+const RESIDUAL_CONTROLS = /[\u0000-\u001f\u007f-\u009f\ufeff]/g;
+
+/** Flatten TTY-oriented status text into what a DOM text node can show. */
+export function stripAnsi(text: string): string {
+  return (
+    text
+      .replace(ANSI_SEQUENCE, '')
+      // a status line is one line; keep word boundaries the newline provided
+      .replace(/[\t\n\r]+/g, ' ')
+      .replace(RESIDUAL_CONTROLS, '')
+      .replace(/ {2,}/g, ' ')
+      .trim()
+  );
+}
+
+/**
  * A pending request plus the task whose pi process is blocked on it. pi holds
  * the turn open until the harness writes back on *that* process's stdin, so the
  * task id has to survive until the user answers — answering the focused task
@@ -149,9 +212,15 @@ export const useExtUi = create<ExtUiStore>((set, get) => ({
         case "setStatus": {
           // omitted statusText clears the entry for that key
           const key = req.statusKey ?? DEFAULT_KEY;
+          // Stripped here rather than in the view: every consumer of a status
+          // wants display text, and the escapes carry no meaning once the
+          // string leaves a TTY.
+          const statusText = req.statusText
+            ? stripAnsi(req.statusText)
+            : req.statusText;
           set((s) => {
             const forTask = { ...(s.statuses[taskId] ?? {}) };
-            if (req.statusText) forTask[key] = req.statusText;
+            if (statusText) forTask[key] = statusText;
             else delete forTask[key];
             const statuses = { ...s.statuses };
             if (Object.keys(forTask).length > 0) statuses[taskId] = forTask;

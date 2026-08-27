@@ -30,6 +30,13 @@ interface ComposerInputProps {
   /** how ⌘⏎ delivers while a turn is running */
   delivery: DeliveryMode;
   onDeliveryChange: (mode: DeliveryMode) => void;
+  /**
+   * Drops the top rule. That border divides the transcript from a composer
+   * docked at the bottom; in the welcome state the composer floats at the
+   * centerline with the brand above it, where the same line reads as a stray
+   * rule severing the two.
+   */
+  seamless?: boolean;
 }
 
 /**
@@ -52,6 +59,7 @@ export function ComposerInput({
   queue,
   delivery,
   onDeliveryChange,
+  seamless = false,
 }: ComposerInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const t = useT();
@@ -103,7 +111,7 @@ export function ComposerInput({
     <div
       style={{
         padding: 12,
-        borderTop: "1px solid var(--separator)",
+        borderTop: seamless ? "none" : "1px solid var(--separator)",
         position: "relative",
       }}
     >
