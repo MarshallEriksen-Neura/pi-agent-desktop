@@ -204,6 +204,10 @@ export default function PiSettingsPage() {
     setCloseBehavior,
     sendShortcut,
     setSendShortcut,
+    startupInterface,
+    setStartupInterface,
+    ideEnabled,
+    setIdeEnabled,
   } = useUI();
   const [notifPermission, setNotifPermission] =
     useState<NotificationPermissionState>("default");
@@ -389,6 +393,38 @@ export default function PiSettingsPage() {
               onChange={(v) => setLocale(v === "中文" ? "zh" : "en")}
             />
           </div>
+        </InsetGroup>
+      )}
+
+      {/* startup layout — app-local, not part of pi's settings.json */}
+      {category === "general" && (
+        <InsetGroup
+          header={t("settings.interface")}
+          footer={t("settings.interfaceFooter")}
+        >
+          <GroupRow
+            first
+            icon={<Activity size={15} />}
+            iconBg="var(--accent)"
+            title={t("settings.startupInterface")}
+            detail={t("settings.startupInterfaceDetail")}
+            trailing={
+              <div style={{ width: 240, flexShrink: 0 }}>
+                <Segmented
+                  options={["default", "work"] as const}
+                  value={startupInterface}
+                  onChange={setStartupInterface}
+                  labelOf={(v) => t(`settings.startupInterface.${v}`)}
+                />
+              </div>
+            }
+          />
+          <GroupRow
+            icon={<Braces size={15} />}
+            title={t("settings.ideEnabled")}
+            detail={t("settings.ideEnabledDetail")}
+            trailing={<IOSSwitch checked={ideEnabled} onChange={setIdeEnabled} />}
+          />
         </InsetGroup>
       )}
 

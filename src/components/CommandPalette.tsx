@@ -96,7 +96,7 @@ export function CommandPalette() {
 }
 
 function PaletteBody() {
-  const { setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal } = useUI();
+  const { setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, ideEnabled } = useUI();
   const cycleModel = usePi((s) => s.cycleModel);
   const piCommands = usePi((s) => s.commands);
   const refresh = usePi((s) => s.refresh);
@@ -251,8 +251,9 @@ function PaletteBody() {
         useChat.getState().send(`/${c.name}`);
       },
     }));
-    return [...base, ...fromProjects, ...fromPi];
-  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t]);
+    const visibleBase = ideEnabled ? base : base.filter((command) => command.id !== "work");
+    return [...visibleBase, ...fromProjects, ...fromPi];
+  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, ideEnabled, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t]);
 
   if (asking) {
     return (
@@ -361,6 +362,8 @@ function PaletteBody() {
           borderRadius: 0,
           height: "auto",
           background: "transparent",
+          outline: "none",
+          boxShadow: "none",
         }}
       />
       {/* inline (non-floating) list — the palette itself is the popup */}
