@@ -6,7 +6,10 @@ import {
   type BackendPorts,
 } from "../../src/lib/backend/composition/container";
 import type { RuntimeConfigPort } from "../../src/lib/backend/ports/runtime-config";
+import type { RemoteControlPort } from "../../src/lib/backend/ports/remote-control";
+import type { RemoteConversationsPort } from "../../src/lib/backend/ports/remote-conversations";
 import { resetRuntimeStoreForTests, useRuntime } from "../../src/lib/pi/runtime";
+import { unreachablePort } from "./fixtures/unreachable-port";
 
 function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
   return {
@@ -142,6 +145,9 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
     externalNavigation: {
       open: async () => undefined,
     },
+    // this test only drives runtimeConfig — see fixtures/unreachable-port
+    remoteControl: unreachablePort<RemoteControlPort>("remoteControl"),
+    remoteConversations: unreachablePort<RemoteConversationsPort>("remoteConversations"),
   };
 }
 

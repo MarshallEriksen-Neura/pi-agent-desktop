@@ -13,6 +13,30 @@ import type {
 export type EventId = string;
 export type EventSequence = number;
 
+/**
+ * Guard for `sequence` on a stream where a regression is a protocol violation
+ * rather than a replay — returns `next` when it strictly increases, throws
+ * otherwise. Pairs with `assertRemoteTaskTransition`: the `assert*` helpers here
+ * refuse impossible state, they do not repair it.
+ *
+ * Deliberately stricter than `reduceRemoteConversationState`, which *drops*
+ * events at or below `lastSequence`. Delivery is at-least-once, so a reducer fed
+ * straight from a reconnecting socket has to tolerate duplicates. This is for
+ * the other side of that boundary — a gateway assigning sequences, or a test
+ * asserting a recorded stream is well-formed — where a repeat means the producer
+ * is broken and silently ignoring it would hide the bug.
+ */
+export function assertNextRemoteEventSequence(
+  last: EventSequence,
+  next: EventSequence,
+): EventSequence {
+  if (!(next > last)) {
+    throw new Error(`Remote event sequence must increase: ${last} -> ${next}`);
+  }
+
+  return next;
+}
+
 export interface RemoteEventBase {
   /**
    * Stable, globally-unique event identifier (UUID v4 or ULID). Used for

@@ -9,7 +9,18 @@
     "rootDir": "../..",
     "outDir": "../../.tmp/backend-tests",
     "jsx": "react-jsx",
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@/*": ["../../src/*"],
+      // `@pi/remote-control-contracts` is a workspace symlink whose types are
+      // reachable only through package.json `exports`, which classic Node
+      // resolution cannot read — and the CommonJS emit this config needs rules
+      // out `node16`/`bundler`, which could. Point at the source instead: every
+      // importer under src/lib/backend uses `import type`, so nothing survives
+      // into the emit and no runtime require is created.
+      "@pi/remote-control-contracts": ["../../packages/remote-control-contracts/src/index.ts"],
+      "@pi/remote-control-contracts/*": ["../../packages/remote-control-contracts/src/*"]
+    }
   },
   "include": [
     "./**/*.ts",

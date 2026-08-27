@@ -20,7 +20,7 @@ run(process.execPath, [
   "-p",
   "tests/backend/tsconfig.json",
 ]);
-rewriteAliases(outDir);
+rewriteAliases(outDir, path.join(outDir, "src"));
 run(process.execPath, ["--test", ".tmp/backend-tests/tests/backend/all.test.js"]);
 
 /**
@@ -29,12 +29,14 @@ run(process.execPath, ["--test", ".tmp/backend-tests/tests/backend/all.test.js"]
  * graph reaches one. Rewrite them to relative paths post-emit — cheaper than
  * adding a resolver hook, and keeps `node --test` invocable by hand.
  */
-function rewriteAliases(dir) {
-  const srcRoot = path.join(dir, "src");
+function rewriteAliases(dir, srcRoot) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      rewriteAliases(full);
+      // srcRoot is threaded through rather than derived from `dir`: deriving it
+      // per level made it `<dir>/src` at every depth, so a rewrite one level
+      // down resolved against `src/lib/pi/src` and emitted `./src/lib/...`.
+      rewriteAliases(full, srcRoot);
       continue;
     }
     if (!entry.name.endsWith(".js")) continue;

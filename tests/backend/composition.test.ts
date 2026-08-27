@@ -13,6 +13,9 @@ import {
   DesktopInvokeError,
   normalizeDesktopInvokeError,
 } from "../../src/lib/backend/desktop/invoke";
+import type { RemoteControlPort } from "../../src/lib/backend/ports/remote-control";
+import type { RemoteConversationsPort } from "../../src/lib/backend/ports/remote-conversations";
+import { unreachablePort } from "./fixtures/unreachable-port";
 
 function fakePorts(label = "fake"): BackendPorts {
   return {
@@ -154,6 +157,12 @@ function fakePorts(label = "fake"): BackendPorts {
     externalNavigation: {
       open: async () => undefined,
     },
+    /* The LAN gateway has no place in container wiring tests, and no test in
+       this suite reaches either port. Rejecting rather than returning empty
+       snapshots keeps that true: a stub that answers plausibly would let a
+       future test pass against a fake that proves nothing. */
+    remoteControl: unreachablePort<RemoteControlPort>("remoteControl"),
+    remoteConversations: unreachablePort<RemoteConversationsPort>("remoteConversations"),
   } satisfies BackendPorts;
 }
 
