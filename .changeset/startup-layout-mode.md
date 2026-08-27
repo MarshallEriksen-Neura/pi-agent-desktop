@@ -69,7 +69,21 @@ they flipped a flag nothing read:
   itself, instead of being shown unconditionally.
 
 `work-only` keeps the sidebar available, since it is the only route to the session
-list once the IDE is gone.
+list once the IDE is gone — but only the session sections. The file tree is hidden
+there, because its primary action is `openFile`, which reads the file into the doc
+cache and sets `activeFile`, both of which only `EditorCanvas` renders: clicking a
+file would mark the row selected, spend the read, and show nothing. Trimming it to
+the operations that *do* work without an editor (new / rename / delete) would keep
+exactly the manual file work this layout exists to hand to the agent, so the
+section goes whole.
+
+The top bar stops naming a file there for the same reason: nothing ever opened
+one, so `activeFile` is still its placeholder default and the window would be
+labelled with a file the user cannot reach. Plain `work` mode still shows it —
+there the name is what ⌘/ returns to.
+
+Opening a project does not depend on the editor: `ProjectSwitcher` lives in the
+top bar, and ⌘K offers the folder picker and recents.
 
 Also fixed: the command palette's search field no longer draws a focus ring — the
 palette is its own popup, so the inner outline was a second frame inside a frame.

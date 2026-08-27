@@ -232,6 +232,10 @@ export function Sidebar() {
   const [explorerHover, setExplorerHover] = useState(false);
   const [focusedEntry, setFocusedEntry] = useState<FsEntry | null>(null);
   const [sessionsExpanded, setSessionsExpanded] = useState(false);
+  /* work-only is the one layout with no editor to open a file into — see the
+     Explorer section below. The workspace still initializes: its root is what
+     the agent runs against, whether or not a tree is drawn. */
+  const showExplorer = useUI((s) => s.layoutMode !== "work-only");
 
   useEffect(() => {
     init();
@@ -411,6 +415,14 @@ export function Sidebar() {
           {/* conversations started on a paired phone — same list, own section */}
           <RemoteSection />
 
+          {/* The tree's primary action opens a file into the editor, so with the
+              editor removed it would read a whole file into the doc cache, mark
+              the row selected, and show nothing — a control that reports success
+              and does nothing. Its remaining powers (new / rename / delete) are
+              the manual work this layout exists to hand to the agent, so the
+              whole section goes rather than being trimmed to those. */}
+          {showExplorer && (
+          <>
           {/* Explorer header — label + hover-revealed new-file / new-folder buttons */}
           <div
             onMouseEnter={() => setExplorerHover(true)}
@@ -511,6 +523,8 @@ export function Sidebar() {
           {top.map((e) => (
             <TreeNode key={e.path} entry={e} depth={0} />
           ))}
+          </>
+          )}
         </ScrollArea>
       </nav>
 

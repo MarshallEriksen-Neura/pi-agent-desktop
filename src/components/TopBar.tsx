@@ -89,15 +89,21 @@ export function TopBar() {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
-        <span
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            color: "var(--text-primary)",
-          }}
-        >
-          {fileName}
-        </span>
+        {/* Plain work mode still names the file ⌘/ would return to, but with the
+            editor removed nothing ever opened one — activeFile is still its
+            placeholder default, so this would label the window with a file the
+            user cannot reach and may not have. */}
+        {layoutMode !== "work-only" && (
+          <span
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: "var(--text-primary)",
+            }}
+          >
+            {fileName}
+          </span>
+        )}
         <ProjectSwitcher />
       </div>
 
