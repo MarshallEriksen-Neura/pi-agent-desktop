@@ -16,6 +16,15 @@ const nextConfig: NextConfig = {
   // Silence multiple-lockfile root inference in this workspace
   outputFileTracingRoot: __dirname,
   assetPrefix: isProd ? undefined : undefined,
+  /**
+   * `@appica/icons-react` exposes all 4997 icons as named exports off a single
+   * root barrel — there are no per-icon subpaths to import from instead. Without
+   * this, dev builds resolve the whole barrel on every touch. (lucide-react is
+   * already in Next's built-in list; this package is not.)
+   */
+  experimental: {
+    optimizePackageImports: ["@appica/icons-react"],
+  },
   webpack: (config) => {
     /**
      * Redirect the bare `shiki` specifier to an explicit language/theme list.

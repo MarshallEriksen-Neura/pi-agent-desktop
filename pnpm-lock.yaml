@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@appica/icons-react':
+        specifier: ^1.0.0
+        version: 1.0.0(@types/react@19.2.17)(react@19.2.8)
       '@appica/ui-react':
         specifier: ^1.0.0
         version: 1.0.0(@date-fns/tz@1.5.0)(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)
@@ -242,6 +245,16 @@ packages:
   '@aparajita/capacitor-secure-storage@8.0.0':
     resolution: {integrity: sha512-oYnwSjdIh23aRNgz8982+TmFvQH/2yZkEdw1iIg+H2ziFJoOVELPTc7u6Ez2HwOuDIW5AGqBX75GvrzQ+D70Qg==}
     engines: {node: '>=20.0.0'}
+
+  '@appica/icons-react@1.0.0':
+    resolution: {integrity: sha512-g0/qrEyklCkiFBXFuBUg8xy/qYii1uhUGHKz1TXf47YF3KTvZCyOIGY82AGqO2ol8wHNsTwVXYCq68fAXvdqkg==}
+    engines: {node: '>=20.0.0'}
+    peerDependencies:
+      '@types/react': ^19.0.0
+      react: ^19.0.0
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
 
   '@appica/ui-react@1.0.0':
     resolution: {integrity: sha512-ZdOsAwMkcJE1G+o/S7xajyyenTsRX6agpmTqoNZcOBbBU1kEnzhF2/MR98zkVy4JHivR84VlSKRTo9/lo5kpsA==}
@@ -3312,6 +3325,12 @@ snapshots:
       '@capacitor/core': 8.5.0
       '@capacitor/ios': 8.5.0(@capacitor/core@8.5.0)
       '@capacitor/keyboard': 8.0.5(@capacitor/core@8.5.0)
+
+  '@appica/icons-react@1.0.0(@types/react@19.2.17)(react@19.2.8)':
+    dependencies:
+      react: 19.2.8
+    optionalDependencies:
+      '@types/react': 19.2.17
 
   '@appica/ui-react@1.0.0(@date-fns/tz@1.5.0)(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(tailwindcss@4.3.3)':
     dependencies:

@@ -13,28 +13,41 @@
 import type { ReactNode } from "react";
 import { motion } from "motion/react";
 import {
-  Bot,
-  FilePenLine,
+  AiAgent,
+  FilePencil,
   FileText,
   Globe,
-  ListChecks,
-  PlugZap,
+  type IconComponent,
+  ListCheck,
+  PlugConnected,
   Search,
   Terminal,
   Wrench,
-} from "lucide-react";
+} from "@appica/icons-react";
 import { toolKind, type ToolKind } from "@/lib/pi/tool-label";
 import type { TaskStatus } from "@/lib/store";
 
-const KIND_ICON: Record<ToolKind, typeof Wrench> = {
+/**
+ * Tool-kind icons come from `@appica/icons-react`, not lucide.
+ *
+ * The set is drawn for a 1.5 stroke, but at the 13px this row uses that lands
+ * on ~0.8 device px — it antialiases into something too faint to read next to
+ * the label. Rows render at 1.75 instead; the neighbouring lucide icons in the
+ * trailing slots are pinned to the same value.
+ *
+ * Note the import shape — icons are named exports off the package root and there
+ * are no per-icon subpaths, unlike `@appica/ui-react`. That barrel is why
+ * `optimizePackageImports` lists the package in next.config.ts.
+ */
+const KIND_ICON: Record<ToolKind, IconComponent> = {
   read: FileText,
-  write: FilePenLine,
+  write: FilePencil,
   bash: Terminal,
   search: Search,
   web: Globe,
-  task: ListChecks,
-  agent: Bot,
-  mcp: PlugZap,
+  task: ListCheck,
+  agent: AiAgent,
+  mcp: PlugConnected,
   other: Wrench,
 };
 
@@ -186,7 +199,7 @@ export function ActivityLine({
           color: ICON_COLOR[status],
         }}
       >
-        <Icon size={13} strokeWidth={2} />
+        <Icon size={13} strokeWidth={1.75} />
       </span>
       <span
         style={{

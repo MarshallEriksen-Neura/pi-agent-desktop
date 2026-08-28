@@ -621,7 +621,8 @@ function EditToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boole
                 (e.currentTarget as HTMLButtonElement).style.color = "var(--text-tertiary)";
               }}
             >
-              <ExternalLink size={11} />
+              {/* stroke matched to the row's appica tool icon (1.75, not lucide's 2) */}
+              <ExternalLink size={11} strokeWidth={1.75} />
               {t("agent.previewInBrowser")}
             </button>
           )}

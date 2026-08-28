@@ -989,9 +989,10 @@ export function useSubagentRow(
     trailing: live ? (
       startedAt !== undefined ? <Elapsed since={startedAt} /> : <PiSpark size={11} />
     ) : status === "error" ? (
-      <AlertTriangle size={11} style={{ color: "var(--danger)" }} />
+      // stroke matched to the row's appica tool icon (1.75, not lucide's 2)
+      <AlertTriangle size={11} strokeWidth={1.75} style={{ color: "var(--danger)" }} />
     ) : (
-      <Check size={11} style={{ color: "var(--success)" }} />
+      <Check size={11} strokeWidth={1.75} style={{ color: "var(--success)" }} />
     ),
     label:
       count > 1
