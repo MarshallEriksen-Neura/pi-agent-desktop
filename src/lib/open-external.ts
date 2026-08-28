@@ -9,3 +9,12 @@ export function openExternal(url: string) {
     window.open(url, "_blank", "noopener,noreferrer");
   });
 }
+
+/**
+ * Open a local .html/.htm file in the system browser. The desktop port rejects
+ * non-HTML targets, so on failure there is no web fallback — a file:// URL
+ * opened from the dev web page is blocked by the browser anyway.
+ */
+export function openHtmlFile(path: string) {
+  void getPort("externalNavigation").openHtmlFile(path).catch(() => {});
+}

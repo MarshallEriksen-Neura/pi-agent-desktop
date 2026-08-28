@@ -31,6 +31,34 @@ export const MODAL_METHODS = new Set(["confirm", "select", "input", "editor"]);
 const DEFAULT_KEY = "default";
 
 /**
+ * Widget lines that are a machine-readable envelope rather than display text.
+ *
+ * `setWidget` normally carries pre-rendered lines, so this store hands them
+ * straight to a monospace block. But an extension that detects an RPC host can
+ * use the same channel to *hand over data* instead of drawing: `pi-subagents`
+ * pins one line of `PI_SUBAGENT_ASYNC_JSON:{…}` under key `subagent-async` and
+ * expects the host to decode it and draw its own live view — which this app
+ * already does, from each run's own `status.json` (see `./async-runs`), in far
+ * more detail than the envelope carries. Rendered verbatim it was a 30-line JSON
+ * blob wedged above the composer for the whole run.
+ *
+ * Dropped rather than decoded, then, because the same information arrives on a
+ * better transport. Matched by prefix so an extension that later adds a real
+ * text line to that widget still shows it, and so the entry clears itself the
+ * moment nothing but envelopes is left.
+ *
+ * The upstream extension also takes `asyncWidget: false` in its own config, but
+ * that is the user's file: this keeps a protocol payload out of the UI whatever
+ * the local config says.
+ */
+const WIDGET_ENVELOPE_PREFIXES = ["PI_SUBAGENT_ASYNC_JSON:"];
+
+function isWidgetEnvelope(line: string): boolean {
+  const head = line.trimStart();
+  return WIDGET_ENVELOPE_PREFIXES.some((prefix) => head.startsWith(prefix));
+}
+
+/**
  * TTY escape sequences in extension status text. Extensions written for a
  * terminal colorize their output, and the status line is plain DOM text — so an
  * unstripped `setStatus` printed its escapes as literal glyphs
@@ -231,13 +259,15 @@ export const useExtUi = create<ExtUiStore>((set, get) => ({
         }
 
         case "setWidget": {
-          // omitted widgetLines clears the widget for that key
+          // omitted widgetLines clears the widget for that key — as does a
+          // payload that was nothing but a protocol envelope
           const key = req.widgetKey ?? DEFAULT_KEY;
+          const lines = req.widgetLines?.filter((line) => !isWidgetEnvelope(line));
           set((s) => {
             const forTask = { ...(s.widgets[taskId] ?? {}) };
-            if (req.widgetLines?.length) {
+            if (lines?.length) {
               forTask[key] = {
-                lines: req.widgetLines,
+                lines,
                 placement: req.widgetPlacement ?? "aboveEditor",
               };
             } else {

@@ -138,6 +138,7 @@ export const zh: Record<keyof typeof en, string> = {
   "agent.pastedImage": "粘贴的图片",
   "agent.removeImage": "移除图片",
   "agent.viewImage": "查看图片",
+  "agent.previewInBrowser": "在浏览器中打开",
   "agent.closePreview": "关闭预览",
   "agent.thought": "已思考",
   "agent.thinking": "思考中…",
@@ -310,6 +311,10 @@ export const zh: Record<keyof typeof en, string> = {
   "review.reverted": "已撤销",
   "review.reject": "拒绝",
   "review.accept": "接受",
+
+  // +/- badge on an edit row
+  "diff.stat": "新增 {added} 行，删除 {removed} 行",
+  "diff.statApprox": "约新增 {added} 行，删除 {removed} 行",
 
   // extension sheet
   "ext.request": "扩展请求",

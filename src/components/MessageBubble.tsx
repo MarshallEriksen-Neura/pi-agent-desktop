@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  ExternalLink,
   MoreVertical,
   RotateCcw,
   TriangleAlert,
@@ -16,12 +17,15 @@ import {
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n";
 import { useMessageActions } from "@/lib/pi/message-actions";
-import { mcpAuthCompleteExample, toolDetail, toolTitle } from "@/lib/pi/tool-label";
+import { mcpAuthCompleteExample, toolDetail, toolTitle, EDIT_TOOL } from "@/lib/pi/tool-label";
+import { htmlEditTarget } from "@/lib/pi/html-preview";
 import { isSubagentTool } from "@/lib/pi/subagents";
+import { useToolDiffStat } from "@/lib/pi/diff-stat";
 import { useSubagentRow } from "./Subagents";
 import type { ChatToolCall } from "@/lib/pi/chat";
-import { openExternal } from "@/lib/open-external";
+import { openExternal, openHtmlFile } from "@/lib/open-external";
 import { ActivityLine } from "./ActivityLine";
+import { DiffStatBadge } from "./DiffStatBadge";
 import { ImageLightbox } from "./ImageLightbox";
 import { useChat, type ChatMessage } from "@/lib/pi/chat";
 
@@ -472,7 +476,8 @@ function AssistantMessage({
 /**
  * One tool call in the transcript. Subagents get the interactive variant: their
  * call returns the moment the worker is forked, so this row — not the tool
- * result — is where the real work is followed and opened.
+ * result — is where the real work is followed and opened. Edits get a variant
+ * that reports how many lines moved.
  *
  * Branching on the tool *name* rather than inside one component keeps the store
  * subscription off the ordinary rows, and the branch is stable for a given call.
@@ -480,6 +485,9 @@ function AssistantMessage({
 function ToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
   if (isSubagentTool(tool.name)) {
     return <SubagentToolRow tool={tool} animateIn={animateIn} />;
+  }
+  if (EDIT_TOOL.test(tool.name)) {
+    return <EditToolRow tool={tool} animateIn={animateIn} />;
   }
   return (
     <ActivityLine
@@ -491,6 +499,68 @@ function ToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }
     />
   );
 }
+
+/**
+ * An edit row, which grows a `+12 −3` badge the moment the write lands. The stat
+ * arrives from the agent bridge (keyed by tool call), so a row restored from
+ * history — where there was no pre-edit snapshot to diff — stays a plain row.
+ *
+ * An edit that wrote an HTML page also grows an "open in browser" affordance:
+ * the whole point of having the agent write a page is to look at it, and the
+ * browser resolves the page's relative assets against the file itself.
+ */
+function EditToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
+  const t = useT();
+  const stat = useToolDiffStat(tool.id);
+  const changed = stat && (stat.added > 0 || stat.removed > 0);
+  // the preview opens the file as it is on disk now, so it only shows once the
+  // write has landed — not while the call is still running
+  const target = tool.status === "done" ? htmlEditTarget(tool.name, tool.args) : undefined;
+  return (
+    <ActivityLine
+      status={tool.status}
+      toolName={tool.name}
+      title={toolTitle(tool.name, tool.args)}
+      detail={toolDetail(tool.args)}
+      animateIn={animateIn}
+      trailing={
+        <>
+          {changed ? <DiffStatBadge stat={stat} /> : undefined}
+          {target && (
+            <button
+              type="button"
+              title={t("agent.previewInBrowser")}
+              onClick={() => openHtmlFile(target)}
+              style={previewButtonStyle}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.color = "var(--accent)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.color = "var(--text-tertiary)";
+              }}
+            >
+              <ExternalLink size={11} />
+              {t("agent.previewInBrowser")}
+            </button>
+          )}
+        </>
+      }
+    />
+  );
+}
+
+const previewButtonStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 3,
+  border: "none",
+  background: "transparent",
+  color: "var(--text-tertiary)",
+  fontSize: 10.5,
+  cursor: "pointer",
+  padding: 0,
+  transition: "color 0.15s ease",
+};
 
 function SubagentToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
   const title = toolTitle(tool.name, tool.args);

@@ -138,6 +138,7 @@ export const en = {
   "agent.pastedImage": "Pasted image",
   "agent.removeImage": "Remove image",
   "agent.viewImage": "View image",
+  "agent.previewInBrowser": "Open in browser",
   "agent.closePreview": "Close preview",
   "agent.thought": "Thought",
   "agent.thinking": "Thinking…",
@@ -310,6 +311,10 @@ export const en = {
   "review.reverted": "Reverted",
   "review.reject": "Reject",
   "review.accept": "Accept",
+
+  // +/- badge on an edit row
+  "diff.stat": "{added} lines added, {removed} lines removed",
+  "diff.statApprox": "about {added} lines added and {removed} removed",
 
   // extension sheet
   "ext.request": "Extension request",

@@ -20,6 +20,7 @@ import { termBus, ansi } from "@/lib/terminal-bus";
 import { editorBus } from "@/lib/editor-bus";
 import { destroyPetBridge, initPetBridge } from "@/lib/pet/bridge";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
+import { diffStat, diffStatFromArgs, diffStatFromResult, useDiffStats } from "./diff-stat";
 import {
   BASH_TOOL,
   EDIT_TOOL,
@@ -34,6 +35,25 @@ interface ToolRec {
   path?: string;
   /** file content before the edit (undefined if it wasn't loaded in time) */
   oldText?: string;
+  /**
+   * Resolves once the pre-edit snapshot attempt has settled. `tool_execution_end`
+   * awaits it rather than racing it — losing that race used to mean no `oldText`
+   * and therefore no diff at all, and the file has been overwritten by then, so
+   * there is no second chance to read the old content.
+   */
+  snapshot?: Promise<void>;
+  /**
+   * Whether the file was readable before the edit. `false` means pi created it,
+   * which is a real diff against empty (all additions) rather than unknown.
+   */
+  existedBefore?: boolean;
+  /**
+   * The edit tool's own arguments, kept for the +/- count. They describe the
+   * change directly, which is what makes the badge survive a disk read-back that
+   * never lands — the layout without an editor, a mocked backend, a path the
+   * workspace store resolved differently than the agent did.
+   */
+  args?: Record<string, unknown>;
   /** chars of the bash partialResult already streamed to the terminal */
   streamed: number;
   /** block ID if in block mode */
@@ -132,15 +152,31 @@ function bindAgentBridge(taskId: string) {
       if (raw) {
         rec.kind = "edit";
         rec.path = normPath(raw);
+        rec.args = args;
+        const path = rec.path;
         const ws = useWorkspace.getState();
-        rec.oldText = ws.docs[rec.path]; // may be undefined — openFile races the tool
-        // focus the file so the user watches the edit land; also snapshots
-        // the pre-edit content into docs for the later diff highlight
-        void ws.openFile(rec.path).then(() => {
-          if (rec.oldText === undefined) {
-            rec.oldText = useWorkspace.getState().docs[rec.path!];
+        const cached = ws.docs[path];
+        // focus the file so the user watches the edit land; also snapshots the
+        // pre-edit content, which both the changed-line highlight and the +/-
+        // badge diff against
+        rec.snapshot = (async () => {
+          try {
+            if (cached !== undefined) {
+              rec.oldText = cached;
+              rec.existedBefore = true;
+            }
+            await ws.openFile(path);
+            rec.oldText ??= useWorkspace.getState().docs[path];
+            // openFile leaves docs untouched when the read fails, which is exactly
+            // how a file pi is about to create reads here
+            rec.existedBefore ??= rec.oldText !== undefined;
+          } catch {
+            // Never reject: tool_execution_end awaits this, and a rejection there
+            // would discard the badge and the highlight with nothing to show for it.
+            // `existedBefore` stays unset on purpose — an unexpected failure is not
+            // evidence the file was absent, and guessing would invent removals.
           }
-        });
+        })();
       }
     } else if (BASH_TOOL.test(e.toolName)) {
       rec.kind = "bash";
@@ -219,19 +255,44 @@ function bindAgentBridge(taskId: string) {
 
     if (rec.kind === "edit" && rec.path && !e.isError) {
       const path = rec.path;
-      const ws = useWorkspace.getState();
+      const toolCallId = e.toolCallId;
+      // Extension editors such as pi-hashline-edit-pro already return exact
+      // line metrics. Publish those before any workspace IPC so the transcript
+      // badge cannot be held hostage by the pre/post-read race.
+      const reportedStat = diffStatFromResult(e.result);
+      if (reportedStat && (reportedStat.added > 0 || reportedStat.removed > 0)) {
+        useDiffStats.getState().record(toolCallId, reportedStat);
+      }
       void (async () => {
-        const oldText = rec.oldText ?? ws.docs[path];
+        await rec.snapshot; // only disk fallback/highlighting waits for the pre-edit read
+        // a file pi created has no previous content, which is a diff against
+        // empty — not an unknown one
+        const oldText = rec.existedBefore === false ? "" : rec.oldText;
+        const ws = useWorkspace.getState();
         await ws.reloadFile(path); // pull pi's write from disk
         await ws.openFile(path); //   ensure it's the active editor doc
         void ws.refreshDir(parentDir(path)); // new files show up in the tree
         const newText = useWorkspace.getState().docs[path];
+
+        /* Badge source priority: tool-reported metrics are authoritative and
+           already published above. Without them, a disk diff observes what
+           landed; tool arguments are the final fallback for native edit/write. */
+        const stat =
+          reportedStat ??
+          (oldText !== undefined && newText !== undefined && newText !== oldText
+            ? diffStat(oldText, newText)
+            : diffStatFromArgs(rec.args ?? {}, oldText));
         if (
-          oldText === undefined ||
-          newText === undefined ||
-          oldText === newText
-        )
-          return;
+          !reportedStat &&
+          stat &&
+          (stat.added > 0 || stat.removed > 0)
+        ) {
+          useDiffStats.getState().record(toolCallId, stat);
+        }
+
+        // the highlight needs both real texts — it decorates actual line numbers
+        if (oldText === undefined || newText === undefined) return;
+        if (oldText === newText) return;
         const lines = changedLines(oldText, newText);
         if (lines.length === 0) return;
         // let the editor swap to the fresh doc before decorating it

@@ -17,3 +17,5 @@ import "./model-sync.test";
 import "./composer-shortcut.test";
 import "./pet-animator.test";
 import "./provider-auth.test";
+import "./diff-stat.test";
+import "./html-preview.test";

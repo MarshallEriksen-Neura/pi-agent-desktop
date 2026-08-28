@@ -144,6 +144,7 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
     },
     externalNavigation: {
       open: async () => undefined,
+      openHtmlFile: async () => undefined,
     },
     // this test only drives runtimeConfig — see fixtures/unreachable-port
     remoteControl: unreachablePort<RemoteControlPort>("remoteControl"),

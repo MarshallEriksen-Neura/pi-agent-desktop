@@ -190,6 +190,27 @@ fn open_external(url: String) -> Result<(), String> {
     r.map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Open an HTML file in the system default browser as a `file://` URL. Scoped
+/// to .html/.htm so the command cannot be used as a generic "open anything"
+/// primitive; the browser resolves relative assets against the file's own
+/// directory, which is what a preview of an agent-edited page wants.
+#[tauri::command]
+fn open_html_preview(path: String) -> Result<(), String> {
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if ext != "html" && ext != "htm" {
+        return Err("only .html/.htm files can be previewed".into());
+    }
+    if !std::path::Path::new(&path).is_file() {
+        return Err("file not found".into());
+    }
+    let url = tauri::Url::from_file_path(&path).map_err(|_| "invalid path".to_string())?;
+    open_external(url.as_str().to_string())
+}
+
 /// Build the system tray so the main window can be minimized to tray and
 /// restored (or quit) from outside the window. Left-click toggles the window,
 /// right-click (or the menu) shows 显示 / 隐藏 / 退出.
@@ -343,6 +364,7 @@ pub fn run() {
             pet_window::pet_window_set_position,
             pet_window::list_custom_pets,
             open_external,
+            open_html_preview,
             pi_models::pi_fetch_models,
             provider_auth::provider_auth_list,
             provider_auth::provider_auth_begin,

@@ -156,6 +156,7 @@ function fakePorts(label = "fake"): BackendPorts {
     },
     externalNavigation: {
       open: async () => undefined,
+      openHtmlFile: async () => undefined,
     },
     /* The LAN gateway has no place in container wiring tests, and no test in
        this suite reaches either port. Rejecting rather than returning empty

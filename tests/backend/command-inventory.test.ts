@@ -36,11 +36,11 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   assert.equal(result.inventory.legacyTauriFileCount, 0);
   assert.equal(result.inventory.legacyTauriRefCount, 0);
   assert.ok(result.inventory.tauriRefCount > 0);
-  assert.ok(result.inventory.commandCallCount >= 64);
+  assert.ok(result.inventory.commandCallCount >= 65);
   // 62 was stale before this suite could run: pet_window_prewarm had been
   // invoked since the pet feature landed without being added to the boundary
   // script's expected list, so the real count was already 63. app_quit makes 64.
-  assert.equal(result.inventory.commandUniqueCount, 64);
+  assert.equal(result.inventory.commandUniqueCount, 65);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -70,6 +70,8 @@ test("locks the desktop command names and Pi process event names", () => {
     "mcp_config_read",
     "mcp_config_write",
     "open_external",
+    // opens an agent-written .html file as a file:// URL in the system browser
+    "open_html_preview",
     "pet_window_hide",
     // invoked since the pet feature landed; the list simply never caught up,
     // and this suite could not run to say so

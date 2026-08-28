@@ -75,6 +75,24 @@ Download `Pi_0.1.0_aarch64.dmg` or `Pi_0.1.0_x64.dmg`.
 
 Download the `.AppImage` / `.deb` / `.rpm` and install it the usual way.
 
+### Recommended: a `pi` editor that reports its own line counts
+
+```bash
+pi install npm:pi-hashline-edit-pro
+```
+
+Pi Desktop shows a `+12 −3` badge on every file-edit row in the transcript. It resolves that count from three sources, in this order:
+
+1. **Line metrics the edit tool reports in its own result** — exact, and available the instant the call ends.
+2. **A disk read-back** — reads the file after the write and diffs it against the pre-edit snapshot.
+3. **The tool's arguments** — a targeted replacement carries its own before/after text; a whole-file write carries the after text.
+
+[`pi-hashline-edit-pro`](https://github.com/YuGiMob/pi-hashline-edit-pro) hits the first path: its `replace` returns `added_lines` / `removed_lines` in the result payload, so the badge is published straight from the tool's own accounting and never depends on a filesystem read landing in time.
+
+It matters most for anchor-based editing specifically. That tool identifies the lines it removes by content anchor rather than by text, so the removed count genuinely cannot be reconstructed from the call arguments — path 3 is unavailable by construction, and without the reported metrics the badge would be left waiting on path 2.
+
+`pi`'s built-in `edit` / `write` work fine without this and fall back to paths 2 and 3. Installing it makes the count immediate and exact rather than dependent on a read-back.
+
 ## How it works
 
 ```mermaid
