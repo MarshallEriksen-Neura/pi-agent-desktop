@@ -41,6 +41,14 @@ interface WorkspaceStore {
   pickProject: () => Promise<void>;
   removeRecent: (path: string) => Promise<void>;
   toggleDir: (path: string) => Promise<void>;
+  /**
+   * Load a file's text into `docs` without changing what the editor shows.
+   * Resolves true when the text is available (or the path is an image, which
+   * carries no text doc). Read-only surfaces — the file inspector, an edit
+   * snapshot taken before the agent writes — need the content but must not
+   * reach over and move the user's cursor to get it.
+   */
+  ensureDoc: (path: string) => Promise<boolean>;
   openFile: (path: string) => Promise<void>;
   /** Force re-read from disk (e.g. after an agent tool edited the file). */
   reloadFile: (path: string) => Promise<void>;
@@ -163,18 +171,22 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     }
   },
 
-  openFile: async (path) => {
-    const { docs } = get();
+  ensureDoc: async (path) => {
     // images are fetched as base64 by the ImageViewer — no text doc to load
-    if (docs[path] === undefined && !isImageFile(path)) {
-      try {
-        const content = await getPort("workspaceFs").readFile(path);
-        set((s) => ({ docs: { ...s.docs, [path]: content } }));
-      } catch (e) {
-        set({ loadError: e instanceof Error ? e.message : String(e) });
-        return; // don't open a file we couldn't read
-      }
+    if (isImageFile(path)) return true;
+    if (get().docs[path] !== undefined) return true;
+    try {
+      const content = await getPort("workspaceFs").readFile(path);
+      set((s) => ({ docs: { ...s.docs, [path]: content } }));
+      return true;
+    } catch (e) {
+      set({ loadError: e instanceof Error ? e.message : String(e) });
+      return false;
     }
+  },
+
+  openFile: async (path) => {
+    if (!(await get().ensureDoc(path))) return; // don't open a file we couldn't read
     useUI.getState().setActiveFile(path);
   },
 

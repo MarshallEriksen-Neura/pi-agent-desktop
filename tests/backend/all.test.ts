@@ -18,4 +18,5 @@ import "./composer-shortcut.test";
 import "./pet-animator.test";
 import "./provider-auth.test";
 import "./diff-stat.test";
+import "./file-diffs.test";
 import "./html-preview.test";

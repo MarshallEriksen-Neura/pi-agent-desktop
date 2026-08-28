@@ -40,6 +40,7 @@ const THEME_STORAGE_KEY = "pi-desktop.theme";
 const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";
 const AGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.agentPanelWidth";
 const SUBAGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.subagentPanelWidth";
+const INSPECTOR_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.inspectorPanelWidth";
 const SEND_SHORTCUT_STORAGE_KEY = "pi-desktop.sendShortcut";
 const LAYOUT_MODE_STORAGE_KEY = "pi-desktop.layoutMode";
 
@@ -59,6 +60,17 @@ export const SUBAGENT_PANEL_WIDTH_DEFAULT = 420;
 /** Below this the tool feed's `name + args` rows stop being readable. */
 export const SUBAGENT_PANEL_WIDTH_MIN = 320;
 export const SUBAGENT_PANEL_WIDTH_MAX = 720;
+
+/**
+ * File inspector column width, in px. Wider by default than the subagent
+ * inspector: this one holds two line-number gutters and unwrapped code, so the
+ * same 420px that reads fine for a tool feed puts a diff into horizontal
+ * scrolling on almost every line.
+ */
+export const INSPECTOR_PANEL_WIDTH_DEFAULT = 480;
+/** Below this the two gutters plus a sign plus code stops being worth reading. */
+export const INSPECTOR_PANEL_WIDTH_MIN = 360;
+export const INSPECTOR_PANEL_WIDTH_MAX = 860;
 
 // what happens when the user closes the main window
 export type CloseBehavior = "ask" | "minimize" | "quit";
@@ -98,6 +110,11 @@ const clampSubagentPanelWidth = (px: number) =>
     Math.min(SUBAGENT_PANEL_WIDTH_MAX, Math.max(SUBAGENT_PANEL_WIDTH_MIN, px)),
   );
 
+const clampInspectorPanelWidth = (px: number) =>
+  Math.round(
+    Math.min(INSPECTOR_PANEL_WIDTH_MAX, Math.max(INSPECTOR_PANEL_WIDTH_MIN, px)),
+  );
+
 export interface NotificationSettings {
   enabled: boolean;
 }
@@ -133,6 +150,9 @@ interface UIState {
   /** user-dragged width of the docked subagent inspector (px) */
   subagentPanelWidth: number;
   subagentPanelResizing: boolean;
+  /** user-dragged width of the docked file inspector (px) */
+  inspectorPanelWidth: number;
+  inspectorPanelResizing: boolean;
   commandPaletteOpen: boolean;
   terminalOpen: boolean;
   activeFile: string;
@@ -185,6 +205,11 @@ interface UIState {
   setSubagentPanelResizing: (resizing: boolean) => void;
   resetSubagentPanelWidth: () => void;
   initSubagentPanelWidth: () => void;
+  setInspectorPanelWidth: (px: number) => void;
+  persistInspectorPanelWidth: () => void;
+  setInspectorPanelResizing: (resizing: boolean) => void;
+  resetInspectorPanelWidth: () => void;
+  initInspectorPanelWidth: () => void;
   toggleTerminal: () => void;
   setTerminalOpen: (open: boolean) => void;
   setCommandPalette: (open: boolean) => void;
@@ -220,6 +245,8 @@ export const useUI = create<UIState>((set) => ({
   agentPanelWidth: AGENT_PANEL_WIDTH_DEFAULT,
   subagentPanelWidth: SUBAGENT_PANEL_WIDTH_DEFAULT,
   subagentPanelResizing: false,
+  inspectorPanelWidth: INSPECTOR_PANEL_WIDTH_DEFAULT,
+  inspectorPanelResizing: false,
   agentPanelResizing: false,
   commandPaletteOpen: false,
   activeFile: "src/lib/agent.ts",
@@ -410,6 +437,45 @@ export const useUI = create<UIState>((set) => ({
       const px = saved === null ? NaN : Number(saved);
       if (!Number.isFinite(px)) return {};
       return { subagentPanelWidth: clampSubagentPanelWidth(px) };
+    }),
+
+  /* file inspector — same contract again */
+  setInspectorPanelWidth: (px) =>
+    set((s) => {
+      const width = clampInspectorPanelWidth(px);
+      return width === s.inspectorPanelWidth ? {} : { inspectorPanelWidth: width };
+    }),
+  persistInspectorPanelWidth: () => {
+    try {
+      localStorage.setItem(
+        INSPECTOR_PANEL_WIDTH_STORAGE_KEY,
+        String(useUI.getState().inspectorPanelWidth),
+      );
+    } catch {
+      // storage unavailable (private mode) — the width stays for this session only
+    }
+  },
+  setInspectorPanelResizing: (resizing) => set({ inspectorPanelResizing: resizing }),
+  resetInspectorPanelWidth: () =>
+    set(() => {
+      try {
+        localStorage.removeItem(INSPECTOR_PANEL_WIDTH_STORAGE_KEY);
+      } catch {
+        // storage unavailable — the in-memory reset still applies
+      }
+      return { inspectorPanelWidth: INSPECTOR_PANEL_WIDTH_DEFAULT };
+    }),
+  initInspectorPanelWidth: () =>
+    set(() => {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(INSPECTOR_PANEL_WIDTH_STORAGE_KEY);
+      } catch {
+        // storage unavailable — stay on the default inspector width
+      }
+      const px = saved === null ? NaN : Number(saved);
+      if (!Number.isFinite(px)) return {};
+      return { inspectorPanelWidth: clampInspectorPanelWidth(px) };
     }),
 
   setCommandPalette: (open) => set({ commandPaletteOpen: open }),

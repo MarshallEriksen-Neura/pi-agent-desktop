@@ -61,8 +61,7 @@ export function TerminalInput() {
         style={{
           fontSize: 12,
           color: "var(--text-tertiary)",
-          fontFamily:
-            '"SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace',
+          fontFamily: "var(--font-mono)",
         }}
       >
         $
@@ -80,8 +79,7 @@ export function TerminalInput() {
           border: "none",
           outline: "none",
           background: "transparent",
-          fontFamily:
-            '"SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace',
+          fontFamily: "var(--font-mono)",
           fontSize: 12,
           color: "var(--text-primary)",
           padding: "4px 0",

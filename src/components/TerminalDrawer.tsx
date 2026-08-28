@@ -40,6 +40,24 @@ function buildXtermTheme() {
   };
 }
 
+/**
+ * The app's mono stack, read from the stylesheet.
+ *
+ * xterm draws to a canvas, so it needs a literal family string rather than a CSS
+ * variable — and a second copy of the list is a copy that drifts. This one asks
+ * the document for the same `--font-mono` the editor and every diff gutter use,
+ * so the terminal cannot end up on a different face (or on a ligature cut, which
+ * a fixed cell grid does not want) than the rest of the app.
+ */
+function monoFontStack(): string {
+  const declared = getComputedStyle(document.documentElement)
+    .getPropertyValue("--font-mono")
+    // the declaration wraps across lines; canvas measurement wants one line
+    .replace(/\s+/g, " ")
+    .trim();
+  return declared || "ui-monospace, Consolas, monospace";
+}
+
 /** Bottom drawer terminal — slides up with a spring, themed by tokens. */
 export function TerminalDrawer() {
   const { terminalOpen, setTerminalOpen } = useUI();
@@ -86,8 +104,7 @@ export function TerminalDrawer() {
 
       const term = new Terminal({
         allowProposedApi: true,
-        fontFamily:
-          '"SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace',
+        fontFamily: monoFontStack(),
         fontSize: 12.5,
         lineHeight: 1.5,
         cursorBlink: true,

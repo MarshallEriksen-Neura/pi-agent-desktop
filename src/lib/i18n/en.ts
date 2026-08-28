@@ -316,6 +316,33 @@ export const en = {
   "diff.stat": "{added} lines added, {removed} lines removed",
   "diff.statApprox": "about {added} lines added and {removed} removed",
 
+  // file inspector — the docked panel behind a file row in the transcript
+  "inspector.title": "File inspector",
+  "inspector.open": "Open {file} in the inspector",
+  "inspector.source": "Source",
+  "inspector.changes": "Changes",
+  "inspector.following": "Following pi — click to pin this file",
+  "inspector.pinned": "Pinned — click to follow pi again",
+  "inspector.close": "Close inspector",
+  "inspector.closeTab": "Close tab",
+  "inspector.openInEditor": "Open in editor",
+  "inspector.readOnly": "Read-only · file as it is on disk",
+  "inspector.diffAgainstBefore": "Compared with the file before this edit",
+  "inspector.approx": "Rewritten as a block — counts are approximate",
+  "inspector.diffReleased": "This diff is no longer held in memory",
+  "inspector.staleRead": "Changed {count} more times since pi read it",
+  "inspector.loading": "Reading…",
+  "inspector.unchangedLines": "{count} unchanged lines",
+  "inspector.viewSource": "View in source",
+  "inspector.truncated": "Change too large to show in full — first {count} lines only",
+  "inspector.added": "added",
+  "inspector.removed": "removed",
+  "inspector.prevChange": "Previous change",
+  "inspector.nextChange": "Next change",
+  "inspector.newChanges": "{count} new changes",
+  "inspector.backToLatest": "Back to latest",
+  "inspector.resize": "Drag to resize the inspector",
+
   // extension sheet
   "ext.request": "Extension request",
 

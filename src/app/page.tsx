@@ -6,11 +6,15 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   AGENT_PANEL_WIDTH_MAX,
   AGENT_PANEL_WIDTH_MIN,
+  INSPECTOR_PANEL_WIDTH_MAX,
+  INSPECTOR_PANEL_WIDTH_MIN,
   SUBAGENT_PANEL_WIDTH_MAX,
   SUBAGENT_PANEL_WIDTH_MIN,
   useUI,
 } from "@/lib/store";
 import { SubagentPanel, useSubagentPanelOpen } from "@/components/Subagents";
+import { FileInspector } from "@/components/FileInspector";
+import { useFileInspector } from "@/lib/file-inspector";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
 import { EditorCanvas } from "@/components/EditorCanvas";
@@ -53,6 +57,12 @@ export default function Home() {
     persistSubagentPanelWidth,
     setSubagentPanelResizing,
     resetSubagentPanelWidth,
+    inspectorPanelWidth,
+    inspectorPanelResizing,
+    setInspectorPanelWidth,
+    persistInspectorPanelWidth,
+    setInspectorPanelResizing,
+    resetInspectorPanelWidth,
     zenMode,
     workMode,
     layoutMode,
@@ -107,7 +117,12 @@ export default function Home() {
      wherever that conversation is and is meaningless without it. Zen mode shows
      nothing but the composer, so it stays out of the way there. */
   const subagentOpen = useSubagentPanelOpen();
-  const showSubagent = subagentOpen && showAgent;
+  /* One docked column, two possible tenants. Both are opened by clicking a
+     transcript row, so the last row clicked wins — the row handlers close the
+     other one rather than this deciding a fixed precedence. */
+  const inspectorOpen = useFileInspector((s) => s.open && s.tabs.length > 0);
+  const showInspector = inspectorOpen && showAgent;
+  const showSubagent = subagentOpen && showAgent && !showInspector;
 
   // Track the row's width so the rail can be capped against what's actually
   // available. An observer rather than a window resize listener: the row is also
@@ -127,7 +142,14 @@ export default function Home() {
    * The widest the rail may be right now: whatever the row can spare above the
    * editor's floor. Measuring the row means the nav rail is already excluded;
    * the sidebar is subtracted because it doesn't shrink.
+   *
+   * The editor's floor only applies when there is an editor. In work mode the
+   * chat is the only flexible column, so reserving another 360px for a column
+   * that isn't mounted left the docked panels pinned near their minimum with
+   * most of the window free.
    */
+  const flexibleFloor = showEditor ? EDITOR_MIN_WIDTH : 0;
+
   /**
    * The inspector's ceiling. It yields to the rail rather than the other way
    * round: the chat is the primary surface, and an inspector wide enough to
@@ -135,12 +157,12 @@ export default function Home() {
    */
   const subagentMaxWidth = useMemo(() => {
     if (!rowWidth) return SUBAGENT_PANEL_WIDTH_MAX;
-    const room = rowWidth - (showSidebar ? 248 : 0) - AGENT_PANEL_WIDTH_MIN - EDITOR_MIN_WIDTH;
+    const room = rowWidth - (showSidebar ? 248 : 0) - AGENT_PANEL_WIDTH_MIN - flexibleFloor;
     return Math.max(
       SUBAGENT_PANEL_WIDTH_MIN,
       Math.min(SUBAGENT_PANEL_WIDTH_MAX, room),
     );
-  }, [rowWidth, showSidebar]);
+  }, [rowWidth, showSidebar, flexibleFloor]);
 
   const subagentEffectiveWidth = Math.min(subagentPanelWidth, subagentMaxWidth);
 
@@ -149,19 +171,45 @@ export default function Home() {
     [subagentMaxWidth],
   );
 
+  /** The file inspector's ceiling — same reasoning as the subagent column's. */
+  const inspectorMaxWidth = useMemo(() => {
+    if (!rowWidth) return INSPECTOR_PANEL_WIDTH_MAX;
+    const room = rowWidth - (showSidebar ? 248 : 0) - AGENT_PANEL_WIDTH_MIN - flexibleFloor;
+    return Math.max(
+      INSPECTOR_PANEL_WIDTH_MIN,
+      Math.min(INSPECTOR_PANEL_WIDTH_MAX, room),
+    );
+  }, [rowWidth, showSidebar, flexibleFloor]);
+
+  const inspectorEffectiveWidth = Math.min(inspectorPanelWidth, inspectorMaxWidth);
+
+  const inspectorPanelBounds = useCallback(
+    () => ({ min: INSPECTOR_PANEL_WIDTH_MIN, max: inspectorMaxWidth }),
+    [inspectorMaxWidth],
+  );
+
   const agentMaxWidth = useMemo(() => {
     if (!rowWidth) return AGENT_PANEL_WIDTH_MAX;
     const room =
       rowWidth -
       (showSidebar ? 248 : 0) -
-      // the inspector is a column too, so the rail cannot claim its space
+      // the docked inspector is a column too, so the rail cannot claim its space
       (showSubagent ? subagentEffectiveWidth : 0) -
-      EDITOR_MIN_WIDTH;
+      (showInspector ? inspectorEffectiveWidth : 0) -
+      flexibleFloor;
     // A minimum-size window can leave less room than the rail's own floor.
     // Clamping up rather than inverting the range keeps the rail usable and
     // lets the editor be the one that gives.
     return Math.max(AGENT_PANEL_WIDTH_MIN, Math.min(AGENT_PANEL_WIDTH_MAX, room));
-  }, [rowWidth, showSidebar, showSubagent, subagentEffectiveWidth]);
+  }, [
+    rowWidth,
+    showSidebar,
+    showSubagent,
+    subagentEffectiveWidth,
+    showInspector,
+    inspectorEffectiveWidth,
+    flexibleFloor,
+  ]);
 
   /**
    * The rendered width, which is not the same as the saved one. A rail dragged
@@ -175,6 +223,56 @@ export default function Home() {
     () => ({ min: AGENT_PANEL_WIDTH_MIN, max: agentMaxWidth }),
     [agentMaxWidth],
   );
+
+  /**
+   * The docked column the work-mode chat is sharing the row with, and how to
+   * resize it. Null in the editor layouts, where each docked column carries its
+   * own handle on the edge it shares with the editor.
+   *
+   * Two tenants, one column (see showInspector / showSubagent above), so the
+   * single handle has to follow whichever is in it.
+   */
+  const dockedResize = useMemo(() => {
+    if (showEditor) return null;
+    if (showInspector)
+      return {
+        width: inspectorEffectiveWidth,
+        bounds: inspectorPanelBounds,
+        onResize: setInspectorPanelWidth,
+        onResizeStateChange: setInspectorPanelResizing,
+        onCommit: persistInspectorPanelWidth,
+        onReset: resetInspectorPanelWidth,
+        label: t("inspector.resize"),
+      };
+    if (showSubagent)
+      return {
+        width: subagentEffectiveWidth,
+        bounds: subagentPanelBounds,
+        onResize: setSubagentPanelWidth,
+        onResizeStateChange: setSubagentPanelResizing,
+        onCommit: persistSubagentPanelWidth,
+        onReset: resetSubagentPanelWidth,
+        label: t("subagents.resize"),
+      };
+    return null;
+  }, [
+    showEditor,
+    showInspector,
+    inspectorEffectiveWidth,
+    inspectorPanelBounds,
+    setInspectorPanelWidth,
+    setInspectorPanelResizing,
+    persistInspectorPanelWidth,
+    resetInspectorPanelWidth,
+    showSubagent,
+    subagentEffectiveWidth,
+    subagentPanelBounds,
+    setSubagentPanelWidth,
+    setSubagentPanelResizing,
+    persistSubagentPanelWidth,
+    resetSubagentPanelWidth,
+    t,
+  ]);
 
   return (
     <div
@@ -221,17 +319,51 @@ export default function Home() {
               transition={subagentPanelResizing ? { duration: 0 } : springPanel}
               style={{ position: "relative", overflow: "hidden", flexShrink: 0 }}
             >
-              <PanelResizer
-                edge="left"
-                width={subagentEffectiveWidth}
-                bounds={subagentPanelBounds}
-                onResize={setSubagentPanelWidth}
-                onResizeStateChange={setSubagentPanelResizing}
-                onCommit={persistSubagentPanelWidth}
-                onReset={resetSubagentPanelWidth}
-                label={t("subagents.resize")}
-              />
+              {/* Only when an editor sits to the left. In work mode this edge is
+                  the window edge, and the seam that can move is the one against
+                  the chat — the handle for it is mounted there instead. */}
+              {showEditor && (
+                <PanelResizer
+                  edge="left"
+                  width={subagentEffectiveWidth}
+                  bounds={subagentPanelBounds}
+                  onResize={setSubagentPanelWidth}
+                  onResizeStateChange={setSubagentPanelResizing}
+                  onCommit={persistSubagentPanelWidth}
+                  onReset={resetSubagentPanelWidth}
+                  label={t("subagents.resize")}
+                />
+              )}
               <SubagentPanel width={subagentEffectiveWidth} />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* File inspector — same column, same motion: what changed in the file a
+            transcript row named, without giving up sight of the conversation. */}
+        <AnimatePresence initial={false}>
+          {showInspector && (
+            <motion.div
+              key="inspector"
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: inspectorEffectiveWidth, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={inspectorPanelResizing ? { duration: 0 } : springPanel}
+              style={{ position: "relative", overflow: "hidden", flexShrink: 0 }}
+            >
+              {showEditor && (
+                <PanelResizer
+                  edge="left"
+                  width={inspectorEffectiveWidth}
+                  bounds={inspectorPanelBounds}
+                  onResize={setInspectorPanelWidth}
+                  onResizeStateChange={setInspectorPanelResizing}
+                  onCommit={persistInspectorPanelWidth}
+                  onReset={resetInspectorPanelWidth}
+                  label={t("inspector.resize")}
+                />
+              )}
+              <FileInspector width={inspectorEffectiveWidth} />
             </motion.div>
           )}
         </AnimatePresence>
@@ -245,7 +377,27 @@ export default function Home() {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
               className="sd-work"
+              /* tells the stylesheet to keep the left border: with a docked
+                 column beside it that edge is a seam, not the window edge */
+              data-docked={dockedResize ? "1" : undefined}
             >
+              {/* The chat is the flexible column here, so the movable seam is its
+                  left edge — but what it resizes is the fixed column on the other
+                  side, which is why the handle drives that width and grows the
+                  opposite way from where it sits. */}
+              {dockedResize && (
+                <PanelResizer
+                  edge="left"
+                  grow="right"
+                  width={dockedResize.width}
+                  bounds={dockedResize.bounds}
+                  onResize={dockedResize.onResize}
+                  onResizeStateChange={dockedResize.onResizeStateChange}
+                  onCommit={dockedResize.onCommit}
+                  onReset={dockedResize.onReset}
+                  label={dockedResize.label}
+                />
+              )}
               <AgentPanel />
             </motion.div>
           ) : (

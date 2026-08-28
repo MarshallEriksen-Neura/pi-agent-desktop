@@ -173,21 +173,32 @@ pub fn run_shell_bridge_if_requested() -> Option<i32> {
     wsl::run_shell_bridge_if_requested()
 }
 
+/// Hand a URL to the OS default handler.
+///
+/// The scheme guard lives in the callers, not here: `open_external` is reachable
+/// from the webview and must stay http(s)-only, while the HTML preview needs to
+/// pass the `file://` URL it has already validated. Routing the preview through
+/// the guarded command instead is what made its button do nothing at all — the
+/// call failed on "only http(s) urls allowed" before it ever reached the shell.
+fn spawn_url_opener(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let r = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open").arg(url).spawn();
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Open an http(s) URL in the system default browser (terminal web-links).
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("only http(s) urls allowed".into());
     }
-    #[cfg(target_os = "windows")]
-    let r = std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", &url])
-        .spawn();
-    #[cfg(target_os = "macos")]
-    let r = std::process::Command::new("open").arg(&url).spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let r = std::process::Command::new("xdg-open").arg(&url).spawn();
-    r.map(|_| ()).map_err(|e| e.to_string())
+    spawn_url_opener(&url)
 }
 
 /// Open an HTML file in the system default browser as a `file://` URL. Scoped
@@ -208,7 +219,7 @@ fn open_html_preview(path: String) -> Result<(), String> {
         return Err("file not found".into());
     }
     let url = tauri::Url::from_file_path(&path).map_err(|_| "invalid path".to_string())?;
-    open_external(url.as_str().to_string())
+    spawn_url_opener(url.as_str())
 }
 
 /// Build the system tray so the main window can be minimized to tray and

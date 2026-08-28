@@ -20,7 +20,9 @@ import { termBus, ansi } from "@/lib/terminal-bus";
 import { editorBus } from "@/lib/editor-bus";
 import { destroyPetBridge, initPetBridge } from "@/lib/pet/bridge";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
-import { diffStat, diffStatFromArgs, diffStatFromResult, useDiffStats } from "./diff-stat";
+import { diffStatFromArgs, diffStatFromResult, useDiffStats } from "./diff-stat";
+import { buildDiff, useFileDiffs } from "./file-diffs";
+import { isFollowingAgent, useFileInspector } from "@/lib/file-inspector";
 import {
   BASH_TOOL,
   EDIT_TOOL,
@@ -156,18 +158,20 @@ function bindAgentBridge(taskId: string) {
         const path = rec.path;
         const ws = useWorkspace.getState();
         const cached = ws.docs[path];
-        // focus the file so the user watches the edit land; also snapshots the
-        // pre-edit content, which both the changed-line highlight and the +/-
-        // badge diff against
+        // Snapshot the pre-edit content, which both the changed-line highlight
+        // and the +/- badge diff against. Whether the editor also *jumps* to the
+        // file is a separate question: it should while the user is watching work
+        // happen, and must not once they have pinned a file open themselves.
         rec.snapshot = (async () => {
           try {
             if (cached !== undefined) {
               rec.oldText = cached;
               rec.existedBefore = true;
             }
-            await ws.openFile(path);
+            if (isFollowingAgent()) await ws.openFile(path);
+            else await ws.ensureDoc(path);
             rec.oldText ??= useWorkspace.getState().docs[path];
-            // openFile leaves docs untouched when the read fails, which is exactly
+            // the read leaves docs untouched when it fails, which is exactly
             // how a file pi is about to create reads here
             rec.existedBefore ??= rec.oldText !== undefined;
           } catch {
@@ -270,17 +274,31 @@ function bindAgentBridge(taskId: string) {
         const oldText = rec.existedBefore === false ? "" : rec.oldText;
         const ws = useWorkspace.getState();
         await ws.reloadFile(path); // pull pi's write from disk
-        await ws.openFile(path); //   ensure it's the active editor doc
+        // Re-focus only while the surface is still chasing the agent. Pinned, the
+        // user keeps the file they were reading.
+        if (isFollowingAgent()) await ws.openFile(path);
         void ws.refreshDir(parentDir(path)); // new files show up in the tree
         const newText = useWorkspace.getState().docs[path];
 
+        /* One diff serves both surfaces: the inspector renders its hunks and the
+           badge takes its totals, so the panel and the row it was opened from
+           cannot disagree about how much moved. */
+        const body =
+          oldText !== undefined && newText !== undefined && newText !== oldText
+            ? buildDiff(oldText, newText)
+            : undefined;
+        if (body) {
+          useFileDiffs.getState().record(toolCallId, path, body);
+          useFileInspector.getState().noteAgentEdit(path, toolCallId);
+        }
+
         /* Badge source priority: tool-reported metrics are authoritative and
-           already published above. Without them, a disk diff observes what
+           already published above. Without them, the disk diff observes what
            landed; tool arguments are the final fallback for native edit/write. */
         const stat =
           reportedStat ??
-          (oldText !== undefined && newText !== undefined && newText !== oldText
-            ? diffStat(oldText, newText)
+          (body
+            ? { added: body.added, removed: body.removed, approx: body.approx }
             : diffStatFromArgs(rec.args ?? {}, oldText));
         if (
           !reportedStat &&

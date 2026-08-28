@@ -316,6 +316,33 @@ export const zh: Record<keyof typeof en, string> = {
   "diff.stat": "新增 {added} 行，删除 {removed} 行",
   "diff.statApprox": "约新增 {added} 行，删除 {removed} 行",
 
+  // file inspector — the docked panel behind a file row in the transcript
+  "inspector.title": "文件查看器",
+  "inspector.open": "在查看器中打开 {file}",
+  "inspector.source": "原文",
+  "inspector.changes": "变更",
+  "inspector.following": "跟随 pi — 点击固定当前文件",
+  "inspector.pinned": "已固定 — 点击恢复跟随 pi",
+  "inspector.close": "关闭查看器",
+  "inspector.closeTab": "关闭标签",
+  "inspector.openInEditor": "在编辑器中打开",
+  "inspector.readOnly": "只读 · 磁盘上的现状",
+  "inspector.diffAgainstBefore": "与本次编辑前的文件对比",
+  "inspector.approx": "整块重写 — 行数为估算",
+  "inspector.diffReleased": "这次改动的内容已不在内存中",
+  "inspector.staleRead": "pi 读取之后又改动了 {count} 次",
+  "inspector.loading": "读取中…",
+  "inspector.unchangedLines": "{count} 行未变更",
+  "inspector.viewSource": "在原文中查看",
+  "inspector.truncated": "改动过大，仅显示前 {count} 行",
+  "inspector.added": "新增",
+  "inspector.removed": "删除",
+  "inspector.prevChange": "上一处改动",
+  "inspector.nextChange": "下一处改动",
+  "inspector.newChanges": "{count} 处新改动",
+  "inspector.backToLatest": "回到最新",
+  "inspector.resize": "拖动调整查看器宽度",
+
   // extension sheet
   "ext.request": "扩展请求",
 

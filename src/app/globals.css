@@ -107,11 +107,34 @@
   --duration-fast: 0.25s;
   --duration-base: 0.4s;
 
-  /* Typography */
-  --font-ui: -apple-system, "SF Pro Text", "SF Pro Display", "Segoe UI",
-    system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", ui-monospace,
-    Menlo, Consolas, monospace;
+  /* Typography
+     Apple faces lead — this is an iOS-inspired shell and on a Mac it should look
+     like one. Everything after them is what actually resolves on Windows, which
+     is where the app mostly runs:
+
+     - `Segoe UI Variable` is Windows 11's own UI face and a real variable font,
+       so `font-optical-sizing: auto` on <body> gets an axis to work with and a
+       10.5px label stops being a shrunken 13px one. `… Text` is the named
+       instance for builds that only expose those, `Segoe UI` is the Windows 10
+       floor.
+     - CJK is a separate hop: no Segoe face carries Han glyphs and PingFang is
+       mac-only, so Chinese falls through to YaHei. `Microsoft YaHei UI` is the
+       tighter UI cut of the same design and what Windows itself uses for
+       interface text; plain `Microsoft YaHei` stays behind it for older systems.
+     - Emoji sit after the generic on purpose: per-character fallback keeps
+       walking past a family that lacks the glyph, so this is only reached by the
+       characters that need it. */
+  --font-ui: -apple-system, "SF Pro Text", "SF Pro Display",
+    "Segoe UI Variable", "Segoe UI Variable Text", "Segoe UI", system-ui,
+    "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji";
+  /* `Cascadia Mono` ahead of `Cascadia Code`: same design, no programming
+     ligatures. In a diff a ligature is a lie — `!=` drawn as `≠` is not what the
+     file says, and this stack renders the editor, the terminal and every diff
+     gutter. The trailing CJK entry keeps Chinese comments deterministic instead
+     of leaving them to last-resort fallback. */
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Mono", "Cascadia Code",
+    ui-monospace, Consolas, Menlo, monospace, "Microsoft YaHei UI";
 
   /* ── Ink wash accents (models page) ── */
   --ink-title: rgba(0, 0, 0, 0.9);
@@ -141,9 +164,14 @@
   --pet-seal-review: #c1443a;
   --pet-seal-failed: #2b2724;
   /* Serif first — 宋体 where it exists, Georgia as the Latin stand-in — so the
-     text reads as brushed rather than as UI chrome. */
+     text reads as brushed rather than as UI chrome. `SimSun` is the Windows leg
+     of the same idea, and it sits *after* the Latin serifs on purpose: it carries
+     Latin glyphs too, and they are poor at this size. Behind Georgia it is
+     reached only by the Han characters that need it — without it those quietly
+     fall through to a sans UI face, which is the one thing this stack is trying
+     not to look like. */
   --pet-bubble-font: "Songti SC", "Source Han Serif SC", "Noto Serif SC", Georgia,
-    "Times New Roman", var(--font-ui);
+    "Times New Roman", SimSun, var(--font-ui);
 
   color-scheme: light;
 }
@@ -726,6 +754,8 @@ body {
   height: 100%;
   min-width: 0;
   flex: 1;
+  /* anchors the resize handle for the docked column beside it */
+  position: relative;
 }
 /* AgentPanel's <aside> carries an explicit px width (the docked rail's dragged
    width) — force it to fill its flex container in work mode so the chat spans
@@ -735,6 +765,11 @@ body {
   max-width: none !important;
   border-left: none !important;
   border-radius: 0 !important;
+}
+/* Except when a column is docked to the left: there the border is the seam
+   between two panels, not a stray line against the window edge. */
+.sd-work[data-docked="1"] > aside {
+  border-left: 1px solid var(--separator) !important;
 }
 
 /* Reading measure for work mode. Applied to each transcript row and to the

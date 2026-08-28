@@ -73,6 +73,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initSendShortcut();
     // restore the dragged width of the subagent inspector column
     useUI.getState().initSubagentPanelWidth();
+    // restore the dragged width of the file inspector column
+    useUI.getState().initInspectorPanelWidth();
     // restore user-customized appearance (colors, background, text scale)
     useAppearance.getState().init();
     try {

@@ -163,8 +163,7 @@ function BlockCard({ block }: { block: TerminalBlock }) {
             maxHeight: 400,
             overflowY: "auto",
             padding: "8px 12px",
-            fontFamily:
-              '"SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace',
+            fontFamily: "var(--font-mono)",
             fontSize: 12,
             lineHeight: 1.6,
             color: "var(--text-primary)",

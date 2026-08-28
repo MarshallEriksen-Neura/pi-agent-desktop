@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@appica/ui-react/collapsible";
 import { Spinner } from "@appica/ui-react/spinner";
@@ -17,10 +17,20 @@ import {
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n";
 import { useMessageActions } from "@/lib/pi/message-actions";
-import { mcpAuthCompleteExample, toolDetail, toolTitle, EDIT_TOOL } from "@/lib/pi/tool-label";
+import {
+  argPath,
+  mcpAuthCompleteExample,
+  normPath,
+  relPath,
+  toolDetail,
+  toolKind,
+  toolTitle,
+  EDIT_TOOL,
+} from "@/lib/pi/tool-label";
 import { htmlEditTarget } from "@/lib/pi/html-preview";
-import { isSubagentTool } from "@/lib/pi/subagents";
+import { isSubagentTool, useSubagents } from "@/lib/pi/subagents";
 import { useToolDiffStat } from "@/lib/pi/diff-stat";
+import { useFileInspector } from "@/lib/file-inspector";
 import { useSubagentRow } from "./Subagents";
 import type { ChatToolCall } from "@/lib/pi/chat";
 import { openExternal, openHtmlFile } from "@/lib/open-external";
@@ -489,6 +499,9 @@ function ToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }
   if (EDIT_TOOL.test(tool.name)) {
     return <EditToolRow tool={tool} animateIn={animateIn} />;
   }
+  if (toolKind(tool.name) === "read") {
+    return <ReadToolRow tool={tool} animateIn={animateIn} />;
+  }
   return (
     <ActivityLine
       status={tool.status}
@@ -496,6 +509,66 @@ function ToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }
       title={toolTitle(tool.name, tool.args)}
       detail={toolDetail(tool.args)}
       animateIn={animateIn}
+    />
+  );
+}
+
+/**
+ * Inspector wiring shared by the file rows.
+ *
+ * Opening a file also drops the subagent inspector's focus: the two panels dock
+ * in the same column, so the row clicked last is the one that gets it. Returns
+ * nothing openable when the call carries no path — a dead control that looks
+ * live is worse than a plain row.
+ */
+function useFileRow(
+  tool: ChatToolCall,
+  kind: "read" | "edit",
+): { open: () => void; active: boolean; label: string } | undefined {
+  const t = useT();
+  const path = useMemo(() => {
+    const raw = argPath(
+      typeof tool.args === "object" && tool.args !== null
+        ? (tool.args as Record<string, unknown>)
+        : {},
+    );
+    return raw ? normPath(raw) : undefined;
+  }, [tool.args]);
+
+  const active = useFileInspector(
+    (s) => s.open && path !== undefined && s.activePath === path,
+  );
+
+  if (!path) return undefined;
+  return {
+    active,
+    label: t("inspector.open", { file: relPath(path) }),
+    open: () => {
+      useSubagents.getState().focus(null);
+      useFileInspector.getState().openTab({
+        path,
+        // an edit row points at its own diff; a read row only asks for the file
+        toolCallId: kind === "edit" ? tool.id : undefined,
+        kind,
+        sinceAt: tool.at,
+      });
+    },
+  };
+}
+
+/** A `Read` row — opens the file it read in the inspector. */
+function ReadToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
+  const row = useFileRow(tool, "read");
+  return (
+    <ActivityLine
+      status={tool.status}
+      toolName={tool.name}
+      title={toolTitle(tool.name, tool.args)}
+      detail={toolDetail(tool.args)}
+      animateIn={animateIn}
+      onClick={row?.open}
+      active={row?.active}
+      ariaLabel={row?.label}
     />
   );
 }
@@ -512,6 +585,7 @@ function ToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }
 function EditToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
   const t = useT();
   const stat = useToolDiffStat(tool.id);
+  const row = useFileRow(tool, "edit");
   const changed = stat && (stat.added > 0 || stat.removed > 0);
   // the preview opens the file as it is on disk now, so it only shows once the
   // write has landed — not while the call is still running
@@ -523,6 +597,9 @@ function EditToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boole
       title={toolTitle(tool.name, tool.args)}
       detail={toolDetail(tool.args)}
       animateIn={animateIn}
+      onClick={row?.open}
+      active={row?.active}
+      ariaLabel={row?.label}
       trailing={
         <>
           {changed ? <DiffStatBadge stat={stat} /> : undefined}
@@ -530,7 +607,12 @@ function EditToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boole
             <button
               type="button"
               title={t("agent.previewInBrowser")}
-              onClick={() => openHtmlFile(target)}
+              onClick={(e) => {
+                // the row itself opens the inspector — this control is a
+                // different destination, so it keeps the click
+                e.stopPropagation();
+                openHtmlFile(target);
+              }}
               style={previewButtonStyle}
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLButtonElement).style.color = "var(--accent)";
@@ -589,7 +671,11 @@ function SubagentToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: b
       // arguments it was launched with
       detail={row.detail ?? toolDetail(tool.args)}
       animateIn={animateIn}
-      onClick={row.open}
+      onClick={() => {
+        // the docked column holds one inspector at a time; this row just claimed it
+        useFileInspector.getState().close();
+        row.open();
+      }}
       active={row.active}
       trailing={row.trailing}
       ariaLabel={row.label}

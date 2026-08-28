@@ -45,15 +45,22 @@ export interface RecordedDiffStat extends DiffStat {
  * ~500ms at 6k, which is UI-thread time. Past the cap we report the region as a
  * block instead — for the whole-file rewrite that gets you here, that is what it
  * is anyway.
+ *
+ * Exported so the hunk builder in file-diffs.ts trips the same threshold: a
+ * badge reading `~` while the panel beside it renders a confident line-by-line
+ * diff would be two answers to one question.
  */
-const EXACT_DIFF_MAX_LINES = 2000;
+export const EXACT_DIFF_MAX_LINES = 2000;
 
 /**
  * Text → lines, the way a diff tool counts them: a file ending in a newline has
  * N lines, not N plus an empty one, and empty text has none. Skipping this is
  * how a brand-new file ends up reporting a phantom `−1`.
+ *
+ * Exported for the same reason as the cap above — the counts and the rendered
+ * hunks have to agree on what a line is.
  */
-function toLines(text: string): string[] {
+export function toLines(text: string): string[] {
   if (text.length === 0) return [];
   return (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
 }

@@ -16,8 +16,17 @@ export interface PanelResizerProps {
    * which changes with the window and the sidebar.
    */
   bounds: () => { min: number; max: number };
-  /** which way width grows relative to pointer movement */
+  /** which side of the containing box the handle is pinned to */
   edge: "left" | "right";
+  /**
+   * Which way width grows relative to pointer movement. Defaults to `edge`,
+   * which is right whenever the handle sits on the panel it resizes.
+   *
+   * Pass it explicitly when the handle lives on the *neighbour* — work mode
+   * mounts this on the chat column's left edge to drive the docked inspector
+   * beside it, where dragging right has to widen the inspector, not narrow it.
+   */
+  grow?: "left" | "right";
   /** fired at most once per frame while dragging */
   onResize: (px: number) => void;
   /** drag started / ended — lets the caller drop its width transition */
@@ -41,6 +50,7 @@ export function PanelResizer({
   width,
   bounds,
   edge,
+  grow = edge,
   onResize,
   onResizeStateChange,
   onCommit,
@@ -86,7 +96,7 @@ export function PanelResizer({
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = drag.current;
     if (!d) return;
-    const delta = edge === "left" ? d.startX - e.clientX : e.clientX - d.startX;
+    const delta = grow === "left" ? d.startX - e.clientX : e.clientX - d.startX;
     d.moved = true;
     pendingWidth.current = clampTo(d.startWidth + delta, d.min, d.max);
     if (frame.current) return;
@@ -122,9 +132,9 @@ export function PanelResizer({
     const dir = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
     if (!dir) return;
     e.preventDefault();
-    // On a left-edge handle, ArrowRight moves the divider right — which makes
-    // the panel narrower, not wider.
-    const step = (e.shiftKey ? KEY_STEP_FINE : KEY_STEP) * dir * (edge === "left" ? -1 : 1);
+    // When width grows leftward, ArrowRight moves the divider right — which
+    // makes the panel narrower, not wider.
+    const step = (e.shiftKey ? KEY_STEP_FINE : KEY_STEP) * dir * (grow === "left" ? -1 : 1);
     const { min, max } = bounds();
     onResize(clampTo(width + step, min, max));
     onCommit?.();

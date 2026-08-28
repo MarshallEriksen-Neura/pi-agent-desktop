@@ -33,6 +33,12 @@ export interface ChatToolCall {
   status: "running" | "done" | "error";
   /** OAuth authorization URL surfaced by an MCP auth-start result. */
   authUrl?: string;
+  /**
+   * When the call started. The file inspector needs it to tell whether the file
+   * on disk today is still what a `Read` actually read — absent on transcripts
+   * restored from history, where the panel simply drops that hint.
+   */
+  at?: number;
 }
 
 export interface ChatMessage {
@@ -736,6 +742,7 @@ export function createChatStore(taskId: string) {
                   name: e.toolName,
                   args: e.args,
                   status: "running" as const,
+                  at: Date.now(),
                 },
               ],
             })),
