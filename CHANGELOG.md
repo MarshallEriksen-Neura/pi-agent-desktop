@@ -2,6 +2,58 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
+## [0.9.2] — 2026-08-28
+
+### Added
+- **文件检查器 —— 点 transcript 里的文件行，文件就停靠在对话旁边**（`Read` / `Edit` 行整行可点）。此前一个 turn 改了四个文件，你唯一的去处是编辑器，而编辑器会被 agent 拖着走
+  - 它显示的是那次编辑的 **diff**，不是编辑之后的文件。"刚才那下改了什么"此前答不上来：bridge 为了在编辑器里高亮改动行，本来就会在编辑工具跑之前快照文件、跑完再读一遍，但那份快照在工具结束的那一刻就被丢掉了 —— 于是一行可以报出 `+12 −3`，却没有任何办法说出是哪十二行。现在同一对 pre/post 变成 unified diff 的 hunk，存到一个"几秒甚至几分钟后才打开的面板"仍读得到的地方
+  - **可以钉住**。`follow` 是这个 store 存在的理由：不钉的话 agent 会把视图拽到它那一瞬间正在写的文件上（这正是 bridge 一直以来的行为），于是"一边读 A 文件的第 200 行、一边看着一个 turn 改另外四个文件"是不可能的。跟随仍是默认 —— 你在看工作发生时那才是对的 —— 但你一旦自己打开了什么，它就钉住、开始数错过了几次、并给一条回去的路（`N 个新改动` / `回到最新`）
+  - 点一个**正在跑**的编辑行不会让面板自我矛盾：如果 agent 写的就是你屏幕上这个文件，改动落进你正在看的那个 tab，而不是被计成"你错过的"。视图也不动 —— 你为了读上下文切到了源码视图，这个选择不该被一次写入抹掉
+  - tab 上限 6 个、LRU 淘汰。无上限的 tab 条就是一次重构变成四十个没人看的标签；关掉当前 tab 时回落到**最近**的邻居而不是第一个（条是按最旧在前排的，index 0 是最陈的那个）
+  - 面板关着的时候 agent 的编辑只记下目标、不往里塞 tab。把没人要求看的文件填进 tab 条，是 tab 条不再表示"我打开过什么"的开始
+  - `Read` 行渲染的是文件**现在**在磁盘上的样子，不一定是 agent 当时读到的内容 —— 面板会直说这件事（`inspector.staleRead`）
+  - hunk 之间的未改动行折叠成 `⋯ 展开 14 行 ⋯`，gap 数在建 hunk 时就算好了，展开不重算任何东西
+  - **故意不做语法高亮**。在 400px 宽的列里，语法色叠在 diff 底色上是两套配色系统在打架 —— 底色和行号槽才是回答"改了什么"的东西，而那是这个面板存在的唯一理由。要认真读的时候编辑器只有一次点击的距离
+  - 单次编辑保留 400 行 diff、总共留 200 条。stat 可以永久留着（三个整数），hunk 列表不行，所以这边会淘汰；面板找不到 diff 时回落到显示文件当前内容，这是诚实的降级
+- **编辑行的行数徽章 `▪▪▪▫▫ +12 −3`**，在写入落地的那一刻从 0 弹上来
+  - 数字来自**真正的 Myers diff**（新依赖 `fast-myers-diff`）。只做前后缀裁剪对**单处**连续编辑是精确的，但对散开的编辑会疯狂高报 —— 400 行文件里散落的三行改动会读成 ±400。错的数字比没有数字更糟
+  - 三个来源，按优先级：工具自己报的指标（`pi-hashline-edit-pro` 这类扩展编辑器本来就返回精确值，最权威）→ 磁盘前后快照对比 → 工具参数解析
+  - 2000 行以内精确。Myers 是 O(ND)，全量重写在这个行数上要花约 55ms UI 线程时间、6k 行要约 500ms；超过就整块上报并渲染成 `~` 而不是假装精确 —— 而能把你带到那儿的整文件重写，本来也就是一整块。这个阈值 diff-stat 和 file-diffs 共用，否则会出现"徽章写着 `~`、旁边面板却渲染出一份自信的逐行 diff"这种一个问题两个答案
+  - 到达动画只在写入后 1500ms 内算"正在到达"。transcript 行是虚拟化的，徽章每次滚回视野都会重挂载 —— 没有这个时间窗，一次性的点缀会变成每次扫过都重播的抽动
+- **HTML 预览** —— 编辑/写入工具的目标是 `.html` 时，写入落地后那一行长出「在浏览器中打开」。新增 `open_html_preview` 后端命令；判定放在 `html-preview.ts` 而不是组件里，好让 transcript 恢复路径（历史里有 args 但没有活的 bridge）和测试共用同一份"什么算可预览"的定义
+- **对话为空时的欢迎界面** —— 居中的 `PiMark` 加一行标题，取代此前那句空状态文案。撤场用 spring 下落过渡，`useReducedMotion` 打开时换成瞬时版本
+
+### Changed
+- **工具类型图标换成 `@appica/icons-react`** —— 9 种工具（read / write / bash / search / web / task / agent / mcp / other）不再走 lucide。注意导入形状：图标是 package root 上的具名导出，**没有 per-icon 子路径**，跟 `@appica/ui-react` 正好相反 —— AGENTS.md 里那条 subpath 规则不适用于图标包，写成 `@appica/icons-react/file-text` 解析不到任何东西
+  - 这套字形是按 1.5 笔画画的，但在这一行用的 13px 下等效只有约 0.8 设备像素，抗锯齿之后淡到读不出来。行内统一渲染成 1.75，同排 trailing 槽里的 lucide 图标（`ExternalLink` / `AlertTriangle` / `Check`）也钉到同一个值 —— 否则同一行里会出现 1.5 和 2.0 两种笔画
+- **字体栈按平台重排** —— Apple 字面打头（这是个 iOS 风格的外壳，在 Mac 上就该长这样），Windows 补上 `Segoe UI Variable`（Win11 自己的 UI 字面，且是真正的可变字体）并保留 `Segoe UI` 作为 Win10 回退。CJK 是单独一跳：没有任何 Segoe 字面带汉字glyph，而 PingFang 只在 Mac 上有。Emoji 放在泛型字体**之后** —— 逐字符回退会保证它照样生效，放前面则会让它抢走本该由 UI 字面渲染的字符
+- **工作模式的阅读宽度限制挪到行上**（`.sd-measure`）而不是面板上。限制面板本身会连带压掉它的背景和分隔线
+- **有停靠列时左边框保留为面板间的分隔线**，而不是当作窗口边缘线抹掉
+
+### Fixed
+- **后端测试套件从来没跑过** —— `tsc` 先失败，于是 `test:backend` 在 `node --test` 之前就退出了，85 个测试**零个**执行。三个互不相关的原因藏在同一堵报错墙后面
+  - `tests/backend/tsconfig.json` 用经典 `Node` 解析，读不了 package.json 的 `exports`。`@pi/remote-control-contracts` 是 workspace 符号链接，类型只能那样触达，于是 `src/lib/backend` 下五个文件解析不到它。这份配置需要的 CommonJS 输出又排除了 `node16`/`bundler`，所以改为把 `paths` 指向源码 —— 每个 importer 都是 `import type`，什么都不会进到 emit
+  - `composition` 和 `runtime-store` 手搓了完整的 `BackendPorts`，缺 `remoteControl` / `remoteConversations`。补的是一个"不可达端口"stub，而不是 `as unknown as BackendPorts`：那个 cast 会关掉正是让这些 fake 值得一写的检查，而一个看起来合理的 stub（`list: async () => []`）会让未来的测试对着一个什么都证明不了的 fake 通过
+  - `assertNextRemoteEventSequence` 被 import 但根本不存在。补在 `events.ts` 里紧挨 `EventSequence`，跟着这个包的 `assert*` / `can*` 分工。它比 `reduceRemoteConversationState` **故意更严格** —— 后者会丢掉 `lastSequence` 及以下的事件，因为投递是 at-least-once
+  - 修完上面这些又露出一个被 tsc 报错一直挡着的 bug：`rewriteAliases` 每层递归都从 `dir` 重算 `srcRoot`，深一点就变成 `<dir>/src`，于是在 `src/lib/pi/` 里面 `@/lib/workspace` 被重写成 `./src/lib/workspace`。emit 此前从未被执行过，所以它从未显形
+- **"锁定"类测试全部过期** —— 这些测试把源码当文本读、对顺序做断言，所以它们描述的代码一被重构就失效了；而套件本身编译不过，没有任何东西提示这件事。五处失败，**没有一个是回归**，下面每个标记在 0.9.0 就已经不存在了
+  - Esc 不是 capture 阶段，也不是正向测试。0.8.0 去掉了全局 `capture: true`，因为 Esc 属于当前聚焦的输入框；handler 除非有 subagent 被聚焦否则直接早退
+  - `useChat.getState().init()` 已经不在启动链里
+  - 有一处 shell 级的 `connect({ cwd, resumePath })` 假设只有一个 pi 进程。现在每个对话各起一个、带自己保存的 `--session` 路径，所以恢复归 `sessions.init()` 管，根目录是就地读的而不是被提到外面
+  - 宠物自启在 idle 回调之前就把 `petId` 从 prefs 里解构出来了，所以调用读的是 `petId`；配置更新发生在显形之前
+  - close 监听器挪到了 `closeBehavior` 判断后面、进了自己的 effect，所以它有了自己的测试:quit 模式下**不能有任何** JS 监听器 —— 渲染进程卡死时它会在 Rust 看到 `ExitRequested` 之前把原生关闭挡下来
+  - `command-inventory`:`pet_window_prewarm` 从宠物功能落地起就一直被调用，却从没进过期望列表，所以真实的唯一命令数早就是 63 而不是断言里的 62。加上 `app_quit` 之后是 64
+  - `check-backend-boundaries`:`typeof window` 只有在它代替"我是不是在 Tauri 里"这个问题时才算平台猜测 —— 而那个问题属于 ports。跟 `"undefined"` 比较时它问的是"DOM 存在了吗"，那是核心 store **必须**处理的：这个应用是静态导出，它们会在 prerender 期间于 Node 里求值。把这个写法整体禁掉会让规则对 SSR-safe 的代码不可满足，留下的是一条常驻违规而不是一个信号,所以只匹配裸形式。已验证它对真正的探测仍然会触发（`typeof window.__TAURI_INTERNALS__` 同时踩中两个标记）
+- **`app_quit` 改走 `desktopInvoke`** —— quit 端口此前直接调 `@tauri-apps/api/core` 的 `invoke`，是 `src/lib/backend/desktop` 里唯一的裸 invoke。别的命令都走 `desktopInvoke`，它会把失败归一化成带分类 kind 的 `DesktopInvokeError` —— 所以一次被 capability 列表拒绝、或撞上命令不存在的 quit，此前是以一个裸 Tauri 字符串的形式冒出来的。它也让这个命令对 `check-backend-boundaries.mjs` 不可见（那个脚本数的是 `desktopInvoke` 调用点）:`app_quit` 在应用里是活的，却不在清单上
+- **HTML 预览被 URL 打开器的安全检查挡住** —— `openExternal` 的 http(s) 白名单同时也拦掉了 `file://`。安全检查移到调用方：`openHtmlFile` 走自己的端口，桌面端拒绝非 HTML 目标，因此失败时**没有** web 回退（从 dev 网页打开的 `file://` URL 本来就被浏览器拦着）。拒绝会被记进日志而不是丢掉 —— 这个按钮的全部失败模式就是"看起来坏了"：文件没了、或者命令拒绝了这个路径，而一个被吞掉的错误留下的是一次什么都没发生也什么都不说的点击
+- **扩展状态文本里的 ANSI 转义序列显示成原始字符** —— 为终端写的扩展会带 TTY 转义，未处理的 `setStatus` 会把它们当字面 glyph 打出来。选择剥掉而不是渲染:终端界面用的 `ansi_up` 在那里是对的，但状态文本不是终端。也没有引入 `strip-ansi` 包 —— 它不在依赖树里，而且它也覆盖不了这里要处理的全部序列。正则用 `\x` 转义写成，因为字面的 ESC / BEL 字节在编辑器里是看不见的
+
+### Internal
+- **shiki 精简到 34 种语言** —— `@streamdown/code`（唯一的 importer）在模块作用域用 `Object.keys()` 读 `bundledLanguages` 和 `bundledLanguagesInfo`，所以 shiki 的 barrel 抗 tree-shaking，会把 332 个语言条目加 65 个主题拖进依赖图并真的产出 chunk。`next.config.ts` 里用 `shiki$` 别名指向 `src/lib/shiki-slim.ts`；`$` 把别名锚定在精确请求上，`shiki/engine/javascript`、`shiki/wasm` 这些子路径必须继续解析到真包。**这是 chunk 数量和体积的收益，不是内存收益**
+- `@appica/icons-react` 进了 `experimental.optimizePackageImports` —— 4997 个图标全是单个 root barrel 上的具名导出，没有子路径可以绕，不加这条 dev 构建每次改动都要解析整个 barrel。lucide-react 已经在 Next 内置的列表里，这个包不在。生产 tree-shaking 本身没问题（`sideEffects: false`、纯 re-export barrel、没有顶层求值 —— 跟上面 shiki 的情况不同）
+- 新依赖:`fast-myers-diff`（行数统计与 hunk 构建）、`@appica/icons-react`
+- 已知遗留:后端套件里有 3 个先前就存在的失败 —— `mock-pi-process` broken pipe、`session-pin` resumePath undefined、`mcp-import` OAuth fixture。这些测试和它们 import 的源码自 0.9.0 起都没有改动过，需要各自单独排查
+
 ## [0.9.1] — 2026-08-27
 
 ### Added
