@@ -9,6 +9,7 @@ mod pi_settings;
 mod projects;
 mod provider_auth;
 mod remote_control;
+mod skills_cli;
 mod updater;
 mod wsl;
 
@@ -350,6 +351,8 @@ pub fn run() {
             pi_settings::pi_settings_read,
             pi_settings::pi_settings_write,
             pi_settings::pi_cli,
+            skills_cli::skills_cli,
+            skills_cli::skills_search,
             mcp_config::mcp_config_read,
             mcp_config::mcp_config_write,
             mcp_config::mcp_config_open_dir,

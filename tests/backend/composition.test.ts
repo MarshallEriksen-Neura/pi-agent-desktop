@@ -88,6 +88,8 @@ function fakePorts(label = "fake"): BackendPorts {
       discoverMcpSources: async () => [],
       fetchModels: async () => [],
       runPiCli: async () => ({ code: 0, stdout: "", stderr: "" }),
+      runSkillsCli: async () => ({ code: 0, stdout: "", stderr: "" }),
+      searchSkills: async () => [],
       checkPiCliUpdate: async () => ({
         installed: null,
         latest: null,

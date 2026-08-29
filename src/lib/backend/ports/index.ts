@@ -13,6 +13,7 @@ export type {
   SettingsScopeFileDto,
   CliResultDto,
   PiSkillDirectoryEntryDto,
+  SkillCatalogHitDto,
   McpAdapterStatusDto,
   McpDiscoverySourceDto,
 } from "./pi-configuration";

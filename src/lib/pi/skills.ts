@@ -40,6 +40,14 @@ interface FsEntry {
 
 const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
 
+/** `…/.pi/agent/settings.json` → `…/.pi/agent` — where global skills live. */
+export const piAgentDir = (globalSettingsPath: string) =>
+  norm(globalSettingsPath).replace(/\/settings\.json$/, "");
+
+/** `…/.pi/agent/settings.json` → the home directory `~` expands to. */
+export const piHome = (globalSettingsPath: string) =>
+  piAgentDir(globalSettingsPath).replace(/\/\.pi\/agent$/, "");
+
 /** minimal YAML frontmatter reader — only the two keys pi's skill format uses */
 function parseSkillMd(content: string, fallbackName: string) {
   let name = fallbackName;
@@ -196,9 +204,8 @@ export const useSkills = create<SkillsStore>((set, get) => ({
     try {
       if (!usePiSettings.getState().loaded) await usePiSettings.getState().load();
       const s = usePiSettings.getState();
-      const globalPath = norm(s.global.path); // …/.pi/agent/settings.json
-      const agentDir = globalPath.replace(/\/settings\.json$/, "");
-      const home = agentDir.replace(/\/\.pi\/agent$/, "");
+      const agentDir = piAgentDir(s.global.path); // …/.pi/agent
+      const home = piHome(s.global.path);
       const rawRoot = useWorkspace.getState().root;
       const root = rawRoot ? norm(rawRoot) : null;
 

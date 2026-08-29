@@ -40,7 +40,8 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // 62 was stale before this suite could run: pet_window_prewarm had been
   // invoked since the pet feature landed without being added to the boundary
   // script's expected list, so the real count was already 63. app_quit makes 64.
-  assert.equal(result.inventory.commandUniqueCount, 65);
+  // skills_cli (the `npx skills` bridge) makes 66, skills_search 67.
+  assert.equal(result.inventory.commandUniqueCount, 67);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -113,6 +114,11 @@ test("locks the desktop command names and Pi process event names", () => {
     "remote_conversations_list",
     "runtime_config_read",
     "runtime_config_write",
+    // `npx skills …` — skill install/remove/update, allowlisted subcommands only
+    "skills_cli",
+    // native catalogue search: skills.sh sends no CORS headers, so the webview
+    // is not allowed to read the response
+    "skills_search",
     "workspace_root",
     "wsl_list_distros",
     "wsl_runtime_validate",

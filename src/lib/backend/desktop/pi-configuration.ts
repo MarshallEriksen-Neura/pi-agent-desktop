@@ -3,6 +3,7 @@ import type {
   PiConfigurationPort,
   PiSkillDirectoryEntryDto,
   SettingsScopeFileDto,
+  SkillCatalogHitDto,
   McpAdapterStatusDto,
   McpDiscoverySourceDto,
 } from "../ports";
@@ -62,6 +63,15 @@ export const desktopPiConfigurationPort: PiConfigurationPort = {
       args,
       cwd: cwd ?? null,
     }),
+
+  runSkillsCli: (args: string[], cwd?: string | null) =>
+    desktopInvoke<CliResultDto>("skills_cli", {
+      args,
+      cwd: cwd ?? null,
+    }),
+
+  searchSkills: (query: string, limit: number) =>
+    desktopInvoke<SkillCatalogHitDto[]>("skills_search", { query, limit }),
 
   checkPiCliUpdate: () => desktopInvoke<PiCliUpdateInfo>("pi_cli_update_check"),
 

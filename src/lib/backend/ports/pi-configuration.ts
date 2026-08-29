@@ -36,6 +36,14 @@ export interface PiSkillDirectoryEntryDto {
   isDir: boolean;
 }
 
+export interface SkillCatalogHitDto {
+  id: string;
+  skillId: string;
+  name: string;
+  source: string;
+  installs: number;
+}
+
 export interface PiConfigurationPort {
   readSettings(scope: SettingsScope | "models", root?: string | null): Promise<SettingsScopeFileDto>;
   writeSettings(scope: SettingsScope | "models", content: string, root?: string | null): Promise<void>;
@@ -46,6 +54,13 @@ export interface PiConfigurationPort {
   discoverMcpSources(root?: string | null): Promise<McpDiscoverySourceDto[]>;
   fetchModels(config: ProviderConfig): Promise<string[]>;
   runPiCli(args: string[], cwd?: string | null): Promise<CliResultDto>;
+  /** `npx skills …` — skill install/remove/update, see src/lib/pi/skills-install.ts */
+  runSkillsCli(args: string[], cwd?: string | null): Promise<CliResultDto>;
+  /**
+   * skills.sh catalogue search. Native rather than `fetch` because the endpoint
+   * sends no CORS headers, so the webview is not allowed to read the response.
+   */
+  searchSkills(query: string, limit: number): Promise<SkillCatalogHitDto[]>;
   checkPiCliUpdate(): Promise<PiCliUpdateInfo>;
   readSkillFile(path: string): Promise<string>;
   listSkillDirectory(path: string): Promise<PiSkillDirectoryEntryDto[]>;

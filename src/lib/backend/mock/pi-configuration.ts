@@ -5,6 +5,7 @@ import type {
   PiConfigurationPort,
   PiSkillDirectoryEntryDto,
   SettingsScopeFileDto,
+  SkillCatalogHitDto,
 } from "../ports";
 import type { ProviderConfig } from "../../pi/models";
 import type { SettingsScope } from "../../pi/settings";
@@ -85,6 +86,57 @@ const MOCK_MODEL_IDS = [
   "text-embedding-3-small",
 ];
 
+/** Catalogue hits for browser preview — a name that several repos publish. */
+const MOCK_CATALOG: SkillCatalogHitDto[] = [
+  {
+    id: "vercel-labs/agent-skills/frontend-design",
+    skillId: "frontend-design",
+    name: "frontend-design",
+    source: "vercel-labs/agent-skills",
+    installs: 673399,
+  },
+  {
+    id: "anthropics/skills/pdf",
+    skillId: "pdf",
+    name: "pdf",
+    source: "anthropics/skills",
+    installs: 412800,
+  },
+  {
+    id: "some-fork/skills/pdf",
+    skillId: "pdf",
+    name: "pdf",
+    source: "some-fork/skills",
+    installs: 1820,
+  },
+];
+
+/** `skills add <source> --list` output, box-drawing prefixes and all. */
+const MOCK_SKILLS_LIST = [
+  "│",
+  "◇  Found 3 skills",
+  "",
+  "◇  Available Skills",
+  "Document Skills",
+  "│",
+  "│    pdf",
+  "│",
+  "│      Read, merge, split, and fill PDF files.",
+  "│",
+  "│    docx",
+  "│",
+  "│      Create and edit Word documents.",
+  "",
+  "General",
+  "│",
+  "│    frontend-design",
+  "│",
+  "│      Distinctive, intentional visual design guidance.",
+  "",
+  "└  Use --skill <name> to install specific skills",
+  "",
+].join("\n");
+
 export function createMockPiConfigurationPort(
   options: MockPiConfigurationOptions = {}
 ): PiConfigurationPort {
@@ -159,6 +211,24 @@ export function createMockPiConfigurationPort(
       stdout: `(mock) pi ${args.join(" ")}\n`,
       stderr: "",
     }),
+
+    runSkillsCli: async (args: string[]): Promise<CliResultDto> => ({
+      code: 0,
+      // `--list` drives the source picker, so the mock has to answer in the
+      // real CLI's shape (see parseSkillList) rather than a bare echo.
+      stdout: args.includes("--list")
+        ? MOCK_SKILLS_LIST
+        : `(mock) skills ${args.join(" ")}\n`,
+      stderr: "",
+    }),
+
+    searchSkills: async (query: string) => {
+      const needle = query.trim().toLowerCase();
+      return MOCK_CATALOG.filter(
+        (hit) =>
+          hit.name.includes(needle) || hit.source.toLowerCase().includes(needle)
+      );
+    },
 
     checkPiCliUpdate: async (): Promise<PiCliUpdateInfo> => ({
       installed: null,

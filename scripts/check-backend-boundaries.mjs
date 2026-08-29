@@ -24,6 +24,7 @@ const EXPECTED_COMMAND_NAMES = [
   "provider_auth_list", "provider_auth_logout",
   "runtime_config_write", "workspace_root", "wsl_list_distros",
   "wsl_runtime_validate", "wsl_shell_bridge_path",
+  "skills_cli", "skills_search",
   "remote_control_disable", "remote_control_enable", "remote_control_pairing_payload",
   "remote_control_private_addresses", "remote_control_reset_identity",
   "remote_control_revoke_device", "remote_control_status", "remote_conversation_append",

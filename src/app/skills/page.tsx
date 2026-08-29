@@ -5,6 +5,8 @@ import { motion, AnimatePresence } from "motion/react";
 import { usePi } from "@/lib/pi/store";
 import { usePiSettings, type SettingsScope } from "@/lib/pi/settings";
 import { useSkills, type SkillInfo, type SkillOrigin } from "@/lib/pi/skills";
+import { useSkillsInstall, type InstallScope } from "@/lib/pi/skills-install";
+import { useWorkspace } from "@/lib/workspace";
 import { useT } from "@/lib/i18n";
 import {
   SettingsPage,
@@ -14,6 +16,7 @@ import {
   Segmented,
   StringListEditor,
 } from "@/components/settings-ui";
+import { SkillsInstall } from "@/components/SkillsInstall";
 import { Skeleton } from "@/components/primitives";
 import {
   Search,
@@ -24,6 +27,8 @@ import {
   Check,
   FileText,
   ChevronRight,
+  ArrowLeftRight,
+  Trash2,
 } from "lucide-react";
 
 const ORIGINS: readonly SkillOrigin[] = ["global", "project", "path"];
@@ -166,12 +171,23 @@ function OriginLedger({
 function SkillRow({ skill, first }: { skill: SkillInfo; first: boolean }) {
   const t = useT();
   const readSource = useSkills((s) => s.readSource);
+  const busy = useSkillsInstall((s) => s.busy);
+  const locked = useSkillsInstall((s) => Boolean(s.locks?.[skill.name]));
+  const hasRoot = useWorkspace((w) => Boolean(w.root));
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [source, setSource] = useState<string | null>(null);
   const [sourceErr, setSourceErr] = useState<string | null>(null);
   const [showSource, setShowSource] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** `path`-origin skills live outside pi's two managed directories. */
+  const managed = skill.origin !== "path";
+  const moveTo: InstallScope | null = !managed
+    ? null
+    : skill.origin === "project"
+      ? "global"
+      : "project";
 
   useEffect(() => () => {
     if (copyTimer.current) clearTimeout(copyTimer.current);
@@ -357,6 +373,55 @@ function SkillRow({ skill, first }: { skill: SkillInfo; first: boolean }) {
                   <FileText size={12} />
                   {showSource ? t("skills.hideSource") : t("skills.viewSource")}
                 </motion.button>
+                {moveTo && (
+                  <motion.button
+                    type="button"
+                    whileTap={{ scale: 0.94 }}
+                    onClick={() => useSkillsInstall.getState().move(skill, moveTo)}
+                    disabled={
+                      busy !== null || !locked || (moveTo === "project" && !hasRoot)
+                    }
+                    title={
+                      !locked
+                        ? t("skillsInstall.moveNeedsLock")
+                        : moveTo === "project" && !hasRoot
+                          ? t("skillsInstall.scopeFooterNoProject")
+                          : undefined
+                    }
+                    style={{
+                      ...chipButton,
+                      opacity:
+                        busy !== null || !locked || (moveTo === "project" && !hasRoot)
+                          ? 0.45
+                          : 1,
+                    }}
+                  >
+                    <ArrowLeftRight size={12} />
+                    {busy === `move:${skill.file}`
+                      ? t("skillsInstall.moving")
+                      : t("skillsInstall.moveTo", {
+                          scope: t(`skills.origin.${moveTo}`),
+                        })}
+                  </motion.button>
+                )}
+                {managed && (
+                  <motion.button
+                    type="button"
+                    whileTap={{ scale: 0.94 }}
+                    onClick={() => useSkillsInstall.getState().uninstall(skill)}
+                    disabled={busy !== null}
+                    style={{
+                      ...chipButton,
+                      color: "var(--danger, #E5484D)",
+                      opacity: busy !== null ? 0.45 : 1,
+                    }}
+                  >
+                    <Trash2 size={12} />
+                    {busy === `remove:${skill.file}`
+                      ? t("skillsInstall.removing")
+                      : t("skillsInstall.remove")}
+                  </motion.button>
+                )}
               </div>
               <div
                 title={skill.file}
@@ -469,6 +534,8 @@ export default function SkillsPage() {
       subtitle={sk.mock ? t("skills.subtitleMock") : t("skills.subtitleLive")}
     >
       <OriginLedger counts={counts} filter={filter} onFilter={setFilter} />
+
+      <SkillsInstall />
 
       {/* search — filters name + description */}
       <div

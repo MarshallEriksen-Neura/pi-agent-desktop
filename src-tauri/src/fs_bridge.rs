@@ -42,6 +42,21 @@ pub fn workspace_root() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Whether a directory entry should be treated as a directory, following
+/// symlinks. `DirEntry::file_type` reports the link itself, so a Windows
+/// junction or a Unix symlink to a directory comes back as neither file nor
+/// dir — which would hide, for instance, skills that `npx skills add` linked
+/// into `~/.pi/agent/skills` in its default (symlink) mode.
+fn entry_is_dir(entry: &fs::DirEntry) -> bool {
+    match entry.file_type() {
+        Ok(ft) if ft.is_symlink() => fs::metadata(entry.path())
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false),
+        Ok(ft) => ft.is_dir(),
+        Err(_) => false,
+    }
+}
+
 #[tauri::command]
 pub fn fs_list_dir(path: String) -> Result<Vec<FsEntry>, String> {
     let dir = Path::new(&path);
@@ -58,7 +73,7 @@ pub fn fs_list_dir(path: String) -> Result<Vec<FsEntry>, String> {
             if SKIP_DIRS.contains(&name.as_str()) {
                 return None;
             }
-            let is_dir = e.file_type().ok()?.is_dir();
+            let is_dir = entry_is_dir(&e);
             Some(FsEntry {
                 path: e.path().to_string_lossy().replace('\\', "/"),
                 name,
