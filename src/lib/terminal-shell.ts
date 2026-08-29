@@ -4,6 +4,8 @@ import { getPiClient } from "./pi/client";
 import type { BashResult } from "./pi/protocol";
 import { termBus, ansi } from "./terminal-bus";
 import { piRequestErrorText } from "./pi/request-error";
+import { printableOnly, splitPastedLines } from "./terminal-paste";
+import { clearTerminalView, isClearCommand } from "./terminal-builtins";
 
 /**
  * Interactive shell line-discipline for the terminal drawer.
@@ -16,68 +18,172 @@ import { piRequestErrorText } from "./pi/request-error";
  * write only the tail the events did not cover — the response `output` can be
  * truncated while the event stream is complete, so the events are the better
  * source when both are available.
+ *
+ * A paste is not a key. xterm hands it to `onData` as one multi-character string
+ * with newlines already folded to CR, so this has to be written as a stream
+ * processor rather than a switch over single keystrokes: a two-line paste is a
+ * command to run plus input for the *next* prompt, and one that lands mid-command
+ * is typeahead that has to survive until that prompt exists.
  */
 
 let running = false;
+/** The line being edited. Already echoed — the terminal shows exactly this. */
 let buffer = "";
+/**
+ * Input that arrived while a command was running, replayed verbatim at the next
+ * prompt. Echoing it immediately would interleave it with the command's output,
+ * so it stays invisible until there is a prompt to type at.
+ */
+let held = "";
 let bashSeq = 0;
 
 const PROMPT = "\x1b[2m$\x1b[0m ";
+/** Bracketed-paste guards, in case a future caller turns DECSET 2004 on. */
+const BRACKET = /\x1b\[20[01]~/g;
+/** Held typeahead is bounded — a runaway writer must not grow it forever. */
+const HELD_MAX = 8192;
 
 export function promptLine() {
   termBus.write(PROMPT);
 }
 
-/** Handle raw key data from xterm.onData. */
+/**
+ * Handle one `onData` payload from xterm — a keystroke, or a whole paste.
+ */
 export function handleTermInput(data: string) {
-  if (running) {
-    // Ctrl-C aborts the in-flight bash command; the pending `bash` request
-    // resolves with cancelled=true, which restores the prompt.
-    if (data === "\x03") {
-      termBus.write("^C\r\n");
-      void getPiClient()
-        .request({ type: "abort_bash" })
-        .then((response) => {
-          if (!response.success) {
-            termBus.writeln(ansi.red(response.error || "abort_bash failed"));
-          }
-        })
-        .catch((error) => termBus.writeln(ansi.red(piRequestErrorText(error))));
-    }
-    return; // ignore other typing while a command runs
+  if (!data) return;
+
+  // Escape sequences are keys this shell does not implement (arrows, F-keys,
+  // mouse reports). Drop them whole: stripping the ESC and keeping the rest
+  // would type "[A" into the buffer on every press of Up.
+  if (data.charCodeAt(0) === 0x1b && !data.startsWith("\x1b[200~")) return;
+  const text = data.replace(BRACKET, "");
+
+  if (text === "\x03") {
+    onInterrupt();
+    return;
+  }
+  if (text === "\x7f" || text === "\b") {
+    if (!running) backspace();
+    return;
+  }
+  if (text === "\x0c") {
+    // Ctrl-L. Previously stripped as an unprintable and silently did nothing.
+    if (!running) clearScreen();
+    return;
   }
 
-  switch (data) {
-    case "\r": {
-      // Enter — run the buffered line
-      termBus.write("\r\n");
-      const cmd = buffer.trim();
-      buffer = "";
-      if (!cmd) {
-        promptLine();
-        return;
-      }
-      runBash(cmd);
-      break;
-    }
-    case "\x7f": // Backspace
-      if (buffer.length > 0) {
-        buffer = buffer.slice(0, -1);
-        termBus.write("\b \b");
-      }
-      break;
-    case "\x03": // Ctrl-C at prompt — clear the line
-      buffer = "";
-      termBus.write("^C\r\n");
-      promptLine();
-      break;
-    default:
-      // printable chars (incl. paste); drop other control sequences
-      if (data >= " " || data === "\t") {
-        buffer += data;
-        termBus.write(data);
-      }
+  if (running) {
+    // typeahead — replayed by drainHeld() once the prompt comes back
+    if (held.length < HELD_MAX) held += text;
+    return;
   }
+  feed(text);
+}
+
+/**
+ * Consume input at the prompt, running a command at every newline.
+ *
+ * The tail after the last newline is a partial line: it stays in the buffer as
+ * the thing the user is now editing, which is what makes a paste ending without
+ * a trailing newline land as an editable command rather than running blind.
+ */
+function feed(text: string) {
+  const { lines, tail } = splitPastedLines(text);
+  for (let i = 0; i < lines.length; i++) {
+    echo(lines[i]);
+    submit();
+    if (running) {
+      // The rest of the paste belongs to prompts that do not exist yet.
+      held += [...lines.slice(i + 1), tail].join("\r");
+      return;
+    }
+  }
+  echo(tail);
+}
+
+/** Append to the line being edited and show it. */
+function echo(text: string) {
+  const printable = printableOnly(text);
+  if (!printable) return;
+  buffer += printable;
+  termBus.write(printable);
+}
+
+/** Run the buffered line. Blank lines just reprint the prompt, as a shell does. */
+function submit() {
+  termBus.write("\r\n");
+  const cmd = buffer.trim();
+  buffer = "";
+  if (!cmd) {
+    promptLine();
+    return;
+  }
+  // `clear` is answered here, not by pi — see terminal-builtins.ts for why a
+  // captured-output shell cannot let the real one through.
+  if (isClearCommand(cmd)) {
+    clearTerminalView();
+    return;
+  }
+  runBash(cmd);
+}
+
+/** Ctrl-L — clear the screen, keeping the half-typed line, as a shell does. */
+function clearScreen() {
+  clearTerminalView();
+  if (buffer) termBus.write(buffer);
+}
+
+/**
+ * Ctrl-C: abort the running command, or clear the line at the prompt.
+ *
+ * Either way it discards held typeahead. Interrupting and then watching queued
+ * lines from an abandoned paste execute anyway is the opposite of what the key
+ * is for.
+ */
+function onInterrupt() {
+  held = "";
+  if (!running) {
+    buffer = "";
+    termBus.write("^C\r\n");
+    promptLine();
+    return;
+  }
+  // The pending `bash` request resolves with cancelled=true, restoring the prompt.
+  termBus.write("^C\r\n");
+  void getPiClient()
+    .request({ type: "abort_bash" })
+    .then((response) => {
+      if (!response.success) {
+        termBus.writeln(ansi.red(response.error || "abort_bash failed"));
+      }
+    })
+    .catch((error) => termBus.writeln(ansi.red(piRequestErrorText(error))));
+}
+
+/** Erase one code point, so a pasted emoji or CJK char deletes in one press. */
+function backspace() {
+  if (!buffer) return;
+  const chars = Array.from(buffer);
+  chars.pop();
+  buffer = chars.join("");
+  termBus.write("\b \b");
+}
+
+/** Replay input that arrived while the last command was running. */
+function drainHeld() {
+  if (!held) return;
+  const text = held;
+  held = "";
+  feed(text);
+}
+
+/**
+ * Paste `text` at the prompt — the explicit path for a key binding or menu item,
+ * as opposed to a native `paste` event that xterm turns into `onData`.
+ */
+export function pasteIntoTerminal(text: string) {
+  handleTermInput(text);
 }
 
 async function runBash(cmd: string) {
@@ -111,6 +217,8 @@ async function runBash(cmd: string) {
     off();
     running = false;
     promptLine();
+    // queued paste lines / typeahead run in order, after the prompt is painted
+    drainHeld();
   }
 }
 

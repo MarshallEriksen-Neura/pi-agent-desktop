@@ -5,6 +5,8 @@ import { termBus } from "@/lib/terminal-bus";
 import { getPiClient } from "./pi/client";
 import type { BashResult } from "./pi/protocol";
 import { piRequestErrorText } from "./pi/request-error";
+import { splitPastedLines } from "./terminal-paste";
+import { clearTerminalView, isClearCommand } from "./terminal-builtins";
 
 /**
  * Block-mode shell handler — each command becomes a card in the blocks view.
@@ -51,10 +53,10 @@ export function handleBlockInput(data: string) {
   // Enter: run the command as a block
   if (data === "\r") {
     termBus.write("\r\n");
-    const cmd = buffer.trim();
+    const cmd = buffer;
     buffer = "";
-    if (!cmd) return;
-    runBlockCommand(cmd);
+    // via runBlockLine so this path gets the builtins too, not just the input row
+    runBlockLine(cmd);
     return;
   }
 
@@ -67,6 +69,41 @@ export function handleBlockInput(data: string) {
 
 export function blockPromptLine() {
   termBus.write("\x1b[2m$\x1b[0m ");
+}
+
+/**
+ * Run one already-assembled command as a block.
+ *
+ * Block mode has a real `<input>`, so the caller holds the edited line — there is
+ * nothing to accumulate a keystroke at a time, and feeding a command through
+ * `handleBlockInput` character by character only risks the line buffer and the
+ * input disagreeing.
+ */
+export function runBlockLine(command: string) {
+  const cmd = command.trim();
+  if (!cmd) return;
+  // `clear` empties the block list rather than becoming a block that reports it
+  // cleared something — ansi_up drops erase sequences, so the real command's
+  // output would render as nothing at all.
+  if (isClearCommand(cmd)) {
+    clearTerminalView();
+    return;
+  }
+  runBlockCommand(cmd);
+}
+
+/**
+ * Run every complete line of a paste and return the unterminated tail.
+ *
+ * A block is one command, so a multi-line paste is several — the alternative is
+ * what `<input>` does on its own, which is to strip the newlines and silently
+ * weld `cd foo` and `echo bar` into `cd fooecho bar`. The tail goes back to the
+ * input so a paste with no trailing newline stays editable before it runs.
+ */
+export function runPastedLines(text: string): string {
+  const { lines, tail } = splitPastedLines(text);
+  for (const line of lines) runBlockLine(line);
+  return tail;
 }
 
 let bashSeq = 0;

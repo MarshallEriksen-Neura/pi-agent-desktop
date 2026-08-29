@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
@@ -10,17 +10,28 @@ import type { WebLinksAddon } from "@xterm/addon-web-links";
 import type { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { useUI } from "@/lib/store";
-import { termBus } from "@/lib/terminal-bus";
+import { ansi, termBus } from "@/lib/terminal-bus";
 import { useT } from "@/lib/i18n";
 import { Kbd } from "./primitives";
-import { handleTermInput, promptLine } from "@/lib/terminal-shell";
+import { handleTermInput, pasteIntoTerminal, promptLine } from "@/lib/terminal-shell";
 import { openExternal } from "@/lib/open-external";
 import { X, Command, LayoutGrid, Terminal as TerminalIcon } from "lucide-react";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
 import { TerminalBlocks } from "./TerminalBlocks";
 import { TerminalInput } from "./TerminalInput";
-import { blockPromptLine } from "@/lib/terminal-block-shell";
+import { blockPromptLine, runPastedLines } from "@/lib/terminal-block-shell";
 import { useRuntime } from "@/lib/pi/runtime";
+import {
+  canReadClipboard,
+  copyText,
+  readClipboardText,
+} from "@/lib/terminal-clipboard";
+import { clearTerminalView } from "@/lib/terminal-builtins";
+import {
+  TerminalContextMenu,
+  type TerminalMenuItem,
+  type TerminalMenuState,
+} from "./TerminalContextMenu";
 
 /** Read current token values so xterm follows the active theme. */
 function buildXtermTheme() {
@@ -58,6 +69,12 @@ function monoFontStack(): string {
   return declared || "ui-monospace, Consolas, monospace";
 }
 
+/** True on macOS, where the clipboard modifier is Cmd rather than Ctrl. */
+function isMacPlatform() {
+  if (typeof navigator === "undefined") return false;
+  return /mac/i.test(navigator.platform || navigator.userAgent);
+}
+
 /** Bottom drawer terminal — slides up with a spring, themed by tokens. */
 export function TerminalDrawer() {
   const { terminalOpen, setTerminalOpen } = useUI();
@@ -69,6 +86,61 @@ export function TerminalDrawer() {
   const fitRef = useRef<FitAddon | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
   const firstOpenRef = useRef(true);
+  const [menu, setMenu] = useState<TerminalMenuState | null>(null);
+  // The terminal is built once per open; `t` changes whenever the locale does.
+  // A ref keeps the key handler's messages current without tearing the terminal
+  // down and rebuilding it on a language switch.
+  const tRef = useRef(t);
+  tRef.current = t;
+
+  /**
+   * Set when Ctrl/Cmd+V was seen and it is not yet known whether the webview
+   * will deliver a native `paste` event for it.
+   */
+  const pasteArmedRef = useRef<number | null>(null);
+
+  /** Paste into whichever view is showing: the xterm line, or the input box. */
+  const pasteFromClipboard = useCallback(async () => {
+    const text = await readClipboardText();
+    if (!text) {
+      if (useTerminalBlocks.getState().viewMode === "classic") {
+        termBus.writeln(ansi.dim(tRef.current("terminal.clipboardUnavailable")));
+      }
+      return;
+    }
+    if (useTerminalBlocks.getState().viewMode === "classic") {
+      pasteIntoTerminal(text);
+      return;
+    }
+    const store = useTerminalBlocks.getState();
+    // Complete lines run; the tail joins whatever is already in the input.
+    const tail = runPastedLines(store.input + text);
+    useTerminalBlocks.getState().setInput(tail);
+  }, []);
+
+  /**
+   * Watch for a native `paste` event after Ctrl/Cmd+V, and read the clipboard
+   * ourselves only if none arrives.
+   *
+   * Written as a race rather than a platform check because the two ways a paste
+   * can reach a webview terminal fail on opposite axes: the native event needs no
+   * permission but is not delivered everywhere, and the clipboard read is
+   * delivered everywhere but can be denied. Whichever one works, one paste
+   * happens — the timer is cancelled by the event, so they cannot both fire.
+   */
+  const armPasteFallback = useCallback(() => {
+    if (pasteArmedRef.current !== null) window.clearTimeout(pasteArmedRef.current);
+    pasteArmedRef.current = window.setTimeout(() => {
+      pasteArmedRef.current = null;
+      void pasteFromClipboard();
+    }, 150);
+  }, [pasteFromClipboard]);
+
+  const disarmPasteFallback = useCallback(() => {
+    if (pasteArmedRef.current === null) return;
+    window.clearTimeout(pasteArmedRef.current);
+    pasteArmedRef.current = null;
+  }, []);
 
   /* create the terminal once the drawer first opens (or switches to classic) */
   useEffect(() => {
@@ -122,6 +194,66 @@ export function TerminalDrawer() {
       term.unicode.activeVersion = "11"; // enable unicode11 width tables
       term.loadAddon(webLinks);
       term.loadAddon(search);
+
+      /*
+       * Clipboard bindings. xterm deliberately ships none — Ctrl-C is the
+       * shell's interrupt and the embedder decides what else the modifier does.
+       *
+       * Returning false stops xterm from turning the key into shell input, but
+       * it does *not* stop the browser: xterm consults this handler before it
+       * would call preventDefault. So anything handled here has to cancel the
+       * event itself, or a paste lands twice — once from the clipboard read and
+       * again from the native `paste` event xterm also listens for.
+       */
+      const isMac = isMacPlatform();
+      term.attachCustomKeyEventHandler((e) => {
+        if (e.type !== "keydown") return true;
+        const mod = isMac ? e.metaKey : e.ctrlKey;
+        if (!mod || e.altKey) return true;
+        const key = e.key.toLowerCase();
+
+        if (key === "c") {
+          // Ctrl/Cmd+Shift+C always copies. Plain Ctrl-C copies only with a
+          // selection, the way Windows Terminal does it, so an unselected
+          // Ctrl-C still reaches the shell as SIGINT. On macOS Cmd-C copies and
+          // Ctrl-C interrupts, which `mod` already separates.
+          if (!e.shiftKey && !term.hasSelection()) return true;
+          const selection = term.getSelection();
+          e.preventDefault();
+          if (!selection) return false;
+          void copyText(selection);
+          // Clear it so the next Ctrl-C interrupts instead of copying again —
+          // otherwise a stale selection makes the command unkillable.
+          term.clearSelection();
+          return false;
+        }
+
+        if (key === "v") {
+          if (e.shiftKey) {
+            // Ctrl/Cmd+Shift+V is the explicit route: no native paste event is
+            // coming, so reading the clipboard is the only way to serve it.
+            e.preventDefault();
+            void pasteFromClipboard();
+            return false;
+          }
+          // Plain Ctrl/Cmd+V deliberately does NOT preventDefault. The webview's
+          // own paste event costs no permission, and cancelling it to read the
+          // clipboard instead would put a prompt in front of the first paste —
+          // where a single "Block" is remembered by the webview and would leave
+          // this binding permanently dead.
+          //
+          // The native event is expected on all three platforms (the app sets
+          // its menu on the tray, not the app, so Tauri still installs the
+          // default macOS menu and its Edit→Paste accelerator). armPasteFallback
+          // is insurance, not a platform workaround: if the event ever does not
+          // arrive, the terminal would otherwise have no paste at all, and the
+          // guard costs one cancelled timer when it does.
+          armPasteFallback();
+          return true;
+        }
+
+        return true;
+      });
 
       term.open(hostRef.current);
 
@@ -178,6 +310,10 @@ export function TerminalDrawer() {
     })();
 
     host.addEventListener("mousedown", onHostMouseDown);
+    // A native paste arrived, so the clipboard-read fallback must stand down.
+    // xterm binds its own handler to the textarea and to its root element; this
+    // listens on the host those live in, so it sees the event either way.
+    host.addEventListener("paste", disarmPasteFallback);
 
     return () => {
       disposed = true;
@@ -185,6 +321,9 @@ export function TerminalDrawer() {
       observer?.disconnect();
       resizeObserver?.disconnect();
       host.removeEventListener("mousedown", onHostMouseDown);
+      host.removeEventListener("paste", disarmPasteFallback);
+      // a pending fallback must not fire into a terminal that is going away
+      disarmPasteFallback();
       webglRef.current?.dispose();
       termRef.current?.dispose();
       termRef.current = null;
@@ -201,6 +340,59 @@ export function TerminalDrawer() {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [terminalOpen]);
+
+  /**
+   * Build the right-click menu against whatever is selected right now.
+   *
+   * The two views hold a selection in different places: classic mode keeps it in
+   * xterm (drawn on a canvas, invisible to the DOM), block mode is ordinary DOM
+   * text.
+   */
+  const openMenu = useCallback(
+    (e: React.MouseEvent) => {
+      // AppShell already cancels the native menu app-wide; this only stops the
+      // event from also reaching a parent that might act on a right-click.
+      e.preventDefault();
+      const term = termRef.current;
+      const classic = viewMode === "classic";
+      const selection = classic
+        ? (term?.getSelection() ?? "")
+        : (window.getSelection()?.toString() ?? "");
+      const mod = isMacPlatform() ? "⌘" : "Ctrl";
+
+      const items: TerminalMenuItem[] = [
+        {
+          label: t("terminal.copy"),
+          hint: classic ? `${mod}C` : undefined,
+          disabled: !selection,
+          onSelect: () => {
+            void copyText(selection);
+            if (classic) term?.clearSelection();
+          },
+        },
+        {
+          label: t("terminal.paste"),
+          hint: `${mod}V`,
+          disabled: !canReadClipboard(),
+          onSelect: () => void pasteFromClipboard(),
+        },
+      ];
+      if (classic) {
+        items.push({
+          label: t("terminal.selectAll"),
+          onSelect: () => term?.selectAll(),
+        });
+      }
+      items.push({
+        label: t("terminal.clear"),
+        hint: classic ? "Ctrl+L" : undefined,
+        onSelect: () => clearTerminalView(),
+      });
+
+      setMenu({ x: e.clientX, y: e.clientY, items });
+    },
+    [viewMode, t, pasteFromClipboard]
+  );
 
   return (
     <AnimatePresence>
@@ -334,17 +526,26 @@ export function TerminalDrawer() {
           </div>
 
           {/* Content area: blocks view or classic xterm */}
-          {viewMode === "blocks" ? (
-            <TerminalBlocks />
-          ) : (
-            <div
-              ref={hostRef}
-              style={{ flex: 1, minHeight: 0, padding: "0 12px 8px 16px" }}
-            />
-          )}
+          <div
+            onContextMenu={openMenu}
+            style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
+          >
+            {viewMode === "blocks" ? (
+              <TerminalBlocks />
+            ) : (
+              <div
+                ref={hostRef}
+                style={{ flex: 1, minHeight: 0, padding: "0 12px 8px 16px" }}
+              />
+            )}
+          </div>
 
           {/* Input row (blocks mode only) */}
           {viewMode === "blocks" && <TerminalInput />}
+
+          {menu && (
+            <TerminalContextMenu state={menu} onClose={() => setMenu(null)} />
+          )}
         </motion.section>
       )}
     </AnimatePresence>

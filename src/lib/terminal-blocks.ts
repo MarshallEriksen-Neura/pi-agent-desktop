@@ -31,6 +31,14 @@ interface TerminalBlocksState {
   blocks: TerminalBlock[];
   /** view mode: "blocks" (card-based) or "classic" (full xterm canvas) */
   viewMode: "blocks" | "classic";
+  /**
+   * The command line being edited in block mode.
+   *
+   * Store state rather than component state because the context menu's Paste is
+   * rendered outside the input's tree and still has to write into it — and it
+   * costs nothing to keep a half-typed command across a view-mode toggle.
+   */
+  input: string;
 
   addBlock: (block: Omit<TerminalBlock, "id" | "collapsed">) => string;
   updateBlock: (id: string, patch: Partial<TerminalBlock>) => void;
@@ -38,6 +46,7 @@ interface TerminalBlocksState {
   toggleCollapse: (id: string) => void;
   clearBlocks: () => void;
   setViewMode: (mode: "blocks" | "classic") => void;
+  setInput: (value: string) => void;
 }
 
 let seq = 0;
@@ -45,6 +54,7 @@ let seq = 0;
 export const useTerminalBlocks = create<TerminalBlocksState>((set) => ({
   blocks: [],
   viewMode: "blocks",
+  input: "",
 
   addBlock: (block) => {
     const id = `tb-${Date.now()}-${++seq}`;
@@ -75,4 +85,6 @@ export const useTerminalBlocks = create<TerminalBlocksState>((set) => ({
   clearBlocks: () => set({ blocks: [] }),
 
   setViewMode: (mode) => set({ viewMode: mode }),
+
+  setInput: (value) => set({ input: value }),
 }));

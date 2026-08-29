@@ -304,6 +304,11 @@ export const en = {
   // terminal drawer
   "terminal.title": "Terminal",
   "terminal.close": "Close terminal",
+  "terminal.copy": "Copy",
+  "terminal.paste": "Paste",
+  "terminal.selectAll": "Select all",
+  "terminal.clear": "Clear",
+  "terminal.clipboardUnavailable": "(clipboard unavailable — nothing to paste)",
 
   // diff review card
   "review.edited": "Pi edited {file}",
@@ -828,6 +833,67 @@ export const en = {
     "Extra skill directories in settings.json. Global paths resolve relative to ~/.pi/agent, project paths relative to .pi. Changes apply after restarting pi.",
   "skills.rescan": "Rescan",
   "skills.rescanDetail": "Re-read settings.json and scan skill directories again",
+
+  // skill installation — runs the Skills CLI (npx skills)
+  "skillsInstall.header": "Install skills",
+  "skillsInstall.scopeFooterGlobal":
+    "Installs into ~/.pi/agent/skills, available in every project.",
+  "skillsInstall.scopeFooterProject":
+    "Installs into this project's .pi/skills, which you can commit for the team.",
+  "skillsInstall.scopeFooterNoProject":
+    "Open a project to install project-scoped skills. Until then, installs go to the global directory.",
+  "skillsInstall.inputPlaceholder": "Skill name, or owner/repo, a URL, a local path",
+  "skillsInstall.catalogHeader": "Catalogue",
+  "skillsInstall.matches": "{n} matches",
+  "skillsInstall.catalogFooter":
+    "The same skill name often exists in several repositories — the source and install count say which is which.",
+  "skillsInstall.searchFailed": "Could not reach skills.sh",
+  "skillsInstall.noHits": "Nothing in the catalogue matches “{query}”",
+  "skillsInstall.noHitsDetail":
+    "Try a different term, or paste a repository, URL or local path to install from directly.",
+  "skillsInstall.installs": "{n} installs",
+  "skillsInstall.sourceSkillsHeader": "Skills in {source}",
+  "skillsInstall.browse": "List",
+  "skillsInstall.browsing": "Cloning…",
+  "skillsInstall.browseFailed": "Could not read that source",
+  "skillsInstall.willReplace": "Replaces",
+  "skillsInstall.willReplaceHint":
+    "{name} is already installed, but from a different source. Only one copy of a name can exist, so installing this one replaces it.",
+  "skillsInstall.selectedCount": "{n} of {total} selected",
+  "skillsInstall.installSelected": "Install {n}",
+  "skillsInstall.installAll": "Install all",
+  "skillsInstall.opaqueSource": "Could not list the skills in this source",
+  "skillsInstall.opaqueSourceDetail":
+    "The CLI reported no readable skill list. You can still install everything it contains.",
+  "skillsInstall.updateAll": "Update {scope} skills",
+  "skillsInstall.updateAllDetail":
+    "Re-fetch every skill installed from a tracked source",
+  "skillsInstall.updating": "Updating…",
+  "skillsInstall.updateFooter":
+    "Only skills installed through the Skills CLI are tracked for updates.",
+  "skillsInstall.remove": "Uninstall",
+  "skillsInstall.removing": "Uninstalling…",
+  "skillsInstall.moveTo": "Move to {scope}",
+  "skillsInstall.moving": "Moving…",
+  "skillsInstall.moveNeedsLock":
+    "This skill wasn't installed by the Skills CLI, so there's no source to re-install it from.",
+
+  // skill installation — action results
+  "skillsInstall.noProject": "No project is open, so there's nowhere to install.",
+  "skillsInstall.installed": "Installed {name} — restart pi to load it.",
+  "skillsInstall.installFailed": "Install failed: {err}",
+  "skillsInstall.removed": "Uninstalled {name} — restart pi to drop it.",
+  "skillsInstall.removeFailed": "Uninstall failed: {err}",
+  "skillsInstall.removePathScope":
+    "This skill comes from a configured path, not a directory pi manages. Remove it from settings.json instead.",
+  "skillsInstall.updated": "Skills updated — restart pi to load them.",
+  "skillsInstall.updateFailed": "Update failed: {err}",
+  "skillsInstall.moved": "Moved {name} — restart pi to load it.",
+  "skillsInstall.moveFailed": "Move failed: {err}",
+  "skillsInstall.moveUnavailable":
+    "{name} has no recorded source, so it can't be re-installed elsewhere.",
+  "skillsInstall.moveHalfDone":
+    "{name} was installed in the new scope, but the old copy is still there: {err}",
 
   // store page
   "store.title": "Store",

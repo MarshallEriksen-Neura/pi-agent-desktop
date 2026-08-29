@@ -18,6 +18,18 @@ export const termBus = {
   writeln(data = "") {
     this.write(data + "\r\n");
   },
+  /**
+   * Drop the backlog, then write `data`.
+   *
+   * Used by `clear`: replaying erased scrollback into a terminal that mounts
+   * later would undo the clear, since a late subscriber is handed the whole
+   * backlog. The escape sequence goes out after the drop so the live terminal
+   * still erases what it has already painted.
+   */
+  reset(data = "") {
+    backlog.length = 0;
+    if (data) this.write(data);
+  },
   subscribe(l: Listener): () => void {
     listeners.add(l);
     // replay history for late mounts

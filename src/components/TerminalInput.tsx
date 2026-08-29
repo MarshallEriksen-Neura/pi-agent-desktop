@@ -1,8 +1,12 @@
 "use client";
 
-import { useRef, KeyboardEvent, useState } from "react";
+import { ClipboardEvent, KeyboardEvent } from "react";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
-import { handleBlockInput } from "@/lib/terminal-block-shell";
+import {
+  handleBlockInput,
+  runBlockLine,
+  runPastedLines,
+} from "@/lib/terminal-block-shell";
 import { handleTermInput } from "@/lib/terminal-shell";
 
 /**
@@ -10,32 +14,35 @@ import { handleTermInput } from "@/lib/terminal-shell";
  * Simpler than ComposerInput — single line, shell-focused.
  */
 export function TerminalInput() {
-  const { viewMode } = useTerminalBlocks();
-  const [value, setValue] = useState("");
+  const { viewMode, input, setInput } = useTerminalBlocks();
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      const cmd = value.trim();
-      setValue("");
+      const cmd = input.trim();
+      setInput("");
       if (!cmd) return;
 
       if (viewMode === "blocks") {
-        // feed the command into block-mode handler
-        for (const ch of cmd) handleBlockInput(ch);
-        handleBlockInput("\r");
+        runBlockLine(cmd);
       } else {
-        // classic mode: feed to xterm line discipline
-        for (const ch of cmd) handleTermInput(ch);
-        handleTermInput("\r");
+        // classic mode: feed to xterm's line discipline as one paste-like write
+        handleTermInput(cmd + "\r");
       }
       return;
     }
 
-    // Ctrl-C
-    if (e.key === "c" && e.ctrlKey) {
+    // Ctrl-C. Only claim it when there is nothing to copy: taking it
+    // unconditionally means the field's own Ctrl-C never reaches the clipboard,
+    // which is the whole complaint about this terminal.
+    if (e.key === "c" && e.ctrlKey && !e.metaKey) {
+      const selection = window.getSelection()?.toString();
+      const inField =
+        e.currentTarget.selectionStart !== e.currentTarget.selectionEnd;
+      if (selection || inField) return; // let the browser copy
+
       e.preventDefault();
-      setValue("");
+      setInput("");
       if (viewMode === "blocks") {
         handleBlockInput("\x03");
       } else {
@@ -43,6 +50,32 @@ export function TerminalInput() {
       }
       return;
     }
+  };
+
+  /**
+   * A pasted multi-line command is several commands.
+   *
+   * Left to itself, `<input type="text">` strips the newlines and concatenates
+   * the lines, turning `cd foo` + `echo bar` into `cd fooecho bar` — wrong, and
+   * quiet about it. Single-line pastes fall through to the browser so the caret
+   * position and undo history keep working normally.
+   */
+  const onPaste = (e: ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData("text");
+    if (!text || !/[\r\n]/.test(text)) return;
+    e.preventDefault();
+
+    const el = e.currentTarget;
+    const start = el.selectionStart ?? input.length;
+    const end = el.selectionEnd ?? input.length;
+    const merged = input.slice(0, start) + text + input.slice(end);
+
+    if (viewMode === "blocks") {
+      setInput(runPastedLines(merged));
+      return;
+    }
+    setInput("");
+    handleTermInput(merged);
   };
 
   return (
@@ -68,12 +101,13 @@ export function TerminalInput() {
       </span>
       <input
         type="text"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
         placeholder="Type a command…"
         autoComplete="off"
         spellCheck={false}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         style={{
           flex: 1,
           border: "none",

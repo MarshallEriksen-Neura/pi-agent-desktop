@@ -304,6 +304,11 @@ export const zh: Record<keyof typeof en, string> = {
   // terminal drawer
   "terminal.title": "终端",
   "terminal.close": "关闭终端",
+  "terminal.copy": "复制",
+  "terminal.paste": "粘贴",
+  "terminal.selectAll": "全选",
+  "terminal.clear": "清屏",
+  "terminal.clipboardUnavailable": "(无法读取剪贴板 — 没有可粘贴的内容)",
 
   // diff review card
   "review.edited": "Pi 编辑了 {file}",
@@ -807,6 +812,62 @@ export const zh: Record<keyof typeof en, string> = {
     "settings.json 中的额外技能目录。全局路径相对 ~/.pi/agent 解析，项目路径相对 .pi 解析。更改在重启 pi 后生效。",
   "skills.rescan": "重新扫描",
   "skills.rescanDetail": "重新读取 settings.json 并再次扫描技能目录",
+
+  // skill installation — runs the Skills CLI (npx skills)
+  "skillsInstall.header": "安装技能",
+  "skillsInstall.scopeFooterGlobal": "装到 ~/.pi/agent/skills，所有项目都能用。",
+  "skillsInstall.scopeFooterProject":
+    "装到当前项目的 .pi/skills，可以提交给团队共享。",
+  "skillsInstall.scopeFooterNoProject":
+    "打开一个项目才能装项目级技能。在那之前一律装到通用目录。",
+  "skillsInstall.inputPlaceholder": "技能名，或 owner/repo、链接、本地路径",
+  "skillsInstall.catalogHeader": "目录",
+  "skillsInstall.matches": "{n} 个匹配",
+  "skillsInstall.catalogFooter":
+    "同一个技能名常常在好几个仓库里都有 —— 看来源和安装量区分。",
+  "skillsInstall.searchFailed": "连不上 skills.sh",
+  "skillsInstall.noHits": "目录里没有匹配“{query}”的技能",
+  "skillsInstall.noHitsDetail": "换个关键词，或直接粘一个仓库、链接、本地路径。",
+  "skillsInstall.installs": "{n} 次安装",
+  "skillsInstall.sourceSkillsHeader": "{source} 里的技能",
+  "skillsInstall.browse": "列出",
+  "skillsInstall.browsing": "克隆中…",
+  "skillsInstall.browseFailed": "读不出这个来源",
+  "skillsInstall.willReplace": "会替换",
+  "skillsInstall.willReplaceHint":
+    "{name} 已经装了,但来自另一个来源。同名只能存在一份,装这个会替换掉它。",
+  "skillsInstall.selectedCount": "已选 {n} / {total}",
+  "skillsInstall.installSelected": "安装 {n} 个",
+  "skillsInstall.installAll": "全部安装",
+  "skillsInstall.opaqueSource": "列不出这个来源里的技能",
+  "skillsInstall.opaqueSourceDetail":
+    "CLI 没有给出可解析的技能清单。仍然可以把它包含的全部技能装上。",
+  "skillsInstall.updateAll": "更新{scope}技能",
+  "skillsInstall.updateAllDetail": "重新拉取所有记录了来源的技能",
+  "skillsInstall.updating": "更新中…",
+  "skillsInstall.updateFooter": "只有通过 Skills CLI 安装的技能才会被记录、才能更新。",
+  "skillsInstall.remove": "卸载",
+  "skillsInstall.removing": "卸载中…",
+  "skillsInstall.moveTo": "移到{scope}",
+  "skillsInstall.moving": "搬移中…",
+  "skillsInstall.moveNeedsLock":
+    "这个技能不是 Skills CLI 装的，没有可用来重装的来源记录。",
+
+  // skill installation — action results
+  "skillsInstall.noProject": "没有打开项目，无处安装。",
+  "skillsInstall.installed": "已安装 {name} — 重启 pi 后生效。",
+  "skillsInstall.installFailed": "安装失败：{err}",
+  "skillsInstall.removed": "已卸载 {name} — 重启 pi 后生效。",
+  "skillsInstall.removeFailed": "卸载失败：{err}",
+  "skillsInstall.removePathScope":
+    "这个技能来自 settings.json 里配置的路径，不在 pi 管理的目录里。请到 settings.json 里移除。",
+  "skillsInstall.updated": "技能已更新 — 重启 pi 后生效。",
+  "skillsInstall.updateFailed": "更新失败：{err}",
+  "skillsInstall.moved": "已移动 {name} — 重启 pi 后生效。",
+  "skillsInstall.moveFailed": "搬移失败：{err}",
+  "skillsInstall.moveUnavailable": "{name} 没有来源记录，无法重装到另一个范围。",
+  "skillsInstall.moveHalfDone":
+    "{name} 已装到新范围，但旧的那份还在：{err}",
 
   // store page
   "store.title": "商店",
