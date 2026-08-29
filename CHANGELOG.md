@@ -2,6 +2,37 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
+## [0.10.0] — 2026-08-30
+
+### Added
+- **技能页面能装了** —— 此前它只能读:`useSkills.scan()` 走一遍 pi 的三个技能目录、解析每份 `SKILL.md` 的 frontmatter,于是页面能列、能搜、能预览,然后就到此为止。想把一个技能弄到磁盘上得离开应用开终端,还得自己记住哪个目录对应"到处可用"、哪个对应"只这个项目"
+  - 驱动它的是 `npx skills`([vercel-labs/skills](https://github.com/vercel-labs/skills))。那个 CLI 本来就把 pi 当一等公民(`--agent pi`),全局写 `~/.pi/agent/skills`、项目写 `<root>/.pi/skills` —— 正是扫描器已经在读的那两个目录,所以装完重扫一次就落进现有的全局/项目分组,没有新的第三种状态
+  - **一个输入框,两条路进去**。打名字,skills.sh 目录边打边答;贴一个地方 —— `owner/repo`、git 或下载链接、本地路径 —— 旁边长出「列出」按钮去枚举它。走哪条按文本里有没有分隔符(`/ \ : . ~`)判定:裸词不可能是来源,而一个名字不该触发二十秒的 clone
+  - 报一个技能名是常见情况,而且它**真的有歧义**:`ui-ux-pro-max` 存在于九个互不相关的仓库里,所以答案必须是一个可选的列表,不能是一次猜测。结果按"名字精确匹配优先、再按安装量"排 —— 不这么排的话,某一个仓库里安装量更高的兄弟技能(`ckm:design-system`,32K)会盖住另外八个真正在发你打的那个名字的仓库
+  - **哪一行算已装,按来源判定而不是按名字**。磁盘上的东西不记来源(`SKILL.md` 只有 name 和 description),但 CLI 的 lock 文件记(`~/.agents/.skill-lock.json`,项目是 `<root>/skills-lock.json`),所以 `parseLock` 现在报每条的 `source` —— 和目录接口返回的是同一个 `owner/repo` 身份,旧条目只有 `sourceUrl` 时归约成它。只有来源也对上才打「已安装」徽章
+  - 另外八行不是简单的"未安装":同名只能存在一份,装它们中任何一个都会替换掉现在那份。那些行保留安装按钮,并加一个「会替换」徽章把后果说出来
+  - **卸载 / 更新 / 在全局与项目之间搬移**,都在展开的技能行里。搬移是"从 lock 记录的来源重装、再删掉旧的那份" —— `skills update` 内部就是这两步。直接拷目录会让目标 scope 的 lock 是空的,从而悄悄把这个技能排除在未来的更新之外,所以这个动作只在存在 lock 条目时提供
+  - 安装传 `--copy`。CLI 默认是往一个规范的 `~/.agents/skills` 建符号链接,而 Windows junction 没法跟着项目的 `.pi/skills/` 一起提交 —— 上游本来就打算让那个目录进版本库
+- **终端能复制粘贴了,有右键菜单,`clear` 也真的清屏** —— 此前终端抽屉**完全没有复制**。xterm 故意不带剪贴板绑定(`Ctrl-C` 是 shell 的中断,修饰键还意味着什么由嵌入方决定),而没有任何东西绑过它们,于是唯一的出路是块视图里每块自己的复制按钮。右键也顶不上:`AppShell` 为了让自定义菜单存在而全局取消了 `contextmenu`,这连带把 WebView2 自己的复制/粘贴项也拿掉了,而终端从来没拿到替代品
+  - **复制**:`Ctrl/Cmd+Shift+C` 总是复制选区;裸 `Ctrl-C` 只在有选区时复制,否则照常作为 SIGINT 抵达 shell —— Windows Terminal 就是这么拆同一个键的。复制后清掉选区:留着会让**下一次** `Ctrl-C` 又去复制而不是中断,于是一个过期的选区能让正在跑的命令杀不掉。macOS 上 `mod` 是 Cmd,所以那边 `Ctrl-C` 始终是中断
+  - **粘贴,原生优先**。裸 `Ctrl/Cmd+V` 故意**不** `preventDefault`。webview 自己的 paste 事件不要任何授权,而 `navigator.clipboard.readText()` 会弹窗 —— 且一次"阻止"会被永久记住,所以为了读剪贴板而取消原生事件,等于把一个永久性的失败放在一次误点之外。`armPasteFallback` 等 150ms,只在原生事件没来时才去读剪贴板;事件会取消定时器,所以两条路加起来恰好粘贴一次。`Ctrl/Cmd+Shift+V` 和菜单项是显式路径,那里读剪贴板是唯一选择、弹窗也是预期的
+  - **粘贴不是一次按键**,这是此前它半坏的根源:xterm 把整段粘贴作为**一个**多字符字符串交给 `onData`,换行已经折成 CR,而两个视图都只按单次击键处理它。经典模式的 `switch` 拿整个 payload 去和 `"\r"` 比,于是两行粘贴永远匹配不到回车、连着内嵌的 CR 一起掉进可打印分支被原样回显,显示自己覆盖自己;以换行开头的粘贴过不了 `data >= " "` 直接消失;命令正在跑时到达的粘贴被丢掉。块模式则让 `<input type="text">` 干它对换行一贯干的事 —— 剥掉,于是 `cd foo` + `echo bar` 静默变成 `cd fooecho bar`
+  - `splitPastedLines`([src/lib/terminal-paste.ts](src/lib/terminal-paste.ts))现在为两个视图共同持有多行规则:以换行结尾的行是命令,最后一个换行之后的尾巴留在行编辑器里可改 —— 所以没有结尾换行的粘贴是落进输入行而不是盲跑。经典模式把余下的行按 typeahead 存着、每条命令跑完再回放一条,和真实终端排队粘贴行的方式一样;`Ctrl-C` 丢弃队列,因为"按了中断、然后看着一段被放弃的粘贴继续跑"和这个键的用途正好相反
+  - **右键菜单** —— 复制 / 粘贴 / 全选 / 清屏。经 portal 渲染:抽屉用 `overflow: hidden` 动画自己的高度,而 Motion 的 transform 让它成为 containing block,所以就地渲染的 fixed 定位菜单会被它所属的那个抽屉裁掉
+  - **`clear` 此前不可能生效**,三个独立的原因:每条命令是一次单独的 `bash` RPC,输出是被**捕获**的而不是写进活的 PTY,所以转义序列是作为响应体里的文本到达、对面没有终端;pi 的 shell 没有设 `TERM`,而 `clear` 要读 terminfo 才知道该吐什么,于是它在打印任何东西之前就失败了;块模式经 `ansi_up` 渲染,那个库实现 SGR、忽略其他所有 CSI 码 —— 擦除和光标指令都在内 —— 所以即使收到了也做不了。现在 `clear`(以及 `cls`,Windows 用户会打、且同样不会更好)和 `Ctrl-L` 都在前端应答:块模式清空块列表,经典模式发 `\x1b[3J\x1b[2J\x1b[H`。`3J` 是关键 —— 没有它"清掉"的回滚缓冲一个滚轮就回来了。同时调 `termBus.reset()` 丢掉 backlog,因为总线会把它回放给迟到的订阅者,清屏之后才挂载的终端否则会把清掉的东西恢复出来
+
+### Fixed
+- **符号链接安装的技能在页面上全部不可见** —— `fs_list_dir` 用 `DirEntry::file_type()` 判断 `isDir`,而它描述的是链接本身而不是链接的目标,于是一个指向目录的 Windows junction 或 Unix 符号链接被报成既不是文件也不是目录。而符号链接正是 Skills CLI 的**默认**安装方式,所以用户此前从终端装的每一个技能在这个页面上都是隐形的。现在跟随链接判断,文件树顺带白拿同一个修复
+- **"已思考"行下方约 24px 的空白** —— pi 常规地用一个裸 `"\n\n"` 文本块给纯思考消息收尾,于是 `m.text` 是 truthy 而 Streamdown 从它渲染出一个空容器。那一行不是免费的:它还放着 `⋮` 菜单 —— 一个 hover 前 opacity 为 0 的 24px 按钮,行高由它决定。新增 `hasText()`,所有"这条消息有没有文本"的判断统一走它。只有判断用 trim 后的值,渲染和复制仍用原始文本 —— trim 会把开头的四空格缩进(一个缩进代码块)变成普通段落
+- **通知预览显示成空白** —— 同一个裸 `"\n\n"`:会话标题预览此前直接截前 60 字符,现在先 trim 再截
+
+### Internal
+- 新增两个 Tauri 命令。`skills_cli`([src-tauri/src/skills_cli.rs](src-tauri/src/skills_cli.rs))对齐 `pi_cli`:子命令白名单(`add` / `remove` / `update` / `list`)、stdin 置空、Windows 上不弹控制台窗口。它优先用全局安装的 `skills` 可执行文件,否则回落到 `npx -y skills@latest`,两者都经 `pi_command::resolve_executable` 解析以便找到 npm 的 `.cmd` shim。因为首次 npx 下载加一次来源 clone 会跑到几十秒,它是 `async` 配 `spawn_blocking` 而不是同步命令
+- `skills_search` 走 Rust 而不是渲染进程。`https://skills.sh/api/search`(CLI 自己的 `find` 用的匿名端点;文档化的 `/api/v1/*` 要 Vercel OIDC bearer token,直接 401)**一个 `Access-Control-Allow-Origin` 都不发,**所以从 webview 发 `fetch` 会在读到响应之前被 CORS 拦掉、只冒出一个 `TypeError: Failed to fetch` —— 那看起来和网络不通一模一样,也正是为什么商店页 fetch `registry.npmjs.org` 没事而这个不行(npm 发 `ACAO: *`)。原生客户端没有同源规则,能拿到真实错误和超时,并且会读用户的代理(`HTTP(S)_PROXY`,Windows 上还有 Internet Settings 注册表键)
+- **CLI 的失败原因此前被 npm 的警告顶掉**。Skills CLI 经 clack 打日志,写的是 **stdout** —— 失败原因也在那里;stderr 通常只有 npm 关于用户 `.npmrc` 里某个配置键的警告。报 `stderr || stdout` 于是显示噪音、藏起原因。`cliError` 现在两个流都读,滤掉 npm 闲话、clack 的边框字符、spinner 帧,以及只重复"失败了"的收尾行,保留最后几行有信息量的;子进程上的 `npm_config_loglevel=error` 从源头掐掉那条警告
+- 桌面适配器命令清单:67 个唯一命令(此前 65)
+- 后端套件 121 pass。3 个先前就存在的失败依旧 —— browser-mock 扩展 UI、session-pin resumePath、mcp-import OAuth fixture;这些测试和它们 import 的源码自 0.9.0 起没有改动过
+
 ## [0.9.2] — 2026-08-28
 
 ### Added
