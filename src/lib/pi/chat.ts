@@ -709,8 +709,12 @@ export function createChatStore(taskId: string) {
                 if (updated[i].role === "assistant") {
                   const msg = updated[i];
                   const title = getSessionTitle(taskId).trim() || t("session.untitled");
-                  const preview =
-                    msg.text.slice(0, 60) + (msg.text.length > 60 ? "…" : "");
+                  // Trimmed first: pi closes a thinking-only message with a bare
+                  // "\n\n", and an untrimmed slice of that is whitespace — truthy,
+                  // so it wins over the fallback body and the notification lands
+                  // blank.
+                  const body = msg.text.trim();
+                  const preview = body.slice(0, 60) + (body.length > 60 ? "…" : "");
                   showNotification(t("agent.backgroundDoneTitle", { title }), {
                     body: preview || t("agent.backgroundDoneBody"),
                     onClick: () => {

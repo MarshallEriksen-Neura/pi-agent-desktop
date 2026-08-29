@@ -59,6 +59,24 @@ interface MessageBubbleProps {
 }
 
 /**
+ * Does this message carry text that markdown will actually put on screen?
+ *
+ * pi routinely closes a thinking-only message with a bare `"\n\n"` text block,
+ * so `m.text` is truthy while Streamdown renders an empty container from it. The
+ * text row is not free: it also holds the `⋮` menu, a 24px button parked at
+ * opacity 0 until hover, which sets the row's height. A truthy-only check
+ * therefore buys ~24px of blank space under every "已思考" line. Every gate on
+ * "does this message have text" goes through here.
+ *
+ * Only the gates use the trimmed value — the raw text is what gets rendered and
+ * copied, because trimming it would turn a leading four-space indent (an
+ * indented code block) into a paragraph.
+ */
+function hasText(m: ChatMessage): boolean {
+  return (m.text ?? "").trim().length > 0;
+}
+
+/**
  * Does this message put anything on screen?
  *
  * pi opens a new assistant message on every `message_start`, and some of those
@@ -81,7 +99,7 @@ export function hasRenderableContent(m: ChatMessage): boolean {
   // truthy checks for the same reason, so a field this predicate would trip on
   // is a field they would have simply skipped.
   return Boolean(
-    m.text ||
+    hasText(m) ||
       m.thinking ||
       m.tools?.length ||
       m.isError ||
@@ -165,7 +183,7 @@ export function MessageBubble({ m, animateIn = true, tight = false }: MessageBub
             )}
           </div>
         )}
-        {m.text && (
+        {hasText(m) && (
           <>
             <div
               style={{
@@ -350,7 +368,7 @@ function AssistantMessage({
         </div>
       ))}
 
-      {(m.text || m.streaming) && (
+      {(hasText(m) || m.streaming) && (
         <div style={{ position: "relative", display: "flex", gap: 4, alignItems: "flex-start", minWidth: 0 }}>
           {/* minWidth:0 — a flex item defaults to min-width:auto, which refuses to
               shrink under its content's intrinsic width. Without it a long URL or
@@ -360,7 +378,7 @@ function AssistantMessage({
             <StreamdownRenderer text={m.text} animating={m.streaming} />
           </div>
 
-          {!m.streaming && m.text && (
+          {!m.streaming && hasText(m) && (
             <div style={{ position: "relative", flexShrink: 0 }}>
               <motion.button
                 onClick={() => setMenuOpen(!menuOpen)}
@@ -470,7 +488,7 @@ function AssistantMessage({
         </div>
       )}
 
-      {!m.streaming && m.text && (
+      {!m.streaming && hasText(m) && (
         <BubbleCopyButton
           text={m.text}
           visible={showCopy}
