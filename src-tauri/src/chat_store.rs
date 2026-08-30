@@ -3,6 +3,7 @@
 //! the pi CLI). Message payloads are stored as an opaque JSON string so the
 //! frontend owns the schema; Rust only indexes metadata for the session list.
 
+use crate::remote_profiles::ExecutionBinding;
 use pi_backend_core::chat_store::{configure_and_migrate, validate_session_payload};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,11 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+fn local_execution_binding() -> ExecutionBinding {
+    ExecutionBinding::Local {
+        target_id: "local".into(),
+    }
 }
 
 fn open_db() -> Result<Connection, String> {
@@ -66,6 +72,7 @@ pub struct ChatSessionMeta {
     pub preview: String,
     /// Project root this conversation belongs to (canonical key).
     pub project_root: String,
+    pub execution_binding: ExecutionBinding,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -81,6 +88,8 @@ pub struct ChatSessionSave {
     pub preview: String,
     #[serde(default)]
     pub project_root: String,
+    #[serde(default = "local_execution_binding")]
+    pub execution_binding: ExecutionBinding,
     /// serialized ChatMessage[] — opaque to Rust
     pub messages: String,
     pub created_at: i64,
@@ -98,7 +107,7 @@ pub fn chat_sessions_list(
     with_db(&db, |conn| {
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, session_path, preview, project_root, created_at, updated_at
+                "SELECT id, name, session_path, preview, project_root, execution_binding, created_at, updated_at
                  FROM chat_sessions WHERE project_root = ?1 ORDER BY updated_at DESC",
             )
             .map_err(|e| e.to_string())?;
@@ -110,8 +119,13 @@ pub fn chat_sessions_list(
                     session_path: r.get(2)?,
                     preview: r.get(3)?,
                     project_root: r.get(4)?,
-                    created_at: r.get(5)?,
-                    updated_at: r.get(6)?,
+                    execution_binding: r
+                        .get::<_, String>(5)
+                        .ok()
+                        .and_then(|value| serde_json::from_str(&value).ok())
+                        .unwrap_or_else(local_execution_binding),
+                    created_at: r.get(6)?,
+                    updated_at: r.get(7)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -141,12 +155,14 @@ pub fn chat_session_save(db: State<'_, ChatDb>, session: ChatSessionSave) -> Res
     validate_session_payload(&session.name, &session.preview, &session.messages)
         .map_err(|error| error.to_string())?;
     let key = crate::projects::project_key(&session.project_root);
+    let execution_binding = serde_json::to_string(&session.execution_binding)
+        .map_err(|error| format!("serialize execution binding: {error}"))?;
     with_db(&db, |conn| {
         conn.execute(
-            "INSERT INTO chat_sessions (id, name, session_path, preview, messages, project_root, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO chat_sessions (id, name, session_path, preview, messages, project_root, execution_binding, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
-               name = ?2, session_path = ?3, preview = ?4, messages = ?5, project_root = ?6, updated_at = ?8",
+               name = ?2, session_path = ?3, preview = ?4, messages = ?5, project_root = ?6, execution_binding = ?7, updated_at = ?9",
             params![
                 session.id,
                 session.name,
@@ -154,6 +170,7 @@ pub fn chat_session_save(db: State<'_, ChatDb>, session: ChatSessionSave) -> Res
                 session.preview,
                 session.messages,
                 key,
+                execution_binding,
                 session.created_at,
                 now_ms()
             ],

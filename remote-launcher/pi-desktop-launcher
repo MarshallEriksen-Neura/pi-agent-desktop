@@ -1,0 +1,225 @@
+#!/bin/sh
+# Install this file on the remote host at the profile's absolute launcherPath.
+# Run mode deliberately emits diagnostics only on stderr; stdout belongs to Pi JSONL.
+set -eu
+
+mode=${1:-}
+payload=${2:-}
+if [ "$mode" != "--run" ] && [ "$mode" != "--preflight" ]; then
+  printf '%s\n' 'invalid launcher mode' >&2
+  exit 64
+fi
+if [ -z "$payload" ]; then
+  printf '%s\n' 'missing launcher payload' >&2
+  exit 64
+fi
+
+if decoded=$(printf '%s' "$payload" | base64 -d 2>/dev/null); then
+  :
+elif decoded=$(printf '%s' "$payload" | base64 -D 2>/dev/null); then
+  :
+else
+  printf '%s\n' 'invalid launcher payload encoding' >&2
+  exit 65
+fi
+
+# `ssh host command` runs a NON-interactive, non-login shell: it reads only
+# $BASH_ENV, never ~/.bashrc or ~/.profile. Debian's stock ~/.bashrc also returns
+# early on `case $- in *i*)`, before any version-manager block. So nvm, fnm,
+# volta and asdf all put node on the *interactive* PATH and nowhere we can see.
+#
+# Recover it by asking a login shell for its PATH and APPENDING that. Appending,
+# not prepending: anything already reachable keeps priority, so a host that works
+# today cannot be changed by this. The same recovery is what makes an
+# nvm-installed `pi` findable, since it lives in that same bin directory.
+if ! command -v node >/dev/null 2>&1; then
+  for login_shell in bash zsh; do
+    command -v "$login_shell" >/dev/null 2>&1 || continue
+    # A marker keeps this robust against rc files that print banners.
+    login_path=$("$login_shell" -lc 'printf "PI_PATH:%s\n" "$PATH"' 2>/dev/null \
+      | sed -n 's/^PI_PATH://p' | tail -n 1) || login_path=""
+    if [ -n "$login_path" ]; then
+      PATH="$PATH:$login_path"
+      export PATH
+    fi
+    command -v node >/dev/null 2>&1 && break
+  done
+fi
+
+# Last resort for hosts with no bash or zsh. No attempt is made to pick a
+# version: glob order is lexicographic, which is wrong for semver (v9 sorts after
+# v10), and for a fallback whose alternative is "nothing runs", any working node
+# beats none. Pin a specific one with a symlink on the PATH if it matters.
+if ! command -v node >/dev/null 2>&1; then
+  for candidate in \
+    "${HOME:-}"/.nvm/versions/node/*/bin/node \
+    "${HOME:-}"/.local/share/fnm/node-versions/*/installation/bin/node \
+    "${HOME:-}"/.volta/bin/node \
+    "${HOME:-}"/.asdf/shims/node \
+    /usr/local/bin/node \
+    /opt/homebrew/bin/node
+  do
+    [ -x "$candidate" ] || continue
+    PATH="$PATH:$(dirname "$candidate")"
+    export PATH
+  done
+fi
+
+export PI_DESKTOP_LAUNCHER_PAYLOAD="$decoded"
+export PI_DESKTOP_LAUNCHER_MODE="$mode"
+exec node -e '
+const { spawn } = require("node:child_process");
+
+const PREFLIGHT_TIMEOUT_MS = 10_000;
+const MAX_DIAGNOSTIC_BYTES = 16 * 1024;
+
+function fail(message, code = 65) {
+  process.stderr.write(`${message}\n`);
+  process.exit(code);
+}
+
+let payload;
+try {
+  payload = JSON.parse(process.env.PI_DESKTOP_LAUNCHER_PAYLOAD);
+} catch {
+  fail("invalid launcher payload");
+}
+
+const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
+const MAX_REMOTE_PATH_BYTES = 4096;
+const validRemotePath = (value) =>
+  typeof value === "string" &&
+  value.startsWith("/") &&
+  Buffer.byteLength(value) <= MAX_REMOTE_PATH_BYTES &&
+  !CONTROL_CHAR.test(value);
+const validExecutable = (value) =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  Buffer.byteLength(value) <= MAX_REMOTE_PATH_BYTES &&
+  !CONTROL_CHAR.test(value);
+
+const mode = process.env.PI_DESKTOP_LAUNCHER_MODE;
+if (
+  payload === null ||
+  typeof payload !== "object" ||
+  payload.protocolVersion !== 1 ||
+  !validRemotePath(payload.cwd) ||
+  !validExecutable(payload.piExecutable) ||
+  (payload.resumePath !== null &&
+    payload.resumePath !== undefined &&
+    !validRemotePath(payload.resumePath))
+) {
+  fail("unsupported launcher payload");
+}
+
+if (mode === "--preflight") {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const os = require("node:os");
+  const piAuthConfigured = () => {
+    try {
+      const stat = fs.statSync(path.join(os.homedir(), ".pi", "agent", "auth.json"), {
+        throwIfNoEntry: false,
+      });
+      return Boolean(stat?.isFile() && stat.size > 2);
+    } catch {
+      return false;
+    }
+  };
+  let completed = false;
+  const finish = (result) => {
+    if (completed) return;
+    completed = true;
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  };
+
+  let workspace;
+  try {
+    workspace = fs.statSync(payload.cwd, { throwIfNoEntry: false });
+  } catch {
+    finish({ ok: false, errorCode: "workspace_unavailable", error: "remote cwd is not accessible" });
+    process.exit(0);
+  }
+  if (!workspace?.isDirectory()) {
+    finish({ ok: false, errorCode: "workspace_missing", error: "remote cwd does not exist" });
+    process.exit(0);
+  }
+
+  const child = spawn(payload.piExecutable, ["--version"], {
+    cwd: payload.cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  const appendBounded = (current, chunk) =>
+    (current + chunk.toString()).slice(0, MAX_DIAGNOSTIC_BYTES);
+  child.stdout.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
+  child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
+
+  const timeout = setTimeout(() => {
+    child.kill("SIGKILL");
+    finish({ ok: false, errorCode: "pi_timeout", error: "pi --version timed out" });
+  }, PREFLIGHT_TIMEOUT_MS);
+
+  child.once("error", (error) => {
+    clearTimeout(timeout);
+    finish({ ok: false, errorCode: "pi_not_found", error: error.message });
+  });
+  child.once("close", (code) => {
+    clearTimeout(timeout);
+    if (completed) return;
+    if (code === 0) {
+      finish({
+        ok: true,
+        piVersion: stdout.trim(),
+        nodeVersion: process.version,
+        // Shows when the shell had to recover node from a login PATH: the path
+        // will sit under .nvm/.fnm/.volta rather than a system bin.
+        nodePath: process.execPath,
+        // Weak evidence on purpose: pi owns auth.json and exposes no CLI query,
+        // so a nonempty file is the most the launcher can honestly report. The
+        // desktop app surfaces a false value as a warning, never a blocker.
+        piAuthConfigured: piAuthConfigured(),
+      });
+    } else finish({
+      ok: false,
+      errorCode: "pi_unavailable",
+      error: stderr.trim() || `pi exited with ${code}`,
+    });
+  });
+} else {
+  const args = ["--mode", "rpc"];
+  if (typeof payload.resumePath === "string" && payload.resumePath.length > 0) {
+    args.push("--session", payload.resumePath);
+  }
+
+  const child = spawn(payload.piExecutable, args, {
+    cwd: payload.cwd,
+    stdio: "inherit",
+  });
+  let stopping = false;
+  const forward = (signal) => {
+    if (stopping) return;
+    stopping = true;
+    try {
+      child.kill(signal);
+    } catch {
+      process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143);
+    }
+    setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+    }, 4_000).unref();
+  };
+  process.on("SIGTERM", () => forward("SIGTERM"));
+  process.on("SIGINT", () => forward("SIGINT"));
+  process.on("SIGHUP", () => forward("SIGHUP"));
+  child.once("error", (error) => {
+    process.stderr.write(`cannot start pi: ${error.message}\n`);
+    process.exit(127);
+  });
+  child.once("close", (code, signal) => {
+    const signalExitCodes = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143, SIGKILL: 137 };
+    process.exit(code ?? signalExitCodes[signal] ?? 1);
+  });
+}
+'

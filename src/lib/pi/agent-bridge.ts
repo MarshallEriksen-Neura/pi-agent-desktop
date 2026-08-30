@@ -13,6 +13,7 @@
  */
 
 import { getPiClient } from "./client";
+import { useSessions } from "./sessions";
 import { getActiveTaskId, useTaskContext } from "./task-context";
 import { useUI } from "@/lib/store";
 import { useWorkspace } from "@/lib/workspace";
@@ -95,6 +96,13 @@ function parentDir(p: string): string {
   return i > 0 ? p.slice(0, i) : p;
 }
 
+/** Whether this task is bound to a remote execution target. */
+function remoteTask(taskId: string): boolean {
+  const state = useSessions.getState();
+  const session = state.sessions.find((item) => item.id === taskId);
+  return (session?.executionBinding ?? state.executionBinding).kind === "ssh";
+}
+
 const HIGHLIGHT_CAP = 400;
 
 /** 1-based changed line numbers in `next` (common prefix/suffix trimmed) */
@@ -127,6 +135,7 @@ function bindAgentBridge(taskId: string) {
   recs = new Map<string, ToolRec>();
 
   const client = getPiClient(taskId);
+  const remote = remoteTask(taskId);
 
   bridgeUnlisteners.push(
     client.on("agent_start", () => useUI.getState().beginAgentRun()),
@@ -148,6 +157,12 @@ function bindAgentBridge(taskId: string) {
     if (!ui.agentRunning) ui.beginAgentRun();
 
     const rec: ToolRec = { kind: "other", streamed: 0 };
+    // Remote paths and command output belong to the remote Pi transcript. Do not
+    // feed them into local workspace, editor, diff, or terminal state.
+    if (remote) {
+      recs.set(e.toolCallId, rec);
+      return;
+    }
 
     if (EDIT_TOOL.test(e.toolName)) {
       const raw = argPath(args);

@@ -17,6 +17,7 @@ import {
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n";
 import { useMessageActions } from "@/lib/pi/message-actions";
+import { useSessions } from "@/lib/pi/sessions";
 import {
   argPath,
   mcpAuthCompleteExample,
@@ -511,14 +512,15 @@ function AssistantMessage({
  * subscription off the ordinary rows, and the branch is stable for a given call.
  */
 function ToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
+  const remoteMode = useSessions((state) => state.executionBinding.kind === "ssh");
   if (isSubagentTool(tool.name)) {
     return <SubagentToolRow tool={tool} animateIn={animateIn} />;
   }
   if (EDIT_TOOL.test(tool.name)) {
-    return <EditToolRow tool={tool} animateIn={animateIn} />;
+    return <EditToolRow tool={tool} animateIn={animateIn} remoteMode={remoteMode} />;
   }
   if (toolKind(tool.name) === "read") {
-    return <ReadToolRow tool={tool} animateIn={animateIn} />;
+    return <ReadToolRow tool={tool} animateIn={animateIn} remoteMode={remoteMode} />;
   }
   return (
     <ActivityLine
@@ -542,7 +544,8 @@ function ToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }
 function useFileRow(
   tool: ChatToolCall,
   kind: "read" | "edit",
-): { open: () => void; active: boolean; label: string } | undefined {
+  disabled = false,
+) {
   const t = useT();
   const path = useMemo(() => {
     const raw = argPath(
@@ -557,7 +560,7 @@ function useFileRow(
     (s) => s.open && path !== undefined && s.activePath === path,
   );
 
-  if (!path) return undefined;
+  if (!path || disabled) return undefined;
   return {
     active,
     label: t("inspector.open", { file: relPath(path) }),
@@ -575,8 +578,16 @@ function useFileRow(
 }
 
 /** A `Read` row — opens the file it read in the inspector. */
-function ReadToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
-  const row = useFileRow(tool, "read");
+function ReadToolRow({
+  tool,
+  animateIn,
+  remoteMode,
+}: {
+  tool: ChatToolCall;
+  animateIn: boolean;
+  remoteMode: boolean;
+}) {
+  const row = useFileRow(tool, "read", remoteMode);
   return (
     <ActivityLine
       status={tool.status}
@@ -600,14 +611,23 @@ function ReadToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boole
  * the whole point of having the agent write a page is to look at it, and the
  * browser resolves the page's relative assets against the file itself.
  */
-function EditToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }) {
+function EditToolRow({
+  tool,
+  animateIn,
+  remoteMode,
+}: {
+  tool: ChatToolCall;
+  animateIn: boolean;
+  remoteMode: boolean;
+}) {
   const t = useT();
   const stat = useToolDiffStat(tool.id);
-  const row = useFileRow(tool, "edit");
+  const row = useFileRow(tool, "edit", remoteMode);
   const changed = stat && (stat.added > 0 || stat.removed > 0);
   // the preview opens the file as it is on disk now, so it only shows once the
   // write has landed — not while the call is still running
-  const target = tool.status === "done" ? htmlEditTarget(tool.name, tool.args) : undefined;
+  const target =
+    !remoteMode && tool.status === "done" ? htmlEditTarget(tool.name, tool.args) : undefined;
   return (
     <ActivityLine
       status={tool.status}

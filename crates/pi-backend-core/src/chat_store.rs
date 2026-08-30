@@ -5,7 +5,7 @@ use thiserror::Error;
 pub const MAX_SESSION_MESSAGES_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SESSION_NAME_BYTES: usize = 512;
 pub const MAX_SESSION_PREVIEW_BYTES: usize = 8 * 1024;
-pub const CHAT_SCHEMA_VERSION: i64 = 1;
+pub const CHAT_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Error)]
 pub enum ChatStoreError {
@@ -33,6 +33,7 @@ pub fn configure_and_migrate(
            preview TEXT NOT NULL DEFAULT '',
            messages TEXT NOT NULL DEFAULT '[]',
            project_root TEXT NOT NULL DEFAULT '',
+           execution_binding TEXT NOT NULL DEFAULT '{\"kind\":\"local\",\"targetId\":\"local\"}',
            created_at INTEGER NOT NULL,
            updated_at INTEGER NOT NULL
          );",
@@ -52,6 +53,16 @@ pub fn configure_and_migrate(
                 [root],
             )?;
         }
+    }
+    let has_execution_binding: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name = 'execution_binding'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_execution_binding == 0 {
+        transaction.execute_batch(
+            "ALTER TABLE chat_sessions ADD COLUMN execution_binding TEXT NOT NULL DEFAULT '{\"kind\":\"local\",\"targetId\":\"local\"}';",
+        )?;
     }
     transaction.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_project
@@ -123,6 +134,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(project_root, "D:/legacy-project");
+        let execution_binding: String = connection
+            .query_row(
+                "SELECT execution_binding FROM chat_sessions WHERE id = 'legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(execution_binding, r#"{"kind":"local","targetId":"local"}"#);
         drop(connection);
         fs::remove_dir_all(directory).unwrap();
     }

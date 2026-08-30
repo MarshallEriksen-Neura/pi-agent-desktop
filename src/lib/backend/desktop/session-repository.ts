@@ -30,6 +30,7 @@ export const desktopSessionRepositoryPort: SessionRepositoryPort = {
         sessionPath: session.sessionPath,
         preview: session.preview,
         projectRoot: session.projectRoot,
+        executionBinding: session.executionBinding,
         messages: JSON.stringify(session.messages),
         createdAt: session.createdAt,
       },

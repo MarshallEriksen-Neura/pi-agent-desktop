@@ -1,4 +1,5 @@
 import type { PiCommand, PiEvent } from "../../pi/protocol";
+import type { ExecutionBinding } from "./execution-target";
 
 /** Task key used when the caller omits `taskId` — the primary conversation. */
 export const DEFAULT_TASK_ID = "default";
@@ -7,6 +8,8 @@ export interface PiProcessStartOptions {
   cwd?: string;
   resumePath?: string;
   taskId?: string;
+  /** Execution target is immutable for the lifetime of the process port. */
+  executionBinding?: ExecutionBinding;
 }
 
 export interface PiProcessExit {

@@ -7,6 +7,7 @@ import { createDesktopPiProcessPort } from "../desktop/pi-process";
 import { desktopProjectCatalogPort } from "../desktop/project-catalog";
 import { createDesktopProviderAuthPort } from "../desktop/provider-auth";
 import { desktopRemoteControlPort } from "../desktop/remote-control";
+import { desktopRemotePiProfilePort } from "../desktop/remote-profiles";
 import { desktopRemoteConversationsPort } from "../desktop/remote-conversations";
 import { createDesktopRuntimeConfigPort } from "../desktop/runtime-config";
 import { desktopSessionRepositoryPort } from "../desktop/session-repository";
@@ -21,13 +22,14 @@ import {
 export function createDesktopBackendPorts(): BackendPorts {
   return {
     piProcess: createDesktopPiProcessPort(),
-    createPiProcess: (taskId) => createDesktopPiProcessPort(taskId),
+    createPiProcess: (taskId, executionBinding) => createDesktopPiProcessPort(taskId, executionBinding),
     sessionRepository: desktopSessionRepositoryPort,
     workspaceFs: desktopWorkspaceFsPort,
     projectCatalog: desktopProjectCatalogPort,
     providerAuth: createDesktopProviderAuthPort(),
     remoteControl: desktopRemoteControlPort,
     remoteConversations: desktopRemoteConversationsPort,
+    remoteProfiles: desktopRemotePiProfilePort,
     runtimeConfig: createDesktopRuntimeConfigPort(),
     piConfiguration: createDesktopPiConfigurationPort(),
     window: desktopWindowPort,

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useUI } from "@/lib/store";
 import { usePi } from "@/lib/pi/store";
+import { useSessions } from "@/lib/pi/sessions";
 import { useT, type MsgKey } from "@/lib/i18n";
 import { PiMark } from "@/components/PiMark";
 
@@ -39,7 +40,11 @@ export function NavRail() {
   const pathname = usePathname();
   const zenMode = useUI((s) => s.zenMode);
   const status = usePi((s) => s.status);
+  const remoteMode = useSessions((s) => s.executionBinding.kind === "ssh");
   const t = useT();
+  const visibleItems = remoteMode
+    ? ITEMS.filter((item) => item.href === "/" || item.href === "/settings/")
+    : ITEMS;
 
   if (zenMode) return null;
 
@@ -74,7 +79,7 @@ export function NavRail() {
       data-tauri-drag-region
     >
       <PiMark size={30} withBackground style={{ marginBottom: 8 }} />
-      {ITEMS.map((item) => {
+      {visibleItems.map((item) => {
         const active = isActive(item.href);
         return (
           <Link key={item.href} href={item.href} title={t(item.labelKey)}>

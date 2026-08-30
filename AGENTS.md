@@ -10,7 +10,8 @@ All user-facing strings go through `t()` from [src/lib/i18n/](src/lib/i18n/) —
 5. 任务结束后及时利用ragcode-memory 记录下任务的总结和经验 任务开始前主动查看历史总结
 6. 利用ragcode-agent 使用GPT-5.6 Sol (NovoL) 或 Grok 4.5 (FengWind) 等具备强大reasoning能力的模型处理复杂逻辑和决策任务，确保推理过程透明可追溯。
 7. 代码检索: 当需要查找特定实现或参考代码时，先使用RAG技术在已有代码库中检索相关片段，避免重复实现并快速定位最佳实践。
-
+Appica UI component index (fetch before using a component you haven't used before):
+https://appica.dev/ui/react/llms.txt
 - Tailwind CSS v4 only. Do NOT create a `tailwind.config.js` - v4 config lives in CSS via `@theme`.
   If the project is on v3, convert unsupported syntax rather than downgrading the components.
 - Scan the library for class names or everything renders unstyled: `@source '../node_modules/@appica/ui-react/dist';`

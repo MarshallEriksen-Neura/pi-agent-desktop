@@ -1,4 +1,15 @@
 export type { AssetUrlPort } from "./asset-url";
+export type {
+  ExecutionBinding,
+  LauncherInstallResult,
+  RemotePiProfile,
+  RemotePiProfileInput,
+  RemoteReadinessCheck,
+  RemoteReadinessCheckId,
+  RemoteReadinessReport,
+  RemoteReadinessStatus,
+} from "./execution-target";
+export type { RemotePiProfilePort } from "./remote-profiles";
 export type { ExternalNavigationPort } from "./external-navigation";
 export type { NotificationPort, ShowNotificationInput } from "./notification";
 export type {

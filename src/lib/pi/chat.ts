@@ -610,6 +610,7 @@ export function createChatStore(taskId: string) {
                 await piStore().getState().connect({
                   cwd: target.cwd,
                   resumePath: target.resumePath,
+                  executionBinding: target.executionBinding,
                 });
               } catch {
                 // auto-reconnect failed — user will need to restart manually

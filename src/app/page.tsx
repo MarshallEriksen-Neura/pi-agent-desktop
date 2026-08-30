@@ -32,6 +32,7 @@ import { ModelPicker } from "@/components/ModelPicker";
 import { Kbd } from "@/components/primitives";
 import { Command, Sparkles } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import { useSessions } from "@/lib/pi/sessions";
 
 /**
  * xterm is only needed once the drawer opens (⌘J). It renders nothing while
@@ -80,6 +81,7 @@ export default function Home() {
     agentRunning,
   } = useUI();
   const t = useT();
+  const remoteMode = useSessions((state) => state.executionBinding.kind === "ssh");
   const rowRef = useRef<HTMLDivElement>(null);
   /** live width of the panel row — the drag ceiling and the effective width
    *  both depend on it, and it changes when the window is resized */
@@ -96,9 +98,13 @@ export default function Home() {
   useEffect(() => {
     const actions: Record<string, () => void> = {
       commandPalette: () => setCommandPalette(!useUI.getState().commandPaletteOpen),
-      zenMode: () => toggleZen(),
-      workMode: () => toggleWork(), // no-op in work-only — no other layout to reach
-      toggleTerminal: () => useUI.getState().toggleTerminal(),
+      ...(!remoteMode
+        ? {
+            zenMode: () => toggleZen(),
+            workMode: () => toggleWork(), // no-op in work-only — no other layout to reach
+            toggleTerminal: () => useUI.getState().toggleTerminal(),
+          }
+        : {}),
     };
     const onKey = (e: KeyboardEvent) => {
       const mac = isMacPlatform();
@@ -119,16 +125,24 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setCommandPalette, toggleWork, toggleZen]);
+  }, [remoteMode, setCommandPalette, toggleWork, toggleZen]);
+
+  useEffect(() => {
+    if (!remoteMode) return;
+    // Persisted local layout state must not blank or expose local-only surfaces
+    // when the restored conversation is SSH-bound.
+    useUI.setState({ zenMode: false, terminalOpen: false });
+  }, [remoteMode]);
 
   /* Nothing mounts until the saved layout is known, so a work-mode launch never
      builds the editor just to tear it down. The boot screen covers the gap. */
   // work-only has no way back to the IDE, so the session list has to stay
   // reachable from the chat column — it would otherwise have no entry point.
+  const effectiveWorkMode = workMode || remoteMode;
   const showSidebar =
-    layoutReady && sidebarOpen && !zenMode && (!workMode || layoutMode === "work-only");
-  const showAgent = layoutReady && !zenMode && (workMode || agentPanelOpen);
-  const showEditor = layoutReady && !zenMode && !workMode;
+    layoutReady && sidebarOpen && !zenMode && !remoteMode && (!workMode || layoutMode === "work-only");
+  const showAgent = layoutReady && !zenMode && (remoteMode || workMode || agentPanelOpen);
+  const showEditor = layoutReady && !zenMode && !remoteMode && !workMode;
   /* The inspector follows the chat: it belongs to a conversation, so it appears
      wherever that conversation is and is meaningless without it. Zen mode shows
      nothing but the composer, so it stays out of the way there. */
@@ -137,8 +151,8 @@ export default function Home() {
      transcript row, so the last row clicked wins — the row handlers close the
      other one rather than this deciding a fixed precedence. */
   const inspectorOpen = useFileInspector((s) => s.open && s.tabs.length > 0);
-  const showInspector = inspectorOpen && showAgent;
-  const showSubagent = subagentOpen && showAgent && !showInspector;
+  const showInspector = !remoteMode && inspectorOpen && showAgent;
+  const showSubagent = !remoteMode && subagentOpen && showAgent && !showInspector;
 
   // Track the row's width so the rail can be capped against what's actually
   // available. An observer rather than a window resize listener: the row is also
@@ -385,7 +399,7 @@ export default function Home() {
         </AnimatePresence>
 
         {showAgent &&
-          (workMode ? (
+          (effectiveWorkMode ? (
             <motion.div
               key="agent-work"
               initial={{ opacity: 0 }}
@@ -442,8 +456,8 @@ export default function Home() {
           ))}
       </div>
 
-      <TerminalDrawer />
-      <DiffReviewCard />
+      {!remoteMode && <TerminalDrawer />}
+      {!remoteMode && <DiffReviewCard />}
 
       {/* Zen-mode floating agent input — the immersive core */}
       <AnimatePresence>

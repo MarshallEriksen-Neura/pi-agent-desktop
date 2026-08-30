@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { TooltipProvider } from "@appica/ui-react/tooltip";
 import { NavRail } from "./NavRail";
 import { ExtensionSheet } from "./ExtensionSheet";
@@ -41,7 +41,12 @@ const chatRecoveryService = {
     const state = useSessions.getState();
     const id = taskId || state.activeId;
     const session = state.sessions.find((item) => item.id === id);
-    return { cwd: root, resumePath: session?.sessionPath || undefined };
+    const binding = session?.executionBinding ?? state.executionBinding;
+    return {
+      cwd: binding.kind === "ssh" ? binding.remoteCwd : root,
+      resumePath: session?.sessionPath || undefined,
+      executionBinding: binding,
+    };
   },
 };
 
@@ -59,6 +64,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 function MainShell({ children }: { children: React.ReactNode }) {
   // drives the close-request listener below; initCloseBehavior() reconciles it
   const closeBehavior = useUI((s) => s.closeBehavior);
+  const pathname = usePathname();
+  const router = useRouter();
+  const remoteMode = useSessions((s) => s.executionBinding.kind === "ssh");
+  const remoteRouteAllowed =
+    pathname === "/" ||
+    pathname?.startsWith("/settings") ||
+    pathname?.startsWith("/update");
   useEffect(() => {
     // restore the saved UI language (or detect from the system) before first paint settles
     useI18n.getState().initLocale();
@@ -149,6 +161,10 @@ function MainShell({ children }: { children: React.ReactNode }) {
       destroyAgentBridge();
     };
   }, []);
+
+  useEffect(() => {
+    if (remoteMode && !remoteRouteAllowed) router.replace("/");
+  }, [remoteMode, remoteRouteAllowed, router]);
 
   // Intercept the window close request (caption button, Alt+F4, native close) so
   // the user's saved behavior is honored instead of always quitting.
@@ -259,7 +275,9 @@ function MainShell({ children }: { children: React.ReactNode }) {
     <TooltipProvider delay={400}>
       <div style={{ display: "flex", height: "100vh", overflow: "hidden" }} data-testid="app-shell">
         <NavRail />
-        <div style={{ flex: 1, minWidth: 0, height: "100%" }}>{children}</div>
+        <div style={{ flex: 1, minWidth: 0, height: "100%" }}>
+          {!remoteMode || remoteRouteAllowed ? children : null}
+        </div>
         <ExtensionSheet />
         <CliUpdateToast />
         <RestartPiToast />

@@ -10,7 +10,7 @@ import { piRequestErrorText } from "./request-error";
 import { getBackendKind } from "../backend/composition/container";
 import { getActiveTaskId, useTaskContext } from "./task-context";
 import { DEFAULT_TASK_ID } from "../backend/ports/pi-process";
-import { getChatRecoveryTarget } from "../orchestration/chat-recovery";
+import type { ExecutionBinding } from "../backend/ports/execution-target";
 
 // Re-export so `usePiSettings` resolves whether imported from here or from
 // "@/lib/pi/settings" — guards against stale bundler graphs.
@@ -35,9 +35,13 @@ interface PiStore {
   modelsError: string | null;
   lastError: string | null;
 
-  connect: (opts?: { cwd?: string; resumePath?: string }) => Promise<void>;
+  connect: (opts?: { cwd?: string; resumePath?: string; executionBinding?: ExecutionBinding }) => Promise<void>;
   /** Stop pi and reconnect — used when the working directory changes. */
-  restart: (cwd?: string, resumePath?: string) => Promise<void>;
+  restart: (
+    cwd?: string,
+    resumePath?: string,
+    executionBinding?: ExecutionBinding,
+  ) => Promise<void>;
   refresh: () => Promise<void>;
   setModel: (m: PiModel) => Promise<void>;
   setThinking: (level: ThinkingLevel) => Promise<void>;
@@ -120,8 +124,8 @@ function surfaceSettingFailure(key: string, error: string) {
  * Per-task pi connection state. Each task owns its own pi process, so status,
  * model list and thinking level are tracked independently per conversation.
  */
-export function createPiStore(taskId: string) {
-  const client = getPiClient(taskId);
+export function createPiStore(taskId: string, executionBinding?: ExecutionBinding) {
+  const client = getPiClient(taskId, executionBinding);
   let sessionHooked = false;
   let activityHooked = false;
   let modelChangeSeq = 0;
@@ -178,8 +182,11 @@ export function createPiStore(taskId: string) {
             client.on("session", () => void get().refresh());
           }
 
-          await client.start({ cwd: opts?.cwd, resumePath: opts?.resumePath });
-
+          await client.start({
+            cwd: opts?.cwd,
+            resumePath: opts?.resumePath,
+            executionBinding: opts?.executionBinding,
+          });
           // A new process boots at settings.json's default, so the remembered
           // level has to be re-applied to this one.
           appliedRemembered = false;
@@ -207,7 +214,7 @@ export function createPiStore(taskId: string) {
         }
       },
 
-      restart: async (cwd, resumePath) => {
+      restart: async (cwd, resumePath, executionBinding) => {
         if (retryTimer) {
           clearTimeout(retryTimer);
           retryTimer = null;
@@ -216,8 +223,9 @@ export function createPiStore(taskId: string) {
         // only pass a cwd. Without a resume path pi boots blank and opens a new
         // session file, so the conversation on screen silently loses its context
         // mid-flight. Fall back to this task's own pinned session.
+        const recoveryTarget = getChatRecoveryTarget(taskId);
         const resume =
-          resumePath?.trim() || getChatRecoveryTarget(taskId)?.resumePath || undefined;
+          resumePath?.trim() || recoveryTarget?.resumePath || undefined;
         try {
           await client.stop();
         } catch (error) {
@@ -226,7 +234,11 @@ export function createPiStore(taskId: string) {
           throw error;
         }
         set({ status: "disconnected", lastError: null });
-        await get().connect({ cwd, resumePath: resume });
+        await get().connect({
+          cwd: cwd ?? recoveryTarget?.cwd,
+          resumePath: resume,
+          executionBinding: executionBinding ?? recoveryTarget?.executionBinding,
+        });
         if (get().status === "disconnected") {
           throw new Error(get().lastError || t("agent.piUnavailable"));
         }
@@ -378,11 +390,11 @@ export function createPiStore(taskId: string) {
 
 const piStores = new Map<string, PiStoreApi>();
 
-export function getPiStore(taskId: string): PiStoreApi {
+export function getPiStore(taskId: string, executionBinding?: ExecutionBinding): PiStoreApi {
   const key = taskId.trim() || DEFAULT_TASK_ID;
   let store = piStores.get(key);
   if (!store) {
-    store = createPiStore(key);
+    store = createPiStore(key, executionBinding);
     piStores.set(key, store);
   }
   return store;

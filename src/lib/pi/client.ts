@@ -13,6 +13,7 @@ import {
   type PiProcessPort,
 } from "../backend/ports/pi-process";
 import { getActiveTaskId } from "./task-context";
+import type { ExecutionBinding } from "../backend/ports/execution-target";
 
 type EventCb = (e: PiEvent) => void;
 /** Cross-task listener — receives the originating task id alongside the event. */
@@ -329,11 +330,14 @@ function resolveTaskId(taskId?: string): string {
  * The client for a task (defaults to the currently focused conversation).
  * Lazily creates a task-scoped process port on first use.
  */
-export function getPiClient(taskId?: string): PiClient {
+export function getPiClient(
+  taskId?: string,
+  executionBinding?: ExecutionBinding,
+ ): PiClient {
   const key = resolveTaskId(taskId);
   let client = clients.get(key);
   if (!client) {
-    client = new PiClient(key, getPort("createPiProcess")(key));
+    client = new PiClient(key, getPort("createPiProcess")(key, executionBinding));
     clients.set(key, client);
   }
   return client;

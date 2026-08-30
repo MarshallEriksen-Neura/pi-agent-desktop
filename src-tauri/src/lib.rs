@@ -9,6 +9,7 @@ mod pi_settings;
 mod projects;
 mod provider_auth;
 mod remote_control;
+mod remote_profiles;
 mod skills_cli;
 mod updater;
 mod wsl;
@@ -339,6 +340,13 @@ pub fn run() {
             pi_bridge::pi_send,
             pi_bridge::pi_stop,
             pi_bridge::pi_generate_title,
+            remote_profiles::remote_profiles_list,
+            remote_profiles::remote_profile_save,
+            remote_profiles::remote_profile_delete,
+            remote_profiles::remote_profile_preflight,
+            remote_profiles::remote_profile_check_draft,
+            remote_profiles::remote_profile_install_launcher,
+            remote_profiles::ssh_config_hosts,
             fs_bridge::workspace_root,
             fs_bridge::fs_list_dir,
             fs_bridge::fs_read_file,

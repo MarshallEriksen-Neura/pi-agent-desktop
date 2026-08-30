@@ -106,6 +106,7 @@ function PaletteBody() {
   const wsMock = useWorkspace((s) => s.mock);
   const wsRoot = useWorkspace((s) => s.root);
   const recents = useWorkspace((s) => s.recents);
+  const remoteMode = useSessions((s) => s.executionBinding.kind === "ssh");
   const t = useT();
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
@@ -221,7 +222,7 @@ function PaletteBody() {
       },
     ];
     // project selection — folder picker + recent projects (Tauri only)
-    const fromProjects: Command[] = wsMock
+    const fromProjects: Command[] = wsMock || remoteMode
       ? []
       : [
           {
@@ -258,10 +259,13 @@ function PaletteBody() {
       },
     }));
     // work-only cannot leave the chat column, so the toggle is not offered
-    const visibleBase =
-      layoutMode === "work-only" ? base.filter((command) => command.id !== "work") : base;
+    const hiddenBaseCommands = new Set<string>([
+      ...(layoutMode === "work-only" ? ["work"] : []),
+      ...(remoteMode ? ["work", "terminal", "zen"] : []),
+    ]);
+    const visibleBase = base.filter((command) => !hiddenBaseCommands.has(command.id));
     return [...visibleBase, ...fromProjects, ...fromPi];
-  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t, shortcutOverrides, mac]);
+  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, remoteMode, t, shortcutOverrides, mac]);
 
   if (asking) {
     return (

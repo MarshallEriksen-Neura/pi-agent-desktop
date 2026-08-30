@@ -7,6 +7,7 @@ import { getPiClient, disposeAllPiClients, disposePiClient } from "./client";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
 import type { GenerateTitleInput, SessionRepositoryPort } from "../backend/ports";
+import type { ExecutionBinding } from "../backend/ports/execution-target";
 import { getBackendKind, getPort } from "../backend/composition/container";
 import {
   readCurrentPiSessionPath,
@@ -15,6 +16,7 @@ import {
 } from "../orchestration/session-lifecycle";
 import { setActiveTaskId, getActiveTaskId, setSessionTitle, setFocusSessionHandler } from "./task-context";
 import { DEFAULT_TASK_ID } from "../backend/ports/pi-process";
+const LOCAL_EXECUTION_BINDING: ExecutionBinding = { kind: "local", targetId: "local" };
 
 /**
  * Chat-session history — zustand in front, SQLite (Tauri/Rust) behind.
@@ -42,6 +44,8 @@ export interface ChatSessionMeta {
   preview: string;
   /** Canonical project root this conversation belongs to ("" in browser preview). */
   projectRoot: string;
+  /** Target identity is persisted with the transcript; old rows default to local. */
+  executionBinding?: ExecutionBinding;
   createdAt: number;
   updatedAt: number;
 }
@@ -52,6 +56,10 @@ interface SessionsStore {
   initialized: boolean;
   /** Project root the current list is scoped to. */
   projectRoot: string;
+  /** Currently selected target for newly created conversations. */
+  executionBinding: ExecutionBinding;
+  setExecutionBinding: (binding: ExecutionBinding) => void;
+  switchExecutionTarget: (binding: ExecutionBinding, localProjectRoot: string) => Promise<void>;
 
   init: (projectRoot: string) => Promise<void>;
   /** Re-scope history to another project (called after the workspace switches). */
@@ -61,6 +69,36 @@ interface SessionsStore {
   renameSession: (id: string, name: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
 }
+
+export function executionScopeKey(binding: ExecutionBinding, localProjectRoot: string): string {
+  if (binding.kind === "local") return projectKey(localProjectRoot);
+  return `ssh:${encodeURIComponent(binding.profileId)}:${encodeURIComponent(binding.remoteCwd)}`;
+}
+
+function sameExecutionBinding(
+  left: ExecutionBinding | undefined,
+  right: ExecutionBinding,
+): boolean {
+  const current = left ?? LOCAL_EXECUTION_BINDING;
+  if (current.kind !== right.kind) return false;
+  if (current.kind === "local") return right.kind === "local";
+  return (
+    right.kind === "ssh" &&
+    current.profileId === right.profileId &&
+    current.profileRevision === right.profileRevision &&
+    current.hostAlias === right.hostAlias &&
+    current.remoteCwd === right.remoteCwd &&
+    current.launcherProtocolVersion === right.launcherProtocolVersion
+  );
+}
+
+function cwdForBinding(
+  binding: ExecutionBinding | undefined,
+  localProjectRoot: string,
+ ): string | undefined {
+  return binding?.kind === "ssh" ? binding.remoteCwd : localProjectRoot || undefined;
+}
+
 
 /**
  * Canonical project key — forward slashes, no trailing slash. Mirrors
@@ -154,7 +192,10 @@ const nowId = () =>
     ? crypto.randomUUID()
     : `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-function createMeta(projectRoot: string): ChatSessionMeta {
+function createMeta(
+  projectRoot: string,
+  executionBinding: ExecutionBinding = LOCAL_EXECUTION_BINDING,
+ ): ChatSessionMeta {
   const now = Date.now();
   return {
     id: nowId(),
@@ -162,6 +203,7 @@ function createMeta(projectRoot: string): ChatSessionMeta {
     sessionPath: "",
     preview: "",
     projectRoot: projectKey(projectRoot),
+    executionBinding,
     createdAt: now,
     updatedAt: now,
   };
@@ -263,6 +305,8 @@ async function generateInitialTitle(taskId: string, messages: ChatMessage[]) {
   if (!activeId || titleAttempts.has(taskId)) return;
   const session = sessions.find((item) => item.id === taskId);
   if (!session) return;
+  // V1 does not start a second local Pi process for remote conversations.
+  if (session.executionBinding?.kind === "ssh") return;
 
   const userMessages = messages.filter((message) => message.role === "user" && message.text.trim());
   if (userMessages.length !== 1) return;
@@ -398,15 +442,19 @@ function hookAutosave(taskId: string) {
  */
 async function ensureTaskStarted(
   taskId: string,
-  opts: { cwd?: string; resumePath?: string }
+  opts: { cwd?: string; resumePath?: string; executionBinding?: ExecutionBinding }
 ): Promise<void> {
   const chat = getChatStore(taskId);
   if (!chat.getState().initialized) chat.getState().init();
   hookAutosave(taskId);
 
-  const pi = getPiStore(taskId);
+  const pi = getPiStore(taskId, opts.executionBinding);
   if (pi.getState().status === "disconnected") {
-    await pi.getState().connect({ cwd: opts.cwd, resumePath: opts.resumePath });
+    await pi.getState().connect({
+      cwd: opts.cwd,
+      resumePath: opts.resumePath,
+      executionBinding: opts.executionBinding,
+    });
   }
 
   liveTasks.add(taskId);
@@ -442,7 +490,7 @@ function resetTaskRegistry(): void {
 
 /** Begin an empty conversation in `projectRoot` as its own new task/process. */
 async function startFresh(projectRoot: string): Promise<void> {
-  const meta = createMeta(projectRoot);
+  const meta = createMeta(projectRoot, useSessions.getState().executionBinding);
   setActiveTaskId(meta.id);
   setSessionTitle(meta.id, "");
   useSessions.setState((s) => ({
@@ -450,7 +498,10 @@ async function startFresh(projectRoot: string): Promise<void> {
     activeId: meta.id,
   }));
   void backendSave(meta, []);
-  await ensureTaskStarted(meta.id, { cwd: projectRoot || undefined });
+  await ensureTaskStarted(meta.id, {
+    cwd: cwdForBinding(meta.executionBinding, projectRoot),
+    executionBinding: meta.executionBinding,
+  });
 }
 
 /* ── store ── */
@@ -460,6 +511,47 @@ export const useSessions = create<SessionsStore>((set, get) => ({
   activeId: null,
   initialized: false,
   projectRoot: "",
+  executionBinding: LOCAL_EXECUTION_BINDING,
+  setExecutionBinding: (executionBinding) => set({ executionBinding }),
+  switchExecutionTarget: async (executionBinding, localProjectRoot) => {
+    const scope = executionScopeKey(executionBinding, localProjectRoot);
+    const active = get().sessions.find((session) => session.id === get().activeId);
+    if (get().initialized && get().projectRoot === scope && sameExecutionBinding(active?.executionBinding, executionBinding)) {
+      set({ executionBinding });
+      return;
+    }
+
+    await flushSave();
+    resetTaskRegistry();
+    set({
+      initialized: true,
+      projectRoot: scope,
+      sessions: [],
+      activeId: null,
+      executionBinding,
+    });
+
+    const sessions = await backendList(scope);
+    set({ sessions });
+    sessions.forEach((session) => setSessionTitle(session.id, session.name));
+    const compatible = sessions.find((session) => sameExecutionBinding(session.executionBinding, executionBinding));
+    if (compatible) {
+      set({ activeId: compatible.id });
+      setActiveTaskId(compatible.id);
+      await repaint(compatible.id);
+      await ensureTaskStarted(compatible.id, {
+        cwd: executionBinding.kind === "ssh" ? executionBinding.remoteCwd : localProjectRoot || undefined,
+        resumePath: compatible.sessionPath || undefined,
+        executionBinding: compatible.executionBinding,
+      });
+      return;
+    }
+
+    if (sessions.length > 0 && executionBinding.kind === "ssh") {
+      useExtUi.getState().pushToast(t("session.remoteProfileChanged"), "warning", 8000);
+    }
+    await startFresh(scope);
+  },
 
   init: async (projectRoot) => {
     if (get().initialized) return;
@@ -476,14 +568,15 @@ export const useSessions = create<SessionsStore>((set, get) => ({
 
     const latest = sessions[0];
     if (latest) {
-      set({ activeId: latest.id });
+      set({ activeId: latest.id, executionBinding: latest.executionBinding ?? LOCAL_EXECUTION_BINDING });
       setActiveTaskId(latest.id);
       // Refresh-restore: repaint the newest conversation and spawn its process
       // with --session so the agent loop has the full prior context.
       await repaint(latest.id);
       await ensureTaskStarted(latest.id, {
-        cwd: key || undefined,
+        cwd: cwdForBinding(latest.executionBinding, key),
         resumePath: latest.sessionPath || undefined,
+        executionBinding: latest.executionBinding,
       });
     } else {
       await startFresh(key);
@@ -510,12 +603,13 @@ export const useSessions = create<SessionsStore>((set, get) => ({
 
     const latest = sessions[0];
     if (latest) {
-      set({ activeId: latest.id });
+      set({ activeId: latest.id, executionBinding: latest.executionBinding ?? LOCAL_EXECUTION_BINDING });
       setActiveTaskId(latest.id);
       await repaint(latest.id);
       await ensureTaskStarted(latest.id, {
-        cwd: key || undefined,
+        cwd: cwdForBinding(latest.executionBinding, key),
         resumePath: latest.sessionPath || undefined,
+        executionBinding: latest.executionBinding,
       });
     } else {
       await startFresh(key);
@@ -534,10 +628,11 @@ export const useSessions = create<SessionsStore>((set, get) => ({
   switchSession: async (id) => {
     if (id === get().activeId) return;
     await flushSave();
-    set({ activeId: id });
+    const meta = get().sessions.find((s) => s.id === id);
+    const executionBinding = meta?.executionBinding ?? LOCAL_EXECUTION_BINDING;
+    set({ activeId: id, executionBinding });
     setActiveTaskId(id);
 
-    const meta = get().sessions.find((s) => s.id === id);
     const sessionPath = meta?.sessionPath ?? "";
 
     if (!liveTasks.has(id) && !sessionPath) {
@@ -549,10 +644,11 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       await repaint(id);
     }
 
-    const root = sessionDependencies().projectRoot() ?? get().projectRoot;
+    const localRoot = sessionDependencies().projectRoot() ?? get().projectRoot;
     await ensureTaskStarted(id, {
-      cwd: root || undefined,
+      cwd: cwdForBinding(executionBinding, localRoot),
       resumePath: sessionPath || undefined,
+      executionBinding,
     });
   },
 
@@ -605,14 +701,16 @@ export const useSessions = create<SessionsStore>((set, get) => ({
 
     const next = get().sessions[0];
     if (next) {
-      set({ activeId: next.id });
+      const meta = get().sessions.find((session) => session.id === next.id);
+      const executionBinding = meta?.executionBinding ?? LOCAL_EXECUTION_BINDING;
+      set({ activeId: next.id, executionBinding });
       setActiveTaskId(next.id);
       if (!liveTasks.has(next.id)) await repaint(next.id);
-      const meta = get().sessions.find((s) => s.id === next.id);
-      const root = sessionDependencies().projectRoot() ?? get().projectRoot;
+      const localRoot = sessionDependencies().projectRoot() ?? get().projectRoot;
       await ensureTaskStarted(next.id, {
-        cwd: root || undefined,
+        cwd: cwdForBinding(executionBinding, localRoot),
         resumePath: meta?.sessionPath || undefined,
+        executionBinding,
       });
     } else {
       await startFresh(get().projectRoot);

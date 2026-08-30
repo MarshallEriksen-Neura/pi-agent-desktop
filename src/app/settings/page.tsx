@@ -36,6 +36,7 @@ import {
 import { APP_VERSION } from "@/lib/update";
 import { usePiSettings, type SettingsScope, type PiSettings } from "@/lib/pi/settings";
 import { usePi, THINKING_LEVELS, clearRememberedThinking } from "@/lib/pi/store";
+import { useSessions } from "@/lib/pi/sessions";
 import { useRuntime } from "@/lib/pi/runtime";
 import { getBackendKind, getPort } from "@/lib/backend/composition/container";
 import { useWorkspace } from "@/lib/workspace";
@@ -76,6 +77,7 @@ import {
 import { PetSettings } from "@/components/PetSettings";
 import { ShortcutsSettings } from "@/components/ShortcutsSettings";
 import { RemoteControlSection } from "@/components/remote-control/RemoteControlSection";
+import { RemoteAgentSettings } from "@/components/RemoteAgentSettings";
 import { ProviderAuthSection } from "@/components/provider-auth/ProviderAuthSection";
 
 const TRUST_OPTIONS = ["ask", "always", "never"] as const;
@@ -131,6 +133,14 @@ type SettingsCategory =
   | "accounts"
   | "remote"
   | "advanced";
+
+/**
+ * Categories with nothing to show while the agent runs over SSH: they all edit
+ * the local pi's settings.json, which the remote process never reads. Both the
+ * nav filter and the fallback that pushes an already-open category back to
+ * "general" read this list, so the two can't drift apart.
+ */
+const REMOTE_HIDDEN_CATEGORIES: readonly SettingsCategory[] = ["agent", "accounts", "advanced"];
 
 interface SettingsCategoryItem {
   id: SettingsCategory;
@@ -199,6 +209,7 @@ function SettingsCategoryNav({
 
 export default function PiSettingsPage() {
   const s = usePiSettings();
+  const loadSettings = usePiSettings((state) => state.load);
   const { currentModel } = usePi();
   const [scope, setScope] = useState<SettingsScope>("global");
   const { locale, setLocale } = useI18n();
@@ -217,8 +228,9 @@ export default function PiSettingsPage() {
   const [notifPermission, setNotifPermission] =
     useState<NotificationPermissionState>("default");
   const [category, setCategory] = useState<SettingsCategory>("general");
+  const remoteMode = useSessions((state) => state.executionBinding.kind === "ssh");
 
-  const categories: SettingsCategoryItem[] = [
+  const allCategories: SettingsCategoryItem[] = [
     {
       id: "general",
       title: t("settings.category.general"),
@@ -268,14 +280,26 @@ export default function PiSettingsPage() {
       icon: <Braces size={15} />,
     },
   ];
+  // annotate before filtering: `.filter()` on a bare literal widens `id` to string
+  const categories = allCategories.filter(
+    (item) => !remoteMode || !REMOTE_HIDDEN_CATEGORIES.includes(item.id),
+  );
   const activeCategory = categories.find((item) => item.id === category) ?? categories[0];
 
   useEffect(() => {
-    s.load();
+    if (!remoteMode) void loadSettings();
+  }, [loadSettings, remoteMode]);
+
+  useEffect(() => {
     // Check notification permission on mount (async on the Tauri path)
     void refreshNotificationPermission().then(setNotifPermission);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (remoteMode && REMOTE_HIDDEN_CATEGORIES.includes(category)) {
+      setCategory("general");
+    }
+  }, [category, remoteMode]);
 
   const file = scope === "global" ? s.global : s.project;
   const own: PiSettings = useMemo(() => file.data ?? {}, [file]);
@@ -415,7 +439,12 @@ export default function PiSettingsPage() {
       )}
 
       {/* command environment — Windows only: route Pi's Bash through WSL */}
-      {category === "runtime" && <RuntimeSection />}
+      {category === "runtime" && (
+        <>
+          {!remoteMode && <RuntimeSection />}
+          <RemoteAgentSettings />
+        </>
+      )}
 
       {/* user-customizable UI — app-local, not part of pi's settings.json */}
       {category === "appearance" && <InsetGroup
@@ -594,7 +623,7 @@ export default function PiSettingsPage() {
       </InsetGroup>}
 
       {/* scope switch — mirrors `pi config` (Tab toggles global/project) */}
-      {category !== "remote" && <InsetGroup
+      {!remoteMode && category !== "remote" && <InsetGroup
         header={t("settings.scope")}
         footer={
           scope === "global"
@@ -617,9 +646,9 @@ export default function PiSettingsPage() {
 
       {category === "remote" ? (
         <RemoteControlSection />
-      ) : category === "accounts" ? (
+      ) : !remoteMode && category === "accounts" ? (
         <ProviderAuthSection />
-      ) : file.parseError ? (
+      ) : !remoteMode && file.parseError ? (
         <InsetGroup header={t("settings.problem")}>
           <GroupRow
             first
@@ -730,7 +759,7 @@ export default function PiSettingsPage() {
           </>}
 
           {/* appearance & startup */}
-          {category === "appearance" && <InsetGroup header={t("settings.appearance")}>
+          {!remoteMode && category === "appearance" && <InsetGroup header={t("settings.appearance")}>
             <div style={dim("theme")}>
               <GroupRow
                 first
@@ -982,7 +1011,7 @@ export default function PiSettingsPage() {
           </>}
 
           {/* network — global only, like project trust */}
-          {category === "runtime" && scope === "global" && (
+          {!remoteMode && category === "runtime" && scope === "global" && (
             <InsetGroup
               header={t("settings.network")}
               footer={t("settings.networkFooter")}
@@ -1142,7 +1171,7 @@ export default function PiSettingsPage() {
           </>}
 
           {/* built-in tools */}
-          {category === "runtime" && <InsetGroup
+          {!remoteMode && category === "runtime" && <InsetGroup
             header={t("settings.tools")}
             footer={t("settings.toolsFooter")}
           >
@@ -1209,7 +1238,7 @@ export default function PiSettingsPage() {
           </InsetGroup>}
 
           {/* shell & sessions */}
-          {category === "runtime" && <InsetGroup
+          {!remoteMode && category === "runtime" && <InsetGroup
             header={t("settings.shellSessions")}
             footer={t("settings.shellSessionsFooter")}
           >
@@ -1270,6 +1299,7 @@ export default function PiSettingsPage() {
               trailing={<ChevronRight size={15} color="var(--text-tertiary)" />}
               onClick={() => router.push("/update/")}
             />
+            {!remoteMode && <>
             <div style={dim("enableInstallTelemetry")}>
               <GroupRow
                 icon={<Radio size={15} />}
@@ -1309,6 +1339,7 @@ export default function PiSettingsPage() {
                 }
               />
             </div>
+            </>}
           </InsetGroup>}
 
           {/* trust — global only, per pi docs */}

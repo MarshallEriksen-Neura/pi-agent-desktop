@@ -9,6 +9,7 @@ import type {
   ProviderAuthPort,
   RemoteControlPort,
   RemoteConversationsPort,
+  RemotePiProfilePort,
   RuntimeConfigPort,
   SessionRepositoryPort,
   UpdaterPort,
@@ -28,6 +29,7 @@ export interface BackendPorts {
   providerAuth: ProviderAuthPort;
   remoteControl: RemoteControlPort;
   remoteConversations: RemoteConversationsPort;
+  remoteProfiles: RemotePiProfilePort;
   runtimeConfig: RuntimeConfigPort;
   piConfiguration: PiConfigurationPort;
   window: WindowPort;
@@ -40,8 +42,11 @@ export interface BackendPorts {
 
 export type BackendPortName = keyof BackendPorts;
 
-/** Creates an isolated pi-process port bound to a task id. */
-export type PiProcessPortFactory = (taskId?: string) => PiProcessPort;
+/** Creates an isolated pi-process port bound to a task and optional execution target. */
+export type PiProcessPortFactory = (
+  taskId?: string,
+  executionBinding?: import("../ports/execution-target").ExecutionBinding,
+  ) => PiProcessPort;
 
 export class BackendContainerError extends Error {
   constructor(

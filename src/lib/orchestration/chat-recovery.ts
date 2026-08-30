@@ -1,6 +1,9 @@
+import type { ExecutionBinding } from "../backend/ports/execution-target";
+
 export interface ChatRecoveryTarget {
   cwd?: string;
   resumePath?: string;
+  executionBinding?: ExecutionBinding;
 }
 
 export interface ChatRecoveryService {

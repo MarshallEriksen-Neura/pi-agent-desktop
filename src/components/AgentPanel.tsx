@@ -38,6 +38,7 @@ import { ComposerInput } from "./ComposerInput";
 import { RetryBanner } from "./RetryBanner";
 import { ExtStatusLine, ExtWidgets } from "./ExtensionSurfaces";
 import { SessionHistoryMenu } from "./SessionHistoryMenu";
+import { ExecutionTargetPicker } from "./ExecutionTargetPicker";
 import { IconButton, SectionLabel } from "./primitives";
 import {
   Square,
@@ -350,6 +351,7 @@ function LocalAgentPanel({ width }: { width?: number }) {
           {/* Session list in a menu, not a sidebar toggle: work and zen mode
               can't render the sidebar at all, so a toggle there flips a flag
               nothing reads and the button reads as dead. */}
+          <ExecutionTargetPicker />
           <SessionHistoryMenu />
           <IconButton
             label={t("agent.newSession")}

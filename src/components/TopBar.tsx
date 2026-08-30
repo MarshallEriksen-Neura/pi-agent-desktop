@@ -21,6 +21,7 @@ import { useUI } from "@/lib/store";
 import { bindingLabel, isMacPlatform } from "@/lib/shortcuts";
 import { useUpdate } from "@/lib/update";
 import { useT } from "@/lib/i18n";
+import { useSessions } from "@/lib/pi/sessions";
 import { IconButton, Kbd } from "./primitives";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { WindowControls } from "./WindowControls";
@@ -60,6 +61,7 @@ export function TopBar() {
   const updateDismissed = useUpdate((s) => s.dismissed);
   const dismissUpdate = useUpdate((s) => s.dismiss);
   const t = useT();
+  const remoteMode = useSessions((state) => state.executionBinding.kind === "ssh");
   const router = useRouter();
 
   // one silent check on launch so the reminder can surface without visiting settings
@@ -70,7 +72,7 @@ export function TopBar() {
 
   const showUpdate = updatePhase === "available" && !updateDismissed;
   /* work-only is a one-layout world: the toggle would have nothing to toggle. */
-  const showWorkToggle = layoutMode !== "work-only";
+  const showWorkToggle = layoutMode !== "work-only" && !remoteMode;
 
   return (
     <header
@@ -90,29 +92,33 @@ export function TopBar() {
     >
       {/* mirrors showSidebar in page.tsx — a toggle for a panel that cannot
           appear in this layout would be a dead button */}
-      {!zenMode && (!workMode || layoutMode === "work-only") && (
+      {!remoteMode && !zenMode && (!workMode || layoutMode === "work-only") && (
         <IconButton label={t("topbar.toggleSidebar")} onClick={toggleSidebar}>
           <PanelLeft size={16} />
         </IconButton>
       )}
 
       <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
-        {/* Plain work mode still names the file ⌘/ would return to, but with the
-            editor removed nothing ever opened one — activeFile is still its
-            placeholder default, so this would label the window with a file the
-            user cannot reach and may not have. */}
-        {layoutMode !== "work-only" && (
-          <span
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: "var(--text-primary)",
-            }}
-          >
-            {fileName}
+        {remoteMode ? (
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+            {t("remoteAgent.mode")}
           </span>
+        ) : (
+          <>
+            {layoutMode !== "work-only" && (
+              <span
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--text-primary)",
+                }}
+              >
+                {fileName}
+              </span>
+            )}
+            <ProjectSwitcher />
+          </>
         )}
-        <ProjectSwitcher />
       </div>
 
       {/* update reminder pill — only when a desktop update is available; tap to open the update page */}
@@ -171,7 +177,10 @@ export function TopBar() {
 
       {/* command palette pill — the chord comes from the registry, so it keeps
           matching after a rebind in settings */}
-      <button
+      {remoteMode ? (
+        <div style={{ flex: 1 }} />
+      ) : (
+        <button
         onClick={() => setCommandPalette(true)}
         style={{
           marginLeft: showUpdate ? 0 : "auto",
@@ -200,10 +209,13 @@ export function TopBar() {
           )}
         </Kbd>
       </button>
+      )}
 
-      <IconButton label={t("topbar.toggleTerminal")} onClick={toggleTerminal} active={terminalOpen}>
-        <SquareTerminal size={16} />
-      </IconButton>
+      {!remoteMode && (
+        <IconButton label={t("topbar.toggleTerminal")} onClick={toggleTerminal} active={terminalOpen}>
+          <SquareTerminal size={16} />
+        </IconButton>
+      )}
       {/* three-way: following the OS reads as the monitor glyph, not sun/moon */}
       <IconButton
         label={
@@ -223,15 +235,17 @@ export function TopBar() {
           <Sun size={16} />
         )}
       </IconButton>
-      <IconButton label={t("topbar.zenMode")} onClick={toggleZen} active={zenMode}>
-        <Focus size={16} />
-      </IconButton>
+      {!remoteMode && (
+        <IconButton label={t("topbar.zenMode")} onClick={toggleZen} active={zenMode}>
+          <Focus size={16} />
+        </IconButton>
+      )}
       {showWorkToggle && (
         <IconButton label={t("topbar.workMode")} onClick={toggleWork} active={workMode}>
           <MessagesSquare size={16} />
         </IconButton>
       )}
-      {!zenMode && !workMode && (
+      {!remoteMode && !zenMode && !workMode && (
         <IconButton label={t("topbar.toggleAgentPanel")} onClick={toggleAgentPanel}>
           <Sparkles size={16} />
         </IconButton>

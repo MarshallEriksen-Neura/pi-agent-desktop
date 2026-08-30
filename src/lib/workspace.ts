@@ -5,6 +5,7 @@ import { isImageFile } from "./image-files";
 import { useUI } from "./store";
 import { getBackendKind, getPort } from "./backend/composition/container";
 import { switchWorkspaceProject } from "./orchestration/project-switch";
+import { useSessions } from "./pi/sessions";
 
 export interface FsEntry {
   name: string;
@@ -109,6 +110,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   },
 
   openProject: async (path) => {
+    if (useSessions.getState().executionBinding.kind === "ssh") return;
     const { mock, switching } = get();
     if (mock || switching) return;
     set({ switching: true, loadError: null });
@@ -138,6 +140,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   },
 
   pickProject: async () => {
+    if (useSessions.getState().executionBinding.kind === "ssh") return;
     if (get().mock || get().switching) return;
     try {
       const picked = await getPort("projectCatalog").pick();

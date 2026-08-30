@@ -5,6 +5,7 @@
 //! `pi://stderr`, and process exit as `pi://exit`. Commands come back in
 //! through `pi_send` and are written to the child's stdin.
 
+use crate::remote_profiles::{self, ExecutionBinding};
 use pi_backend_core::pi_process::{
     LaunchSpec, PiProcess, ProcessEvent, ProcessLimits, ProcessPhase, ProcessSnapshot,
 };
@@ -17,7 +18,6 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
-
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Task key used when the caller omits `task_id` — the primary conversation.
@@ -34,13 +34,19 @@ fn task_key(task_id: Option<String>) -> String {
     }
 }
 
-/// Outbound stdout/stderr event — the payload now names the owning task so the
-/// frontend can route each line to the correct conversation.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PiLineEvent {
     task_id: String,
+    generation: u64,
+    target_id: String,
     line: String,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiStartResult {
+    generation: u64,
+    target_id: String,
 }
 
 /// Outbound exit event — same task routing as `PiLineEvent`.
@@ -48,6 +54,8 @@ struct PiLineEvent {
 #[serde(rename_all = "camelCase")]
 struct PiExitEvent {
     task_id: String,
+    generation: u64,
+    target_id: String,
     code: Option<i32>,
 }
 
@@ -56,9 +64,15 @@ struct PiExitEvent {
 /// parallel conversations each get their own process.
 pub struct PiProc(pub Mutex<PiRuntime>);
 
+struct ManagedProcess {
+    process: Arc<PiProcess>,
+    target_id: String,
+    execution_binding: ExecutionBinding,
+}
+
 pub struct PiRuntime {
     next_generation: u64,
-    processes: HashMap<String, Arc<PiProcess>>,
+    processes: HashMap<String, ManagedProcess>,
 }
 
 impl Default for PiProc {
@@ -78,7 +92,11 @@ impl PiProc {
                 .0
                 .lock()
                 .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
-            runtime.processes.drain().map(|(_, p)| p).collect::<Vec<_>>()
+            runtime
+                .processes
+                .drain()
+                .map(|(_, managed)| managed.process)
+                .collect::<Vec<_>>()
         };
         for process in processes {
             process.stop(timeout).map_err(|error| error.to_string())?;
@@ -89,10 +107,14 @@ impl PiProc {
     /// Health probe: prefer the primary (default) process, fall back to any.
     pub fn snapshot(&self) -> Option<ProcessSnapshot> {
         let runtime = self.0.lock().ok()?;
-        if let Some(process) = runtime.processes.get(DEFAULT_TASK_ID) {
-            return process.snapshot().ok();
+        if let Some(managed) = runtime.processes.get(DEFAULT_TASK_ID) {
+            return managed.process.snapshot().ok();
         }
-        runtime.processes.values().next().and_then(|p| p.snapshot().ok())
+        runtime
+            .processes
+            .values()
+            .next()
+            .and_then(|managed| managed.process.snapshot().ok())
     }
 }
 
@@ -104,51 +126,88 @@ pub fn pi_start(
     cwd: Option<String>,
     binary: Option<String>,
     resume_path: Option<String>,
-) -> Result<(), String> {
+    execution_binding: Option<ExecutionBinding>,
+) -> Result<PiStartResult, String> {
     let task = task_key(task_id);
-    // Repair/migrate the WSL custom-shell override before the new Pi process
-    // reads settings.json. Native mode is a no-op.
-    crate::wsl::sync_shell_bridge_settings(cwd.as_deref())?;
+    let binding = execution_binding.unwrap_or(ExecutionBinding::Local {
+        target_id: "local".into(),
+    });
+    let requested_target_id = match &binding {
+        ExecutionBinding::Local { target_id } => {
+            if target_id != "local" {
+                return Err(format!("unsupported local execution target `{target_id}`"));
+            }
+            target_id.clone()
+        }
+        ExecutionBinding::Ssh { profile_id, .. } => format!("ssh:{profile_id}"),
+    };
+    let is_remote = matches!(binding, ExecutionBinding::Ssh { .. });
+    if !is_remote {
+        // Repair/migrate the WSL custom-shell override before local Pi reads
+        // settings.json. Remote Pi owns its own shell and settings.
+        crate::wsl::sync_shell_bridge_settings(cwd.as_deref())?;
+    }
     let mut runtime = state
         .0
         .lock()
         .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
-    if let Some(process) = runtime.processes.get(&task) {
-        let snapshot = process.snapshot().map_err(|error| error.to_string())?;
+    if let Some(managed) = runtime.processes.get(&task) {
+        let snapshot = managed
+            .process
+            .snapshot()
+            .map_err(|error| error.to_string())?;
         if matches!(
             snapshot.phase,
             ProcessPhase::Running | ProcessPhase::Stopping
         ) {
-            return Ok(());
+            if managed.execution_binding != binding {
+                return Err(format!(
+                    "task `{task}` is already bound to a different execution target or profile revision"
+                ));
+            }
+            return Ok(PiStartResult {
+                generation: snapshot.generation,
+                target_id: managed.target_id.clone(),
+            });
         }
         runtime.processes.remove(&task);
     }
-
-    let bin = binary.as_deref().unwrap_or("pi");
-    let mut cmd = crate::pi_command::command(binary.as_deref())?;
-    // Ensure npm-installed CLIs resolve inside the pi child process even when
-    // the npm global prefix is missing from the inherited PATH — pi extensions
-    // that shell out to a globally installed binary depend on this.
-    crate::pi_command::prepend_npm_bin_to_path(&mut cmd);
-    cmd.args(["--mode", "rpc"]);
-    // Resume a specific session at process startup so pi loads the full prior
-    // context (past turns, tool results, thinking) into its agent loop — the
-    // post-start `switch_session` RPC is kept only as a best-effort fallback.
-    // `--session <path|id>` is non-interactive (unlike `--resume`), which is
-    // required for headless RPC mode.
-    if let Some(path) = resume_path.as_deref() {
-        let path = path.trim();
-        if !path.is_empty() {
-            cmd.args(["--session", path]);
+    let (spec, target_id, executable_label) = match &binding {
+        ExecutionBinding::Local { target_id } => {
+            let bin = binary.as_deref().unwrap_or("pi");
+            let mut cmd = crate::pi_command::command(binary.as_deref())?;
+            crate::pi_command::prepend_npm_bin_to_path(&mut cmd);
+            cmd.args(["--mode", "rpc"]);
+            if let Some(path) = resume_path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty())
+            {
+                cmd.args(["--session", path]);
+            }
+            if let Some(dir) = cwd.as_deref() {
+                cmd.current_dir(dir);
+            }
+            (
+                LaunchSpec::from_command(&cmd),
+                target_id.clone(),
+                bin.to_owned(),
+            )
         }
-    }
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
+        ExecutionBinding::Ssh { profile_id, .. } => {
+            let profile = remote_profiles::load_profile(profile_id)?;
+            remote_profiles::validate_binding(&profile, &binding)?;
+            let spec =
+                remote_profiles::ssh_launch_spec(&profile, &binding, resume_path.as_deref())?;
+            (spec, requested_target_id.clone(), "ssh".to_owned())
+        }
+    };
     let generation = runtime.next_generation;
-    runtime.next_generation = runtime.next_generation.saturating_add(1);
-    let spec = LaunchSpec::from_command(&cmd);
+    runtime.next_generation = runtime
+        .next_generation
+        .checked_add(1)
+        .ok_or("Pi process generation overflow")?;
     let task_for_sink = task.clone();
+    let target_for_sink = target_id.clone();
     let process =
         PiProcess::spawn(
             generation,
@@ -160,6 +219,8 @@ pub fn pi_start(
                         "pi://line",
                         PiLineEvent {
                             task_id: task_for_sink.clone(),
+                            generation,
+                            target_id: target_for_sink.clone(),
                             line,
                         },
                     );
@@ -169,6 +230,8 @@ pub fn pi_start(
                         "pi://stderr",
                         PiLineEvent {
                             task_id: task_for_sink.clone(),
+                            generation,
+                            target_id: target_for_sink.clone(),
                             line,
                         },
                     );
@@ -178,18 +241,30 @@ pub fn pi_start(
                         "pi://exit",
                         PiExitEvent {
                             task_id: task_for_sink.clone(),
+                            generation,
+                            target_id: target_for_sink.clone(),
                             code: exit.code,
                         },
                     );
                 }
                 ProcessEvent::Diagnostic(diagnostic) => {
-                    eprintln!("[pi-process] {}", diagnostic.code);
+                    eprintln!("[pi-process:{}] {}", diagnostic.code, diagnostic.detail);
                 }
             },
         )
-        .map_err(|error| format!("failed to spawn Pi CLI `{bin}`: {error}"))?;
-    runtime.processes.insert(task, Arc::new(process));
-    Ok(())
+        .map_err(|error| format!("failed to spawn Pi CLI `{executable_label}`: {error}"))?;
+    runtime.processes.insert(
+        task,
+        ManagedProcess {
+            process: Arc::new(process),
+            target_id: target_id.clone(),
+            execution_binding: binding,
+        },
+    );
+    Ok(PiStartResult {
+        generation,
+        target_id,
+    })
 }
 
 #[tauri::command]
@@ -197,34 +272,66 @@ pub fn pi_send(
     state: State<'_, PiProc>,
     task_id: Option<String>,
     line: String,
+    expected_generation: u64,
+    expected_target_id: String,
 ) -> Result<(), String> {
     let task = task_key(task_id);
-    let process = state
+    let runtime = state
         .0
         .lock()
-        .map_err(|_| "Pi runtime lock is poisoned".to_owned())?
-        .processes
-        .get(&task)
-        .cloned()
-        .ok_or("pi is not running")?;
+        .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
+    let managed = runtime.processes.get(&task).ok_or("pi is not running")?;
+    validate_process_identity(managed, expected_generation, &expected_target_id)?;
+    let process = managed.process.clone();
+    drop(runtime);
     process
         .send_json_line(&line)
         .map_err(|error| format!("write to pi failed: {error}"))
 }
 
 #[tauri::command]
-pub fn pi_stop(state: State<'_, PiProc>, task_id: Option<String>) -> Result<(), String> {
+pub fn pi_stop(
+    state: State<'_, PiProc>,
+    task_id: Option<String>,
+    expected_generation: u64,
+    expected_target_id: String,
+) -> Result<(), String> {
     let task = task_key(task_id);
-    let process = state
-        .0
-        .lock()
-        .map_err(|_| "Pi runtime lock is poisoned".to_owned())?
-        .processes
-        .remove(&task);
-    if let Some(process) = process {
-        process
+    let process = {
+        let mut runtime = state
+            .0
+            .lock()
+            .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
+        let Some(managed) = runtime.processes.get(&task) else {
+            return Ok(());
+        };
+        validate_process_identity(managed, expected_generation, &expected_target_id)?;
+        runtime.processes.remove(&task)
+    };
+    if let Some(managed) = process {
+        managed
+            .process
             .stop(PROCESS_STOP_TIMEOUT)
             .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn validate_process_identity(
+    managed: &ManagedProcess,
+    expected_generation: u64,
+    expected_target_id: &str,
+) -> Result<(), String> {
+    if managed.target_id != expected_target_id {
+        return Err("stale Pi process target".to_owned());
+    }
+    let actual = managed
+        .process
+        .snapshot()
+        .map_err(|error| error.to_string())?
+        .generation;
+    if actual != expected_generation {
+        return Err("stale Pi process generation".to_owned());
     }
     Ok(())
 }
