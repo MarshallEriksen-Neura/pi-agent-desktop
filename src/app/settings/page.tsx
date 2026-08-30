@@ -29,11 +29,10 @@ import {
   Palette,
   Bot,
   SquareTerminal,
-  CornerDownLeft,
   KeyRound,
+  Keyboard,
   Wrench,
 } from "lucide-react";
-import { SEND_SHORTCUTS } from "@/lib/composer-shortcut";
 import { APP_VERSION } from "@/lib/update";
 import { usePiSettings, type SettingsScope, type PiSettings } from "@/lib/pi/settings";
 import { usePi, THINKING_LEVELS, clearRememberedThinking } from "@/lib/pi/store";
@@ -75,6 +74,7 @@ import {
   ChipMultiSelect,
 } from "@/components/settings-ui";
 import { PetSettings } from "@/components/PetSettings";
+import { ShortcutsSettings } from "@/components/ShortcutsSettings";
 import { RemoteControlSection } from "@/components/remote-control/RemoteControlSection";
 import { ProviderAuthSection } from "@/components/provider-auth/ProviderAuthSection";
 
@@ -125,6 +125,7 @@ const FONT_SCALE_LABELS = FONT_SCALES.map((s) => `${Math.round(s * 100)}%`);
 type SettingsCategory =
   | "general"
   | "appearance"
+  | "shortcuts"
   | "agent"
   | "runtime"
   | "accounts"
@@ -209,8 +210,6 @@ export default function PiSettingsPage() {
     setNotificationEnabled,
     closeBehavior,
     setCloseBehavior,
-    sendShortcut,
-    setSendShortcut,
     layoutMode,
     setLayoutMode,
   } = useUI();
@@ -231,6 +230,12 @@ export default function PiSettingsPage() {
       title: t("settings.category.appearance"),
       detail: t("settings.category.appearanceDetail"),
       icon: <Palette size={15} />,
+    },
+    {
+      id: "shortcuts",
+      title: t("settings.category.shortcuts"),
+      detail: t("settings.category.shortcutsDetail"),
+      icon: <Keyboard size={15} />,
     },
     {
       id: "agent",
@@ -1000,6 +1005,9 @@ export default function PiSettingsPage() {
             </div>
           </InsetGroup>}
 
+          {/* every keyboard chord the app binds — rebindable and fixed alike */}
+          {category === "shortcuts" && <ShortcutsSettings />}
+
           {/* desktop notifications */}
           {category === "general" && <>
           <InsetGroup
@@ -1042,29 +1050,8 @@ export default function PiSettingsPage() {
             </div>
           </InsetGroup>
 
-          {/* which key sends a chat message — app-local, not in pi's settings.json */}
-          <InsetGroup
-            header={t("settings.sendShortcut")}
-            footer={t("settings.sendShortcutFooter")}
-          >
-            <GroupRow
-              first
-              icon={<CornerDownLeft size={15} />}
-              iconBg="var(--accent)"
-              title={t("settings.sendShortcut")}
-              detail={t(`settings.sendShortcut.${sendShortcut}.detail`)}
-              trailing={
-                <div style={{ width: 300, flexShrink: 0 }}>
-                  <Segmented
-                    options={SEND_SHORTCUTS}
-                    value={sendShortcut}
-                    onChange={setSendShortcut}
-                    labelOf={(v) => t(`settings.sendShortcut.${v}`)}
-                  />
-                </div>
-              }
-            />
-          </InsetGroup>
+          {/* the composer's send key now lives in the Shortcuts category, with
+              every other chord the app binds */}
 
           {/* what happens when the main window is closed */}
           <InsetGroup

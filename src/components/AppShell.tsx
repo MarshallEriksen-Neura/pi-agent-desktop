@@ -72,6 +72,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initAgentPanelWidth();
     // restore the composer's send shortcut (⌘↩ / ↩ / ⇧↩)
     useUI.getState().initSendShortcut();
+    // restore rebound keyboard chords before the global key listener mounts
+    useUI.getState().initShortcuts();
     // restore the dragged width of the subagent inspector column
     useUI.getState().initSubagentPanelWidth();
     // restore the dragged width of the file inspector column

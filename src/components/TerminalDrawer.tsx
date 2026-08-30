@@ -10,6 +10,7 @@ import type { WebLinksAddon } from "@xterm/addon-web-links";
 import type { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { useUI } from "@/lib/store";
+import { isMacPlatform } from "@/lib/shortcuts";
 import { ansi, termBus } from "@/lib/terminal-bus";
 import { useT } from "@/lib/i18n";
 import { Kbd } from "./primitives";
@@ -67,12 +68,6 @@ function monoFontStack(): string {
     .replace(/\s+/g, " ")
     .trim();
   return declared || "ui-monospace, Consolas, monospace";
-}
-
-/** True on macOS, where the clipboard modifier is Cmd rather than Ctrl. */
-function isMacPlatform() {
-  if (typeof navigator === "undefined") return false;
-  return /mac/i.test(navigator.platform || navigator.userAgent);
 }
 
 /** Bottom drawer terminal — slides up with a spring, themed by tokens. */

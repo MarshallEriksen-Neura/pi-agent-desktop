@@ -12,6 +12,12 @@ import {
   SUBAGENT_PANEL_WIDTH_MIN,
   useUI,
 } from "@/lib/store";
+import {
+  SHORTCUT_REGISTRY,
+  effectiveBindings,
+  isMacPlatform,
+  matchesBinding,
+} from "@/lib/shortcuts";
 import { SubagentPanel, useSubagentPanelOpen } from "@/components/Subagents";
 import { FileInspector } from "@/components/FileInspector";
 import { useFileInspector } from "@/lib/file-inspector";
@@ -79,25 +85,35 @@ export default function Home() {
    *  both depend on it, and it changes when the window is resized */
   const [rowWidth, setRowWidth] = useState(0);
 
-  // Global keyboard shortcuts (iOS-clean: one modifier, memorable)
+  /**
+   * Global keyboard shortcuts (iOS-clean: one modifier, memorable).
+   *
+   * The chords come from the shortcut registry rather than being spelled out
+   * here, so the settings panel can rebind them and so a rebind is checked
+   * against everything else the app binds. Escape stays hard-coded: closing the
+   * frontmost overlay is a convention, not a command with a chord.
+   */
   useEffect(() => {
+    const actions: Record<string, () => void> = {
+      commandPalette: () => setCommandPalette(!useUI.getState().commandPaletteOpen),
+      zenMode: () => toggleZen(),
+      workMode: () => toggleWork(), // no-op in work-only — no other layout to reach
+      toggleTerminal: () => useUI.getState().toggleTerminal(),
+    };
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "k") {
+      const mac = isMacPlatform();
+      const overrides = useUI.getState().shortcutOverrides;
+      for (const command of SHORTCUT_REGISTRY) {
+        if (command.scope !== "global") continue;
+        const run = actions[command.id];
+        if (!run) continue;
+        const hit = effectiveBindings(command, overrides).some((b) =>
+          matchesBinding(e, b, mac)
+        );
+        if (!hit) continue;
         e.preventDefault();
-        setCommandPalette(!useUI.getState().commandPaletteOpen);
-      }
-      if (mod && e.key === ".") {
-        e.preventDefault();
-        toggleZen();
-      }
-      if (mod && e.key === "/") {
-        e.preventDefault();
-        toggleWork(); // no-op in work-only — there is no other layout to reach
-      }
-      if (mod && e.key.toLowerCase() === "j") {
-        e.preventDefault();
-        useUI.getState().toggleTerminal();
+        run();
+        return;
       }
       if (e.key === "Escape") setCommandPalette(false);
     };

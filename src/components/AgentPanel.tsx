@@ -10,6 +10,12 @@ import {
 } from "@appica/ui-react/collapsible";
 import { Spinner } from "@appica/ui-react/spinner";
 import { AGENT_PANEL_WIDTH_DEFAULT, useUI } from "@/lib/store";
+import {
+  effectiveBindings,
+  isMacPlatform,
+  matchesBinding,
+  shortcutById,
+} from "@/lib/shortcuts";
 import { useChat, getChatStore, type ChatMessage, type DeliveryMode } from "@/lib/pi/chat";
 import { usePi, getPiStore } from "@/lib/pi/store";
 import { useSessions, type ChatSessionMeta } from "@/lib/pi/sessions";
@@ -210,10 +216,22 @@ function LocalAgentPanel({ width }: { width?: number }) {
     setDraft(`/${item.name} `);
   };
 
-  /** Keyboard shortcut: Cmd+Shift+C / Ctrl+Shift+C to copy the last assistant message */
+  /**
+   * Copy the last assistant message (⌘⇧C by default, rebindable in settings).
+   *
+   * Bound to this container rather than the window on purpose: the terminal ships
+   * the same chord for its own copy, and only one of the two can hold focus.
+   */
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'C') {
+      const command = shortcutById("copyLastReply");
+      if (!command) return;
+      const { shortcutOverrides } = useUI.getState();
+      const mac = isMacPlatform();
+      const hit = effectiveBindings(command, shortcutOverrides).some((b) =>
+        matchesBinding(e, b, mac)
+      );
+      if (hit) {
         e.preventDefault();
         const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.text);
         if (lastAssistant?.text) {

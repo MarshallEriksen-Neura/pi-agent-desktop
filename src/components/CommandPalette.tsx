@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Autocomplete,
@@ -27,6 +27,7 @@ import {
   Command,
 } from "lucide-react";
 import { useUI } from "@/lib/store";
+import { bindingLabel, isMacPlatform } from "@/lib/shortcuts";
 import { usePi } from "@/lib/pi/store";
 import { useChat } from "@/lib/pi/chat";
 import { useSessions } from "@/lib/pi/sessions";
@@ -97,6 +98,7 @@ export function CommandPalette() {
 
 function PaletteBody() {
   const { setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode } = useUI();
+  const shortcutOverrides = useUI((s) => s.shortcutOverrides);
   const cycleModel = usePi((s) => s.cycleModel);
   const piCommands = usePi((s) => s.commands);
   const refresh = usePi((s) => s.refresh);
@@ -107,6 +109,10 @@ function PaletteBody() {
   const t = useT();
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
+  // Resolved after mount: the static export prerenders without a navigator, so
+  // reading it during render would mismatch on hydration.
+  const [mac, setMac] = useState(false);
+  useEffect(() => setMac(isMacPlatform()), []);
 
   const openAsk = () => {
     setQuestion("");
@@ -150,7 +156,7 @@ function PaletteBody() {
         id: "zen",
         icon: <Focus size={15} />,
         label: t("palette.zen"),
-        hint: "⌘.",
+        hint: bindingLabel("zenMode", shortcutOverrides, mac),
         run: () => {
           close();
           toggleZen();
@@ -160,7 +166,7 @@ function PaletteBody() {
         id: "work",
         icon: <MessagesSquare size={15} />,
         label: t("palette.work"),
-        hint: "⌘/",
+        hint: bindingLabel("workMode", shortcutOverrides, mac),
         run: () => {
           close();
           toggleWork();
@@ -179,7 +185,7 @@ function PaletteBody() {
         id: "terminal",
         icon: <SquareTerminal size={15} />,
         label: t("palette.terminal"),
-        hint: "⌘J",
+        hint: bindingLabel("toggleTerminal", shortcutOverrides, mac),
         run: () => {
           close();
           toggleTerminal();
@@ -255,7 +261,7 @@ function PaletteBody() {
     const visibleBase =
       layoutMode === "work-only" ? base.filter((command) => command.id !== "work") : base;
     return [...visibleBase, ...fromProjects, ...fromPi];
-  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t]);
+  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, t, shortcutOverrides, mac]);
 
   if (asking) {
     return (

@@ -376,6 +376,79 @@ export const en = {
   "settings.category.accountsDetail": "Sign in to model providers with a subscription or API key.",
   "settings.category.advanced": "Advanced",
   "settings.category.advancedDetail": "Project trust and direct settings-file diagnostics.",
+  "settings.category.shortcuts": "Shortcuts",
+  "settings.category.shortcutsDetail": "Every keyboard chord the app binds, in one place.",
+
+  // shortcuts panel
+  "shortcuts.capturing": "Press a chord…",
+  "shortcuts.captureHint": "Hold ⌘/Ctrl or Alt with a key · Esc cancels",
+  "shortcuts.conflict": "Already used by “{command}” — pick another chord",
+  "shortcuts.fixed": "Fixed",
+  "shortcuts.reset": "Reset",
+  "shortcuts.manage": "Manage",
+  "shortcuts.resetAll": "Restore default shortcuts",
+  "shortcuts.resetAllFooter":
+    "Only rebindable shortcuts are affected. Fixed chords never changed.",
+  "shortcuts.changedCount": "{count} changed from the default",
+  "shortcuts.allDefault": "Everything is on its default chord",
+
+  "shortcuts.scope.global": "Global",
+  "shortcuts.scope.globalFooter":
+    "Live anywhere in the window. Click a chord to rebind it.",
+  "shortcuts.scope.chat": "Chat",
+  "shortcuts.scope.chatFooter":
+    "Active while the conversation has focus. The send key is a three-way choice because send and newline compete for the same key inside a text box — whichever you pick, the other one inserts a line break and ⌘/Ctrl+Enter always sends.",
+  "shortcuts.scope.terminal": "Terminal",
+  "shortcuts.scope.terminalFooter":
+    "Handled inside the terminal emulator, or sent to the shell as control bytes — neither can be moved without breaking clipboard access or the shell's own signals.",
+  "shortcuts.scope.editor": "Editor",
+  "shortcuts.scope.editorFooter":
+    "Save is ours; the rest comes from CodeMirror's standard keymaps, which also provide the usual selection and navigation keys not listed here.",
+  "shortcuts.scope.diff": "Diff viewer",
+  "shortcuts.scope.diffFooter":
+    "Walk between changed regions while a diff is open. Skipped while the caret is in a text field.",
+  "shortcuts.scope.panel": "Panel dividers",
+  "shortcuts.scope.panelFooter":
+    "Focus a divider with Tab, then resize it. These follow the ARIA separator protocol.",
+  "shortcuts.scope.dialog": "Dialogs and overlays",
+  "shortcuts.scope.dialogFooter":
+    "Accessibility conventions, honored by every dialog, menu, and overlay in the app.",
+
+  "shortcuts.cmd.commandPalette": "Command palette",
+  "shortcuts.cmd.zenMode": "Zen mode",
+  "shortcuts.cmd.workMode": "Work mode",
+  "shortcuts.cmd.toggleTerminal": "Terminal drawer",
+  "shortcuts.cmd.copyLastReply": "Copy last reply",
+  "shortcuts.cmd.altSend": "Send the other way (steer ↔ queue)",
+  "shortcuts.cmd.slashMenu": "Slash-command menu",
+  "shortcuts.cmd.remoteFollowUp": "Send remote follow-up",
+  "shortcuts.cmd.terminalCopy": "Copy selection",
+  "shortcuts.cmd.terminalPaste": "Paste",
+  "shortcuts.cmd.terminalClear": "Clear screen",
+  "shortcuts.cmd.terminalInterrupt": "Interrupt (SIGINT)",
+  "shortcuts.cmd.terminalRun": "Run command",
+  "shortcuts.cmd.editorSave": "Save file",
+  "shortcuts.cmd.editorFind": "Find in file",
+  "shortcuts.cmd.editorUndoRedo": "Undo · Redo",
+  "shortcuts.cmd.editorIndent": "Indent",
+  "shortcuts.cmd.nextHunk": "Next change",
+  "shortcuts.cmd.prevHunk": "Previous change",
+  "shortcuts.cmd.panelResize": "Resize panel",
+  "shortcuts.cmd.panelResizeFine": "Resize by 1px",
+  "shortcuts.cmd.panelResizeReset": "Reset width",
+  "shortcuts.cmd.dialogConfirm": "Confirm",
+  "shortcuts.cmd.dialogDismiss": "Dismiss · close",
+
+  "shortcuts.reason.sendDesign":
+    "Always sends, under every send-key preference — the escape hatch for a forgotten setting",
+  "shortcuts.reason.menuConvention": "Standard menu navigation while the menu is open",
+  "shortcuts.reason.xtermClipboard":
+    "Plain paste uses the webview's native clipboard event, which avoids a permission prompt that would stay denied",
+  "shortcuts.reason.shellByte": "Sent to the shell as a control byte, not handled by the app",
+  "shortcuts.reason.codemirror": "Provided by the editor's own keymap",
+  "shortcuts.reason.ariaSeparator": "Required by the ARIA separator keyboard protocol",
+  "shortcuts.reason.a11yConvention": "Accessibility convention",
+
   "mcp.section": "MCP servers",
   "mcp.pageSubtitle": "Powered by pi-mcp-adapter · config written to mcp.json",
   "mcp.serverList": "Servers",
@@ -606,8 +679,6 @@ export const en = {
     "Blocked — allow notifications for Pi in your system settings",
   "settings.notifications.unsupported": "Not supported in this environment",
   "settings.sendShortcut": "Send message with",
-  "settings.sendShortcutFooter":
-    "Which key sends a chat message. The other one inserts a line break. ⌘/Ctrl+Enter always sends, whichever you pick.",
   "settings.sendShortcut.mod-enter": "⌘/Ctrl+Enter",
   "settings.sendShortcut.enter": "Enter",
   "settings.sendShortcut.shift-enter": "Shift+Enter",

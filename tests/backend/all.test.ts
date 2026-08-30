@@ -17,6 +17,7 @@ import "./package-install.test";
 import "./model-scope.test";
 import "./model-sync.test";
 import "./composer-shortcut.test";
+import "./shortcuts.test";
 import "./pet-animator.test";
 import "./provider-auth.test";
 import "./diff-stat.test";

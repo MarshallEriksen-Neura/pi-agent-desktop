@@ -15,6 +15,13 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { motion, useReducedMotion } from "motion/react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import { useUI } from "@/lib/store";
+import {
+  effectiveBindings,
+  isMacPlatform,
+  matchesBinding,
+  shortcutById,
+} from "@/lib/shortcuts";
 import type { DiffLine, FileDiff } from "@/lib/pi/file-diffs";
 
 /** Rows a diff flattens into — hunk gaps and the truncation notice included. */
@@ -124,13 +131,13 @@ export function DiffBody({
       ?.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
   };
 
-  // ⌥↓ / ⌥↑ walk the hunks. Alt-modified, so nothing is taken away from the
-  // composer or from the browser's own find — and skipped outright while the
-  // caret is in a field, which belongs to whatever is being typed into.
+  // ⌥↓ / ⌥↑ walk the hunks by default, rebindable in settings. Alt-modified so
+  // nothing is taken away from the composer or from the browser's own find — and
+  // skipped outright while the caret is in a field, which belongs to whatever is
+  // being typed into.
   useEffect(() => {
     if (hunks < 2) return;
     const onKey = (e: KeyboardEvent) => {
-      if (!e.altKey || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
       const el = e.target as HTMLElement | null;
       if (
         el instanceof HTMLInputElement ||
@@ -139,8 +146,19 @@ export function DiffBody({
       ) {
         return;
       }
+      const { shortcutOverrides } = useUI.getState();
+      const mac = isMacPlatform();
+      const hits = (id: string) => {
+        const command = shortcutById(id);
+        if (!command) return false;
+        return effectiveBindings(command, shortcutOverrides).some((b) =>
+          matchesBinding(e, b, mac)
+        );
+      };
+      const step = hits("nextHunk") ? 1 : hits("prevHunk") ? -1 : 0;
+      if (!step) return;
       e.preventDefault();
-      goTo(e.key === "ArrowDown" ? cursor + 1 : cursor - 1);
+      goTo(cursor + step);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
 import { Chip } from "@appica/ui-react/chip";
@@ -18,6 +18,7 @@ import {
   Command,
 } from "lucide-react";
 import { useUI } from "@/lib/store";
+import { bindingLabel, isMacPlatform } from "@/lib/shortcuts";
 import { useUpdate } from "@/lib/update";
 import { useT } from "@/lib/i18n";
 import { IconButton, Kbd } from "./primitives";
@@ -45,6 +46,13 @@ export function TopBar() {
     themeSource,
     setCommandPalette,
   } = useUI();
+
+  const shortcutOverrides = useUI((s) => s.shortcutOverrides);
+  // Resolved after mount: the static export prerenders without a navigator, so
+  // reading it during render would mismatch on hydration.
+  const [mac, setMac] = useState(false);
+  useEffect(() => setMac(isMacPlatform()), []);
+  const paletteChord = bindingLabel("commandPalette", shortcutOverrides, mac);
 
   const fileName = activeFile.split("/").pop() ?? activeFile;
   const updatePhase = useUpdate((s) => s.phase);
@@ -161,7 +169,8 @@ export function TopBar() {
         )}
       </AnimatePresence>
 
-      {/* command palette pill (⌘K) */}
+      {/* command palette pill — the chord comes from the registry, so it keeps
+          matching after a rebind in settings */}
       <button
         onClick={() => setCommandPalette(true)}
         style={{
@@ -181,7 +190,14 @@ export function TopBar() {
       >
         <span>{t("topbar.askAnything")}</span>
         <Kbd>
-          <Command size={11} />K
+          {paletteChord.startsWith("⌘") ? (
+            <>
+              <Command size={11} />
+              {paletteChord.slice(1)}
+            </>
+          ) : (
+            paletteChord
+          )}
         </Kbd>
       </button>
 

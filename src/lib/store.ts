@@ -7,6 +7,11 @@ import {
   isSendShortcut,
   type SendShortcut,
 } from "./composer-shortcut";
+import {
+  parseShortcutOverrides,
+  type Binding,
+  type ShortcutOverrides,
+} from "./shortcuts";
 
 export type Theme = "light" | "dark";
 export type TaskStatus = "done" | "running" | "queued" | "error";
@@ -42,6 +47,7 @@ const AGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.agentPanelWidth";
 const SUBAGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.subagentPanelWidth";
 const INSPECTOR_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.inspectorPanelWidth";
 const SEND_SHORTCUT_STORAGE_KEY = "pi-desktop.sendShortcut";
+const SHORTCUTS_STORAGE_KEY = "pi-desktop.shortcuts";
 const LAYOUT_MODE_STORAGE_KEY = "pi-desktop.layoutMode";
 
 /** Docked chat rail width, in px. Only applies in the default layout —
@@ -172,6 +178,12 @@ interface UIState {
   /** which key combination sends a message from the chat composer */
   sendShortcut: SendShortcut;
 
+  /**
+   * Rebound keyboard chords, keyed by registry id. Only what the user changed —
+   * an absent id means the shipped default in `SHORTCUT_REGISTRY`.
+   */
+  shortcutOverrides: ShortcutOverrides;
+
   toggleTheme: () => void;
   /** adopt an explicit theme (pins it as the user's choice) */
   setTheme: (theme: Theme) => void;
@@ -230,6 +242,34 @@ interface UIState {
   setSendShortcut: (s: SendShortcut) => void;
   /** restore the saved composer send shortcut — call once on mount */
   initSendShortcut: () => void;
+  /** rebind one command; the caller is responsible for rejecting conflicts */
+  setShortcutBinding: (id: string, binding: Binding) => void;
+  /** drop one override, returning that command to its shipped chord */
+  resetShortcutBinding: (id: string) => void;
+  /** drop every override */
+  resetAllShortcuts: () => void;
+  /** restore the saved chord overrides — call once on mount */
+  initShortcuts: () => void;
+}
+
+/**
+ * Write the override map and hand back the state patch.
+ *
+ * An empty map removes the key rather than storing `{}` — "no overrides" and
+ * "never touched" should not read differently on disk, and a stale `{}` is one
+ * more thing a future migration would have to recognize.
+ */
+function persistShortcuts(overrides: ShortcutOverrides): Pick<UIState, "shortcutOverrides"> {
+  try {
+    if (Object.keys(overrides).length === 0) {
+      localStorage.removeItem(SHORTCUTS_STORAGE_KEY);
+    } else {
+      localStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(overrides));
+    }
+  } catch {
+    // storage unavailable — keep the rebinds in-memory only
+  }
+  return { shortcutOverrides: overrides };
 }
 
 export const useUI = create<UIState>((set) => ({
@@ -259,6 +299,7 @@ export const useUI = create<UIState>((set) => ({
   closeBehavior: "ask",
   closeDialogOpen: false,
   sendShortcut: SEND_SHORTCUT_DEFAULT,
+  shortcutOverrides: {},
 
   /**
    * system → light → dark → system. Three-way rather than a plain flip because
@@ -551,5 +592,24 @@ export const useUI = create<UIState>((set) => ({
         // storage unavailable — stay on the default
       }
       return isSendShortcut(saved) ? { sendShortcut: saved } : {};
+    }),
+  setShortcutBinding: (id, binding) =>
+    set((s) => persistShortcuts({ ...s.shortcutOverrides, [id]: binding })),
+  resetShortcutBinding: (id) =>
+    set((s) => {
+      const next = { ...s.shortcutOverrides };
+      delete next[id];
+      return persistShortcuts(next);
+    }),
+  resetAllShortcuts: () => set(() => persistShortcuts({})),
+  initShortcuts: () =>
+    set(() => {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(SHORTCUTS_STORAGE_KEY);
+      } catch {
+        // storage unavailable — every command stays on its shipped chord
+      }
+      return { shortcutOverrides: parseShortcutOverrides(saved) };
     }),
 }));
