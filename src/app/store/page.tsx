@@ -12,6 +12,9 @@ import { AnimatePresence, motion } from "motion/react";
 import { Button } from "@appica/ui-react/button";
 import { Badge } from "@appica/ui-react/badge";
 import { usePiSettings, packageSource } from "@/lib/pi/settings";
+import { packageInstallRequest } from "@/lib/pi/package-install";
+import { cliError } from "@/lib/pi/cli-error";
+import { useWorkspace } from "@/lib/workspace";
 import { useT } from "@/lib/i18n";
 import { SettingsPage, InsetGroup, GroupRow, Segmented } from "@/components/settings-ui";
 import { Skeleton } from "@/components/primitives";
@@ -60,6 +63,8 @@ export default function StorePage() {
   const [installLog, setInstallLog] = useState<{ ok: boolean; text: string } | null>(
     null
   );
+  const root = useWorkspace((state) => state.root);
+  const activeScope = root ? scope : "global";
   const t = useT();
 
   const skeletonRows = [0, 1, 2, 3, 4].map((i) => (
@@ -125,25 +130,38 @@ export default function StorePage() {
   }, [all, query]);
 
   const install = async (pkg: StorePkg) => {
+    const currentRoot = useWorkspace.getState().root;
+    const requestedScope = currentRoot ? scope : "global";
+    const request = packageInstallRequest(`npm:${pkg.name}`, requestedScope, currentRoot);
+    if (!request) {
+      setInstallLog({ ok: false, text: t("store.searchFooterNoProject") });
+      return;
+    }
+
     setInstalling(pkg.name);
     setInstallLog(null);
     try {
-      const args = ["install", `npm:${pkg.name}`];
-      if (scope === "project") args.push("-l");
-      const r = await settings.runPiCli(args);
+      const result = await settings.runPiCli(request.args, request.cwd);
       setInstallLog(
-        r.code === 0
+        result.code === 0
           ? { ok: true, text: t("store.installedLog", { name: pkg.name }) }
           : {
               ok: false,
               text: t("store.installFailed", {
-                code: r.code,
-                err: (r.stderr || r.stdout).trim(),
+                code: result.code,
+                err: cliError(result, t("store.noErrorDetail")),
               }),
             }
       );
+      if (result.code === 0) usePiSettings.setState({ dirtyRestart: true });
       await settings.load();
-      if (r.code === 0) usePiSettings.setState({ dirtyRestart: true });
+    } catch (error) {
+      setInstallLog({
+        ok: false,
+        text: t("store.installUnexpected", {
+          err: error instanceof Error ? error.message : String(error),
+        }),
+      });
     } finally {
       setInstalling(null);
     }
@@ -158,9 +176,11 @@ export default function StorePage() {
       <InsetGroup
         header={t("store.search")}
         footer={
-          scope === "global"
-            ? t("store.searchFooterGlobal")
-            : t("store.searchFooterProject")
+          !root
+            ? t("store.searchFooterNoProject")
+            : activeScope === "global"
+              ? t("store.searchFooterGlobal")
+              : t("store.searchFooterProject")
         }
       >
         <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -182,8 +202,10 @@ export default function StorePage() {
           />
           <Segmented
             options={["global", "project"] as const}
-            value={scope}
+            value={activeScope}
             onChange={setScope}
+            disabled={!root || installing !== null || settings.busy}
+            labelOf={(option) => t(`skills.origin.${option}`)}
           />
         </div>
       </InsetGroup>
@@ -200,17 +222,6 @@ export default function StorePage() {
           }}
         >
           {installLog.text}
-          {installLog.ok && (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => settings.restartPi()}
-              disabled={settings.busy}
-              style={{ marginLeft: 10, borderRadius: 7 }}
-            >
-              {settings.busy ? t("settings.restarting") : t("settings.restartPi")}
-            </Button>
-          )}
         </motion.p>
       )}
 
@@ -271,7 +282,7 @@ export default function StorePage() {
                           variant="primary"
                           size="sm"
                           onClick={() => install(p)}
-                          disabled={installing !== null}
+                          disabled={installing !== null || settings.busy}
                           style={{
                             borderRadius: 8,
                             opacity: installing && installing !== p.name ? 0.4 : 1,

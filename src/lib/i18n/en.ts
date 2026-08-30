@@ -440,16 +440,14 @@ export const en = {
   "mcp.saving": "Saving…",
   "mcp.restartHeader": "Apply changes",
   "mcp.restartFooter": "MCP configuration is loaded when the pi process starts.",
-  "mcp.restartRequired": "Restart pi to apply MCP changes",
-  "mcp.restartDetail": "The file is saved safely; the running process still has its previous adapter state.",
   "mcp.restart": "Restart pi",
-  "mcp.restarting": "Restarting…",
   "mcp.authHint": "MCP authorization is required. Open the authorization page, then paste the code here and send auth-complete.",
   "mcp.openAuthUrl": "Open authorization page",
   "settings.subtitleMock": "Browser preview — edits are in-memory only.",
   "settings.subtitleLive":
     "Edits write straight to pi's settings.json · restart pi to apply",
-  "settings.saved": "Settings saved. Restart pi for changes to take effect.",
+  "restart.pendingTitle": "Changes saved",
+  "restart.pendingDetail": "Restart pi to apply them.",
   "settings.restarting": "Restarting…",
   "settings.restartPi": "Restart pi",
   "settings.language": "Language",
@@ -765,6 +763,30 @@ export const en = {
   "plugins.subtitleMock": "Browser preview — showing mock data.",
   "plugins.subtitleLive":
     "Packages from settings.json · commands from the running pi process.",
+  "plugins.installHeader": "Install package",
+  "plugins.scope.global": "Global",
+  "plugins.scope.project": "Project",
+  "plugins.installFooterGlobal":
+    "Installs into ~/.pi/agent and is available in every project.",
+  "plugins.installFooterProject":
+    "Installs into this project's .pi directory and records the source in .pi/settings.json.",
+  "plugins.installFooterNoProject":
+    "Open a project to enable project installation. Until then, packages install globally.",
+  "plugins.installSourceLabel": "Package source",
+  "plugins.installPlaceholder": "npm package, git URL, or local path",
+  "plugins.installSecurity":
+    "Packages run with full system access. Review third-party source code before installing.",
+  "plugins.install": "Install",
+  "plugins.installing": "Installing…",
+  "plugins.installed": "Installed {source} — restart pi to load it.",
+  "plugins.removed": "Removed {source} — restart pi to unload it.",
+  "plugins.installSourceInvalid":
+    "Enter an npm package, an explicit git/HTTP/SSH source, or a local path.",
+  "plugins.installFailed": "pi install failed (exit {code}): {err}",
+  "plugins.installUnexpected": "Could not run pi install: {err}",
+  "plugins.noErrorDetail": "No diagnostic output",
+  "plugins.removeUnexpected": "Could not run pi remove: {err}",
+  "plugins.removeNoProject": "Open the project before removing a project package.",
   "plugins.globalHeader": "Installed packages — global",
   "plugins.globalFooter":
     "From ~/.pi/agent/settings.json → packages. npm packages install under ~/.pi/agent/npm/, git clones under ~/.pi/agent/git/. Remove runs `pi remove` and restarts are needed to unload.",
@@ -783,8 +805,6 @@ export const en = {
   "plugins.actions": "Actions",
   "plugins.refresh": "Refresh",
   "plugins.refreshDetail": "Re-read settings.json and re-query pi's commands",
-  "plugins.restartTitle": "Restart pi to apply changes",
-  "plugins.restartDetail": "Package changes take effect on next pi start",
   "plugins.remove": "Remove",
   "plugins.removing": "Removing…",
   "plugins.removeFailed": "pi remove failed (exit {code}): {err}",
@@ -906,9 +926,13 @@ export const en = {
     "Installs run `pi install npm:<name>` → written to ~/.pi/agent/settings.json, downloaded to ~/.pi/agent/npm/.",
   "store.searchFooterProject":
     "Installs run `pi install -l` → written to .pi/settings.json so your team gets it too (auto-installed on trusted startup).",
+  "store.searchFooterNoProject":
+    "Open a project to enable project installation. Until then, packages install globally.",
   "store.filterPlaceholder": "Filter packages…",
   "store.installedLog": "Installed {name} — restart pi to load it.",
   "store.installFailed": "pi install failed (exit {code}): {err}",
+  "store.installUnexpected": "Could not run pi install: {err}",
+  "store.noErrorDetail": "No diagnostic output",
   "store.packagesCount": "{n} packages",
   "store.packages": "Packages",
   "store.packagesFooter":

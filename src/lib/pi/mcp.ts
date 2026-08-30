@@ -11,7 +11,6 @@ import type {
   SettingsScopeFileDto,
 } from "../backend/ports/pi-configuration";
 import { useWorkspace } from "../workspace";
-import { usePiSettings } from "./settings";
 
 export type McpScope = "global" | "project";
 export type McpTransport = "stdio" | "http";
@@ -253,7 +252,6 @@ interface McpStore {
   openConfigDirectory: (scope: McpScope) => Promise<void>;
   importSource: (scope: McpScope, sourceId: string, mode: McpImportConflictMode, selectedNames?: string[]) => Promise<void>;
   installAdapter: () => Promise<void>;
-  restartPi: () => Promise<void>;
   upsertServer: (
     scope: McpScope,
     name: string,
@@ -486,20 +484,6 @@ export const useMcp = create<McpStore>((set, get) => {
         }
         await get().refreshAdapter();
         set({ dirtyRestart: true });
-      } catch (error) {
-        set({ lastError: error instanceof Error ? error.message : String(error) });
-      } finally {
-        set({ busy: false });
-      }
-    },
-
-    restartPi: async () => {
-      set({ busy: true });
-      try {
-        await usePiSettings.getState().restartPi();
-        const error = usePiSettings.getState().lastError;
-        if (error) throw new Error(error);
-        set({ dirtyRestart: false, lastError: null });
       } catch (error) {
         set({ lastError: error instanceof Error ? error.message : String(error) });
       } finally {

@@ -141,7 +141,10 @@ interface PiSettingsStore {
   /** update the packages array in one scope and persist */
   setPackages: (scope: SettingsScope, packages: PackageEntry[]) => Promise<void>;
   /** run a pi package CLI command (install/remove/update/list) */
-  runPiCli: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+  runPiCli: (
+    args: string[],
+    cwd?: string | null
+  ) => Promise<{ code: number; stdout: string; stderr: string }>;
   /** stop + start pi so file edits take effect, then refresh RPC state */
   restartPi: () => Promise<void>;
 }
@@ -264,10 +267,13 @@ export const usePiSettings = create<PiSettingsStore>((set, get) => ({
     await get().setKey(scope, "packages", packages);
   },
 
-  runPiCli: async (args) => {
+  runPiCli: async (args, cwd) => {
     set({ busy: true });
     try {
-      return await getPort("piConfiguration").runPiCli(args, projectRoot());
+      return await getPort("piConfiguration").runPiCli(
+        args,
+        cwd === undefined ? projectRoot() : cwd
+      );
     } finally {
       set({ busy: false });
     }

@@ -13,6 +13,7 @@ import "./session-pin.test";
 import "./backend-provider.test";
 import "./mcp-import.test";
 import "./skills-install.test";
+import "./package-install.test";
 import "./model-scope.test";
 import "./model-sync.test";
 import "./composer-shortcut.test";

@@ -6,6 +6,7 @@ import { TooltipProvider } from "@appica/ui-react/tooltip";
 import { NavRail } from "./NavRail";
 import { ExtensionSheet } from "./ExtensionSheet";
 import { CliUpdateToast } from "./CliUpdateToast";
+import { RestartPiToast } from "./RestartPiToast";
 import { useCliUpdate } from "@/lib/pi/cli-update";
 import { usePi } from "@/lib/pi/store";
 import {
@@ -259,6 +260,7 @@ function MainShell({ children }: { children: React.ReactNode }) {
         <div style={{ flex: 1, minWidth: 0, height: "100%" }}>{children}</div>
         <ExtensionSheet />
         <CliUpdateToast />
+        <RestartPiToast />
         <CloseConfirmDialog />
       </div>
     </TooltipProvider>

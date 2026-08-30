@@ -22,7 +22,6 @@ import {
   Search,
   Wand2,
   RefreshCw,
-  RotateCcw,
   Copy,
   Check,
   FileText,
@@ -657,15 +656,6 @@ export default function SkillsPage() {
           detail={t("skills.rescanDetail")}
           onClick={rescan}
         />
-        {settings.dirtyRestart && (
-          <GroupRow
-            icon={<RotateCcw size={16} />}
-            iconBg="var(--warning, #C15F3C)"
-            title={t("plugins.restartTitle")}
-            detail={t("plugins.restartDetail")}
-            onClick={() => settings.restartPi()}
-          />
-        )}
       </InsetGroup>
 
       {(sk.error || settings.lastError) && (

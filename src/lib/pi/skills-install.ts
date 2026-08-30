@@ -17,8 +17,8 @@
  */
 
 import { create } from "zustand";
-import type { CliResultDto } from "../backend/ports";
 import { getBackendKind, getPort } from "../backend/composition/container";
+import { cliError } from "./cli-error";
 import { usePiSettings } from "./settings";
 import { piHome, useSkills, type SkillInfo } from "./skills";
 import { useWorkspace } from "../workspace";
@@ -150,6 +150,8 @@ export function parseLock(content: string): Record<string, string> {
 }
 
 
+const msg = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
 /**
  * The CLI resolves a project-scoped install — and any relative local source —
  * against the process cwd, so every invocation runs inside the open project
@@ -160,41 +162,7 @@ const cwdFor = () => useWorkspace.getState().root || null;
 const run = (args: string[]) =>
   getPort("piConfiguration").runSkillsCli(args, cwdFor());
 
-const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
-/** clack's gutter and status glyphs, which carry no information here. */
-const GUTTER = /^[│|■◆◇◒◐◓◑●○└┌├─]+\s*/;
-/** npx/npm chatter about the user's environment, not about the skill. */
-const NPM_NOISE = /^npm (warn|WARN|notice)\b/;
-/** clack outros that only repeat that something went wrong. */
-const OUTRO = /^(Installation failed|Removal failed|Update failed|Canceled|Cancelled)$/;
-
-/**
- * The CLI's own diagnosis, reduced to something a single row can show.
- *
- * Both streams have to be read. The failure text goes to stdout — clack logs
- * there — while stderr usually carries nothing but npm's warning about a config
- * key in the user's .npmrc. Preferring stderr therefore showed the noise and
- * hid the reason.
- */
-export function cliError(r: CliResultDto, fallback: string): string {
-  const lines = `${r.stdout}\n${r.stderr}`
-    .replace(ANSI, "")
-    .split(/\r?\n/)
-    .map((line) => line.replace(GUTTER, "").trim())
-    .filter(
-      (line) =>
-        line &&
-        !NPM_NOISE.test(line) &&
-        !OUTRO.test(line) &&
-        !line.startsWith("Tip:") &&
-        // Spinner frames are rewritten in place, so stripping the cursor-move
-        // sequences glues several of them (and the next gutter) into one line.
-        // Every one carries the ellipsis the CLI marks progress with.
-        !line.includes("…")
-    );
-  return lines.slice(-3).join(" · ").slice(-400) || fallback;
-}
+export { cliError } from "./cli-error";
 
 /**
  * Whether the field names a place to fetch from rather than a skill to look up.

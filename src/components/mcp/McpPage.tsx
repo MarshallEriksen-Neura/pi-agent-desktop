@@ -627,51 +627,7 @@ export function McpPage() {
         />
       )}
 
-      {/* docked restart bar — the view's single focal point */}
-      {mcp.dirtyRestart && (
-        <motion.div
-          initial={{ y: 24, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ type: "spring", stiffness: 320, damping: 30 }}
-          style={{
-            position: "sticky",
-            bottom: 0,
-            marginTop: 22,
-            padding: "12px 0 14px",
-            background: `linear-gradient(180deg, transparent, ${PAPER.bottom} 26%)`,
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => mcp.restartPi()}
-            disabled={mcp.busy}
-            style={{
-              width: "100%",
-              height: 42,
-              borderRadius: 99,
-              border: "none",
-              background: SEAL.fill,
-              color: SEAL.onSeal,
-              fontFamily: SANS,
-              fontSize: 14,
-              fontWeight: 600,
-              cursor: mcp.busy ? "wait" : "pointer",
-              transition: "background 180ms",
-            }}
-            onMouseEnter={(event) => {
-              if (!mcp.busy) event.currentTarget.style.background = SEAL.fillHover;
-            }}
-            onMouseLeave={(event) => {
-              event.currentTarget.style.background = SEAL.fill;
-            }}
-          >
-            {mcp.busy ? t("mcp.restarting") : t("mcp.restartRequired")}
-          </button>
-          <div style={{ marginTop: 8, textAlign: "center", fontSize: 11.5, color: INK.ink500 }}>
-            {t("mcp.restartDetail")}
-          </div>
-        </motion.div>
-      )}
+      {/* restart hint is global — RestartPiToast in AppShell */}
 
       {mcp.lastError && (
         <p role="alert" style={{ marginTop: 14, fontSize: 12.5, color: SEAL.red, lineHeight: 1.5 }}>

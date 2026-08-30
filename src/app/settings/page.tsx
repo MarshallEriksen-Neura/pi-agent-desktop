@@ -326,44 +326,6 @@ export default function PiSettingsPage() {
       subtitle={s.mock ? t("settings.subtitleMock") : t("settings.subtitleLive")}
       maxWidth={980}
     >
-      {/* restart-needed banner */}
-      <AnimatePresence>
-        {s.dirtyRestart && (
-          <motion.div
-            initial={{ opacity: 0, y: -8, height: 0 }}
-            animate={{ opacity: 1, y: 0, height: "auto" }}
-            exit={{ opacity: 0, y: -8, height: 0 }}
-            style={{ overflow: "hidden" }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                marginTop: 16,
-                padding: "10px 14px",
-                borderRadius: "var(--radius-lg)",
-                border: "1px solid var(--separator)",
-                background: "var(--accent-muted)",
-                fontSize: 13,
-                color: "var(--text-primary)",
-              }}
-            >
-              <span style={{ flex: 1 }}>{t("settings.saved")}</span>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => s.restartPi()}
-                disabled={s.busy}
-                style={{ borderRadius: 8, opacity: s.busy ? 0.6 : 1 }}
-              >
-                {s.busy ? t("settings.restarting") : t("settings.restartPi")}
-              </Button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       <div className="settings-split-layout">
         <SettingsCategoryNav
           items={categories}

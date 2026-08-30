@@ -101,7 +101,6 @@ export default function ModelsPage() {
   const customLoaded = piModelsStore.loaded;
 
   const piSettings = usePiSettings();
-  const dirtyRestart = piSettings.dirtyRestart;
   const enabledModels = piSettings.effective().enabledModels ?? [];
 
   const [search, setSearch] = useState("");
@@ -896,21 +895,17 @@ export default function ModelsPage() {
             {t("models.enabledInChatFooter")}
           </motion.div>
 
-          {/* Restart hint */}
-          {dirtyRestart && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.96 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="rounded-2xl border px-4 py-3 text-sm"
-              style={{
-                background: "rgba(196,92,72,0.08)",
-                borderColor: "rgba(196,92,72,0.2)",
-                color: "#c45c48",
-              }}
-            >
-              {t("models.footer")}
-            </motion.div>
-          )}
+          {/* Where custom models live — static note; restart hint is global */}
+          <div
+            className="rounded-2xl border px-4 py-3 text-xs"
+            style={{
+              background: "var(--bg-sunken)",
+              borderColor: "var(--separator)",
+              color: "var(--text-tertiary)",
+            }}
+          >
+            {t("models.footer")}
+          </div>
         </div>
         </div>
       </div>

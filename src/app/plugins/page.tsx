@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Button } from "@appica/ui-react/button";
 import { usePi } from "@/lib/pi/store";
 import {
@@ -10,6 +10,12 @@ import {
   type SettingsScope,
 } from "@/lib/pi/settings";
 import { useT } from "@/lib/i18n";
+import { useWorkspace } from "@/lib/workspace";
+import { cliError } from "@/lib/pi/cli-error";
+import {
+  normalizePackageSource,
+  packageInstallRequest,
+} from "@/lib/pi/package-install";
 import {
   SettingsPage,
   InsetGroup,
@@ -24,9 +30,12 @@ import {
   Layers,
   Command,
   RefreshCw,
-  RotateCcw,
   ChevronRight,
   Wand2,
+  AlertTriangle,
+  Download,
+  CircleCheck,
+  CircleX,
 } from "lucide-react";
 
 /** string-array resource keys of settings.json shown in "Local resources" */
@@ -56,7 +65,13 @@ export default function PluginsPage() {
   const { commands, mock, refresh } = usePi();
   const settings = usePiSettings();
   const [removing, setRemoving] = useState<string | null>(null);
+  const [installSource, setInstallSource] = useState("");
+  const [installScope, setInstallScope] = useState<SettingsScope>("global");
+  const [installing, setInstalling] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [resScope, setResScope] = useState<SettingsScope>("global");
+  const root = useWorkspace((state) => state.root);
+  const activeInstallScope: SettingsScope = root ? installScope : "global";
   const t = useT();
 
   useEffect(() => {
@@ -64,29 +79,103 @@ export default function PluginsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // status banners describe a pending restart — once pi restarted (via any
+  // entry point), the "installed/removed" message is no longer actionable
+  useEffect(() => {
+    if (!settings.dirtyRestart) setStatus(null);
+  }, [settings.dirtyRestart]);
+
   const globalPkgs = (settings.global.data?.packages ?? []) as PackageEntry[];
   const projectPkgs = (settings.project.data?.packages ?? []) as PackageEntry[];
 
   const extCommands = commands.filter((c) => c.source?.startsWith("extension:"));
   const builtins = commands.filter((c) => !c.source?.startsWith("extension:"));
 
-  const remove = async (scope: "global" | "project", entry: PackageEntry) => {
-    const src = packageSource(entry);
-    setRemoving(src);
+  const installPackage = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const source = normalizePackageSource(installSource);
+    const currentRoot = useWorkspace.getState().root;
+    const requestedScope: SettingsScope = currentRoot ? installScope : "global";
+    const request = source
+      ? packageInstallRequest(source, requestedScope, currentRoot)
+      : null;
+    if (!source || !request) {
+      setStatus({ ok: false, text: t("plugins.installSourceInvalid") });
+      return;
+    }
+
+    setInstalling(true);
+    setStatus(null);
+    usePiSettings.setState({ lastError: null });
     try {
-      // `pi remove` edits settings.json and cleans up ~/.pi/agent/npm|git
-      const r = await settings.runPiCli(
-        scope === "project" ? ["remove", src, "-l"] : ["remove", src]
-      );
-      if (r.code !== 0) {
-        usePiSettings.setState({
-          lastError: t("plugins.removeFailed", {
-            code: r.code,
-            err: (r.stderr || r.stdout).trim(),
+      const result = await settings.runPiCli(request.args, request.cwd);
+      if (result.code !== 0) {
+        setStatus({
+          ok: false,
+          text: t("plugins.installFailed", {
+            code: result.code,
+            err: cliError(result, t("plugins.noErrorDetail")),
           }),
         });
+        return;
       }
+
+      usePiSettings.setState({ dirtyRestart: true });
       await settings.load();
+      void refresh();
+      setInstallSource("");
+      setStatus({
+        ok: true,
+        text: t("plugins.installed", { source }),
+      });
+    } catch (error) {
+      setStatus({
+        ok: false,
+        text: t("plugins.installUnexpected", {
+          err: error instanceof Error ? error.message : String(error),
+        }),
+      });
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const remove = async (scope: "global" | "project", entry: PackageEntry) => {
+    const src = packageSource(entry);
+    const currentRoot = useWorkspace.getState().root;
+    if (scope === "project" && !currentRoot) {
+      usePiSettings.setState({ lastError: t("plugins.removeNoProject") });
+      return;
+    }
+
+    setRemoving(src);
+    setStatus(null);
+    usePiSettings.setState({ lastError: null });
+    try {
+      // `pi remove` edits settings.json and cleans up ~/.pi/agent/npm|git
+      const result = await settings.runPiCli(
+        scope === "project" ? ["remove", src, "-l"] : ["remove", src],
+        currentRoot
+      );
+      if (result.code !== 0) {
+        usePiSettings.setState({
+          lastError: t("plugins.removeFailed", {
+            code: result.code,
+            err: cliError(result, t("plugins.noErrorDetail")),
+          }),
+        });
+        return;
+      }
+      usePiSettings.setState({ dirtyRestart: true });
+      await settings.load();
+      void refresh();
+      setStatus({ ok: true, text: t("plugins.removed", { source: src }) });
+    } catch (error) {
+      usePiSettings.setState({
+        lastError: t("plugins.removeUnexpected", {
+          err: error instanceof Error ? error.message : String(error),
+        }),
+      });
     } finally {
       setRemoving(null);
     }
@@ -116,7 +205,7 @@ export default function PluginsPage() {
               variant="outline"
               size="sm"
               onClick={() => remove(scope, entry)}
-              disabled={removing === src}
+              disabled={installing || settings.busy || removing !== null}
               style={{ color: "var(--danger)", borderRadius: 8 }}
             >
               {removing === src ? t("plugins.removing") : t("plugins.remove")}
@@ -131,6 +220,118 @@ export default function PluginsPage() {
       title={t("plugins.title")}
       subtitle={mock ? t("plugins.subtitleMock") : t("plugins.subtitleLive")}
     >
+      <InsetGroup
+        header={t("plugins.installHeader")}
+        footer={
+          !root
+            ? t("plugins.installFooterNoProject")
+            : activeInstallScope === "global"
+              ? t("plugins.installFooterGlobal")
+              : t("plugins.installFooterProject")
+        }
+      >
+        <form
+          onSubmit={installPackage}
+          style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}
+        >
+          <Segmented
+            options={["global", "project"] as const}
+            value={activeInstallScope}
+            onChange={setInstallScope}
+            disabled={!root || installing || settings.busy || removing !== null}
+            labelOf={(scope) => t(`plugins.scope.${scope}`)}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="text"
+              id="plugin-package-source"
+              name="packageSource"
+              value={installSource}
+              onChange={(event) => setInstallSource(event.target.value)}
+              aria-label={t("plugins.installSourceLabel")}
+              placeholder={t("plugins.installPlaceholder")}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              disabled={installing || settings.busy || removing !== null}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                padding: "8px 12px",
+                fontSize: 13.5,
+                borderRadius: 9,
+                border: "1px solid var(--separator)",
+                background: "var(--bg-sunken)",
+                color: "var(--text-primary)",
+                outline: "none",
+                fontFamily: "var(--font-mono)",
+              }}
+            />
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              disabled={
+                installing ||
+                settings.busy ||
+                removing !== null ||
+                !installSource.trim()
+              }
+              style={{ borderRadius: 8, flexShrink: 0, minWidth: 92 }}
+            >
+              <Download size={14} aria-hidden />
+              {installing ? t("plugins.installing") : t("plugins.install")}
+            </Button>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 7,
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--text-tertiary)",
+            }}
+          >
+            <AlertTriangle
+              size={14}
+              aria-hidden
+              style={{ flexShrink: 0, marginTop: 2, color: "var(--warning)" }}
+            />
+            <span>{t("plugins.installSecurity")}</span>
+          </div>
+        </form>
+      </InsetGroup>
+
+      {status && (
+        <div
+          role={status.ok ? "status" : "alert"}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginTop: 14,
+            padding: "10px 14px",
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            borderRadius: "var(--radius-md)",
+            border: `1px solid color-mix(in srgb, ${
+              status.ok ? "var(--success)" : "var(--danger)"
+            } 35%, transparent)`,
+            background: `color-mix(in srgb, ${
+              status.ok ? "var(--success)" : "var(--danger)"
+            } 8%, transparent)`,
+            color: "var(--text-primary)",
+          }}
+        >
+          {status.ok ? (
+            <CircleCheck size={15} aria-hidden style={{ flexShrink: 0, color: "var(--success)" }} />
+          ) : (
+            <CircleX size={15} aria-hidden style={{ flexShrink: 0, color: "var(--danger)" }} />
+          )}
+          <span style={{ flex: 1, minWidth: 0 }}>{status.text}</span>
+        </div>
+      )}
       <InsetGroup
         header={t("plugins.globalHeader")}
         footer={t("plugins.globalFooter")}
@@ -251,15 +452,6 @@ export default function PluginsPage() {
             refresh();
           }}
         />
-        {settings.dirtyRestart && (
-          <GroupRow
-            icon={<RotateCcw size={16} />}
-            iconBg="var(--warning, #C15F3C)"
-            title={t("plugins.restartTitle")}
-            detail={t("plugins.restartDetail")}
-            onClick={() => settings.restartPi()}
-          />
-        )}
       </InsetGroup>
 
       {settings.lastError && (

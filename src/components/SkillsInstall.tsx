@@ -11,7 +11,6 @@ import { AnimatePresence, motion } from "motion/react";
 import { Button } from "@appica/ui-react/button";
 import { Badge } from "@appica/ui-react/badge";
 import { useSkills } from "@/lib/pi/skills";
-import { usePiSettings } from "@/lib/pi/settings";
 import {
   useSkillsInstall,
   looksLikeSource,
@@ -165,7 +164,6 @@ export function SkillsInstall() {
   const t = useT();
   const s = useSkillsInstall();
   const installed = useSkills((st) => st.skills);
-  const settings = usePiSettings();
   const root = useWorkspace((w) => w.root);
 
   const typed = s.input.trim();
@@ -435,17 +433,6 @@ export function SkillsInstall() {
             }}
           >
             {t(s.log.key, s.log.params)}
-            {s.log.ok && settings.dirtyRestart && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => settings.restartPi()}
-                disabled={settings.busy}
-                style={{ borderRadius: 7 }}
-              >
-                {settings.busy ? t("settings.restarting") : t("settings.restartPi")}
-              </Button>
-            )}
           </motion.p>
         )}
       </AnimatePresence>
