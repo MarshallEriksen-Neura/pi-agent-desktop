@@ -1,4 +1,5 @@
 import type {
+  LauncherCapabilities,
   LauncherInstallResult,
   RemotePiProfile,
   RemotePiProfileInput,
@@ -21,5 +22,7 @@ export const desktopRemotePiProfilePort: RemotePiProfilePort = {
       host,
       launcherPath: launcherPath ?? null,
     }),
+  capabilities: (id: string) =>
+    desktopInvoke<LauncherCapabilities>("remote_profile_capabilities", { id }),
   sshConfigHosts: () => desktopInvoke<string[]>("ssh_config_hosts"),
 };

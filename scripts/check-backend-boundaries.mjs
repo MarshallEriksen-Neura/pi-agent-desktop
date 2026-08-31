@@ -32,7 +32,7 @@ const EXPECTED_COMMAND_NAMES = [
   "remote_conversation_messages", "remote_conversations_list",
   // Remote Agent (SSH execution) shipped without updating this list, so the
   // check was failing on a clean tree for reasons unrelated to any new change.
-  "remote_profile_check_draft", "remote_profile_delete",
+  "remote_profile_capabilities", "remote_profile_check_draft", "remote_profile_delete",
   "remote_profile_install_launcher", "remote_profile_preflight",
   "remote_profile_save", "remote_profiles_list", "ssh_config_hosts",
   // Remote provider sync: identifiers in, redacted previews out. Provider JSON

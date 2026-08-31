@@ -1,4 +1,5 @@
 import type {
+  LauncherCapabilities,
   LauncherInstallResult,
   RemotePiProfileInput,
   RemotePiProfile,
@@ -119,6 +120,21 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
       const resolved = launcherPath?.trim() || "/home/preview/.local/bin/pi-desktop-launcher";
       installed.add(`${host.trim()}:${resolved}`);
       return { launcherPath: resolved, host: host.trim() };
+    },
+    capabilities: async (id): Promise<LauncherCapabilities> => {
+      const profile = profiles.find((candidate) => candidate.id === id);
+      if (!profile) throw new Error(`Remote profile \`${id}\` was not found`);
+      // The preview reports a current launcher: it models a working host, and a
+      // simulated old launcher would only mislead anyone testing the UI here.
+      return {
+        host: profile.sshHost,
+        launcherPath: profile.launcherPath,
+        launcherProtocolVersion: 1,
+        capabilities: ["capabilities-v1", "preflight-v1", "provider-sync-v1", "run-v1"],
+        supportsCapabilityQuery: true,
+        errorCode: null,
+        error: null,
+      };
     },
     sshConfigHosts: async () => [],
   };

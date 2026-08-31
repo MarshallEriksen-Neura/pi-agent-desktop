@@ -24,6 +24,18 @@ const LAUNCHER_PROTOCOL_VERSION: u32 = 1;
 /// Embedded so the installed launcher cannot drift from this build.
 const LAUNCHER_SOURCE: &str = include_str!("../../remote-launcher/pi-desktop-launcher");
 const SSH_CONNECT_TIMEOUT_OPTION: &str = "ConnectTimeout=15";
+/// `ConnectTimeout` only covers dialing. Without a liveness probe on the
+/// established channel, a network partition leaves the local `ssh` blocked on a
+/// socket that will never answer: no exit, no error, no `pi://exit` event — the
+/// UI stays "running" and Stop writes into a dead pipe. These two options make
+/// OpenSSH tear the channel down after roughly
+/// `ServerAliveInterval * ServerAliveCountMax` seconds of silence, which is what
+/// turns an invisible hang into an exit the desktop can react to.
+///
+/// The probe is an SSH-protocol keepalive, so an idle-but-reachable host answers
+/// it: only a genuinely unreachable peer or a dead sshd advances the counter.
+const SSH_SERVER_ALIVE_INTERVAL_OPTION: &str = "ServerAliveInterval=15";
+const SSH_SERVER_ALIVE_COUNT_OPTION: &str = "ServerAliveCountMax=3";
 const PREFLIGHT_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -135,6 +147,50 @@ pub struct LauncherInstallResult {
     pub launcher_path: String,
     pub host: String,
 }
+
+/// What one launcher reports it can do.
+///
+/// Exists because an unknown mode is indistinguishable from a broken launcher:
+/// the V1 launcher answers any unrecognised mode with `invalid launcher mode` and
+/// exit 64, so a newer desktop could not tell "this host needs a launcher
+/// upgrade" from "this launcher is corrupt". Measured for real on an Ubuntu host
+/// whose installed launcher predated provider-sync — see
+/// `docs/remote-agent-v1-acceptance.md`.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LauncherCapabilities {
+    pub host: String,
+    pub launcher_path: String,
+    /// Payload-protocol version for run/preflight. Capabilities are versioned
+    /// independently, so this must not be used to infer any capability.
+    pub launcher_protocol_version: u32,
+    pub capabilities: Vec<String>,
+    /// `true` when the launcher answered `--capabilities` at all. A launcher
+    /// predating this mode reports `false` with an empty list and no error: it is
+    /// a supported, degradable state, not a failure.
+    pub supports_capability_query: bool,
+    /// Set when the query failed for a reason the user must act on (unreachable
+    /// host, missing launcher). Distinct from an old launcher.
+    pub error_code: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Reply parsed from `--capabilities`. Bounded and non-exhaustive on purpose:
+/// unknown fields from a newer launcher are ignored rather than rejected.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CapabilitiesReply {
+    launcher_protocol_version: u32,
+    capabilities: Vec<String>,
+}
+
+/// A launcher too old to answer `--capabilities`.
+const EXIT_INVALID_LAUNCHER_MODE: i32 = 64;
+/// `sh` reports a missing command this way; the launcher itself is absent.
+const EXIT_COMMAND_NOT_FOUND: i32 = 127;
+const CAPABILITIES_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_CAPABILITY_ENTRIES: usize = 64;
+const MAX_CAPABILITY_NAME_BYTES: usize = 64;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -529,6 +585,116 @@ pub(crate) fn ssh_provider_sync_spec(profile: &RemotePiProfile) -> LaunchSpec {
         .arg("--provider-sync")
 }
 
+fn ssh_capabilities_spec(host: &str, launcher_path: &str) -> LaunchSpec {
+    let mut spec = LaunchSpec::new("ssh");
+    for &argument in ssh_options() {
+        spec = spec.arg(argument);
+    }
+    spec.arg(host.to_owned())
+        .arg(shell_quote(launcher_path))
+        .arg("--capabilities")
+}
+
+/// Asks a host's launcher what it supports.
+///
+/// Fails soft by design. An old launcher (exit 64) and a launcher that answers
+/// with something unparseable both come back as `supports_capability_query:
+/// false` with no `error_code`, because the caller's correct response is the same
+/// in both cases: fall back to V1 behaviour. Only conditions the user must fix —
+/// an unreachable host, a missing launcher — set `error_code`.
+pub fn probe_launcher_capabilities(
+    host: &str,
+    launcher_path: &str,
+) -> Result<LauncherCapabilities, String> {
+    validate_host_alias(host)?;
+    validate_remote_path(launcher_path, "remote launcher")?;
+    let spec = ssh_capabilities_spec(host, launcher_path);
+    let unsupported = |error_code: Option<&str>, error: Option<String>| LauncherCapabilities {
+        host: host.to_owned(),
+        launcher_path: launcher_path.to_owned(),
+        launcher_protocol_version: 0,
+        capabilities: Vec::new(),
+        supports_capability_query: false,
+        error_code: error_code.map(str::to_owned),
+        error,
+    };
+
+    let output = match run_bounded_command(&spec, CAPABILITIES_TIMEOUT, None) {
+        Ok(output) => output,
+        // A local failure to even launch ssh is worth surfacing verbatim.
+        Err(error) => return Ok(unsupported(Some("sshUnavailable"), Some(error))),
+    };
+    if output.timed_out {
+        return Ok(unsupported(
+            Some("timeout"),
+            Some(format!(
+                "querying launcher capabilities timed out after {}s",
+                CAPABILITIES_TIMEOUT.as_secs()
+            )),
+        ));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    match output.status.code() {
+        Some(0) => {}
+        // The launcher predates this mode. Not an error: the caller degrades.
+        Some(EXIT_INVALID_LAUNCHER_MODE) => return Ok(unsupported(None, None)),
+        Some(EXIT_COMMAND_NOT_FOUND) => {
+            let (code, _, message) =
+                classify_transport_failure(Some(EXIT_COMMAND_NOT_FOUND), &stderr, launcher_path);
+            return Ok(unsupported(Some(code), Some(message)));
+        }
+        code => {
+            let (error_code, _, message) = classify_transport_failure(code, &stderr, launcher_path);
+            return Ok(unsupported(Some(error_code), Some(message)));
+        }
+    }
+
+    // Last nonempty line: a login shell may print a banner ahead of the answer.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(line) = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .next_back()
+    else {
+        return Ok(unsupported(None, None));
+    };
+    let Ok(reply) = serde_json::from_str::<CapabilitiesReply>(line) else {
+        // Answered, but not in a shape this build understands. Degrade rather
+        // than fail: a future launcher must never be able to break an old
+        // desktop by adding to its own reply.
+        return Ok(unsupported(None, None));
+    };
+    let mut capabilities: Vec<String> = reply
+        .capabilities
+        .into_iter()
+        .filter(|name| {
+            !name.is_empty()
+                && name.len() <= MAX_CAPABILITY_NAME_BYTES
+                && !name.chars().any(char::is_control)
+        })
+        .take(MAX_CAPABILITY_ENTRIES)
+        .collect();
+    capabilities.sort();
+    capabilities.dedup();
+    Ok(LauncherCapabilities {
+        host: host.to_owned(),
+        launcher_path: launcher_path.to_owned(),
+        launcher_protocol_version: reply.launcher_protocol_version,
+        capabilities,
+        supports_capability_query: true,
+        error_code: None,
+        error: None,
+    })
+}
+
+/// Capability probe for a stored profile.
+#[tauri::command]
+pub fn remote_profile_capabilities(id: String) -> Result<LauncherCapabilities, String> {
+    let profile = load_profile(&id)?;
+    probe_launcher_capabilities(&profile.ssh_host, &profile.launcher_path)
+}
+
 fn ssh_options() -> &'static [&'static str] {
     &[
         "-T",
@@ -556,6 +722,10 @@ fn ssh_options() -> &'static [&'static str] {
         "EscapeChar=none",
         "-o",
         SSH_CONNECT_TIMEOUT_OPTION,
+        "-o",
+        SSH_SERVER_ALIVE_INTERVAL_OPTION,
+        "-o",
+        SSH_SERVER_ALIVE_COUNT_OPTION,
         "-o",
         "RequestTTY=no",
     ]
@@ -1093,10 +1263,10 @@ fn run_bounded_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_launcher_failure, classify_transport_failure, shell_quote, ssh_launch_spec,
-        validate_binding, validate_profile_fields, validate_profile_id, ExecutionBinding,
-        RemotePiProfile, CHECK_LAUNCHER, CHECK_NODE, CHECK_PI, CHECK_SSH, CHECK_WORKSPACE,
-        LAUNCHER_INSTALLER,
+        classify_launcher_failure, classify_transport_failure, shell_quote, ssh_capabilities_spec,
+        ssh_launch_spec, ssh_provider_sync_spec, validate_binding, validate_profile_fields,
+        validate_profile_id, CapabilitiesReply, ExecutionBinding, RemotePiProfile, CHECK_LAUNCHER,
+        CHECK_NODE, CHECK_PI, CHECK_SSH, CHECK_WORKSPACE, LAUNCHER_INSTALLER, LAUNCHER_SOURCE,
     };
 
     fn profile() -> RemotePiProfile {
@@ -1307,5 +1477,85 @@ mod tests {
         assert!(args.contains(&"BatchMode=yes".into()));
         assert!(args.contains(&"StrictHostKeyChecking=yes".into()));
         assert!(args.iter().all(|arg| !arg.contains("/remote/session path")));
+    }
+
+    /// The capability query must be answerable before node is involved: it is
+    /// most needed precisely when node is broken, which is when every other mode
+    /// fails. So it lives in the `sh` prologue, ahead of PATH recovery.
+    #[test]
+    fn capability_mode_is_answered_before_node_discovery() {
+        let source = LAUNCHER_SOURCE;
+        let capability_branch = source
+            .find("--capabilities")
+            .expect("launcher must handle --capabilities");
+        let node_probe = source
+            .find("if ! command -v node")
+            .expect("launcher must still recover node");
+        assert!(
+            capability_branch < node_probe,
+            "--capabilities must be handled before any node discovery"
+        );
+        // `exec node` is what every other mode ends at; the reply must precede it.
+        let exec_node = source.find("exec node").expect("launcher must exec node");
+        assert!(capability_branch < exec_node);
+    }
+
+    #[test]
+    fn capability_spec_carries_no_payload_argument() {
+        let spec = ssh_capabilities_spec("prod", "/opt/pi-desktop-launcher");
+        let args = spec
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(args.last().map(String::as_str), Some("--capabilities"));
+        assert!(args.contains(&"BatchMode=yes".into()));
+        assert!(args.contains(&"ServerAliveInterval=15".into()));
+        // The launcher rejects --capabilities with any extra argument, so sending
+        // one would turn every probe into exit 64 and look like an old launcher.
+        assert_eq!(
+            args.iter().filter(|arg| arg.starts_with("--capabilities")).count(),
+            1
+        );
+    }
+
+    /// The reply is parsed leniently on purpose: a newer launcher adding fields
+    /// must not be able to break an older desktop.
+    #[test]
+    fn capability_reply_ignores_unknown_fields() {
+        let reply: CapabilitiesReply = serde_json::from_str(
+            r#"{"launcherProtocolVersion":1,"capabilities":["run-v1"],"somethingNew":{"a":1}}"#,
+        )
+        .expect("unknown fields must be ignored, not rejected");
+        assert_eq!(reply.launcher_protocol_version, 1);
+        assert_eq!(reply.capabilities, vec!["run-v1".to_owned()]);
+    }
+
+    /// A run channel that cannot notice a partition is the root cause of
+    /// "SSH disconnected; remote process status is unknown": without a liveness
+    /// probe the local `ssh` never exits, so no code path gets to run at all.
+    #[test]
+    fn every_ssh_invocation_carries_a_liveness_probe() {
+        let profile = profile();
+        let binding = ExecutionBinding::Ssh {
+            profile_id: "p1".into(),
+            profile_revision: 2,
+            host_alias: "prod".into(),
+            remote_cwd: profile.remote_cwd.clone(),
+            launcher_protocol_version: 1,
+        };
+        let specs = [
+            ssh_launch_spec(&profile, &binding, None).unwrap(),
+            ssh_provider_sync_spec(&profile),
+        ];
+        for spec in specs {
+            let args = spec
+                .args
+                .iter()
+                .map(|arg| arg.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            assert!(args.contains(&"ServerAliveInterval=15".into()));
+            assert!(args.contains(&"ServerAliveCountMax=3".into()));
+        }
     }
 }

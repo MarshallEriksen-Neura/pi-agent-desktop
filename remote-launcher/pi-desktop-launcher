@@ -5,6 +5,26 @@ set -eu
 
 mode=${1:-}
 payload=${2:-}
+
+# Answered in `sh`, before any node discovery, and deliberately first: a desktop
+# needs to know what this launcher supports even when node is missing or broken,
+# which is exactly when every other mode fails. Exit 0 with a JSON document is
+# the only reply that a newer desktop can tell apart from an older launcher's
+# `invalid launcher mode` (exit 64) — the V1 launcher returns 64 for an unknown
+# mode with no way to distinguish "too old" from "corrupt".
+#
+# LAUNCHER_PROTOCOL_VERSION tracks the run/preflight payload shape. Capabilities
+# are additive and independently versioned, so a desktop must feature-detect by
+# name and never infer one capability from the presence of another.
+if [ "$mode" = "--capabilities" ]; then
+  if [ "$#" -ne 1 ]; then
+    printf '%s\n' 'capabilities_invalid_arguments' >&2
+    exit 64
+  fi
+  printf '%s\n' '{"launcherProtocolVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1"]}'
+  exit 0
+fi
+
 if [ "$mode" = "--provider-sync" ]; then
   if [ "$#" -ne 1 ]; then
     printf '%s\n' 'provider_sync_invalid_arguments' >&2

@@ -348,6 +348,7 @@ pub fn run() {
             remote_profiles::remote_profile_preflight,
             remote_profiles::remote_profile_check_draft,
             remote_profiles::remote_profile_install_launcher,
+            remote_profiles::remote_profile_capabilities,
             remote_profiles::ssh_config_hosts,
             remote_provider_sync::remote_provider_sync_candidates,
             remote_provider_sync::remote_provider_sync_prepare,

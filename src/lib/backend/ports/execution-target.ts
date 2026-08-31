@@ -73,3 +73,46 @@ export interface LauncherInstallResult {
   launcherPath: string;
   host: string;
 }
+
+/** Capability names this build knows how to ask for. */
+export type LauncherCapability =
+  | "run-v1"
+  | "preflight-v1"
+  | "provider-sync-v1"
+  | "capabilities-v1";
+
+/**
+ * What a host's launcher reports it can do.
+ *
+ * A launcher older than the capability query answers any unknown mode with
+ * `invalid launcher mode` and exit 64 — indistinguishable from a corrupt one. So
+ * `supportsCapabilityQuery: false` with no `errorCode` is the normal, expected
+ * answer for an old launcher, and callers must degrade rather than surface it as
+ * a failure. Only `errorCode` means the user has something to fix.
+ */
+export interface LauncherCapabilities {
+  host: string;
+  launcherPath: string;
+  /**
+   * Payload-protocol version for run/preflight. Capabilities are versioned
+   * independently — never infer a capability from this number.
+   */
+  launcherProtocolVersion: number;
+  capabilities: string[];
+  supportsCapabilityQuery: boolean;
+  errorCode?: string | null;
+  error?: string | null;
+}
+
+/** Whether a probe result grants `capability`. Absent query ⇒ V1 baseline only. */
+export function hasLauncherCapability(
+  probe: LauncherCapabilities | null | undefined,
+  capability: LauncherCapability,
+): boolean {
+  if (!probe) return false;
+  if (probe.supportsCapabilityQuery) return probe.capabilities.includes(capability);
+  // A launcher that cannot answer the query still has the V1 surface, which
+  // shipped before capabilities existed. Treating those as absent would break
+  // every already-installed host.
+  return capability === "run-v1" || capability === "preflight-v1";
+}

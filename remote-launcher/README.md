@@ -48,8 +48,11 @@ ssh build-host bash -lc 'command -v node; command -v pi'
 
 ## Protocol
 
-The launcher accepts three fixed internal modes:
+The launcher accepts four fixed internal modes:
 
+- `--capabilities`: takes no payload and writes one JSON document to stdout, e.g. `{"launcherProtocolVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1"]}`. Answered by the `sh` prologue **before** any Node.js discovery, because a desktop most needs to know what a host supports exactly when node is missing or broken. Capabilities are additive and independently versioned: feature-detect by name and never infer one from the presence of another, or from `launcherProtocolVersion`.
+
+  A launcher older than this mode answers `invalid launcher mode` with exit 64, which is byte-identical to what a corrupt launcher returns. The desktop therefore treats an unanswered query as "V1 baseline" — `run-v1` and `preflight-v1` only — rather than as a failure, since every already-installed host still has that surface. Reinstall the launcher (**Settings › Remote agent › Install**) to gain anything newer.
 - `--preflight`: validates the workspace and runs `pi --version`; writes one JSON document to stdout. Alongside `ok` it reports `piVersion`, `nodeVersion`, `nodePath`, and `piAuthConfigured` — the last is a nonempty-`auth.json` check, which the app surfaces as a warning rather than a blocker because pi exposes no way to query login state noninteractively.
 - `--run`: starts `pi --mode rpc` in the remote workspace; stdout remains Pi JSONL and launcher diagnostics go to stderr.
 - `--provider-sync`: reads one provider-sync protocol v1 request (maximum 2 MiB) from stdin. The fixed `inspect` and `apply` actions merge selected provider configuration while preserving existing remote credentials and unrelated entries. Provider JSON and credentials never appear in argv, environment variables, or diagnostics. This capability is independent of the run/preflight payload protocol.
@@ -58,4 +61,6 @@ The payload protocol is versioned. Protocol version `1` carries the remote works
 
 ## Lifecycle
 
-Version 1 is attached to the SSH connection. Closing the app or stopping a conversation asks the launcher to terminate Pi, with a forced-kill fallback. If the network connection disappears, the desktop reports the remote process status as unknown. Durable reattach, multi-client sharing, and guaranteed termination after network loss are not provided.
+Version 1 is attached to the SSH connection. Closing the app or stopping a conversation asks the launcher to terminate Pi, with a forced-kill fallback. Durable reattach, multi-client sharing, and guaranteed termination after network loss are not provided.
+
+The SSH channel carries a liveness probe (`ServerAliveInterval=15`, `ServerAliveCountMax=3`), so a network partition ends the connection after roughly 45 seconds instead of leaving the desktop blocked on a socket that will never answer. What ends is the local `ssh` process: the remote Pi is terminated by SIGHUP forwarding, which requires the remote sshd to notice the dead peer first, and that can lag well behind. So after a partition the desktop reports the remote process status as **unknown** and does not reconnect on its own — a reconnect could start a second Pi against a session file the first one still owns. Recovery is an explicit restart.

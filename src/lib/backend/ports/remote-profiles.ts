@@ -1,4 +1,5 @@
 import type {
+  LauncherCapabilities,
   LauncherInstallResult,
   RemotePiProfile,
   RemotePiProfileInput,
@@ -23,6 +24,11 @@ export interface RemotePiProfilePort {
    * needs no sudo.
    */
   installLauncher(host: string, launcherPath?: string): Promise<LauncherInstallResult>;
+  /**
+   * Asks a stored profile's launcher what it supports. Resolves even when the
+   * launcher is too old to answer — see `LauncherCapabilities`.
+   */
+  capabilities(id: string): Promise<LauncherCapabilities>;
   /** `Host` aliases from the local `~/.ssh/config`; empty when there is none. */
   sshConfigHosts(): Promise<string[]>;
 }

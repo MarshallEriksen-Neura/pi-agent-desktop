@@ -42,8 +42,9 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // script's expected list, so the real count was already 63. app_quit makes 64.
   // skills_cli (the `npx skills` bridge) makes 66, skills_search 67. Remote
   // Agent's 7 (remote_profile_* and ssh_config_hosts) had the same drift and
-  // made 74; provider sync's 3 make 77.
-  assert.equal(result.inventory.commandUniqueCount, 77);
+  // made 74; provider sync's 3 make 77. remote_profile_capabilities — the
+  // launcher capability handshake — makes 78.
+  assert.equal(result.inventory.commandUniqueCount, 78);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -115,7 +116,8 @@ test("locks the desktop command names and Pi process event names", () => {
     "remote_conversation_messages",
     "remote_conversations_list",
     // Remote Agent (SSH execution): profile CRUD, launcher install, preflight,
-    // and ~/.ssh/config alias reading
+    // capability discovery, and ~/.ssh/config alias reading
+    "remote_profile_capabilities",
     "remote_profile_check_draft",
     "remote_profile_delete",
     "remote_profile_install_launcher",
