@@ -12,6 +12,21 @@ import type { RemotePiProfilePort } from "../../src/lib/backend/ports/remote-pro
 import type { RemoteProviderSyncPort } from "../../src/lib/backend/ports/remote-provider-sync";
 import { resetRuntimeStoreForTests, useRuntime } from "../../src/lib/pi/runtime";
 import { unreachablePort } from "./fixtures/unreachable-port";
+import type { WorkspaceFsPort } from "../../src/lib/backend/ports/workspace-fs";
+import { createUnsupportedRemoteWorkspaceFsPort } from "../../src/lib/backend/ports/remote-workspace-fs";
+
+/** This suite never reads files; it only needs the port to exist. */
+const inertWorkspaceFs: WorkspaceFsPort = {
+  root: async () => "",
+  listDir: async () => [],
+  readFile: async () => "",
+  readFileBase64: async () => "",
+  writeFile: async () => undefined,
+  createFile: async () => undefined,
+  createDir: async () => undefined,
+  deleteEntry: async () => undefined,
+  renameEntry: async () => undefined,
+};
 
 function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
   return {
@@ -41,17 +56,11 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
       delete: async () => undefined,
       generateTitle: async () => "",
     },
-    workspaceFs: {
-      root: async () => "",
-      listDir: async () => [],
-      readFile: async () => "",
-      readFileBase64: async () => "",
-      writeFile: async () => undefined,
-      createFile: async () => undefined,
-      createDir: async () => undefined,
-      deleteEntry: async () => undefined,
-      renameEntry: async () => undefined,
-    },
+    workspaceFs: inertWorkspaceFs,
+    createWorkspaceFs: (targetId) =>
+      targetId && targetId !== "local"
+        ? createUnsupportedRemoteWorkspaceFsPort(targetId)
+        : inertWorkspaceFs,
     projectCatalog: {
       resolve: async (path) => path,
       commit: async (path) => path,

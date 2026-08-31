@@ -1,6 +1,8 @@
 export type { AssetUrlPort } from "./asset-url";
 export type {
   ExecutionBinding,
+  LauncherCapabilities,
+  LauncherCapability,
   LauncherInstallResult,
   RemotePiProfile,
   RemotePiProfileInput,
@@ -9,6 +11,13 @@ export type {
   RemoteReadinessReport,
   RemoteReadinessStatus,
 } from "./execution-target";
+export { hasLauncherCapability } from "./execution-target";
+export {
+  createUnsupportedRemoteWorkspaceFsPort,
+  isRemoteWorkspaceUnsupported,
+  REMOTE_WORKSPACE_UNSUPPORTED,
+  RemoteWorkspaceUnsupportedError,
+} from "./remote-workspace-fs";
 export type { RemotePiProfilePort } from "./remote-profiles";
 export type {
   AppliedProviderSyncProvider,

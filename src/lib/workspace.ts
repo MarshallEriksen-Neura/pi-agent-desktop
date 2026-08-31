@@ -5,7 +5,11 @@ import { isImageFile } from "./image-files";
 import { useUI } from "./store";
 import { getBackendKind, getPort } from "./backend/composition/container";
 import { switchWorkspaceProject } from "./orchestration/project-switch";
-import { useSessions } from "./pi/sessions";
+import {
+  LOCAL_WORKSPACE_TARGET,
+  workspaceFsFor,
+  type WorkspaceTargetId,
+} from "./workspace-target";
 
 export interface FsEntry {
   name: string;
@@ -21,6 +25,16 @@ export interface RecentProject {
 
 interface WorkspaceStore {
   root: string | null;
+  /**
+   * Which execution target `root`, `entries` and `docs` belong to.
+   *
+   * Everything else in this store is keyed by bare path string, which is only
+   * unambiguous because every path in one snapshot comes from one host. This
+   * field is what makes that true and checkable: without it, switching a
+   * conversation to an SSH target left the tree showing the *local* project with
+   * nothing marking it as such.
+   */
+  targetId: WorkspaceTargetId;
   mock: boolean;
   /** true once init() has run — distinguishes "booting" from "no project" */
   initialized: boolean;
@@ -33,6 +47,12 @@ interface WorkspaceStore {
   /** loaded file contents keyed by path */
   docs: Record<string, string>;
   loadError: string | null;
+  /**
+   * Repoint the store at `targetId`, dropping tree and document state that
+   * belonged to the previous one. Called from the session store's execution
+   * target switch through a registered seam, never directly by a component.
+   */
+  retarget: (targetId: WorkspaceTargetId) => void;
 
   init: () => Promise<void>;
   loadRecents: () => Promise<void>;
@@ -67,8 +87,19 @@ interface WorkspaceStore {
   renameEntry: (oldPath: string, newName: string) => Promise<void>;
 }
 
+/**
+ * This store's filesystem: the one its current contents came from.
+ *
+ * Every path held in `entries`/`docs` was listed or read through the port for
+ * `targetId`, so reads and writes have to go back to the same one. Resolving it
+ * here instead of at each call site is what makes that structural rather than
+ * remembered.
+ */
+const fs = () => workspaceFsFor(useWorkspace.getState().targetId);
+
 export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   root: null,
+  targetId: LOCAL_WORKSPACE_TARGET,
   mock: false,
   initialized: false,
   switching: false,
@@ -78,10 +109,25 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   docs: {},
   loadError: null,
 
+  retarget: (targetId) => {
+    if (get().targetId === targetId) return;
+    // Tree and documents are keyed by bare path, so they cannot survive a host
+    // change: the same path means a different file on the other side.
+    set({
+      targetId,
+      root: null,
+      entries: {},
+      expanded: {},
+      docs: {},
+      loadError: null,
+    });
+    useUI.getState().setActiveFile("");
+  },
+
   init: async () => {
     if (get().initialized) return;
     try {
-      const workspaceFs = getPort("workspaceFs");
+      const workspaceFs = workspaceFsFor(get().targetId);
       const root = await workspaceFs.root();
       const top = await workspaceFs.listDir(root);
       set({
@@ -110,7 +156,11 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   },
 
   openProject: async (path) => {
-    if (useSessions.getState().executionBinding.kind === "ssh") return;
+    // Project switching is a local-target operation: `path` came from a native
+    // dialog or the recents list, both of which describe this machine. The guard
+    // stays as an early exit for clarity, but it is no longer what protects the
+    // filesystem — `fs()` resolves to a refusing port under a remote target.
+    if (get().targetId !== LOCAL_WORKSPACE_TARGET) return;
     const { mock, switching } = get();
     if (mock || switching) return;
     set({ switching: true, loadError: null });
@@ -119,7 +169,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
         path,
         currentRoot: get().root,
         projectCatalog: getPort("projectCatalog"),
-        workspaceFs: getPort("workspaceFs"),
+        workspaceFs: fs(),
         setActiveFile: (activePath) => useUI.getState().setActiveFile(activePath),
         loadRecents: get().loadRecents,
         applyProjectRoot: (root, top) => {
@@ -140,7 +190,10 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   },
 
   pickProject: async () => {
-    if (useSessions.getState().executionBinding.kind === "ssh") return;
+    // `pick()` opens a native OS dialog, which can only ever describe this
+    // machine — there is no version of it that enumerates a remote host. That
+    // gap is what V2.3's `browse(targetId)` exists to fill.
+    if (get().targetId !== LOCAL_WORKSPACE_TARGET) return;
     if (get().mock || get().switching) return;
     try {
       const picked = await getPort("projectCatalog").pick();
@@ -166,7 +219,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     set({ expanded: { ...expanded, [path]: open } });
     if (open && !entries[path]) {
       try {
-        const children = await getPort("workspaceFs").listDir(path);
+        const children = await fs().listDir(path);
         set((s) => ({ entries: { ...s.entries, [path]: children } }));
       } catch (e) {
         set({ loadError: e instanceof Error ? e.message : String(e) });
@@ -179,7 +232,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     if (isImageFile(path)) return true;
     if (get().docs[path] !== undefined) return true;
     try {
-      const content = await getPort("workspaceFs").readFile(path);
+      const content = await fs().readFile(path);
       set((s) => ({ docs: { ...s.docs, [path]: content } }));
       return true;
     } catch (e) {
@@ -196,7 +249,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   reloadFile: async (path) => {
     if (get().mock || isImageFile(path)) return;
     try {
-      const content = await getPort("workspaceFs").readFile(path);
+      const content = await fs().readFile(path);
       set((s) => ({ docs: { ...s.docs, [path]: content } }));
     } catch {
       // binary / deleted / unreadable — keep whatever we had
@@ -207,7 +260,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     const { mock, entries } = get();
     if (mock || !entries[path]) return; // only refresh dirs already listed
     try {
-      const children = await getPort("workspaceFs").listDir(path);
+      const children = await fs().listDir(path);
       set((s) => ({ entries: { ...s.entries, [path]: children } }));
     } catch {
       // tree stays as-is on failure
@@ -221,7 +274,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     get().updateDoc(path, content);
     if (get().mock) return; // nowhere to persist in browser preview
     try {
-      await getPort("workspaceFs").writeFile(path, content);
+      await fs().writeFile(path, content);
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
     }
@@ -231,7 +284,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     if (get().mock) return;
     const path = `${dirPath}/${name}`;
     try {
-      await getPort("workspaceFs").createFile(path);
+      await fs().createFile(path);
       await get().refreshDir(dirPath);
       // open the new empty file in the editor
       set((s) => ({ docs: { ...s.docs, [path]: "" } }));
@@ -245,7 +298,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     if (get().mock) return;
     const path = `${dirPath}/${name}`;
     try {
-      await getPort("workspaceFs").createDir(path);
+      await fs().createDir(path);
       await get().refreshDir(dirPath);
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
@@ -255,7 +308,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   deleteEntry: async (path, isDir) => {
     if (get().mock) return;
     try {
-      await getPort("workspaceFs").deleteEntry(path);
+      await fs().deleteEntry(path);
       // remove from docs cache
       set((s) => {
         const docs = { ...s.docs };
@@ -294,7 +347,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     const parent = oldPath.substring(0, oldPath.lastIndexOf("/"));
     const newPath = `${parent}/${newName}`;
     try {
-      await getPort("workspaceFs").renameEntry(oldPath, newPath);
+      await fs().renameEntry(oldPath, newPath);
       // migrate cached doc content to new key
       set((s) => {
         const docs = { ...s.docs };

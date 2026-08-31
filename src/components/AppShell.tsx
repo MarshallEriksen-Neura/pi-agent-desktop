@@ -11,6 +11,7 @@ import { useCliUpdate } from "@/lib/pi/cli-update";
 import { usePi } from "@/lib/pi/store";
 import {
   configureSessionProjectRootResolver,
+  configureWorkspaceTargetSwitch,
   useSessions,
 } from "@/lib/pi/sessions";
 import { useExtUi } from "@/lib/pi/ext-ui";
@@ -104,6 +105,12 @@ function MainShell({ children }: { children: React.ReactNode }) {
     }
     configureSessionProjectRootResolver(
       () => useWorkspace.getState().root,
+    );
+    // The session store owns the execution target but cannot import the
+    // workspace store (that direction already exists and would cycle), so the
+    // repoint travels through this seam.
+    configureWorkspaceTargetSwitch((targetId) =>
+      useWorkspace.getState().retarget(targetId),
     );
     // subscribe before connecting so no early events are missed
     useExtUi.getState().init();

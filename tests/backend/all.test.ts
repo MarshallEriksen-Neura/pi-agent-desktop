@@ -12,7 +12,9 @@ import "./remote-profiles.test";
 import "./remote-provider-sync.test";
 import "./remote-workspace-guard.test";
 import "./launcher-capabilities.test";
-// remote-exit-recovery runs from isolated.test.ts — see the note there.
+import "./workspace-target.test";
+// remote-exit-recovery and workspace-retarget run from isolated.test.ts — see
+// the note there.
 import "./project-switch.test";
 import "./session-lifecycle.test";
 import "./session-pin.test";

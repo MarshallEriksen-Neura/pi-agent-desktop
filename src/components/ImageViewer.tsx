@@ -6,12 +6,15 @@ import { ImageOff, Image as ImageIcon } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { useWorkspace } from "@/lib/workspace";
 import { imageMime } from "@/lib/image-files";
-import { getPort } from "@/lib/backend/composition/container";
+import { workspaceFsFor } from "@/lib/workspace-target";
 
 /** Replaces the CodeMirror surface when the active file is an image. */
 export function ImageViewer({ path }: { path: string }) {
   const t = useT();
   const mock = useWorkspace((s) => s.mock);
+  // `path` is a tree entry, so it belongs to whatever host the tree came from.
+  // Reading it through the local port would be wrong under a remote target.
+  const targetId = useWorkspace((s) => s.targetId);
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
@@ -24,7 +27,7 @@ export function ImageViewer({ path }: { path: string }) {
     if (mock) return;
     (async () => {
       try {
-        const b64 = await getPort("workspaceFs").readFileBase64(path);
+        const b64 = await workspaceFsFor(targetId).readFileBase64(path);
         if (alive) setSrc(`data:${imageMime(path)};base64,${b64}`);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
@@ -33,7 +36,7 @@ export function ImageViewer({ path }: { path: string }) {
     return () => {
       alive = false;
     };
-  }, [path, mock]);
+  }, [path, mock, targetId]);
 
   return (
     <div

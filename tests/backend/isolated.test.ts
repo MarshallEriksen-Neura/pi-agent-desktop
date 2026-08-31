@@ -11,3 +11,4 @@
  * Run by `scripts/run-backend-tests.mjs` as a second `node --test` entry.
  */
 import "./remote-exit-recovery.test";
+import "./workspace-retarget.test";

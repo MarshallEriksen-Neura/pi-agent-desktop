@@ -1,6 +1,7 @@
 "use client";
 
-import { getPort } from "@/lib/backend/composition/container";
+import { useWorkspace } from "@/lib/workspace";
+import { workspaceFsFor, type WorkspaceTargetId } from "@/lib/workspace-target";
 
 /**
  * Live progress for *detached* subagent runs.
@@ -448,13 +449,26 @@ export function statusPathOf(asyncDir: string): string {
   return `${asyncDir.replace(/[/\\]+$/, "")}${sep}status.json`;
 }
 
-/** Read one snapshot. Resolves null on any read/parse failure — never throws. */
-export async function readAsyncStatus(asyncDir: string): Promise<AsyncRunStatus | null> {
+/**
+ * Read one snapshot. Resolves null on any read/parse failure — never throws.
+ *
+ * `asyncDir` is produced by a pi tool call, so it belongs to whichever host pi
+ * runs on: for a remote target it is a remote path, and reading it through the
+ * local filesystem was always wrong. It resolves against the active workspace
+ * target by default, which is correct whenever the polled run belongs to the
+ * conversation on screen. A caller that knows otherwise — a background task on
+ * another target — should pass `targetId` explicitly.
+ */
+export async function readAsyncStatus(
+  asyncDir: string,
+  targetId: WorkspaceTargetId = useWorkspace.getState().targetId,
+): Promise<AsyncRunStatus | null> {
   try {
-    const raw = await getPort("workspaceFs").readFile(statusPathOf(asyncDir));
+    const raw = await workspaceFsFor(targetId).readFile(statusPathOf(asyncDir));
     return parseAsyncStatus(raw);
   } catch {
-    // not written yet, over the host's read cap, or no fs bridge in this build
+    // not written yet, over the host's read cap, no fs bridge in this build, or
+    // the target has no remote filesystem access yet
     return null;
   }
 }

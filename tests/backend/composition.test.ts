@@ -18,6 +18,20 @@ import type { RemoteConversationsPort } from "../../src/lib/backend/ports/remote
 import type { RemotePiProfilePort } from "../../src/lib/backend/ports/remote-profiles";
 import type { RemoteProviderSyncPort } from "../../src/lib/backend/ports/remote-provider-sync";
 import { unreachablePort } from "./fixtures/unreachable-port";
+import type { WorkspaceFsPort } from "../../src/lib/backend/ports/workspace-fs";
+import { createUnsupportedRemoteWorkspaceFsPort } from "../../src/lib/backend/ports/remote-workspace-fs";
+
+const workspaceFs = (label: string): WorkspaceFsPort => ({
+  root: async () => label,
+  listDir: async () => [],
+  readFile: async () => "",
+  readFileBase64: async () => "",
+  writeFile: async () => undefined,
+  createFile: async () => undefined,
+  createDir: async () => undefined,
+  deleteEntry: async () => undefined,
+  renameEntry: async () => undefined,
+});
 
 function fakePorts(label = "fake"): BackendPorts {
   return {
@@ -47,17 +61,13 @@ function fakePorts(label = "fake"): BackendPorts {
       delete: async () => undefined,
       generateTitle: async () => label,
     },
-    workspaceFs: {
-      root: async () => label,
-      listDir: async () => [],
-      readFile: async () => "",
-      readFileBase64: async () => "",
-      writeFile: async () => undefined,
-      createFile: async () => undefined,
-      createDir: async () => undefined,
-      deleteEntry: async () => undefined,
-      renameEntry: async () => undefined,
-    },
+    workspaceFs: workspaceFs(label),
+    // Mirrors the real compositions: a remote target must not resolve to the
+    // local port, or this fixture would hide the property the refactor adds.
+    createWorkspaceFs: (targetId) =>
+      targetId && targetId !== "local"
+        ? createUnsupportedRemoteWorkspaceFsPort(targetId)
+        : workspaceFs(label),
     projectCatalog: {
       resolve: async (path) => path,
       commit: async (path) => path,

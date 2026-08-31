@@ -16,6 +16,7 @@ import {
 } from "../orchestration/session-lifecycle";
 import { setActiveTaskId, getActiveTaskId, setSessionTitle, setFocusSessionHandler } from "./task-context";
 import { DEFAULT_TASK_ID } from "../backend/ports/pi-process";
+import { workspaceTargetIdFor, type WorkspaceTargetId } from "../workspace-target";
 const LOCAL_EXECUTION_BINDING: ExecutionBinding = { kind: "local", targetId: "local" };
 
 /**
@@ -144,6 +145,37 @@ export function configureSessionProjectRootResolver(
     desktopFeatures: getBackendKind() === "desktop-tauri",
     projectRoot,
   };
+}
+
+/**
+ * Notified when the execution target changes, so the workspace can repoint.
+ *
+ * A seam rather than a direct call because `workspace.ts` already depends on this
+ * module and importing it back would cycle. Same shape as
+ * `configureChatRecovery`: registered once from `AppShell`, and a no-op until it
+ * is, so tests and the preview do not need it.
+ */
+let targetSwitchListener: ((targetId: WorkspaceTargetId) => void) | null = null;
+
+export function configureWorkspaceTargetSwitch(
+  listener: (targetId: WorkspaceTargetId) => void,
+): void {
+  targetSwitchListener = listener;
+}
+
+export function resetWorkspaceTargetSwitchForTests(): void {
+  targetSwitchListener = null;
+}
+
+/**
+ * Announce the target a conversation now runs on.
+ *
+ * Called after the new binding is committed, never before: the workspace clears
+ * tree and document state, so doing it early would blank the UI while a switch
+ * could still fail and leave the old binding in place.
+ */
+function announceExecutionTarget(binding: ExecutionBinding): void {
+  targetSwitchListener?.(workspaceTargetIdFor(binding));
 }
 
 async function backendList(projectRoot: string): Promise<ChatSessionMeta[]> {
@@ -518,6 +550,10 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     const active = get().sessions.find((session) => session.id === get().activeId);
     if (get().initialized && get().projectRoot === scope && sameExecutionBinding(active?.executionBinding, executionBinding)) {
       set({ executionBinding });
+      // Still announce: this early return also covers the first switch onto a
+      // target whose scope already matches, and the workspace may not have been
+      // pointed at it yet. `retarget` is a no-op when nothing changed.
+      announceExecutionTarget(executionBinding);
       return;
     }
 
@@ -530,6 +566,11 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       activeId: null,
       executionBinding,
     });
+    // The tree and open documents belong to the previous host and cannot be
+    // reinterpreted against this one — same path, different file. Before this
+    // existed, switching to an SSH target left the local project on screen with
+    // nothing marking it as stale.
+    announceExecutionTarget(executionBinding);
 
     const sessions = await backendList(scope);
     set({ sessions });
