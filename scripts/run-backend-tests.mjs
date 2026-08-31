@@ -21,7 +21,24 @@ run(process.execPath, [
   "tests/backend/tsconfig.json",
 ]);
 rewriteAliases(outDir, path.join(outDir, "src"));
-run(process.execPath, ["--test", ".tmp/backend-tests/tests/backend/all.test.js"]);
+
+// Two entries, two processes. `isolated.test.js` holds specs whose setup is not
+// reversible in-process: they call the chat store's `init()`, which registers a
+// subscriber on the global ext-ui store that nothing unsubscribes — clearing the
+// chat-store map leaves it alive, holding a closure over a client the spec then
+// disposes, and a later unrelated spec inherits it and hangs.
+//
+// Both entries always run: bailing out after the first would let a failure there
+// hide whatever the second would have reported.
+const entries = [
+  ".tmp/backend-tests/tests/backend/all.test.js",
+  ".tmp/backend-tests/tests/backend/isolated.test.js",
+];
+let failed = false;
+for (const entry of entries) {
+  if (!runAllowingFailure(process.execPath, ["--test", entry])) failed = true;
+}
+if (failed) process.exit(1);
 
 /**
  * tsc type-checks `@/*` through tsconfig paths but emits the specifier verbatim,
@@ -61,4 +78,15 @@ function run(command, args) {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
+}
+
+/** Same, but reports the outcome instead of exiting, so later entries still run. */
+function runAllowingFailure(command, args) {
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    stdio: "inherit",
+    shell: false,
+  });
+  if (result.error) throw result.error;
+  return result.status === 0;
 }

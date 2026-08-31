@@ -572,6 +572,13 @@ export function createChatStore(taskId: string) {
         client.onExit((code) => {
           const s = get();
           if (!s.streaming) return; // not mid-run: a normal exit, ignore
+          // Read once, before any await: the same target decides the message and
+          // whether auto-reconnect is allowed at all.
+          const recoveryTarget = getChatRecoveryTarget(taskId);
+          // What exited is the local `ssh` child, not the remote pi. Under a
+          // partition the remote pi can still be alive and holding the session
+          // file, so this exit says nothing about remote state.
+          const isRemote = recoveryTarget?.executionBinding?.kind === "ssh";
           const stderr = pendingStderr.trim();
           let summary: string;
           let detail = "";
@@ -582,6 +589,10 @@ export function createChatStore(taskId: string) {
             summary = t("agent.piExited", { code: String(code) });
           } else {
             summary = t("agent.piExitedUnknown");
+          }
+          if (isRemote) {
+            const hint = t("remoteAgent.target.statusUnknown");
+            detail = detail ? `${detail}\n\n${hint}` : hint;
           }
           useUI.getState().endAgentRun();
           piStore().setState({ status: "disconnected" });
@@ -594,29 +605,42 @@ export function createChatStore(taskId: string) {
             });
           }
 
-          // Auto-reconnect: pi crashed mid-run. After a short delay, if nobody
-          // else has reconnected (restart(), manual action), resume the active
-          // session so the user doesn't have to restart the app. The sessionPath
-          // ensures pi reloads the full prior context via --session.
-          setTimeout(() => {
-            if (piStore().getState().status !== "disconnected") return; // already reconnected
-            void (async () => {
-              try {
-                // This task's own session — a background task must not be
-                // reconnected against the focused conversation's session file.
-                const target = getChatRecoveryTarget(taskId);
-                if (!target) return;
-                useExtUi.getState().pushToast(t("agent.reconnecting"), "info", 4000);
-                await piStore().getState().connect({
-                  cwd: target.cwd,
-                  resumePath: target.resumePath,
-                  executionBinding: target.executionBinding,
-                });
-              } catch {
-                // auto-reconnect failed — user will need to restart manually
-              }
-            })();
-          }, 3000);
+          // Auto-reconnect is LOCAL-ONLY, deliberately.
+          //
+          // Locally, an exit means pi is gone, so resuming `sessionPath` is safe
+          // and saves the user a restart. Remotely it means only that the *ssh*
+          // child ended: the launcher kills pi by forwarding SIGHUP, which needs
+          // sshd to notice the dead peer first. Under a partition that can lag
+          // far behind this handler, so reconnecting here would start a second
+          // remote pi against the session file the first one still owns — the
+          // exact two-processes-one-file hazard the local path avoids by
+          // resolving `resumePath` per task.
+          //
+          // Until a remote task has an identity and a confirmable state, the
+          // honest behaviour is to stop and say so. The error detail above
+          // already carries `remoteAgent.target.statusUnknown`; recovery is the
+          // user's explicit call via restart.
+          if (!isRemote) {
+            setTimeout(() => {
+              if (piStore().getState().status !== "disconnected") return; // already reconnected
+              void (async () => {
+                try {
+                  // This task's own session — a background task must not be
+                  // reconnected against the focused conversation's session file.
+                  const target = getChatRecoveryTarget(taskId);
+                  if (!target) return;
+                  useExtUi.getState().pushToast(t("agent.reconnecting"), "info", 4000);
+                  await piStore().getState().connect({
+                    cwd: target.cwd,
+                    resumePath: target.resumePath,
+                    executionBinding: target.executionBinding,
+                  });
+                } catch {
+                  // auto-reconnect failed — user will need to restart manually
+                }
+              })();
+            }, 3000);
+          }
         });
 
         client.on("message_update", (e: PiEvent) => {

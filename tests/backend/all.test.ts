@@ -11,6 +11,7 @@ import "./remote-contracts.test";
 import "./remote-profiles.test";
 import "./remote-provider-sync.test";
 import "./remote-workspace-guard.test";
+// remote-exit-recovery runs from isolated.test.ts — see the note there.
 import "./project-switch.test";
 import "./session-lifecycle.test";
 import "./session-pin.test";
