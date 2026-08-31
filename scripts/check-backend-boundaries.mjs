@@ -30,6 +30,15 @@ const EXPECTED_COMMAND_NAMES = [
   "remote_control_revoke_device", "remote_control_status", "remote_conversation_append",
   "remote_conversation_archive", "remote_conversation_cancel", "remote_conversation_get",
   "remote_conversation_messages", "remote_conversations_list",
+  // Remote Agent (SSH execution) shipped without updating this list, so the
+  // check was failing on a clean tree for reasons unrelated to any new change.
+  "remote_profile_check_draft", "remote_profile_delete",
+  "remote_profile_install_launcher", "remote_profile_preflight",
+  "remote_profile_save", "remote_profiles_list", "ssh_config_hosts",
+  // Remote provider sync: identifiers in, redacted previews out. Provider JSON
+  // and credentials stay behind these three commands.
+  "remote_provider_sync_apply", "remote_provider_sync_candidates",
+  "remote_provider_sync_prepare",
 ].sort();
 const EXPECTED_PI_EVENTS = ["pi://exit", "pi://line", "pi://stderr"];
 
@@ -54,9 +63,17 @@ export function collectBackendInventory(repoRoot = REPO_ROOT) {
       if (!file.startsWith(DESKTOP_DIR)) legacyTauriRefs.push(entry);
     }
 
-    for (const match of content.matchAll(
-      /desktopInvoke(?:<[^>]+>)?\s*\(\s*["']([^"']+)["']/g,
-    )) {
+    /*
+     * Outside the adapter directory `desktopInvoke` is the only legal spelling,
+     * and the leaked-literal rule below enforces that. Inside it, a command may
+     * also be reached through an injected `invoke` — DesktopPiProcessPort takes
+     * one so its tests can substitute a fake — which is how pi_start, pi_send,
+     * and pi_stop went missing from this inventory while still being called.
+     */
+    const commandCall = file.startsWith(DESKTOP_DIR)
+      ? /(?:desktopInvoke|invoke)(?:<[^>]+>)?\s*\(\s*["']([^"']+)["']/g
+      : /desktopInvoke(?:<[^>]+>)?\s*\(\s*["']([^"']+)["']/g;
+    for (const match of content.matchAll(commandCall)) {
       commandCalls.push({ file, command: match[1] });
     }
 

@@ -40,8 +40,10 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // 62 was stale before this suite could run: pet_window_prewarm had been
   // invoked since the pet feature landed without being added to the boundary
   // script's expected list, so the real count was already 63. app_quit makes 64.
-  // skills_cli (the `npx skills` bridge) makes 66, skills_search 67.
-  assert.equal(result.inventory.commandUniqueCount, 67);
+  // skills_cli (the `npx skills` bridge) makes 66, skills_search 67. Remote
+  // Agent's 7 (remote_profile_* and ssh_config_hosts) had the same drift and
+  // made 74; provider sync's 3 make 77.
+  assert.equal(result.inventory.commandUniqueCount, 77);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -112,6 +114,19 @@ test("locks the desktop command names and Pi process event names", () => {
     "remote_conversation_get",
     "remote_conversation_messages",
     "remote_conversations_list",
+    // Remote Agent (SSH execution): profile CRUD, launcher install, preflight,
+    // and ~/.ssh/config alias reading
+    "remote_profile_check_draft",
+    "remote_profile_delete",
+    "remote_profile_install_launcher",
+    "remote_profile_preflight",
+    "remote_profile_save",
+    "remote_profiles_list",
+    // provider sync — identifiers in, redacted previews out; provider JSON and
+    // credentials never cross the port
+    "remote_provider_sync_apply",
+    "remote_provider_sync_candidates",
+    "remote_provider_sync_prepare",
     "runtime_config_read",
     "runtime_config_write",
     // `npx skills …` — skill install/remove/update, allowlisted subcommands only
@@ -119,6 +134,7 @@ test("locks the desktop command names and Pi process event names", () => {
     // native catalogue search: skills.sh sends no CORS headers, so the webview
     // is not allowed to read the response
     "skills_search",
+    "ssh_config_hosts",
     "workspace_root",
     "wsl_list_distros",
     "wsl_runtime_validate",

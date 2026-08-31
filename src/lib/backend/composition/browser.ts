@@ -7,6 +7,7 @@ import { createMockPiProcessPort } from "../mock/pi-process";
 import { createMockProjectCatalogPort } from "../mock/project-catalog";
 import { mockProviderAuthPort } from "../mock/provider-auth";
 import { createMockRemoteControlPort } from "../mock/remote-control";
+import { mockRemoteProviderSyncPort } from "../mock/remote-provider-sync";
 import { createMockRemotePiProfilePort } from "../mock/remote-profiles";
 import { mockRemoteConversationsPort } from "../mock/remote-conversations";
 import { createMockRuntimeConfigPort } from "../mock/runtime-config";
@@ -25,6 +26,7 @@ export function createBrowserBackendPorts(): BackendPorts {
     createPiProcess: (taskId) => createMockPiProcessPort(taskId),
     sessionRepository: createMockSessionRepositoryPort(),
     remoteProfiles: createMockRemotePiProfilePort(),
+    remoteProviderSync: mockRemoteProviderSyncPort,
     workspaceFs: createMockWorkspaceFsPort(),
     projectCatalog: createMockProjectCatalogPort(),
     providerAuth: mockProviderAuthPort,

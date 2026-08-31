@@ -44,7 +44,8 @@ interface PiStartResult {
 }
 
 type PendingEvent =
-  | { kind: "line" | "stderr"; payload: PiLineEventPayload }
+  | { kind: "line"; payload: PiLineEventPayload }
+  | { kind: "stderr"; payload: PiLineEventPayload }
   | { kind: "exit"; payload: PiExitEventPayload };
 
 function isLinePayload(value: unknown): value is PiLineEventPayload {

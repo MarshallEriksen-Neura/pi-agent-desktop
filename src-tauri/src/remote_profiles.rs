@@ -519,6 +519,16 @@ fn ssh_spec_for(
         .arg(shell_quote(payload_base64))
 }
 
+pub(crate) fn ssh_provider_sync_spec(profile: &RemotePiProfile) -> LaunchSpec {
+    let mut spec = LaunchSpec::new("ssh");
+    for &argument in ssh_options() {
+        spec = spec.arg(argument);
+    }
+    spec.arg(profile.ssh_host.clone())
+        .arg(shell_quote(&profile.launcher_path))
+        .arg("--provider-sync")
+}
+
 fn ssh_options() -> &'static [&'static str] {
     &[
         "-T",
@@ -553,7 +563,7 @@ fn ssh_options() -> &'static [&'static str] {
 
 /// Quote one remote-shell argument. The local process still uses argv; this is
 /// needed because OpenSSH joins command arguments before sending them remotely.
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
@@ -846,6 +856,14 @@ fn classify_transport_failure(
         return (CHECK_LAUNCHER, code, described());
     }
     (CHECK_SSH, "ssh_failed", described())
+}
+
+pub(crate) fn ssh_transport_error_code(
+    exit_code: Option<i32>,
+    stderr: &str,
+    launcher_path: &str,
+) -> &'static str {
+    classify_transport_failure(exit_code, stderr, launcher_path).1
 }
 
 /// Maps a launcher-reported `errorCode` onto the row that owns it.

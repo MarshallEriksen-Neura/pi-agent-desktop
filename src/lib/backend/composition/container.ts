@@ -10,6 +10,7 @@ import type {
   RemoteControlPort,
   RemoteConversationsPort,
   RemotePiProfilePort,
+  RemoteProviderSyncPort,
   RuntimeConfigPort,
   SessionRepositoryPort,
   UpdaterPort,
@@ -30,6 +31,7 @@ export interface BackendPorts {
   remoteControl: RemoteControlPort;
   remoteConversations: RemoteConversationsPort;
   remoteProfiles: RemotePiProfilePort;
+  remoteProviderSync: RemoteProviderSyncPort;
   runtimeConfig: RuntimeConfigPort;
   piConfiguration: PiConfigurationPort;
   window: WindowPort;

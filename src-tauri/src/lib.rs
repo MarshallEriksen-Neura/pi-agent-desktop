@@ -10,6 +10,7 @@ mod projects;
 mod provider_auth;
 mod remote_control;
 mod remote_profiles;
+mod remote_provider_sync;
 mod skills_cli;
 mod updater;
 mod wsl;
@@ -329,6 +330,7 @@ pub fn run() {
         .manage(BackendLifecycle::default())
         .manage(RemoteControlState::default())
         .manage(provider_auth::ProviderAuthState::default())
+        .manage(remote_provider_sync::RemoteProviderSyncState::default())
         .manage(chat_store::ChatDb::default())
         .invoke_handler(tauri::generate_handler![
             chat_store::chat_sessions_list,
@@ -347,6 +349,9 @@ pub fn run() {
             remote_profiles::remote_profile_check_draft,
             remote_profiles::remote_profile_install_launcher,
             remote_profiles::ssh_config_hosts,
+            remote_provider_sync::remote_provider_sync_candidates,
+            remote_provider_sync::remote_provider_sync_prepare,
+            remote_provider_sync::remote_provider_sync_apply,
             fs_bridge::workspace_root,
             fs_bridge::fs_list_dir,
             fs_bridge::fs_read_file,

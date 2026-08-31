@@ -10,6 +10,18 @@ export type {
   RemoteReadinessStatus,
 } from "./execution-target";
 export type { RemotePiProfilePort } from "./remote-profiles";
+export type {
+  AppliedProviderSyncProvider,
+  PreparedProviderSync,
+  PreparedProviderSyncProvider,
+  ProviderCredentialAction,
+  ProviderCredentialSource,
+  ProviderSyncBlockedReason,
+  ProviderSyncCandidate,
+  ProviderSyncResult,
+  ProviderSyncWarningCode,
+  RemoteProviderSyncPort,
+} from "./remote-provider-sync";
 export type { ExternalNavigationPort } from "./external-navigation";
 export type { NotificationPort, ShowNotificationInput } from "./notification";
 export type {

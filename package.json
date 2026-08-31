@@ -16,6 +16,7 @@
     "start": "next start",
     "lint": "next lint",
     "test:backend": "node scripts/run-backend-tests.mjs",
+    "test:provider-sync": "node --test remote-launcher/test-provider-sync.mjs",
     "test:remote-control-stage0": "node scripts/run-remote-control-stage0.mjs",
     "test:remote-control-stage1": "node scripts/run-remote-control-stage1.mjs",
     "test:remote-control-stage2": "node scripts/run-remote-control-stage2.mjs",

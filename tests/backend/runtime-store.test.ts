@@ -8,6 +8,8 @@ import {
 import type { RuntimeConfigPort } from "../../src/lib/backend/ports/runtime-config";
 import type { RemoteControlPort } from "../../src/lib/backend/ports/remote-control";
 import type { RemoteConversationsPort } from "../../src/lib/backend/ports/remote-conversations";
+import type { RemotePiProfilePort } from "../../src/lib/backend/ports/remote-profiles";
+import type { RemoteProviderSyncPort } from "../../src/lib/backend/ports/remote-provider-sync";
 import { resetRuntimeStoreForTests, useRuntime } from "../../src/lib/pi/runtime";
 import { unreachablePort } from "./fixtures/unreachable-port";
 
@@ -151,6 +153,8 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
     // this test only drives runtimeConfig — see fixtures/unreachable-port
     remoteControl: unreachablePort<RemoteControlPort>("remoteControl"),
     remoteConversations: unreachablePort<RemoteConversationsPort>("remoteConversations"),
+    remoteProfiles: unreachablePort<RemotePiProfilePort>("remoteProfiles"),
+    remoteProviderSync: unreachablePort<RemoteProviderSyncPort>("remoteProviderSync"),
   };
 }
 

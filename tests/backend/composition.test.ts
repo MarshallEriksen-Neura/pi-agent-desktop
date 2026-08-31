@@ -15,6 +15,8 @@ import {
 } from "../../src/lib/backend/desktop/invoke";
 import type { RemoteControlPort } from "../../src/lib/backend/ports/remote-control";
 import type { RemoteConversationsPort } from "../../src/lib/backend/ports/remote-conversations";
+import type { RemotePiProfilePort } from "../../src/lib/backend/ports/remote-profiles";
+import type { RemoteProviderSyncPort } from "../../src/lib/backend/ports/remote-provider-sync";
 import { unreachablePort } from "./fixtures/unreachable-port";
 
 function fakePorts(label = "fake"): BackendPorts {
@@ -166,6 +168,8 @@ function fakePorts(label = "fake"): BackendPorts {
        future test pass against a fake that proves nothing. */
     remoteControl: unreachablePort<RemoteControlPort>("remoteControl"),
     remoteConversations: unreachablePort<RemoteConversationsPort>("remoteConversations"),
+    remoteProfiles: unreachablePort<RemotePiProfilePort>("remoteProfiles"),
+    remoteProviderSync: unreachablePort<RemoteProviderSyncPort>("remoteProviderSync"),
   } satisfies BackendPorts;
 }
 

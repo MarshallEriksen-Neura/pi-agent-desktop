@@ -11,6 +11,7 @@ import { getBackendKind } from "../backend/composition/container";
 import { getActiveTaskId, useTaskContext } from "./task-context";
 import { DEFAULT_TASK_ID } from "../backend/ports/pi-process";
 import type { ExecutionBinding } from "../backend/ports/execution-target";
+import { getChatRecoveryTarget } from "../orchestration/chat-recovery";
 
 // Re-export so `usePiSettings` resolves whether imported from here or from
 // "@/lib/pi/settings" — guards against stale bundler graphs.

@@ -34,6 +34,7 @@ import type {
   RemoteReadinessReport,
 } from "@/lib/backend/ports/execution-target";
 import { t } from "@/lib/i18n";
+import { ProviderSyncSettings } from "./ProviderSyncSettings";
 import { GroupRow, InsetGroup } from "./settings-ui";
 
 /**
@@ -361,7 +362,6 @@ export function RemoteAgentSettings() {
             placeholder={host ? nameFromHost(host) : t("settings.remoteAgent.namePlaceholder")}
             onChange={(value) => update("name", value)}
           />
-
           <Disclosure
             open={advanced}
             label={t("settings.remoteAgent.advanced")}
@@ -439,6 +439,8 @@ export function RemoteAgentSettings() {
           </div>
         </div>
       </InsetGroup>
+
+      <ProviderSyncSettings profiles={profiles} />
     </>
   );
 }

@@ -9,6 +9,7 @@ import "./composition.test";
 import "./chat-recovery.test";
 import "./remote-contracts.test";
 import "./remote-profiles.test";
+import "./remote-provider-sync.test";
 import "./remote-workspace-guard.test";
 import "./project-switch.test";
 import "./session-lifecycle.test";

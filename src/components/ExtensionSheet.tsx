@@ -141,13 +141,27 @@ function SheetBody({ req }: { req: QueuedExtRequest }) {
           arrives here as its own prompt, which is why an input appeared under
           the options: it was the second request, not part of this one. */}
       {req.method === "select" && (
-        <div style={{ padding: "10px 10px 6px" }}>
+        /* Capped and scrollable: options that now wrap are several lines each,
+           and a question with many of them would otherwise push the actions off
+           screen — DialogContent is `max-h-full overflow-hidden`, so the growth
+           has nowhere to go and the Cancel button becomes unreachable. */
+        <div style={{ padding: "10px 10px 6px", maxHeight: "52vh", overflowY: "auto" }}>
           {(req.options ?? []).map((opt) => (
             <Button
               key={opt}
               variant="ghost"
               onClick={() => respond(req, { value: opt })}
-              className="w-full justify-start"
+              /* Options are extension-authored prose, not short labels: plan-mode
+                 questions arrive as a full sentence per choice. Appica's button
+                 base is `whitespace-nowrap` at a fixed `h-10`, and the dialog
+                 clips overflow — so a long option was cut off mid-word with no
+                 ellipsis to even hint text was missing, leaving the user to pick
+                 between answers they could not read. Wrap and grow instead:
+                 `h-auto` plus explicit vertical padding replaces the fixed row
+                 height, `text-left` keeps the second line aligned with the
+                 first, and `break-words` covers an unbroken token wider than the
+                 sheet (a URL or path), which wrapping alone would still spill. */
+              className="h-auto w-full justify-start py-2.5 text-left leading-snug break-words whitespace-normal"
               style={{ color: "var(--accent)", fontSize: 13.5 }}
             >
               {opt}

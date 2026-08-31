@@ -147,7 +147,7 @@ export class PiClient {
     dispatchAnyTask(this.taskId, ev);
   }
 
-  async start(opts: { cwd?: string; resumePath?: string } = {}) {
+  async start(opts: { cwd?: string; resumePath?: string; executionBinding?: ExecutionBinding } = {}) {
     if (this.started) return;
     await this.process.start(opts);
     this.started = true;

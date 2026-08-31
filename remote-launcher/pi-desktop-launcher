@@ -5,22 +5,28 @@ set -eu
 
 mode=${1:-}
 payload=${2:-}
-if [ "$mode" != "--run" ] && [ "$mode" != "--preflight" ]; then
+if [ "$mode" = "--provider-sync" ]; then
+  if [ "$#" -ne 1 ]; then
+    printf '%s\n' 'provider_sync_invalid_arguments' >&2
+    exit 64
+  fi
+  decoded=""
+elif [ "$mode" = "--run" ] || [ "$mode" = "--preflight" ]; then
+  if [ "$#" -ne 2 ] || [ -z "$payload" ]; then
+    printf '%s\n' 'missing launcher payload' >&2
+    exit 64
+  fi
+  if decoded=$(printf '%s' "$payload" | base64 -d 2>/dev/null); then
+    :
+  elif decoded=$(printf '%s' "$payload" | base64 -D 2>/dev/null); then
+    :
+  else
+    printf '%s\n' 'invalid launcher payload encoding' >&2
+    exit 65
+  fi
+else
   printf '%s\n' 'invalid launcher mode' >&2
   exit 64
-fi
-if [ -z "$payload" ]; then
-  printf '%s\n' 'missing launcher payload' >&2
-  exit 64
-fi
-
-if decoded=$(printf '%s' "$payload" | base64 -d 2>/dev/null); then
-  :
-elif decoded=$(printf '%s' "$payload" | base64 -D 2>/dev/null); then
-  :
-else
-  printf '%s\n' 'invalid launcher payload encoding' >&2
-  exit 65
 fi
 
 # `ssh host command` runs a NON-interactive, non-login shell: it reads only
@@ -67,11 +73,483 @@ fi
 
 export PI_DESKTOP_LAUNCHER_PAYLOAD="$decoded"
 export PI_DESKTOP_LAUNCHER_MODE="$mode"
-exec node -e '
+exec node -e 'eval(require("node:fs").readFileSync(3, "utf8"))' 3<<'__PI_DESKTOP_NODE__'
 const { spawn } = require("node:child_process");
 
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 const MAX_DIAGNOSTIC_BYTES = 16 * 1024;
+const MAX_PROVIDER_SYNC_BYTES = 2 * 1024 * 1024;
+const MAX_PROVIDER_SYNC_PROVIDERS = 64;
+const MAX_PROVIDER_SYNC_MODELS = 512;
+const MAX_PROVIDER_SYNC_DEPTH = 16;
+const MAX_PROVIDER_SYNC_NODES = 50_000;
+const MAX_PROVIDER_SYNC_STRING_BYTES = 64 * 1024;
+
+function providerSyncFail(errorCode) {
+  process.stderr.write("provider_sync_failed\n");
+  process.stdout.write(`${JSON.stringify({ ok: false, errorCode })}\n`);
+  process.exit(0);
+}
+
+function runProviderSync() {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const os = require("node:os");
+  const piDir = path.join(os.homedir(), ".pi");
+  const agentDir = path.join(piDir, "agent");
+  const modelsPath = path.join(agentDir, "models.json");
+  const authPath = path.join(agentDir, "auth.json");
+  const lockPath = path.join(agentDir, ".provider-sync.lock");
+  const lockOwnerPath = path.join(lockPath, "owner.json");
+  const journalPath = path.join(agentDir, ".provider-sync.journal.json");
+  const waitArray = new Int32Array(new SharedArrayBuffer(4));
+  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+  const sleep = (milliseconds) => Atomics.wait(waitArray, 0, 0, milliseconds);
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const hasOnlyKeys = (value, allowed) => isObject(value) && Object.keys(value).every((key) => allowed.includes(key));
+  const validId = (value) => typeof value === "string" && value.length > 0 &&
+    Buffer.byteLength(value) <= 128 && !/[\u0000-\u001f\u007f]/.test(value) &&
+    !["__proto__", "prototype", "constructor"].includes(value);
+  const isEnvName = (value) => typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,255}$/.test(value);
+  const isEnv = (value) => typeof value === "string" &&
+    (/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(value) || /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value));
+  const assertNotSymlink = (target) => {
+    try {
+      if (fs.lstatSync(target).isSymbolicLink()) providerSyncFail("remoteConfigSymlinkRejected");
+    } catch (error) {
+      if (error?.code !== "ENOENT") providerSyncFail("remoteWriteFailed");
+    }
+  };
+  const readStdin = () => {
+    const chunks = [];
+    let size = 0;
+    const buffer = Buffer.alloc(64 * 1024);
+    for (;;) {
+      const count = fs.readSync(0, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      size += count;
+      if (size > MAX_PROVIDER_SYNC_BYTES) providerSyncFail("syncPayloadTooLarge");
+      chunks.push(Buffer.from(buffer.subarray(0, count)));
+    }
+    return Buffer.concat(chunks, size);
+  };
+  const readObject = (target, errorCode) => {
+    assertNotSymlink(target);
+    let fd;
+    try {
+      fd = fs.openSync(target, fs.constants.O_RDONLY | noFollow);
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.size > MAX_PROVIDER_SYNC_BYTES) providerSyncFail(errorCode);
+      const value = JSON.parse(fs.readFileSync(fd, "utf8"));
+      if (!isObject(value)) providerSyncFail(errorCode);
+      return value;
+    } catch (error) {
+      if (error?.code === "ENOENT") return {};
+      providerSyncFail(errorCode);
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  };
+  const safeRemove = (target) => {
+    try { fs.unlinkSync(target); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+  };
+  const fsyncDirectory = () => {
+    // Windows cannot open/fsync directories; provider-sync runs remotely on
+    // POSIX hosts, but this keeps the native launcher harness executable.
+    if (process.platform === "win32") return;
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY ?? 0);
+    const fd = fs.openSync(agentDir, flags);
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  };
+  const writeSecure = (target, value, exclusive = false) => {
+    assertNotSymlink(target);
+    const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+    if (bytes.length > MAX_PROVIDER_SYNC_BYTES) providerSyncFail("syncPayloadTooLarge");
+    const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | noFollow |
+      (exclusive ? fs.constants.O_EXCL : fs.constants.O_TRUNC);
+    const fd = fs.openSync(target, flags, 0o600);
+    try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); fs.fchmodSync(fd, 0o600); } finally { fs.closeSync(fd); }
+  };
+  const copySecure = (source, destination) => {
+    assertNotSymlink(source); assertNotSymlink(destination);
+    let sourceFd;
+    try {
+      sourceFd = fs.openSync(source, fs.constants.O_RDONLY | noFollow);
+      const stat = fs.fstatSync(sourceFd);
+      if (!stat.isFile() || stat.size > MAX_PROVIDER_SYNC_BYTES) providerSyncFail("remoteWriteFailed");
+      const bytes = fs.readFileSync(sourceFd);
+      const destinationFd = fs.openSync(
+        destination,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow,
+        0o600,
+      );
+      try { fs.writeFileSync(destinationFd, bytes); fs.fsyncSync(destinationFd); fs.fchmodSync(destinationFd, 0o600); }
+      finally { fs.closeSync(destinationFd); }
+    } finally {
+      if (sourceFd !== undefined) fs.closeSync(sourceFd);
+    }
+  };
+  const validArtifact = (name) => typeof name === "string" && /^\.provider-sync-[a-f0-9]{24}-(models|auth)\.(tmp|bak)$/.test(name);
+  const cleanupOrphans = () => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    let names;
+    try { names = fs.readdirSync(agentDir); } catch { providerSyncFail("remoteRecoveryRequired"); }
+    for (const name of names) {
+      if (!validArtifact(name)) continue;
+      const target = path.join(agentDir, name);
+      assertNotSymlink(target);
+      try {
+        if (fs.statSync(target).mtimeMs < cutoff) safeRemove(target);
+      } catch (error) {
+        if (error?.code !== "ENOENT") providerSyncFail("remoteRecoveryRequired");
+      }
+    }
+  };
+  const recover = () => {
+    assertNotSymlink(journalPath);
+    if (!fs.existsSync(journalPath)) return;
+    let journal;
+    try { journal = readObject(journalPath, "remoteRecoveryRequired"); }
+    catch { providerSyncFail("remoteRecoveryRequired"); }
+    if (!isObject(journal) || !validArtifact(journal.modelsTemp) || !validArtifact(journal.authTemp) ||
+        !validArtifact(journal.modelsBackup) || !validArtifact(journal.authBackup) ||
+        typeof journal.modelsExisted !== "boolean" || typeof journal.authExisted !== "boolean") {
+      providerSyncFail("remoteRecoveryRequired");
+    }
+    const modelsBackup = path.join(agentDir, journal.modelsBackup);
+    const authBackup = path.join(agentDir, journal.authBackup);
+    const modelsTemp = path.join(agentDir, journal.modelsTemp);
+    const authTemp = path.join(agentDir, journal.authTemp);
+    for (const target of [modelsBackup, authBackup, modelsTemp, authTemp]) assertNotSymlink(target);
+    try {
+      // Restore through the journal-owned temp names and keep backups intact
+      // until both files are back. Recovery is therefore safe to repeat if the
+      // process is interrupted between restoring models.json and auth.json.
+      if (journal.modelsExisted) {
+        if (!fs.existsSync(modelsBackup)) providerSyncFail("remoteRecoveryRequired");
+        safeRemove(modelsTemp);
+        copySecure(modelsBackup, modelsTemp);
+        fs.renameSync(modelsTemp, modelsPath);
+        fsyncDirectory();
+      } else {
+        safeRemove(modelsPath);
+        fsyncDirectory();
+      }
+      if (journal.authExisted) {
+        if (!fs.existsSync(authBackup)) providerSyncFail("remoteRecoveryRequired");
+        safeRemove(authTemp);
+        copySecure(authBackup, authTemp);
+        fs.renameSync(authTemp, authPath);
+        fsyncDirectory();
+      } else {
+        safeRemove(authPath);
+        fsyncDirectory();
+      }
+      safeRemove(modelsTemp); safeRemove(authTemp); safeRemove(modelsBackup); safeRemove(authBackup);
+      safeRemove(journalPath); fsyncDirectory();
+    } catch { providerSyncFail("remoteRollbackFailed"); }
+  };
+  const safeKey = (value) => typeof value === "string" && Buffer.byteLength(value) <= 128 &&
+    !/[\u0000-\u001f\u007f]/.test(value) && !["__proto__", "prototype", "constructor"].includes(value);
+  const boundedJson = (value, depth = 0, state = { nodes: 0 }) => {
+    state.nodes += 1;
+    if (depth > MAX_PROVIDER_SYNC_DEPTH || state.nodes > MAX_PROVIDER_SYNC_NODES) return false;
+    if (value === null || typeof value === "boolean") return true;
+    if (typeof value === "number") return Number.isFinite(value);
+    if (typeof value === "string") return Buffer.byteLength(value) <= MAX_PROVIDER_SYNC_STRING_BYTES;
+    if (Array.isArray(value)) return value.length <= MAX_PROVIDER_SYNC_MODELS &&
+      value.every((item) => boundedJson(item, depth + 1, state));
+    if (!isObject(value) || Object.keys(value).length > MAX_PROVIDER_SYNC_MODELS) return false;
+    return Object.entries(value).every(([key, item]) => safeKey(key) && boundedJson(item, depth + 1, state));
+  };
+  const inspectHeaders = (headers) => {
+    if (headers === undefined) return;
+    if (!isObject(headers) || Object.keys(headers).length > MAX_PROVIDER_SYNC_MODELS) providerSyncFail("syncPayloadInvalid");
+    for (const [name, value] of Object.entries(headers)) {
+      if (!safeKey(name) || name.length === 0 || typeof value !== "string" ||
+          Buffer.byteLength(value) > MAX_PROVIDER_SYNC_STRING_BYTES) providerSyncFail("syncPayloadInvalid");
+      if (value.startsWith("!")) providerSyncFail("commandHeaderUnsupported");
+    }
+  };
+  const finiteNumber = (value) => typeof value === "number" && Number.isFinite(value);
+  const optional = (object, key, predicate) => object[key] === undefined || predicate(object[key]);
+  const stringArray = (value) => Array.isArray(value) && value.length <= MAX_PROVIDER_SYNC_MODELS &&
+    value.every((item) => typeof item === "string" && Buffer.byteLength(item) <= MAX_PROVIDER_SYNC_STRING_BYTES);
+  const validateThinkingMap = (value) => isObject(value) &&
+    hasOnlyKeys(value, ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) &&
+    Object.values(value).every((item) => item === null || typeof item === "string");
+  const validateCost = (value, override) => {
+    if (!isObject(value) || !hasOnlyKeys(value, ["input", "output", "cacheRead", "cacheWrite", "tiers"])) return false;
+    const names = ["input", "output", "cacheRead", "cacheWrite"];
+    if (!names.every((name) => override ? optional(value, name, finiteNumber) : finiteNumber(value[name]))) return false;
+    return optional(value, "tiers", (tiers) => Array.isArray(tiers) && tiers.length <= MAX_PROVIDER_SYNC_MODELS &&
+      tiers.every((tier) => isObject(tier) &&
+        hasOnlyKeys(tier, [...names, "inputTokensAbove"]) &&
+        [...names, "inputTokensAbove"].every((name) => finiteNumber(tier[name]))));
+  };
+  const validateTemplateRecord = (value) => isObject(value) && Object.entries(value).every(([key, item]) => {
+    if (!safeKey(key)) return false;
+    if (item === null || ["string", "number", "boolean"].includes(typeof item)) return typeof item !== "number" || finiteNumber(item);
+    return isObject(item) && hasOnlyKeys(item, ["$var", "omitWhenOff"]) &&
+      ["thinking.enabled", "thinking.effort"].includes(item.$var) && optional(item, "omitWhenOff", (flag) => typeof flag === "boolean");
+  });
+  const validatePercentiles = (value) => isObject(value) && hasOnlyKeys(value, ["p50", "p75", "p90", "p99"]) &&
+    Object.values(value).every(finiteNumber);
+  const validateRouting = (value) => {
+    const keys = ["allow_fallbacks", "require_parameters", "data_collection", "zdr", "enforce_distillable_text",
+      "order", "only", "ignore", "quantizations", "sort", "max_price", "preferred_min_throughput", "preferred_max_latency"];
+    if (!isObject(value) || !hasOnlyKeys(value, keys)) return false;
+    for (const key of ["allow_fallbacks", "require_parameters", "zdr", "enforce_distillable_text"])
+      if (!optional(value, key, (item) => typeof item === "boolean")) return false;
+    if (!optional(value, "data_collection", (item) => ["deny", "allow"].includes(item))) return false;
+    for (const key of ["order", "only", "ignore", "quantizations"]) if (!optional(value, key, stringArray)) return false;
+    if (!optional(value, "sort", (item) => typeof item === "string" ||
+      (isObject(item) && hasOnlyKeys(item, ["by", "partition"]) && optional(item, "by", (part) => typeof part === "string") &&
+       optional(item, "partition", (part) => part === null || typeof part === "string")))) return false;
+    if (!optional(value, "max_price", (item) => isObject(item) &&
+      hasOnlyKeys(item, ["prompt", "completion", "image", "audio", "request"]) &&
+      Object.values(item).every((part) => finiteNumber(part) || typeof part === "string"))) return false;
+    for (const key of ["preferred_min_throughput", "preferred_max_latency"])
+      if (!optional(value, key, (item) => finiteNumber(item) || validatePercentiles(item))) return false;
+    return true;
+  };
+  const validateCompat = (value) => {
+    const booleanKeys = ["supportsStore", "supportsDeveloperRole", "supportsReasoningEffort", "supportsUsageInStreaming",
+      "supportsFinishReason", "requiresToolResultName", "requiresAssistantAfterToolResult", "requiresThinkingAsText",
+      "requiresReasoningContentOnAssistantMessages", "supportsOpenAIGrammarTools", "supportsStrictMode",
+      "sendSessionAffinityHeaders", "supportsLongCacheRetention", "supportsAdditionalTools", "supportsToolSearch",
+      "supportsEagerToolInputStreaming", "supportsCacheControlOnTools", "supportsTemperature", "forceAdaptiveThinking",
+      "allowEmptySignature", "supportsStrictTools", "supportsToolReferences"];
+    const keys = [...booleanKeys, "maxTokensField", "thinkingFormat", "chatTemplateKwargs", "chatTemplateArgs",
+      "cacheControlFormat", "openRouterRouting", "vercelGatewayRouting", "deferredToolsMode", "sessionAffinityFormat"];
+    if (!isObject(value) || !hasOnlyKeys(value, keys)) return false;
+    if (!booleanKeys.every((key) => optional(value, key, (item) => typeof item === "boolean"))) return false;
+    if (!optional(value, "maxTokensField", (item) => ["max_completion_tokens", "max_tokens"].includes(item))) return false;
+    if (!optional(value, "thinkingFormat", (item) => ["openai", "openrouter", "together", "baseten", "deepseek", "zai",
+      "qwen", "chat-template", "qwen-chat-template", "string-thinking", "ant-ling"].includes(item))) return false;
+    if (!optional(value, "chatTemplateKwargs", validateTemplateRecord) || !optional(value, "chatTemplateArgs", validateTemplateRecord)) return false;
+    if (!optional(value, "cacheControlFormat", (item) => item === "anthropic") ||
+        !optional(value, "openRouterRouting", validateRouting) ||
+        !optional(value, "vercelGatewayRouting", (item) => isObject(item) && hasOnlyKeys(item, ["only", "order"]) &&
+          optional(item, "only", stringArray) && optional(item, "order", stringArray)) ||
+        !optional(value, "deferredToolsMode", (item) => item === "kimi") ||
+        !optional(value, "sessionAffinityFormat", (item) => ["openai", "openai-nosession", "openrouter"].includes(item))) return false;
+    return true;
+  };
+  const validateModel = (model, override) => {
+    if (!optional(model, "name", (value) => typeof value === "string") ||
+        (!override && (!optional(model, "api", (value) => typeof value === "string") ||
+          !optional(model, "baseUrl", (value) => typeof value === "string"))) ||
+        !optional(model, "reasoning", (value) => typeof value === "boolean") ||
+        !optional(model, "thinkingLevelMap", validateThinkingMap) ||
+        !optional(model, "input", (value) => Array.isArray(value) && value.length <= 2 && value.every((item) => ["text", "image"].includes(item))) ||
+        !optional(model, "cost", (value) => validateCost(value, override)) ||
+        !optional(model, "contextWindow", finiteNumber) || !optional(model, "maxTokens", finiteNumber) ||
+        !optional(model, "samplingParams", isObject) || !optional(model, "compat", validateCompat)) return false;
+    inspectHeaders(model.headers);
+    return true;
+  };
+  const validateDefinition = (definition) => {
+    const providerKeys = ["name", "baseUrl", "api", "oauth", "headers", "compat", "authHeader", "models", "modelOverrides"];
+    const modelKeys = ["id", "name", "api", "baseUrl", "reasoning", "thinkingLevelMap", "input", "cost",
+      "contextWindow", "maxTokens", "samplingParams", "headers", "compat"];
+    const overrideKeys = ["name", "reasoning", "thinkingLevelMap", "input", "cost", "contextWindow",
+      "maxTokens", "samplingParams", "headers", "compat"];
+    if (!hasOnlyKeys(definition, providerKeys) || !boundedJson(definition) ||
+        !Array.isArray(definition.models) || definition.models.length > MAX_PROVIDER_SYNC_MODELS) providerSyncFail("syncPayloadInvalid");
+    if (!optional(definition, "name", (value) => typeof value === "string") ||
+        !optional(definition, "baseUrl", (value) => typeof value === "string") ||
+        !optional(definition, "api", (value) => typeof value === "string") ||
+        !optional(definition, "authHeader", (value) => typeof value === "boolean") ||
+        !optional(definition, "oauth", (value) => value === "radius") ||
+        !optional(definition, "compat", validateCompat)) providerSyncFail("syncPayloadInvalid");
+    inspectHeaders(definition.headers);
+    const modelIds = new Set();
+    for (const model of definition.models) {
+      if (!hasOnlyKeys(model, modelKeys) || !validId(model.id) || modelIds.has(model.id) || !validateModel(model, false)) providerSyncFail("syncPayloadInvalid");
+      modelIds.add(model.id);
+    }
+    if (definition.modelOverrides !== undefined) {
+      if (!isObject(definition.modelOverrides) || Object.keys(definition.modelOverrides).length > MAX_PROVIDER_SYNC_MODELS) providerSyncFail("syncPayloadInvalid");
+      for (const [modelId, model] of Object.entries(definition.modelOverrides)) {
+        if (!validId(modelId) || !hasOnlyKeys(model, overrideKeys) || !validateModel(model, true)) providerSyncFail("syncPayloadInvalid");
+      }
+    }
+  };
+  const validateCredential = (credential) => {
+    if (credential === null || credential === undefined) return;
+    if (!hasOnlyKeys(credential, ["type", "key"]) || credential.type !== "api_key" ||
+        typeof credential.key !== "string") providerSyncFail("syncPayloadInvalid");
+    if (credential.key.startsWith("!")) providerSyncFail("commandCredentialUnsupported");
+  };
+
+  let request;
+  try { request = JSON.parse(readStdin().toString("utf8")); } catch { providerSyncFail("syncPayloadInvalid"); }
+  if (!isObject(request) || request.providerSyncProtocolVersion !== 1 ||
+      !["inspect", "apply"].includes(request.action)) providerSyncFail("syncProtocolUnsupported");
+  const requestKeys = request.action === "inspect"
+    ? ["providerSyncProtocolVersion", "action", "providerIds"]
+    : ["providerSyncProtocolVersion", "action", "providers"];
+  if (!hasOnlyKeys(request, requestKeys)) providerSyncFail("syncPayloadInvalid");
+  for (const target of [piDir, agentDir]) assertNotSymlink(target);
+  try {
+    fs.mkdirSync(piDir, { recursive: true, mode: 0o700 });
+    assertNotSymlink(piDir);
+    fs.mkdirSync(agentDir, { mode: 0o700 });
+    assertNotSymlink(agentDir);
+  } catch (error) {
+    if (error?.code !== "EEXIST") providerSyncFail("remoteWriteFailed");
+  }
+  for (const target of [modelsPath, authPath, lockPath, journalPath]) assertNotSymlink(target);
+
+  const validateExistingCredential = (authRoot, providerId, provider) => {
+    if (Object.hasOwn(authRoot, providerId)) {
+      const credential = authRoot[providerId];
+      if (!isObject(credential) || !boundedJson(credential)) providerSyncFail("remoteAuthInvalid");
+      if (credential.type === "api_key") {
+        const keyValid = optional(credential, "key", (value) => typeof value === "string" && value.length > 0);
+        const envValid = optional(credential, "env", (value) => isObject(value) &&
+          Object.keys(value).length > 0 && Object.keys(value).length <= MAX_PROVIDER_SYNC_MODELS &&
+          Object.entries(value).every(([key, item]) => isEnvName(key) &&
+            typeof item === "string" && item.length > 0 && Buffer.byteLength(item) <= MAX_PROVIDER_SYNC_STRING_BYTES));
+        if (!hasOnlyKeys(credential, ["type", "key", "env"]) || !keyValid || !envValid ||
+            (!Object.hasOwn(credential, "key") && !Object.hasOwn(credential, "env"))) providerSyncFail("remoteAuthInvalid");
+      } else if (credential.type === "oauth") {
+        if (typeof credential.refresh !== "string" || typeof credential.access !== "string" || !finiteNumber(credential.expires)) providerSyncFail("remoteAuthInvalid");
+      } else providerSyncFail("remoteAuthInvalid");
+    }
+    if (isObject(provider) && Object.hasOwn(provider, "apiKey") && typeof provider.apiKey !== "string") {
+      providerSyncFail("remoteModelsInvalid");
+    }
+  };
+
+  const staleLockCanBeRemoved = () => {
+    try {
+      if (!fs.statSync(lockPath).isDirectory()) return false;
+      assertNotSymlink(lockOwnerPath);
+      const owner = JSON.parse(fs.readFileSync(lockOwnerPath, "utf8"));
+      if (!hasOnlyKeys(owner, ["pid", "createdAt"]) || !Number.isSafeInteger(owner.pid) ||
+          !Number.isSafeInteger(owner.createdAt) || Date.now() - owner.createdAt < 10 * 60 * 1000) return false;
+      try { process.kill(owner.pid, 0); return false; }
+      catch (error) { if (error?.code === "EPERM") return false; }
+      safeRemove(lockOwnerPath);
+      fs.rmdirSync(lockPath);
+      return true;
+    } catch { return false; }
+  };
+  let locked = false;
+  let ownsLock = false;
+  const releaseLock = () => {
+    if (!ownsLock) return;
+    try { safeRemove(lockOwnerPath); } catch {}
+    try { fs.rmdirSync(lockPath); } catch {}
+    ownsLock = false;
+    locked = false;
+  };
+  process.once("exit", releaseLock);
+  const deadline = Date.now() + 5000;
+  while (!locked && Date.now() < deadline) {
+    try {
+      fs.mkdirSync(lockPath, { mode: 0o700 });
+      ownsLock = true;
+      writeSecure(lockOwnerPath, { pid: process.pid, createdAt: Date.now() }, true);
+      locked = true;
+    } catch (error) {
+      if (ownsLock) {
+        releaseLock();
+        providerSyncFail("remoteWriteFailed");
+      }
+      if (error?.code !== "EEXIST") providerSyncFail("remoteWriteFailed");
+      if (!staleLockCanBeRemoved()) sleep(50);
+    }
+  }
+  if (!locked) providerSyncFail("configLockTimeout");
+  try {
+    recover();
+    cleanupOrphans();
+    const modelsRoot = readObject(modelsPath, "remoteModelsInvalid");
+    const authRoot = readObject(authPath, "remoteAuthInvalid");
+    if (modelsRoot.providers === undefined) modelsRoot.providers = {};
+    if (!isObject(modelsRoot.providers)) providerSyncFail("remoteModelsInvalid");
+    if (request.action === "inspect") {
+      if (!Array.isArray(request.providerIds) || request.providerIds.length < 1 || request.providerIds.length > MAX_PROVIDER_SYNC_PROVIDERS) providerSyncFail("syncPayloadInvalid");
+      const seen = new Set();
+      const providers = request.providerIds.map((providerId) => {
+        if (!validId(providerId) || seen.has(providerId)) providerSyncFail("syncPayloadInvalid");
+        seen.add(providerId);
+        const current = modelsRoot.providers[providerId];
+        if (current !== undefined && !isObject(current)) providerSyncFail("remoteModelsInvalid");
+        validateExistingCredential(authRoot, providerId, current);
+        return {
+          providerId,
+          configExists: isObject(current),
+          authCredentialExists: Object.hasOwn(authRoot, providerId),
+          embeddedApiKeyExists: isObject(current) && Object.hasOwn(current, "apiKey"),
+        };
+      });
+      process.stdout.write(`${JSON.stringify({ ok: true, providers })}\n`);
+      process.exit(0);
+    }
+    if (!Array.isArray(request.providers) || request.providers.length < 1 || request.providers.length > MAX_PROVIDER_SYNC_PROVIDERS) providerSyncFail("syncPayloadInvalid");
+    const seen = new Set();
+    const results = [];
+    for (const item of request.providers) {
+      if (!hasOnlyKeys(item, ["providerId", "definition", "credential"]) ||
+          !validId(item.providerId) || seen.has(item.providerId)) providerSyncFail("syncPayloadInvalid");
+      seen.add(item.providerId); validateDefinition(item.definition); validateCredential(item.credential);
+      const existing = modelsRoot.providers[item.providerId];
+      if (existing !== undefined && !isObject(existing)) providerSyncFail("remoteModelsInvalid");
+      validateExistingCredential(authRoot, item.providerId, existing);
+      const hasEmbedded = isObject(existing) && Object.hasOwn(existing, "apiKey");
+      const hasAuth = Object.hasOwn(authRoot, item.providerId);
+      const nextDefinition = JSON.parse(JSON.stringify(item.definition));
+      if (hasEmbedded) nextDefinition.apiKey = existing.apiKey;
+      modelsRoot.providers[item.providerId] = nextDefinition;
+      let credentialAction = "noCredential";
+      const warnings = [];
+      if (hasAuth || hasEmbedded) {
+        credentialAction = "remoteCredentialPreserved";
+        warnings.push("remoteCredentialPreserved");
+      } else if (item.credential) {
+        authRoot[item.providerId] = item.credential;
+        credentialAction = isEnv(item.credential.key) ? "willInstallEnvironmentReference" : "willInstallApiKey";
+      }
+      warnings.push("remoteReloadRequired");
+      results.push({ providerId: item.providerId, configUpdated: true, credentialAction, warnings });
+    }
+    const token = require("node:crypto").randomBytes(12).toString("hex");
+    const names = {
+      modelsTemp: `.provider-sync-${token}-models.tmp`, authTemp: `.provider-sync-${token}-auth.tmp`,
+      modelsBackup: `.provider-sync-${token}-models.bak`, authBackup: `.provider-sync-${token}-auth.bak`,
+    };
+    const paths = Object.fromEntries(Object.entries(names).map(([key, name]) => [key, path.join(agentDir, name)]));
+    for (const target of Object.values(paths)) assertNotSymlink(target);
+    const journal = { ...names, modelsExisted: fs.existsSync(modelsPath), authExisted: fs.existsSync(authPath) };
+    try {
+      writeSecure(paths.modelsTemp, modelsRoot, true); writeSecure(paths.authTemp, authRoot, true);
+      if (journal.modelsExisted) copySecure(modelsPath, paths.modelsBackup);
+      if (journal.authExisted) copySecure(authPath, paths.authBackup);
+      writeSecure(journalPath, journal, true); fsyncDirectory();
+      fs.renameSync(paths.modelsTemp, modelsPath); fsyncDirectory();
+      fs.renameSync(paths.authTemp, authPath); fsyncDirectory();
+      safeRemove(journalPath); fsyncDirectory();
+      safeRemove(paths.modelsBackup); safeRemove(paths.authBackup); fsyncDirectory();
+    } catch {
+      if (fs.existsSync(journalPath)) {
+        recover();
+      } else {
+        for (const target of Object.values(paths)) { try { safeRemove(target); } catch {} }
+      }
+      providerSyncFail("remoteWriteFailed");
+    }
+    process.stdout.write(`${JSON.stringify({ ok: true, providers: results })}\n`);
+    process.exit(0);
+  } finally {
+    releaseLock();
+  }
+}
+
+if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--provider-sync") runProviderSync();
 
 function fail(message, code = 65) {
   process.stderr.write(`${message}\n`);
@@ -222,4 +700,4 @@ if (mode === "--preflight") {
     process.exit(code ?? signalExitCodes[signal] ?? 1);
   });
 }
-'
+__PI_DESKTOP_NODE__

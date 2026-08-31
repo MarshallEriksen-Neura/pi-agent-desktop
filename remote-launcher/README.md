@@ -12,7 +12,7 @@ The remote host must provide:
 - Pi installed and authenticated on the remote host
 - The configured workspace as an absolute POSIX path
 
-Authentication, provider credentials, Pi settings, skills, MCP configuration, Git configuration, and SSH keys remain on the remote host. The profile stored by the desktop app contains no secrets.
+Authentication, Pi settings, skills, MCP configuration, Git configuration, and SSH keys remain on the remote host. The profile stored by the desktop app contains no secrets. Provider sync is a separate, user-initiated capability: it can copy only selected provider definitions and explicitly approved API keys over SSH stdin. OAuth tokens, command credentials, resolved local environment secrets, and provider-scoped `env` values are never transferred.
 
 ## Install
 
@@ -48,10 +48,11 @@ ssh build-host bash -lc 'command -v node; command -v pi'
 
 ## Protocol
 
-The launcher accepts only two internal modes:
+The launcher accepts three fixed internal modes:
 
 - `--preflight`: validates the workspace and runs `pi --version`; writes one JSON document to stdout. Alongside `ok` it reports `piVersion`, `nodeVersion`, `nodePath`, and `piAuthConfigured` — the last is a nonempty-`auth.json` check, which the app surfaces as a warning rather than a blocker because pi exposes no way to query login state noninteractively.
 - `--run`: starts `pi --mode rpc` in the remote workspace; stdout remains Pi JSONL and launcher diagnostics go to stderr.
+- `--provider-sync`: reads one provider-sync protocol v1 request (maximum 2 MiB) from stdin. The fixed `inspect` and `apply` actions merge selected provider configuration while preserving existing remote credentials and unrelated entries. Provider JSON and credentials never appear in argv, environment variables, or diagnostics. This capability is independent of the run/preflight payload protocol.
 
 The payload protocol is versioned. Protocol version `1` carries the remote workspace, Pi executable, and optional remote session path. Values are passed to Node's process APIs as arguments and are never evaluated as shell source.
 
