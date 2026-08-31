@@ -80,7 +80,24 @@ configureWorkspaceTargetSwitch((binding: ExecutionBinding) => void);
 
 Two independently shippable steps. Step 1 is behaviour-preserving and can merge alone.
 
-### V2.R-1 — resolution seam (no behaviour change)
+### V2.R-1 — resolution seam ✅ done (`36d5f09`)
+
+Landed as planned, with two corrections worth recording.
+
+**The factory takes a target id, not an `ExecutionBinding`.** Written the planned
+way first, it forced callers holding only a path to fabricate a binding with a
+zeroed revision and empty cwd — exactly the kind of invented value a later
+implementation could act on. Choosing a filesystem needs only *which host*;
+launching pi is what needs the whole binding.
+
+**`readAsyncStatus` was already wrong, not just unqualified.** `asyncDir` comes
+from a pi tool call, so under a remote target it is a remote path, and the
+unconditional local read predates this refactor. Now resolves against the active
+target with an optional override.
+
+Also: `workspace.ts` no longer imports the session store at all — it reads its
+own `targetId` — so the cycle risk that blocked the repoint is gone rather than
+worked around.
 
 1. `createWorkspaceFs` on `BackendPorts`; desktop + browser compositions supply it. SSH branch = fail-closed stub.
 2. `workspaceFsFor(targetId)` helper; `workspace.ts`'s 11 call sites and the 2 outliers route through it.
