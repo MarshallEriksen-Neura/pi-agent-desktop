@@ -2,6 +2,44 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
+## [0.11.0] — 2026-09-01
+
+### Added
+- **Remote Agent —— 会话可以跑在另一台机器上的 pi 里**,通过 SSH。这是这个版本的主体,分几层落下来
+  - **执行目标是每个会话自己的选择**,不是全局开关。`chat_sessions` 新增 `execution_binding` 字段(schema 1 → 2,带迁移),所以一个会话记得自己属于本地还是某台远程主机,重启之后仍然接回原处。侧边栏按 target 分域:切到远程主机看到的是那台机器上的会话列表,本地的会话不会混进来 —— 恢复一个跨域会话会把 pi 指向另一个 cwd 下的 session 文件
+  - **两种生命周期**。`attached`:pi 的寿命就是 SSH 通道的寿命,通道断它就死。`detached`:pi 活在 launcher 的 supervisor 下、比通道长命,桌面关掉再打开能重新接上正在跑的任务、补播错过的事件(协议见 [docs/remote-agent-v2-supervisor-protocol.md](docs/remote-agent-v2-supervisor-protocol.md))。补播是按 sequence 游标做的精确一次投递,不是重新跑一遍
+  - **`pi://exit` 不代表远端 pi 死了**,这是自动重连必须知道的事。那个事件报的是本地 `ssh` 子进程结束了。launcher 靠转发 SIGHUP 杀 pi,而这要 sshd 先注意到对端已死 —— 实测在双向网络分区下:桌面 24.2 秒放弃,远端 pi 在 122 秒时仍然活着,并且在分区恢复后继续存活。`sshd -T` 报 `ClientAliveInterval 0`,也就是没有应用层 keepalive,回落到内核 TCP keepalive 的 7200 秒。两边认知不一致的窗口是**两小时**量级,所以旧行为会在这个窗口里把两个 `pi --session` 进程放到同一份 transcript 上。自动重连现在只对本地生效;远程退出追加 `remoteAgent.target.statusUnknown` 并等一次显式重启
+  - **launcher 能力握手**(`--capabilities`)。V1 launcher 对任何未知模式都回 `invalid launcher mode` 加 exit 64,和一个损坏的 launcher 逐字节相同,所以新桌面此前无法区分"这台主机要升级 launcher"和"这个 launcher 坏了",也就无法有意降级。不是假设:测试主机上装的 launcher 已经落后五个版本(7418 字节 vs 34846,`provider-sync` 出现零次),而这个漂移完全是静默的。`--capabilities` 由 `sh` 前导在**任何 node 探测之前**应答 —— 桌面最需要知道一台主机支持什么的时刻,恰好是 node 缺失或损坏的时刻,而那时其他所有模式都会失败。降级规则是承重部分:未被应答的查询不是失败,它意味着 V1 基线(只有 `run-v1` 和 `preflight-v1`)
+  - **launcher 自动升级**。新增 `launcherRevision` 和 `statusVersion` 两个字段做版本判定,落后就就地替换。但主机上有活动任务、且升级会改变任务状态格式时**刻意不升** —— 那会让正在跑的任务变得既读不到也停不掉,而等待不花任何代价,任务两种情况下都活着
+  - **远程文件浏览是只读的,而且在结构上不可能走错**。`WorkspaceFsPort` 此前是一个全局实例、每个路径都是裸字符串,没有任何结构性的东西阻止一个远程路径抵达本地文件系统桥 —— 只有散落在各 store 里的 `kind === "ssh"` 提前返回,每个新调用点都得记得写。`createWorkspaceFs(targetId)` 现在和 `createPiProcess` 一起挂在 `BackendPorts` 上,SSH target 解析到一个**拒绝每一次调用**的 port(稳定报 `remoteWorkspaceUnsupported`),永远不会解析到本地那个。读也拒绝,不只是写 —— 只拒绝写的 port 仍然会让远程路径被本地读出来
+  - **远程文件夹选择器可以直接打路径**,不必只靠面包屑一层层点。上下箭头选、Tab 补全、Enter 打开,输入带防抖以免每敲一个字符就发一次 SSH 请求
+  - **远程终端**。四个命令(`remote_terminal_start` / `write` / `resize` / `stop`)走独立通道,不占用 pi 的 RPC
+  - **远程 provider 同步**,两阶段批准:先看要同步什么的脱敏预览,再决定。凭证按类别分别处理,协议契约见 [docs/remote-provider-sync-contract.md](docs/remote-provider-sync-contract.md)
+- **键盘快捷键可以重绑**。新增 `SHORTCUT_REGISTRY` 集中持有系统里所有快捷键,设置页里改。带冲突检测 —— 跨固定命令和重叠作用域一起算,所以两个作用域不可能同时获得焦点时允许共用一个键位(聊天和终端都保留 `⌘⇧C`)。终端相关的 `Ctrl+C` 这类固定键位不可改
+- **终端抽屉高度可拖**。顶边调整器,支持键盘操作,高度存进 localStorage
+- **重启提示统一成一个全局 toast**。此前 models / settings / plugins / skills / store / mcp 六个页面各自挂一份重启提示,现在收敛到 `RestartPiToast` 一个组件
+- **插件页支持全局与项目两种安装范围**
+
+### Fixed
+- **删除会话现在也删 pi 的 transcript** —— 此前只删了 Desktop 那一半。`chat_session_delete` 全文就一句 `DELETE`,删除路径上没有任何一条通向文件系统,于是 pi 的 `.jsonl` 原地留着:Desktop 报已删除、CLI 仍然列出来,而且这些孤儿没有任何东西能回收。实测单个项目 88 份 transcript 共 97.2 MB,其中只有 8 份还被某一行引用
+  - 一个会话的磁盘足迹是**两样东西** —— transcript 加一个同名的兄弟目录(子 agent 的运行记录),后者是孤儿体积的大头。`subagent-artifacts/` 在同一层但是整个 slug 共享的,刻意够不到:它不是任何 transcript 的 stem
+  - 用回收站而不是 unlink(`~/.pi/agent/session-trash/<slug>/`),因为任何已有安装第一次用到这个功能都是清理上面那批积压。时间戳前缀是**探测**过冲突的而不是直接信任:毫秒精度意味着同一毫秒内删两个同名文件会让两次 rename 指向同一路径、第二次静默覆盖第一次 —— 在一个存在意义就是让删除可撤销的目录里丢掉一份 transcript。transcript 和它的运行目录共用一个前缀,这样恢复时还能配对
+  - **先删索引行,后移文件。** 反过来才是危险的:文件被移走而行还在,下次 `--session` 恢复会在那个路径新建**空** session,于是一个用户从未被告知成功的删除,反而静默吃掉了会话。当前顺序最坏只留一个孤儿 —— 正是这之前每次删除已经留下的状态。删行失败则中止,移文件失败被吞掉
+  - 范围:仅本地会话。SSH 会话的 transcript 在对端主机,而 launcher 完全没有文件操作,要够到它需要新模式加协议 bump,所以那些文件留在远端 pi 仍能恢复的地方。这**没有**让 JSONL 成为会话内容的事实源 —— Desktop 之外创建的会话依然对侧边栏不可见,那是同一份报告更大的另一半
+- **过期的 session pin 能覆盖 transcript**。`--session <path>` 不是只读恢复:文件缺失或为空时 pi 会**在那个路径新建** session。同一个数据库里有四行 pin 着已经不存在的文件。`is_resumable` 现在把这一步拦住,改为开新会话,随后的 `session` 通告会重新 pin 那一行 —— 过期条目自愈而不是被继续利用
+- **被拒收的消息此前被报成"任务执行出错"**。pi 只在 `prompt` 的前置检查阶段抛错(`preflightResult` 决定成功/错误输出,`_runAgentPrompt` 只在它报成功之后才被 await),所以那一轮从未开始、文本也从未送达。"任务执行过程中出现错误,已停止"描述的是一次没发生的运行,还藏起了"这条消息仍然需要重发"这个事实 —— 现在是 `agent.promptRefused`
+- **本地 streaming 镜像过期时消息会被丢掉**。`send` 和 `retryLast` 都以本地 `streaming` 为闸,但这个镜像会被 pi 不认为终止的路径清掉:`abort()` 在 pi 还在收尾 bash 子进程时就乐观清除,`appendAssistantError` 在模型报错(而 pi 随后要压缩)时清除,`load()` 在接回一个正在跑的 detached 任务时清除。这三个窗口里 pi 自己的 `isStreaming` 仍是 true,裸 `prompt` 会被"Agent is already processing"拒掉。现在传 `streamingBehavior: "followUp"` 让 pi 排队,最坏情况是消息等一会儿而不是消失。用 `followUp` 而不是 `steer`:用户是以为 agent 空闲才打的这条,所以它是一个迟到的新回合,不是对一个他们根本不知道在跑的回合的纠偏
+- **接回 detached 任务时输入框不解锁**。助手内容本身就是"有一轮在跑"的证据,而它并不总是先有一个我们看见过的 `agent_start` —— 接回时那一轮开始于 attach 游标之前,所以内容是唯一证据。`ensureAssistant` 现在同时置上 store 级的 `streaming`
+
+### Internal
+- 桌面适配器命令清单:**90** 个唯一命令(0.10.0 是 67)
+- `chat_sessions` schema 1 → 2(`execution_binding`),带迁移
+- 会话文件的规则放在 `pi-backend-core::session_files` 而不是 `src-tauri` —— 后者的测试二进制**跑不起来**:`[lib] crate-type` 含 `cdylib`,测试进程在任何测试体之前就以 `STATUS_ENTRYPOINT_NOT_FOUND`(`0xc0000139`)载入失败。`src-tauri/src/pi_sessions.rs` 因此只负责解析本机那两个目录是哪两个
+- 新增远程 agent 验收工具与实测记录(10 个可重复场景,含一次真实模型回合)。网络分区场景只封一个由持有本次运行的 sshd 会话推导出的对端端口,并装一条自删除规则,所以工具不会遗留规则也不会把自己锁在外面
+- 五份新文档:[V2 supervisor 协议](docs/remote-agent-v2-supervisor-protocol.md)、[V2 会话恢复](docs/remote-agent-v2-session-recovery.md)、[V2 workspace 重构](docs/remote-agent-v2-workspace-refactor.md)、[V1 验收](docs/remote-agent-v1-acceptance.md)、[provider 同步契约](docs/remote-provider-sync-contract.md)
+- 清掉两个 changeset 残留文件(`skills-install`、`terminal-clipboard`),内容已随 0.10.0 发布
+- 后端套件 265 pass。3 个先前就存在的失败依旧 —— browser-mock 扩展 UI、chat-recovery resumePath(60 秒超时)、mcp-import OAuth fixture
+
 ## [0.10.0] — 2026-08-30
 
 ### Added
