@@ -157,6 +157,12 @@ export const en = {
   // task failure surfacing
   "agent.taskFailedTitle": "Pi task failed",
   "agent.taskFailed": "The task stopped with an error",
+  // A NACKed `prompt`, which pi only ever refuses *before* a turn starts —
+  // every throw in its prompt path precedes the agent run, and a mid-turn
+  // failure arrives on a different channel. So nothing ran and nothing was
+  // delivered, which is the opposite of "stopped with an error". The detail
+  // line carries pi's reason (compaction busy / no model / auth).
+  "agent.promptRefused": "Pi declined the message, so it was not sent and no turn started",
   "agent.backgroundDoneTitle": "{title} finished",
   "agent.backgroundDoneBody": "Tap to view the result",
   "agent.backgroundWorking": "working",

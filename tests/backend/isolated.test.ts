@@ -12,3 +12,4 @@
  */
 import "./remote-exit-recovery.test";
 import "./workspace-retarget.test";
+import "./prompt-desync.test";

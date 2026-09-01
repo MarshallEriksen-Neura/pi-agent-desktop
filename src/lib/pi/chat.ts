@@ -467,6 +467,23 @@ export function createChatStore(taskId: string) {
      * Issue a `prompt` request whose user bubble is already in the transcript and
      * surface the outcome. Shared by `send` (a new prompt) and `retryLast` (a re-run
      * of the prompt whose turn failed).
+     *
+     * `streamingBehavior` is the safety net for a state desync, and it is not
+     * optional. Both callers gate on the local `streaming` mirror, but that mirror
+     * is cleared by paths pi does not consider terminal — `abort()` clears it
+     * optimistically while pi is still unwinding a bash child, `appendAssistantError`
+     * clears it on a model error that pi follows with compaction, and `load()` clears
+     * it when reattaching to a detached task that is mid-turn. In every one of those
+     * windows pi's own `isStreaming` is still true, and a bare `prompt` is rejected
+     * outright with "Agent is already processing" — surfacing as a failed turn that
+     * claims the task stopped when in fact pi never stopped and the message was
+     * simply dropped. Naming the behavior makes pi queue it instead, so the worst
+     * case is a message that waits rather than one that vanishes.
+     *
+     * `followUp` rather than `steer`: the user typed this believing the agent was
+     * idle, so it is a new turn that happens to be late, not a course correction to
+     * a turn they never knew was running. pi ignores the field entirely when it is
+     * genuinely idle, so passing it unconditionally costs nothing on the happy path.
      */
     const dispatchPrompt = async (
       message: string,
@@ -477,8 +494,16 @@ export function createChatStore(taskId: string) {
           type: "prompt",
           message,
           ...(images.length ? { images } : {}),
+          streamingBehavior: "followUp",
         });
-        if (!res.success) set(appendAssistantError(t("agent.taskFailed"), res.error));
+        // A NACK here is a refusal, not a failed run: pi throws only from the
+        // preflight half of `prompt`, and the RPC reports exactly that half
+        // (`preflightResult` gates the success/error output, and `_runAgentPrompt`
+        // is awaited only after it reported success). So the turn never started
+        // and the text never reached pi — saying the task "stopped with an error"
+        // would describe a run that did not happen, and hide that the message
+        // still needs re-sending.
+        if (!res.success) set(appendAssistantError(t("agent.promptRefused"), res.error));
       } catch (error) {
         // A thrown request means no ack (send failure / timeout / process exit).
         // Surface the concrete category and backend detail whenever available,
@@ -530,11 +555,28 @@ export function createChatStore(taskId: string) {
         let activeRunStarted = false;
         let activeRunHadOutput = false;
 
+        /**
+         * Open (or keep) the assistant bubble that inbound content belongs to.
+         *
+         * Also asserts the store-level `streaming` flag, because assistant content is
+         * proof of a live turn and it is not always preceded by an `agent_start` we
+         * saw. Reattaching to a detached task is the case that matters: the turn began
+         * before the attach cursor, so the only evidence pi is mid-turn is the content
+         * itself. Without this the composer stays unlocked for the rest of the turn
+         * while tokens visibly stream into the transcript.
+         *
+         * Safe against ordering: pi emits `agent_settled` from the `finally` of the
+         * agent run, i.e. strictly after all content for that run, so a late event
+         * cannot resurrect a settled turn.
+         */
         const ensureAssistant = () =>
           set((s) => {
             const last = s.messages[s.messages.length - 1];
-            if (last?.role === "assistant" && last.streaming) return {};
+            if (last?.role === "assistant" && last.streaming) {
+              return s.streaming ? {} : { streaming: true };
+            }
             return {
+              streaming: true,
               messages: [
                 ...s.messages,
                 {

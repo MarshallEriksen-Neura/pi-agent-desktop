@@ -157,6 +157,11 @@ export const zh: Record<keyof typeof en, string> = {
   // task failure surfacing
   "agent.taskFailedTitle": "Pi 任务出错",
   "agent.taskFailed": "任务执行过程中出现错误，已停止",
+  // 被 NACK 的 `prompt`：pi 只会在开跑*之前*拒收（它 prompt 路径里所有 throw
+  // 都在 agent run 之前，turn 中途的失败走的是另一个通道）。所以既没有开始执行，
+  // 消息也没送出去 —— 和"执行出错已停止"正好相反。具体原因（压缩中／未选模型／
+  // 鉴权失败）在详情行里。
+  "agent.promptRefused": "Pi 拒收了这条消息，未发送，也未开始新一轮",
   "agent.backgroundDoneTitle": "{title} 已完成",
   "agent.backgroundDoneBody": "点击查看结果",
   "agent.backgroundWorking": "执行中",
