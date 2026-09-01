@@ -51,8 +51,9 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // because they are separate intents: asking, ending the work, and housekeeping.
   // remote_launcher_autoupgrade makes 85: it is the first caller the capability
   // handshake ever had, and it is separate from install because it decides *whether*
-  // to install rather than doing it on request.
-  assert.equal(result.inventory.commandUniqueCount, 85);
+  // to install rather than doing it on request. The isolated remote PTY capability
+  // adds start, write, resize, and stop, bringing the command inventory to 89.
+  assert.equal(result.inventory.commandUniqueCount, 89);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -151,6 +152,11 @@ test("locks the desktop command names and Pi process event names", () => {
     "remote_task_status",
     // stops the work, as opposed to pi_stop which only closes the local channel
     "remote_task_stop",
+    // raw interactive SSH PTY transport, intentionally separate from Pi's JSONL RPC
+    "remote_terminal_resize",
+    "remote_terminal_start",
+    "remote_terminal_stop",
+    "remote_terminal_write",
     // read-only remote browsing: list a directory, read a file. Writes stay
     // refused until V2.4 adds the hash check
     "remote_workspace_request",

@@ -1,6 +1,7 @@
 import type {
   AssetUrlPort,
   ExternalNavigationPort,
+  FileDropPort,
   NotificationPort,
   PetWindowPort,
   PiConfigurationPort,
@@ -10,6 +11,7 @@ import type {
   RemoteControlPort,
   RemoteConversationsPort,
   RemotePiProfilePort,
+  RemoteTerminalPort,
   RemoteProviderSyncPort,
   RuntimeConfigPort,
   SessionRepositoryPort,
@@ -46,6 +48,7 @@ export interface BackendPorts {
   remoteControl: RemoteControlPort;
   remoteConversations: RemoteConversationsPort;
   remoteProfiles: RemotePiProfilePort;
+  remoteTerminal: RemoteTerminalPort;
   remoteProviderSync: RemoteProviderSyncPort;
   runtimeConfig: RuntimeConfigPort;
   piConfiguration: PiConfigurationPort;
@@ -55,6 +58,11 @@ export interface BackendPorts {
   assetUrl: AssetUrlPort;
   petWindow: PetWindowPort;
   externalNavigation: ExternalNavigationPort;
+  /**
+   * OS drag-and-drop over the window. Window-scoped by nature — the drop never
+   * reaches the DOM, so element-level drop zones hit-test the reported position.
+   */
+  fileDrop: FileDropPort;
 }
 
 export type BackendPortName = keyof BackendPorts;

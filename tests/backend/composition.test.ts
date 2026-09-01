@@ -17,6 +17,7 @@ import type { RemoteControlPort } from "../../src/lib/backend/ports/remote-contr
 import type { RemoteConversationsPort } from "../../src/lib/backend/ports/remote-conversations";
 import type { RemotePiProfilePort } from "../../src/lib/backend/ports/remote-profiles";
 import type { RemoteProviderSyncPort } from "../../src/lib/backend/ports/remote-provider-sync";
+import type { RemoteTerminalPort } from "../../src/lib/backend/ports/remote-terminal";
 import { unreachablePort } from "./fixtures/unreachable-port";
 import type { WorkspaceFsPort } from "../../src/lib/backend/ports/workspace-fs";
 import { createUnsupportedRemoteWorkspaceFsPort } from "../../src/lib/backend/ports/remote-workspace-fs";
@@ -174,6 +175,9 @@ function fakePorts(label = "fake"): BackendPorts {
       open: async () => undefined,
       openHtmlFile: async () => undefined,
     },
+    fileDrop: {
+      onDrag: async () => () => undefined,
+    },
     /* The LAN gateway has no place in container wiring tests, and no test in
        this suite reaches either port. Rejecting rather than returning empty
        snapshots keeps that true: a stub that answers plausibly would let a
@@ -182,6 +186,7 @@ function fakePorts(label = "fake"): BackendPorts {
     remoteConversations: unreachablePort<RemoteConversationsPort>("remoteConversations"),
     remoteProfiles: unreachablePort<RemotePiProfilePort>("remoteProfiles"),
     remoteProviderSync: unreachablePort<RemoteProviderSyncPort>("remoteProviderSync"),
+    remoteTerminal: unreachablePort<RemoteTerminalPort>("remoteTerminal"),
   } satisfies BackendPorts;
 }
 

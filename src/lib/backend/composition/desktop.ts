@@ -1,5 +1,6 @@
 import { desktopAssetUrlPort } from "../desktop/asset-url";
 import { desktopExternalNavigationPort } from "../desktop/external-navigation";
+import { desktopFileDropPort } from "../desktop/file-drop";
 import { desktopNotificationPort } from "../desktop/notification";
 import { desktopPetWindowPort } from "../desktop/pet-window";
 import { createDesktopPiConfigurationPort } from "../desktop/pi-configuration";
@@ -9,6 +10,7 @@ import { createDesktopProviderAuthPort } from "../desktop/provider-auth";
 import { desktopRemoteControlPort } from "../desktop/remote-control";
 import { desktopRemoteProviderSyncPort } from "../desktop/remote-provider-sync";
 import { desktopRemotePiProfilePort } from "../desktop/remote-profiles";
+import { desktopRemoteTerminalPort } from "../desktop/remote-terminal";
 import { desktopRemoteConversationsPort } from "../desktop/remote-conversations";
 import { createDesktopRuntimeConfigPort } from "../desktop/runtime-config";
 import { desktopSessionRepositoryPort } from "../desktop/session-repository";
@@ -39,6 +41,7 @@ export function createDesktopBackendPorts(): BackendPorts {
     providerAuth: createDesktopProviderAuthPort(),
     remoteControl: desktopRemoteControlPort,
     remoteProfiles: desktopRemotePiProfilePort,
+    remoteTerminal: desktopRemoteTerminalPort,
     remoteProviderSync: desktopRemoteProviderSyncPort,
     remoteConversations: desktopRemoteConversationsPort,
     runtimeConfig: createDesktopRuntimeConfigPort(),
@@ -49,6 +52,7 @@ export function createDesktopBackendPorts(): BackendPorts {
     assetUrl: desktopAssetUrlPort,
     petWindow: desktopPetWindowPort,
     externalNavigation: desktopExternalNavigationPort,
+    fileDrop: desktopFileDropPort,
   };
 }
 

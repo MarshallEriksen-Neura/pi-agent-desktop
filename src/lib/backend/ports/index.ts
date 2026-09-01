@@ -19,6 +19,15 @@ export {
   RemoteWorkspaceUnsupportedError,
 } from "./remote-workspace-fs";
 export type { RemotePiProfilePort } from "./remote-profiles";
+export { createUnsupportedRemoteTerminalPort } from "./remote-terminal";
+export type {
+  RemoteTerminalData,
+  RemoteTerminalExit,
+  RemoteTerminalPort,
+  RemoteTerminalStartOptions,
+  RemoteTerminalStartResult,
+  RemoteTerminalUnlisten,
+} from "./remote-terminal";
 export type {
   AppliedProviderSyncProvider,
   PreparedProviderSync,
@@ -32,6 +41,13 @@ export type {
   RemoteProviderSyncPort,
 } from "./remote-provider-sync";
 export type { ExternalNavigationPort } from "./external-navigation";
+export { createUnsupportedFileDropPort } from "./file-drop";
+export type {
+  FileDropEvent,
+  FileDropPort,
+  FileDropPosition,
+  FileDropUnlisten,
+} from "./file-drop";
 export type { NotificationPort, ShowNotificationInput } from "./notification";
 export type {
   PetWindowPort,

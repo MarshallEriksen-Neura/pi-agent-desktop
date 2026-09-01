@@ -330,6 +330,16 @@ export const zh: Record<keyof typeof en, string> = {
   "terminal.selectAll": "全选",
   "terminal.clear": "清屏",
   "terminal.clipboardUnavailable": "(无法读取剪贴板 — 没有可粘贴的内容)",
+  "terminal.dropHint": "松开以插入文件路径",
+  "terminal.blocks": "分块",
+  "terminal.blockView": "分块视图",
+  "terminal.classic": "经典",
+  "terminal.classicView": "经典视图",
+  "terminal.remoteConnecting": "正在连接 {host}…",
+  "terminal.remoteExited": "远程 Shell 已退出（{detail}）。",
+  "terminal.remoteStartFailed": "无法启动远程 Shell：{error}",
+  "terminal.remoteWriteFailed": "无法发送终端输入：{error}",
+  "terminal.remoteInputOverflow": "远程 Shell 连接期间输入过多。",
 
   // diff review card
   "review.edited": "Pi 编辑了 {file}",

@@ -101,7 +101,11 @@ pub struct RemotePiProfileInput {
 /// every Rust test constructs the variant in Rust rather than parsing what the app sends.
 /// The wire shape is pinned by `the_wire_shape_is_what_the_frontend_actually_sends`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ExecutionBinding {
     Local {
         target_id: String,
@@ -139,20 +143,44 @@ pub struct RemoteReadinessCheck {
 
 impl RemoteReadinessCheck {
     fn ok(id: &'static str, detail: Option<String>) -> Self {
-        Self { id, status: "ok", detail, error_code: None, error: None }
+        Self {
+            id,
+            status: "ok",
+            detail,
+            error_code: None,
+            error: None,
+        }
     }
 
     fn failed(id: &'static str, error_code: &'static str, error: String) -> Self {
-        Self { id, status: "failed", detail: None, error_code: Some(error_code), error: Some(error) }
+        Self {
+            id,
+            status: "failed",
+            detail: None,
+            error_code: Some(error_code),
+            error: Some(error),
+        }
     }
 
     fn warning(id: &'static str, error_code: &'static str, error: String) -> Self {
-        Self { id, status: "warning", detail: None, error_code: Some(error_code), error: Some(error) }
+        Self {
+            id,
+            status: "warning",
+            detail: None,
+            error_code: Some(error_code),
+            error: Some(error),
+        }
     }
 
     /// Not reached — an earlier check failed and this one could not be observed.
     fn skipped(id: &'static str) -> Self {
-        Self { id, status: "skipped", detail: None, error_code: None, error: None }
+        Self {
+            id,
+            status: "skipped",
+            detail: None,
+            error_code: None,
+            error: None,
+        }
     }
 }
 
@@ -315,8 +343,9 @@ const WORKSPACE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longer than the rest: `--stop` waits up to 5s for the supervisor to confirm the
 /// process actually died before escalating to SIGKILL, and that wait is on the far side.
 const STOP_TIMEOUT: Duration = Duration::from_secs(45);
-const WORKSPACE_OPERATIONS: [&str; 8] =
-    ["list", "read", "stat", "write", "create", "mkdir", "delete", "rename"];
+const WORKSPACE_OPERATIONS: [&str; 8] = [
+    "list", "read", "stat", "write", "create", "mkdir", "delete", "rename",
+];
 /// The operations that mutate. Only these accept a body, and only `write` has one.
 const WORKSPACE_WRITE_OPERATIONS: [&str; 5] = ["write", "create", "mkdir", "delete", "rename"];
 const WORKSPACE_ENCODINGS: [&str; 2] = ["utf8", "base64"];
@@ -489,9 +518,9 @@ fn validate_remote_task_id(task_id: &str) -> Result<(), String> {
     if task_id.len() < MIN_REMOTE_TASK_ID_BYTES
         || task_id.len() > MAX_REMOTE_TASK_ID_BYTES
         || !first_is_alphanumeric
-        || !task_id
-            .chars()
-            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+        || !task_id.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
     {
         return Err("remote task id is invalid".into());
     }
@@ -574,9 +603,10 @@ pub fn remote_profile_save(profile: RemotePiProfileInput) -> Result<RemotePiProf
             validate_lifecycle(value)?;
             value.to_owned()
         }
-        None => existing
-            .as_ref()
-            .map_or_else(|| LIFECYCLE_ATTACHED.to_owned(), |item| item.lifecycle.clone()),
+        None => existing.as_ref().map_or_else(
+            || LIFECYCLE_ATTACHED.to_owned(),
+            |item| item.lifecycle.clone(),
+        ),
     };
     let saved = RemotePiProfile {
         id,
@@ -726,6 +756,45 @@ pub fn ssh_launch_spec(
     ))
 }
 
+/// Start OpenSSH inside a local PTY and ask the host for an interactive login shell.
+/// Unlike the Pi launcher specs, this must allocate a TTY and carries no JSONL data.
+pub fn ssh_terminal_spec(
+    profile: &RemotePiProfile,
+    binding: &ExecutionBinding,
+) -> Result<LaunchSpec, String> {
+    let ExecutionBinding::Ssh { remote_cwd, .. } = binding else {
+        return Err("remote terminal requested for a local execution binding".into());
+    };
+    validate_binding(profile, binding)?;
+
+    let remote_command = format!(
+        "cd {} && if [ -n \"$SHELL\" ] && [ -x \"$SHELL\" ]; then exec \"$SHELL\" -l; else exec /bin/sh -l; fi",
+        shell_quote(remote_cwd),
+    );
+    let mut spec = LaunchSpec::new("ssh");
+    let options = ssh_options();
+    let mut option_index = 0;
+    while option_index < options.len() {
+        let argument = options[option_index];
+        if argument == "-T" {
+            option_index += 1;
+            continue;
+        }
+        if argument == "-o" && options.get(option_index + 1) == Some(&"RequestTTY=no") {
+            option_index += 2;
+            continue;
+        }
+        spec = spec.arg(argument);
+        option_index += 1;
+    }
+    Ok(spec
+        .arg("-tt")
+        .arg("-o")
+        .arg("RequestTTY=force")
+        .arg(profile.ssh_host.clone())
+        .arg(remote_command))
+}
+
 /// `--start-detached`: same payload as `--run` plus the task id. The reply is one
 /// JSON line and the channel closes immediately — the task outlives it.
 ///
@@ -861,9 +930,8 @@ pub fn ssh_attach_spec(
         after,
         follow,
     };
-    let encoded = STANDARD.encode(
-        serde_json::to_vec(&payload).map_err(|e| format!("encode attach payload: {e}"))?,
-    );
+    let encoded = STANDARD
+        .encode(serde_json::to_vec(&payload).map_err(|e| format!("encode attach payload: {e}"))?);
     Ok(ssh_spec_for(
         &profile.ssh_host,
         &profile.launcher_path,
@@ -967,7 +1035,12 @@ pub fn probe_launcher_capabilities(
         error,
     };
 
-    let output = match run_bounded_command(&spec, CAPABILITIES_TIMEOUT, None, PREFLIGHT_OUTPUT_MAX_BYTES) {
+    let output = match run_bounded_command(
+        &spec,
+        CAPABILITIES_TIMEOUT,
+        None,
+        PREFLIGHT_OUTPUT_MAX_BYTES,
+    ) {
         Ok(output) => output,
         // A local failure to even launch ssh is worth surfacing verbatim.
         Err(error) => return Ok(unsupported(Some("sshUnavailable"), Some(error))),
@@ -1043,7 +1116,9 @@ fn validate_workspace_hash(hash: &str) -> Result<(), String> {
         .strip_prefix(WORKSPACE_HASH_PREFIX)
         .ok_or("remote workspace hash is invalid")?;
     if hex.len() != WORKSPACE_HASH_HEX_LEN
-        || !hex.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err("remote workspace hash is invalid".into());
     }
@@ -1060,11 +1135,15 @@ fn ssh_workspace_spec(
 ) -> Result<LaunchSpec, String> {
     validate_profile(profile)?;
     if !WORKSPACE_OPERATIONS.contains(&operation) {
-        return Err(format!("unsupported remote workspace operation `{operation}`"));
+        return Err(format!(
+            "unsupported remote workspace operation `{operation}`"
+        ));
     }
     if let Some(encoding) = encoding {
         if !WORKSPACE_ENCODINGS.contains(&encoding) {
-            return Err(format!("unsupported remote workspace encoding `{encoding}`"));
+            return Err(format!(
+                "unsupported remote workspace encoding `{encoding}`"
+            ));
         }
     }
     // Validated here as well as in the launcher: the desktop must not put a
@@ -1288,9 +1367,12 @@ pub fn send_to_remote_task(
     // terminator has to be here rather than assumed downstream.
     let body = match idempotency_key {
         Some(key) => {
-            if key.is_empty() || key.len() > 128 || !key.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-            }) {
+            if key.is_empty()
+                || key.len() > 128
+                || !key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            {
                 return Err("remote send idempotency key is invalid".into());
             }
             serde_json::to_string(&serde_json::json!({
@@ -1322,8 +1404,8 @@ pub fn send_to_remote_task(
         .rev()
         .find(|line| !line.trim().is_empty())
         .ok_or("remote send returned no reply")?;
-    let reply: serde_json::Value =
-        serde_json::from_str(line.trim()).map_err(|error| format!("invalid send reply: {error}"))?;
+    let reply: serde_json::Value = serde_json::from_str(line.trim())
+        .map_err(|error| format!("invalid send reply: {error}"))?;
     if reply.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
         return Ok(());
     }
@@ -1548,7 +1630,10 @@ fn ensure_remote_task(
             .get("detail")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
-        return Err(format!("{code}{}{detail}", if detail.is_empty() { "" } else { ": " }));
+        return Err(format!(
+            "{code}{}{detail}",
+            if detail.is_empty() { "" } else { ": " }
+        ));
     }
     let number = |key: &str| reply.get(key).and_then(serde_json::Value::as_i64);
     Ok(RemoteTaskHandle {
@@ -1648,7 +1733,8 @@ pub fn remote_workspace_request(
 
 /// Capability probe for a stored profile.
 #[tauri::command]
-pub fn remote_profile_capabilities(id: String) -> Result<LauncherCapabilities, String> {    let profile = load_profile(&id)?;
+pub fn remote_profile_capabilities(id: String) -> Result<LauncherCapabilities, String> {
+    let profile = load_profile(&id)?;
     probe_launcher_capabilities(&profile.ssh_host, &profile.launcher_path)
 }
 
@@ -1790,24 +1876,29 @@ fn check_readiness(
         match encode_launcher_payload(remote_cwd, pi_executable, protocol_version, None, None) {
             Ok(value) => value,
             Err(error) => {
-                report
-                    .checks
-                    .push(RemoteReadinessCheck::failed(CHECK_SSH, "invalid_payload", error));
+                report.checks.push(RemoteReadinessCheck::failed(
+                    CHECK_SSH,
+                    "invalid_payload",
+                    error,
+                ));
                 return finish_report(report);
             }
         };
     let spec = ssh_spec_for(host, launcher_path, "--preflight", &encoded);
     // Preflight owns stdout and expects exactly one small JSON document. Pi runs
     // use PiProcess instead, where stdout remains the Pi JSONL stream.
-    let output = match run_bounded_command(&spec, PREFLIGHT_TIMEOUT, None, PREFLIGHT_OUTPUT_MAX_BYTES) {
-        Ok(output) => output,
-        Err(error) => {
-            report
-                .checks
-                .push(RemoteReadinessCheck::failed(CHECK_SSH, "ssh_spawn_failed", error));
-            return finish_report(report);
-        }
-    };
+    let output =
+        match run_bounded_command(&spec, PREFLIGHT_TIMEOUT, None, PREFLIGHT_OUTPUT_MAX_BYTES) {
+            Ok(output) => output,
+            Err(error) => {
+                report.checks.push(RemoteReadinessCheck::failed(
+                    CHECK_SSH,
+                    "ssh_spawn_failed",
+                    error,
+                ));
+                return finish_report(report);
+            }
+        };
 
     if output.timed_out {
         report.checks.push(RemoteReadinessCheck::failed(
@@ -1891,25 +1982,36 @@ fn check_readiness(
         // the row stays `skipped` — claiming a directory is fine when none was checked
         // is exactly the kind of false green this split exists to remove.
         match remote_cwd {
-            Some(cwd) => report
+            Some(cwd) => report.checks.push(RemoteReadinessCheck::ok(
+                CHECK_WORKSPACE,
+                Some(cwd.to_owned()),
+            )),
+            None => report
                 .checks
-                .push(RemoteReadinessCheck::ok(CHECK_WORKSPACE, Some(cwd.to_owned()))),
-            None => report.checks.push(RemoteReadinessCheck::skipped(CHECK_WORKSPACE)),
+                .push(RemoteReadinessCheck::skipped(CHECK_WORKSPACE)),
         }
         report.home = field("home");
         report.pi_version = field("piVersion");
-        report
-            .checks
-            .push(RemoteReadinessCheck::ok(CHECK_PI, report.pi_version.clone()));
-        match value.get("piAuthConfigured").and_then(serde_json::Value::as_bool) {
-            Some(true) => report.checks.push(RemoteReadinessCheck::ok(CHECK_PI_AUTH, None)),
+        report.checks.push(RemoteReadinessCheck::ok(
+            CHECK_PI,
+            report.pi_version.clone(),
+        ));
+        match value
+            .get("piAuthConfigured")
+            .and_then(serde_json::Value::as_bool)
+        {
+            Some(true) => report
+                .checks
+                .push(RemoteReadinessCheck::ok(CHECK_PI_AUTH, None)),
             Some(false) => report.checks.push(RemoteReadinessCheck::warning(
                 CHECK_PI_AUTH,
                 "pi_auth_missing",
                 "no credentials found in the remote pi config".into(),
             )),
             // Launcher predates the check — say nothing rather than guess.
-            None => report.checks.push(RemoteReadinessCheck::skipped(CHECK_PI_AUTH)),
+            None => report
+                .checks
+                .push(RemoteReadinessCheck::skipped(CHECK_PI_AUTH)),
         }
         return finish_report(report);
     }
@@ -1931,9 +2033,12 @@ fn finish_report(mut report: RemoteReadinessReport) -> RemoteReadinessReport {
             report.checks.push(RemoteReadinessCheck::skipped(id));
         }
     }
-    report
-        .checks
-        .sort_by_key(|check| CHECK_ORDER.iter().position(|id| *id == check.id).unwrap_or(usize::MAX));
+    report.checks.sort_by_key(|check| {
+        CHECK_ORDER
+            .iter()
+            .position(|id| *id == check.id)
+            .unwrap_or(usize::MAX)
+    });
     report.ok = report.checks.iter().all(|check| match check.id {
         CHECK_PI_AUTH => check.status != "failed",
         _ => check.status == "ok",
@@ -2145,9 +2250,7 @@ fn count_live_tasks(profile: &RemotePiProfile) -> Option<u32> {
     Some(
         tasks
             .iter()
-            .filter(|task| {
-                task.get("state").and_then(serde_json::Value::as_str) != Some("exited")
-            })
+            .filter(|task| task.get("state").and_then(serde_json::Value::as_str) != Some("exited"))
             .count() as u32,
     )
 }
@@ -2280,7 +2383,12 @@ fn install_launcher_to(
         .arg("pi-desktop-launcher-install")
         .arg(shell_quote(&requested));
 
-    let output = run_bounded_command(&spec, INSTALL_TIMEOUT, Some(LAUNCHER_SOURCE), PREFLIGHT_OUTPUT_MAX_BYTES)?;
+    let output = run_bounded_command(
+        &spec,
+        INSTALL_TIMEOUT,
+        Some(LAUNCHER_SOURCE),
+        PREFLIGHT_OUTPUT_MAX_BYTES,
+    )?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if output.timed_out {
         return Err(format!(
@@ -2343,11 +2451,15 @@ pub fn ssh_config_hosts() -> Result<Vec<String>, String> {
     if !path.is_file() {
         return Ok(Vec::new());
     }
-    let content = fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut hosts = Vec::new();
     for line in content.lines() {
         let line = line.trim();
-        let Some(rest) = line.strip_prefix("Host").or_else(|| line.strip_prefix("host")) else {
+        let Some(rest) = line
+            .strip_prefix("Host")
+            .or_else(|| line.strip_prefix("host"))
+        else {
             continue;
         };
         // Only `Host` itself — never `HostName`, `HostKeyAlias`, …
@@ -2400,14 +2512,8 @@ fn run_bounded_command(
             .write_all(body.as_bytes())
             .map_err(|error| format!("cannot write to ssh stdin: {error}"))?;
     }
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("ssh stdout was unavailable")?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("ssh stderr was unavailable")?;
+    let stdout = child.stdout.take().ok_or("ssh stdout was unavailable")?;
+    let stderr = child.stderr.take().ok_or("ssh stderr was unavailable")?;
     let stdout_reader = thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout
@@ -2462,10 +2568,10 @@ mod tests {
     use super::{
         classify_launcher_failure, classify_transport_failure, decide_upgrade, shell_quote,
         ssh_capabilities_spec, ssh_launch_spec, ssh_provider_sync_spec, ssh_start_detached_spec,
-        ssh_task_spec, validate_binding, validate_profile_fields, validate_profile_id,
-        validate_remote_task_id, CapabilitiesReply, ExecutionBinding, RemotePiProfile,
-        RemoteTaskMode, UpgradeDecision, CHECK_LAUNCHER, CHECK_NODE, CHECK_PI, CHECK_SSH,
-        CHECK_WORKSPACE, LAUNCHER_INSTALLER, LAUNCHER_REVISION, LAUNCHER_SOURCE,
+        ssh_task_spec, ssh_terminal_spec, validate_binding, validate_profile_fields,
+        validate_profile_id, validate_remote_task_id, CapabilitiesReply, ExecutionBinding,
+        RemotePiProfile, RemoteTaskMode, UpgradeDecision, CHECK_LAUNCHER, CHECK_NODE, CHECK_PI,
+        CHECK_SSH, CHECK_WORKSPACE, LAUNCHER_INSTALLER, LAUNCHER_REVISION, LAUNCHER_SOURCE,
         LAUNCHER_STATUS_VERSION,
     };
     use super::{ssh_attach_spec, ssh_workspace_spec, LaunchSpec, STANDARD};
@@ -2595,7 +2701,10 @@ mod tests {
             (CHECK_SSH, "ssh_host_unknown")
         );
         assert_eq!(
-            case("connect to host prod port 22: Connection refused", Some(255)),
+            case(
+                "connect to host prod port 22: Connection refused",
+                Some(255)
+            ),
             (CHECK_SSH, "ssh_unreachable")
         );
         // node missing must not be reported as a launcher problem: both exit 127,
@@ -2609,7 +2718,10 @@ mod tests {
             (CHECK_NODE, "node_missing")
         );
         assert_eq!(
-            case("sh: 1: /home/u/.local/bin/pi-desktop-launcher: not found", Some(127)),
+            case(
+                "sh: 1: /home/u/.local/bin/pi-desktop-launcher: not found",
+                Some(127)
+            ),
             (CHECK_LAUNCHER, "launcher_missing")
         );
         assert_eq!(
@@ -2668,7 +2780,10 @@ mod tests {
             classify_launcher_failure(Some("something_new")),
             (CHECK_PI, "preflight_failed")
         );
-        assert_eq!(classify_launcher_failure(None), (CHECK_PI, "preflight_failed"));
+        assert_eq!(
+            classify_launcher_failure(None),
+            (CHECK_PI, "preflight_failed")
+        );
     }
 
     /// `shell_quote` wraps in single quotes, so a single quote inside the
@@ -2704,6 +2819,55 @@ mod tests {
         assert!(args.iter().all(|arg| !arg.contains("/remote/session path")));
     }
 
+    #[test]
+    fn terminal_plan_forces_a_tty_and_quotes_the_remote_working_directory() {
+        let mut profile = profile();
+        profile.remote_cwd = Some("/srv/team's workspace".into());
+        let binding = ExecutionBinding::Ssh {
+            profile_id: "p1".into(),
+            profile_revision: 2,
+            host_alias: "prod".into(),
+            remote_cwd: profile.remote_cwd.clone().unwrap(),
+            launcher_protocol_version: 1,
+            remote_task_id: None,
+        };
+
+        let args = argv(&ssh_terminal_spec(&profile, &binding).unwrap());
+        assert!(args.contains(&"-tt".into()));
+        assert!(args.contains(&"RequestTTY=force".into()));
+        assert!(!args.contains(&"-T".into()));
+        assert!(!args.contains(&"RequestTTY=no".into()));
+        assert!(args.contains(&"BatchMode=yes".into()));
+        for (index, argument) in args.iter().enumerate() {
+            if argument == "-o" {
+                let option = args.get(index + 1).expect("every -o must have an option");
+                assert!(
+                    !option.starts_with('-'),
+                    "SSH -o was left without its option: {args:?}"
+                );
+            }
+        }
+        assert_eq!(args[args.len() - 2], "prod");
+        assert!(args
+            .last()
+            .unwrap()
+            .contains("cd '/srv/team'\\''s workspace'"));
+        assert!(args.last().unwrap().contains("exec \"$SHELL\" -l"));
+
+        let mut drifted = profile.clone();
+        drifted.revision += 1;
+        assert!(ssh_terminal_spec(&drifted, &binding)
+            .unwrap_err()
+            .contains("changed from revision"));
+
+        let local = ExecutionBinding::Local {
+            target_id: "local".into(),
+        };
+        assert!(ssh_terminal_spec(&profile, &local)
+            .unwrap_err()
+            .contains("local execution binding"));
+    }
+
     /// The capability query must be answerable before node is involved: it is
     /// most needed precisely when node is broken, which is when every other mode
     /// fails. So it lives in the `sh` prologue, ahead of PATH recovery.
@@ -2726,7 +2890,10 @@ mod tests {
     }
 
     fn detached_profile() -> RemotePiProfile {
-        RemotePiProfile { lifecycle: "detached".into(), ..profile() }
+        RemotePiProfile {
+            lifecycle: "detached".into(),
+            ..profile()
+        }
     }
 
     fn argv(spec: &LaunchSpec) -> Vec<String> {
@@ -2754,7 +2921,14 @@ mod tests {
         for accepted in ["task-0001", "t0000000", "abcdefgh-0123", &"a".repeat(64)] {
             assert!(validate_remote_task_id(accepted).is_ok(), "{accepted}");
         }
-        for rejected in ["short7", "Task-0001", "-leading", "task_0001", "task 0001", &"a".repeat(65)] {
+        for rejected in [
+            "short7",
+            "Task-0001",
+            "-leading",
+            "task_0001",
+            "task 0001",
+            &"a".repeat(65),
+        ] {
             assert!(validate_remote_task_id(rejected).is_err(), "{rejected}");
         }
     }
@@ -2766,13 +2940,17 @@ mod tests {
     #[test]
     fn a_task_id_belongs_to_a_detached_binding_and_only_to_one() {
         let detached = detached_profile();
-        assert!(validate_binding(&detached, &detached_binding(&detached, Some("task-0001"))).is_ok());
+        assert!(
+            validate_binding(&detached, &detached_binding(&detached, Some("task-0001"))).is_ok()
+        );
         assert!(validate_binding(&detached, &detached_binding(&detached, None)).is_err());
         assert!(validate_binding(&detached, &detached_binding(&detached, Some("BAD"))).is_err());
 
         let attached = profile();
         assert!(validate_binding(&attached, &binding(&attached)).is_ok());
-        assert!(validate_binding(&attached, &detached_binding(&attached, Some("task-0001"))).is_err());
+        assert!(
+            validate_binding(&attached, &detached_binding(&attached, Some("task-0001"))).is_err()
+        );
     }
 
     /// Fail closed rather than silently doing the attached thing: `--run` holds the
@@ -2782,7 +2960,12 @@ mod tests {
     fn the_two_lifecycles_cannot_borrow_each_other_s_launch_path() {
         let detached = detached_profile();
         let attached = profile();
-        assert!(ssh_launch_spec(&detached, &detached_binding(&detached, Some("task-0001")), None).is_err());
+        assert!(ssh_launch_spec(
+            &detached,
+            &detached_binding(&detached, Some("task-0001")),
+            None
+        )
+        .is_err());
         assert!(ssh_start_detached_spec(&attached, &binding(&attached), None).is_err());
     }
 
@@ -2790,7 +2973,8 @@ mod tests {
     fn detached_start_carries_the_task_id_inside_the_payload_not_the_argv() {
         let profile = detached_profile();
         let binding = detached_binding(&profile, Some("task-0001"));
-        let spec = ssh_start_detached_spec(&profile, &binding, Some("/remote/session path")).unwrap();
+        let spec =
+            ssh_start_detached_spec(&profile, &binding, Some("/remote/session path")).unwrap();
         let args = argv(&spec);
         assert_eq!(args[args.len() - 2], "'--start-detached'");
         // The id travels base64-encoded with the rest of the payload; the argv shows
@@ -2811,7 +2995,10 @@ mod tests {
     fn task_modes_pass_the_id_unencoded_and_refuse_the_wrong_arity() {
         let profile = detached_profile();
         let status = ssh_task_spec(&profile, RemoteTaskMode::Status, Some("task-0001")).unwrap();
-        assert_eq!(argv(&status).last().map(String::as_str), Some("'task-0001'"));
+        assert_eq!(
+            argv(&status).last().map(String::as_str),
+            Some("'task-0001'")
+        );
         // --status with no id lists every task; the other two require one.
         assert!(ssh_task_spec(&profile, RemoteTaskMode::Status, None).is_ok());
         assert!(ssh_task_spec(&profile, RemoteTaskMode::Stop, None).is_err());
@@ -2820,7 +3007,10 @@ mod tests {
         assert!(ssh_task_spec(&profile, RemoteTaskMode::Stop, Some("Bad Id")).is_err());
         for mode in [RemoteTaskMode::Status, RemoteTaskMode::Reap] {
             let spec = ssh_task_spec(&profile, mode, None).unwrap();
-            assert!(argv(&spec).contains(&"ServerAliveInterval=15".to_owned()), "{mode:?}");
+            assert!(
+                argv(&spec).contains(&"ServerAliveInterval=15".to_owned()),
+                "{mode:?}"
+            );
         }
     }
 
@@ -2832,7 +3022,13 @@ mod tests {
         assert!(LAUNCHER_SOURCE.contains("detached-tasks-v1"));
         assert!(LAUNCHER_SOURCE.contains("attach-v1"));
         for mode in [
-            "--start-detached", "--supervise", "--status", "--stop", "--send", "--reap", "--attach",
+            "--start-detached",
+            "--supervise",
+            "--status",
+            "--stop",
+            "--send",
+            "--reap",
+            "--attach",
         ] {
             assert!(LAUNCHER_SOURCE.contains(mode), "{mode}");
         }
@@ -2850,7 +3046,8 @@ mod tests {
     fn the_wire_shape_is_what_the_frontend_actually_sends() {
         // Verbatim from ExecutionTargetPicker.tsx, including the field order.
         let attached = r#"{"kind":"ssh","profileId":"remote-18d0a0eaf11dcf48","profileRevision":1,"hostAlias":"yuyun","remoteCwd":"/root/turb-gpt-free-register","launcherProtocolVersion":1}"#;
-        let parsed: ExecutionBinding = serde_json::from_str(attached).expect("frontend ssh binding");
+        let parsed: ExecutionBinding =
+            serde_json::from_str(attached).expect("frontend ssh binding");
         assert_eq!(
             parsed,
             ExecutionBinding::Ssh {
@@ -2880,7 +3077,9 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ExecutionBinding>(r#"{"kind":"local","targetId":"local"}"#)
                 .expect("frontend local binding"),
-            ExecutionBinding::Local { target_id: "local".into() }
+            ExecutionBinding::Local {
+                target_id: "local".into()
+            }
         );
 
         // And the write direction, because this is what lands in sqlite and what the
@@ -2931,7 +3130,9 @@ mod tests {
         // The node half is the authority on what the state files actually contain, so
         // the preamble is only correct if it agrees with this line.
         assert!(
-            LAUNCHER_SOURCE.contains(&format!("const STATUS_VERSION = {LAUNCHER_STATUS_VERSION};")),
+            LAUNCHER_SOURCE.contains(&format!(
+                "const STATUS_VERSION = {LAUNCHER_STATUS_VERSION};"
+            )),
             "node STATUS_VERSION is not {LAUNCHER_STATUS_VERSION}"
         );
     }
@@ -3028,7 +3229,9 @@ mod tests {
         assert_eq!(args[args.len() - 2], "'--attach'");
         assert!(args.contains(&"ServerAliveInterval=15".to_owned()));
         assert!(args.contains(&"ServerAliveCountMax=3".to_owned()));
-        let decoded = STANDARD.decode(args.last().unwrap().trim_matches('\'')).unwrap();
+        let decoded = STANDARD
+            .decode(args.last().unwrap().trim_matches('\''))
+            .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
         assert_eq!(payload["remoteTaskId"], "task-0001");
         assert_eq!(payload["after"], 41);
@@ -3041,7 +3244,9 @@ mod tests {
         // A fresh attach starts from the oldest retained record.
         let fresh = ssh_attach_spec(&profile, &binding, None, false).unwrap();
         let fresh_payload: serde_json::Value = serde_json::from_slice(
-            &STANDARD.decode(argv(&fresh).last().unwrap().trim_matches('\'')).unwrap(),
+            &STANDARD
+                .decode(argv(&fresh).last().unwrap().trim_matches('\''))
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(fresh_payload["after"], serde_json::Value::Null);
@@ -3054,8 +3259,15 @@ mod tests {
     #[test]
     fn workspace_requests_are_constrained_and_travel_base64_encoded() {
         let profile = profile();
-        let spec = ssh_workspace_spec(&profile, "read", "/srv/project with spaces/a.txt", Some("base64"), None, None)
-                .unwrap();
+        let spec = ssh_workspace_spec(
+            &profile,
+            "read",
+            "/srv/project with spaces/a.txt",
+            Some("base64"),
+            None,
+            None,
+        )
+        .unwrap();
         let args = argv(&spec);
         assert_eq!(args[args.len() - 2], "--workspace");
         assert!(args.contains(&"ServerAliveInterval=15".to_owned()));
@@ -3074,7 +3286,9 @@ mod tests {
         // launcher owns that default, so only one side gets to choose it.
         let listing = ssh_workspace_spec(&profile, "list", "/srv", None, None, None).unwrap();
         let listed: serde_json::Value = serde_json::from_slice(
-            &STANDARD.decode(argv(&listing).last().unwrap().trim_matches('\'')).unwrap(),
+            &STANDARD
+                .decode(argv(&listing).last().unwrap().trim_matches('\''))
+                .unwrap(),
         )
         .unwrap();
         assert!(listed.get("encoding").is_none());
@@ -3100,20 +3314,42 @@ mod tests {
         let profile = profile();
         let decode = |spec: &LaunchSpec| -> serde_json::Value {
             serde_json::from_slice(
-                &STANDARD.decode(argv(spec).last().unwrap().trim_matches('\'')).unwrap(),
+                &STANDARD
+                    .decode(argv(spec).last().unwrap().trim_matches('\''))
+                    .unwrap(),
             )
             .unwrap()
         };
         let token = format!("sha256-{}", "a".repeat(64));
 
-        let absent = decode(&ssh_workspace_spec(&profile, "write", "/srv/a.txt", Some("utf8"), None, None).unwrap());
+        let absent = decode(
+            &ssh_workspace_spec(&profile, "write", "/srv/a.txt", Some("utf8"), None, None).unwrap(),
+        );
         assert!(absent.get("expectedHash").is_none());
 
-        let free = decode(&ssh_workspace_spec(&profile, "write", "/srv/a.txt", Some("utf8"), None, Some(None)).unwrap());
+        let free = decode(
+            &ssh_workspace_spec(
+                &profile,
+                "write",
+                "/srv/a.txt",
+                Some("utf8"),
+                None,
+                Some(None),
+            )
+            .unwrap(),
+        );
         assert_eq!(free["expectedHash"], serde_json::Value::Null);
 
         let matched = decode(
-            &ssh_workspace_spec(&profile, "write", "/srv/a.txt", Some("utf8"), None, Some(Some(&token))).unwrap(),
+            &ssh_workspace_spec(
+                &profile,
+                "write",
+                "/srv/a.txt",
+                Some("utf8"),
+                None,
+                Some(Some(&token)),
+            )
+            .unwrap(),
         );
         assert_eq!(matched["expectedHash"], token);
         assert_eq!(matched["operation"], "write");
@@ -3124,31 +3360,75 @@ mod tests {
     #[test]
     fn a_malformed_hash_or_a_stray_destination_is_refused_locally() {
         let profile = profile();
-        for hash in ["deadbeef", "sha256-", &format!("sha256-{}", "A".repeat(64)), &format!("sha256-{}", "a".repeat(63))] {
+        for hash in [
+            "deadbeef",
+            "sha256-",
+            &format!("sha256-{}", "A".repeat(64)),
+            &format!("sha256-{}", "a".repeat(63)),
+        ] {
             assert!(
-                ssh_workspace_spec(&profile, "write", "/srv/a.txt", None, None, Some(Some(hash))).is_err(),
+                ssh_workspace_spec(
+                    &profile,
+                    "write",
+                    "/srv/a.txt",
+                    None,
+                    None,
+                    Some(Some(hash))
+                )
+                .is_err(),
                 "{hash}"
             );
         }
         // `to` belongs to rename and to nothing else.
         assert!(ssh_workspace_spec(&profile, "rename", "/srv/a.txt", None, None, None).is_err());
-        assert!(ssh_workspace_spec(&profile, "write", "/srv/a.txt", None, Some("/srv/b.txt"), None).is_err());
-        assert!(ssh_workspace_spec(&profile, "rename", "/srv/a.txt", None, Some("relative"), None).is_err());
-        let renamed = ssh_workspace_spec(&profile, "rename", "/srv/a.txt", None, Some("/srv/b.txt"), None).unwrap();
+        assert!(ssh_workspace_spec(
+            &profile,
+            "write",
+            "/srv/a.txt",
+            None,
+            Some("/srv/b.txt"),
+            None
+        )
+        .is_err());
+        assert!(ssh_workspace_spec(
+            &profile,
+            "rename",
+            "/srv/a.txt",
+            None,
+            Some("relative"),
+            None
+        )
+        .is_err());
+        let renamed = ssh_workspace_spec(
+            &profile,
+            "rename",
+            "/srv/a.txt",
+            None,
+            Some("/srv/b.txt"),
+            None,
+        )
+        .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(
-            &STANDARD.decode(argv(&renamed).last().unwrap().trim_matches('\'')).unwrap(),
+            &STANDARD
+                .decode(argv(&renamed).last().unwrap().trim_matches('\''))
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(payload["to"], "/srv/b.txt");
     }
     #[test]
-    fn only_a_detached_binding_can_be_attached() {        let attached = profile();
+    fn only_a_detached_binding_can_be_attached() {
+        let attached = profile();
         assert!(ssh_attach_spec(&attached, &binding(&attached), None, true).is_err());
         let detached = detached_profile();
-        assert!(ssh_attach_spec(&detached, &detached_binding(&detached, None), None, true).is_err());
+        assert!(
+            ssh_attach_spec(&detached, &detached_binding(&detached, None), None, true).is_err()
+        );
         assert!(ssh_attach_spec(
             &detached,
-            &ExecutionBinding::Local { target_id: "local".into() },
+            &ExecutionBinding::Local {
+                target_id: "local".into()
+            },
             None,
             true
         )
@@ -3169,7 +3449,9 @@ mod tests {
         // The launcher rejects --capabilities with any extra argument, so sending
         // one would turn every probe into exit 64 and look like an old launcher.
         assert_eq!(
-            args.iter().filter(|arg| arg.starts_with("--capabilities")).count(),
+            args.iter()
+                .filter(|arg| arg.starts_with("--capabilities"))
+                .count(),
             1
         );
     }

@@ -330,6 +330,16 @@ export const en = {
   "terminal.selectAll": "Select all",
   "terminal.clear": "Clear",
   "terminal.clipboardUnavailable": "(clipboard unavailable — nothing to paste)",
+  "terminal.dropHint": "Drop to insert paths",
+  "terminal.blocks": "Blocks",
+  "terminal.blockView": "Block view",
+  "terminal.classic": "Classic",
+  "terminal.classicView": "Classic view",
+  "terminal.remoteConnecting": "Connecting to {host}…",
+  "terminal.remoteExited": "Remote shell exited ({detail}).",
+  "terminal.remoteStartFailed": "Could not start remote shell: {error}",
+  "terminal.remoteWriteFailed": "Could not send terminal input: {error}",
+  "terminal.remoteInputOverflow": "Too much input was entered while the remote shell was connecting.",
 
   // diff review card
   "review.edited": "Pi edited {file}",

@@ -277,7 +277,7 @@ function PaletteBody() {
     // work-only cannot leave the chat column, so the toggle is not offered
     const hiddenBaseCommands = new Set<string>([
       ...(layoutMode === "work-only" ? ["work"] : []),
-      ...(remoteMode ? ["work", "terminal", "zen"] : []),
+      ...(remoteMode ? ["work", "zen"] : []),
     ]);
     const visibleBase = base.filter((command) => !hiddenBaseCommands.has(command.id));
     return [...visibleBase, ...fromProjects, ...fromPi];

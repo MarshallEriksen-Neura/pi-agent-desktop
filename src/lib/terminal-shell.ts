@@ -186,6 +186,19 @@ export function pasteIntoTerminal(text: string) {
   handleTermInput(text);
 }
 
+/**
+ * The line currently being edited.
+ *
+ * Exposed for callers that have to append to it and need to know whether a
+ * separator is required first — a dropped path after `ls` is a second word, a
+ * dropped path at an empty prompt is the first one. Only this shell can answer
+ * that, because only this shell keeps the line (a remote PTY does not report
+ * one).
+ */
+export function currentTerminalLine(): string {
+  return buffer;
+}
+
 async function runBash(cmd: string) {
   running = true;
   const client = getPiClient();

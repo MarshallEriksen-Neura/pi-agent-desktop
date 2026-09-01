@@ -36,6 +36,8 @@ const EXPECTED_COMMAND_NAMES = [
   "remote_profile_capabilities", "remote_profile_check_draft", "remote_profile_delete",
   "remote_profile_install_launcher", "remote_profile_preflight",
   "remote_profile_save", "remote_profiles_list", "ssh_config_hosts",
+  "remote_terminal_resize", "remote_terminal_start", "remote_terminal_stop",
+  "remote_terminal_write",
   // Remote provider sync: identifiers in, redacted previews out. Provider JSON
   // and credentials stay behind these three commands.
   "remote_provider_sync_apply", "remote_provider_sync_candidates",

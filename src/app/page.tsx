@@ -98,11 +98,11 @@ export default function Home() {
   useEffect(() => {
     const actions: Record<string, () => void> = {
       commandPalette: () => setCommandPalette(!useUI.getState().commandPaletteOpen),
+      toggleTerminal: () => useUI.getState().toggleTerminal(),
       ...(!remoteMode
         ? {
             zenMode: () => toggleZen(),
             workMode: () => toggleWork(), // no-op in work-only — no other layout to reach
-            toggleTerminal: () => useUI.getState().toggleTerminal(),
           }
         : {}),
     };
@@ -129,9 +129,9 @@ export default function Home() {
 
   useEffect(() => {
     if (!remoteMode) return;
-    // Persisted local layout state must not blank or expose local-only surfaces
-    // when the restored conversation is SSH-bound.
-    useUI.setState({ zenMode: false, terminalOpen: false });
+    // Persisted local layout state must not expose local-only layout modes when
+    // the restored conversation is SSH-bound. The terminal itself is remote-capable.
+    useUI.setState({ zenMode: false });
   }, [remoteMode]);
 
   /* Nothing mounts until the saved layout is known, so a work-mode launch never
@@ -465,7 +465,7 @@ export default function Home() {
           ))}
       </div>
 
-      {!remoteMode && <TerminalDrawer />}
+      <TerminalDrawer />
       {!remoteMode && <DiffReviewCard />}
 
       {/* Zen-mode floating agent input — the immersive core */}

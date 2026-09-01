@@ -16,6 +16,8 @@ import { mockUpdaterPort } from "../mock/updater";
 import { mockWindowPort } from "../mock/window";
 import { createMockWorkspaceFsPort } from "../mock/workspace-fs";
 import { createUnsupportedRemoteWorkspaceFsPort } from "../ports/remote-workspace-fs";
+import { createUnsupportedFileDropPort } from "../ports/file-drop";
+import { createUnsupportedRemoteTerminalPort } from "../ports/remote-terminal";
 import {
   configureBrowserBackend,
   type BackendPorts,
@@ -30,6 +32,7 @@ export function createBrowserBackendPorts(): BackendPorts {
     createPiProcess: (taskId) => createMockPiProcessPort(taskId),
     sessionRepository: createMockSessionRepositoryPort(),
     remoteProfiles: createMockRemotePiProfilePort(),
+    remoteTerminal: createUnsupportedRemoteTerminalPort(),
     remoteProviderSync: mockRemoteProviderSyncPort,
     workspaceFs,
     // The preview has no SSH transport at all, so an SSH binding must refuse
@@ -51,6 +54,8 @@ export function createBrowserBackendPorts(): BackendPorts {
     assetUrl: mockAssetUrlPort,
     petWindow: mockPetWindowPort,
     externalNavigation: mockExternalNavigationPort,
+    // A page receives `File` objects, never paths — there is nothing to insert.
+    fileDrop: createUnsupportedFileDropPort(),
   };
 }
 

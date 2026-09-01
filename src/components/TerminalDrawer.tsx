@@ -14,14 +14,18 @@ import { isMacPlatform } from "@/lib/shortcuts";
 import { ansi, termBus } from "@/lib/terminal-bus";
 import { useT } from "@/lib/i18n";
 import { Kbd } from "./primitives";
-import { handleTermInput, pasteIntoTerminal, promptLine } from "@/lib/terminal-shell";
+import { handleTermInput, currentTerminalLine, pasteIntoTerminal, promptLine } from "@/lib/terminal-shell";
 import { openExternal } from "@/lib/open-external";
-import { X, Command, LayoutGrid, Terminal as TerminalIcon } from "lucide-react";
+import { X, Command, FileDown, LayoutGrid, Terminal as TerminalIcon } from "lucide-react";
+import { formatDroppedPaths } from "@/lib/terminal-drop";
+import { useFileDropZone } from "@/lib/use-file-drop";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
 import { TerminalBlocks } from "./TerminalBlocks";
 import { TerminalInput } from "./TerminalInput";
-import { blockPromptLine, runPastedLines } from "@/lib/terminal-block-shell";
+import { runPastedLines } from "@/lib/terminal-block-shell";
 import { useRuntime } from "@/lib/pi/runtime";
+import { useSessions } from "@/lib/pi/sessions";
+import { getPort } from "@/lib/backend/composition/container";
 import {
   canReadClipboard,
   copyText,
@@ -70,11 +74,25 @@ function monoFontStack(): string {
   return declared || "ui-monospace, Consolas, monospace";
 }
 
+let remoteTerminalSequence = 0;
+function nextRemoteTerminalSessionId(): string {
+  remoteTerminalSequence += 1;
+  return `terminal_${Date.now().toString(36)}_${remoteTerminalSequence.toString(36)}`;
+}
+
 /** Bottom drawer terminal — slides up with a spring, themed by tokens. */
 export function TerminalDrawer() {
   const { terminalOpen, setTerminalOpen } = useUI();
   const { viewMode, setViewMode } = useTerminalBlocks();
   const runtime = useRuntime((state) => state.persistedConfig);
+  const executionBinding = useSessions((state) => state.executionBinding);
+  const remoteBinding = executionBinding.kind === "ssh" ? executionBinding : null;
+  const remoteBindingRef = useRef(remoteBinding);
+  remoteBindingRef.current = remoteBinding;
+  const effectiveViewMode = remoteBinding ? "classic" : viewMode;
+  const terminalTargetKey = remoteBinding
+    ? `${remoteBinding.profileId}:${remoteBinding.profileRevision}:${remoteBinding.remoteCwd}`
+    : "local";
   const t = useT();
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -94,24 +112,77 @@ export function TerminalDrawer() {
    */
   const pasteArmedRef = useRef<number | null>(null);
 
+  /** Whether the classic xterm view is the one on screen. */
+  const isClassicView = useCallback(
+    () =>
+      remoteBindingRef.current !== null ||
+      useTerminalBlocks.getState().viewMode === "classic",
+    []
+  );
+
+  /** Insert text into whichever view is showing: the xterm line, or the input box. */
+  const insertText = useCallback(
+    (text: string) => {
+      if (!text) return;
+      if (isClassicView()) {
+        if (remoteBindingRef.current) termRef.current?.paste(text);
+        else pasteIntoTerminal(text);
+        return;
+      }
+      const store = useTerminalBlocks.getState();
+      // Complete lines run; the tail joins whatever is already in the input.
+      const tail = runPastedLines(store.input + text);
+      useTerminalBlocks.getState().setInput(tail);
+    },
+    [isClassicView]
+  );
+
   /** Paste into whichever view is showing: the xterm line, or the input box. */
   const pasteFromClipboard = useCallback(async () => {
     const text = await readClipboardText();
     if (!text) {
-      if (useTerminalBlocks.getState().viewMode === "classic") {
-        termBus.writeln(ansi.dim(tRef.current("terminal.clipboardUnavailable")));
-      }
+      const message = ansi.dim(tRef.current("terminal.clipboardUnavailable"));
+      if (remoteBindingRef.current) termRef.current?.writeln(message);
+      else if (isClassicView()) termBus.writeln(message);
       return;
     }
-    if (useTerminalBlocks.getState().viewMode === "classic") {
-      pasteIntoTerminal(text);
-      return;
-    }
-    const store = useTerminalBlocks.getState();
-    // Complete lines run; the tail joins whatever is already in the input.
-    const tail = runPastedLines(store.input + text);
-    useTerminalBlocks.getState().setInput(tail);
-  }, []);
+    insertText(text);
+  }, [insertText, isClassicView]);
+
+  /**
+   * Type the paths of files dropped onto the drawer.
+   *
+   * A drop types, it never runs: `formatDroppedPaths` emits no newline, so the
+   * paths land as an editable argument list in either view.
+   */
+  const insertDroppedPaths = useCallback(
+    (paths: string[]) => {
+      const remote = remoteBindingRef.current !== null;
+      const text = formatDroppedPaths(paths, {
+        // A remote shell shares no filesystem with this machine, so its paths go
+        // in verbatim — still useful as an scp argument, and wrong to rewrite for
+        // a namespace the file did not come from.
+        wslDistro: !remote && runtime.mode === "wsl" ? (runtime.distro ?? "") : null,
+        precedingLine: remote
+          ? null
+          : isClassicView()
+            ? currentTerminalLine()
+            : useTerminalBlocks.getState().input,
+      });
+      insertText(text);
+      // The drag started in another application, so the terminal is very likely
+      // not the focused element by the time the path lands in it.
+      if (isClassicView()) termRef.current?.focus();
+    },
+    [insertText, isClassicView, runtime.distro, runtime.mode]
+  );
+
+  const dropZoneRef = useRef<HTMLElement>(null);
+  const dropActive = useFileDropZone({
+    enabled: terminalOpen,
+    targetRef: dropZoneRef,
+    onDrop: insertDroppedPaths,
+  });
 
   /**
    * Watch for a native `paste` event after Ctrl/Cmd+V, and read the clipboard
@@ -137,14 +208,18 @@ export function TerminalDrawer() {
     pasteArmedRef.current = null;
   }, []);
 
-  /* create the terminal once the drawer first opens (or switches to classic) */
+  /* create the terminal once the drawer first opens (or switches targets) */
   useEffect(() => {
-    if (!terminalOpen || viewMode !== "classic" || !hostRef.current) return;
+    if (!terminalOpen || effectiveViewMode !== "classic" || !hostRef.current) return;
     let disposed = false;
     let unsub: (() => void) | undefined;
+    let remoteUnlisteners: Array<() => void> = [];
+    let remoteSessionId: string | null = null;
     let observer: MutationObserver | undefined;
     let resizeObserver: ResizeObserver | undefined;
     const host = hostRef.current;
+    const binding = remoteBinding;
+    const remotePort = binding ? getPort("remoteTerminal") : null;
 
     const focusTerm = () => {
       // xterm's hidden textarea can lose focus between mount and first paint,
@@ -186,20 +261,11 @@ export function TerminalDrawer() {
 
       term.loadAddon(fit);
       term.loadAddon(unicode11);
-      term.unicode.activeVersion = "11"; // enable unicode11 width tables
+      term.unicode.activeVersion = "11";
       term.loadAddon(webLinks);
       term.loadAddon(search);
 
-      /*
-       * Clipboard bindings. xterm deliberately ships none — Ctrl-C is the
-       * shell's interrupt and the embedder decides what else the modifier does.
-       *
-       * Returning false stops xterm from turning the key into shell input, but
-       * it does *not* stop the browser: xterm consults this handler before it
-       * would call preventDefault. So anything handled here has to cancel the
-       * event itself, or a paste lands twice — once from the clipboard read and
-       * again from the native `paste` event xterm also listens for.
-       */
+      /* Clipboard bindings are owned by the embedder; xterm intentionally has none. */
       const isMac = isMacPlatform();
       term.attachCustomKeyEventHandler((e) => {
         if (e.type !== "keydown") return true;
@@ -208,41 +274,21 @@ export function TerminalDrawer() {
         const key = e.key.toLowerCase();
 
         if (key === "c") {
-          // Ctrl/Cmd+Shift+C always copies. Plain Ctrl-C copies only with a
-          // selection, the way Windows Terminal does it, so an unselected
-          // Ctrl-C still reaches the shell as SIGINT. On macOS Cmd-C copies and
-          // Ctrl-C interrupts, which `mod` already separates.
           if (!e.shiftKey && !term.hasSelection()) return true;
           const selection = term.getSelection();
           e.preventDefault();
           if (!selection) return false;
           void copyText(selection);
-          // Clear it so the next Ctrl-C interrupts instead of copying again —
-          // otherwise a stale selection makes the command unkillable.
           term.clearSelection();
           return false;
         }
 
         if (key === "v") {
           if (e.shiftKey) {
-            // Ctrl/Cmd+Shift+V is the explicit route: no native paste event is
-            // coming, so reading the clipboard is the only way to serve it.
             e.preventDefault();
             void pasteFromClipboard();
             return false;
           }
-          // Plain Ctrl/Cmd+V deliberately does NOT preventDefault. The webview's
-          // own paste event costs no permission, and cancelling it to read the
-          // clipboard instead would put a prompt in front of the first paste —
-          // where a single "Block" is remembered by the webview and would leave
-          // this binding permanently dead.
-          //
-          // The native event is expected on all three platforms (the app sets
-          // its menu on the tray, not the app, so Tauri still installs the
-          // default macOS menu and its Edit→Paste accelerator). armPasteFallback
-          // is insurance, not a platform workaround: if the event ever does not
-          // arrive, the terminal would otherwise have no paste at all, and the
-          // guard costs one cancelled timer when it does.
           armPasteFallback();
           return true;
         }
@@ -251,40 +297,163 @@ export function TerminalDrawer() {
       });
 
       term.open(hostRef.current);
-
-      // webgl must load after open(); fallback to canvas on error.
-      // Load asynchronously and after the first fit so its canvas init
-      // doesn't race with the resize that establishes the textarea layout.
       const tryWebgl = () => {
         try {
           term.loadAddon(webgl);
           webglRef.current = webgl;
-        } catch (e) {
-          console.warn("WebGL renderer unavailable, using canvas:", e);
+        } catch (error) {
+          console.warn("WebGL renderer unavailable, using canvas:", error);
         }
       };
 
       fit.fit();
       tryWebgl();
-
       termRef.current = term;
       fitRef.current = fit;
 
-      unsub = termBus.subscribe((data) => term.write(data));
+      if (binding && remotePort) {
+        remoteSessionId = nextRemoteTerminalSessionId();
+        const sessionId = remoteSessionId;
+        const stopRemoteSession = () =>
+          remotePort.stop(sessionId).catch(() => undefined);
+        const disposeRemoteListeners = () => {
+          remoteUnlisteners.forEach((unlisten) => unlisten());
+          remoteUnlisteners = [];
+        };
+        let startRequested = false;
+        let remoteStarted = false;
+        let remoteExited = false;
+        let acceptingInput = true;
+        let writeFailed = false;
+        let pendingInput: string[] = [];
+        let pendingInputBytes = 0;
+        let latestSize = {
+          cols: Math.max(1, term.cols),
+          rows: Math.max(1, term.rows),
+        };
+        const reportWriteFailure = (error: unknown) => {
+          if (disposed || writeFailed) return;
+          writeFailed = true;
+          acceptingInput = false;
+          pendingInput = [];
+          pendingInputBytes = 0;
+          term.write(
+            `\r\n${ansi.dim(tRef.current("terminal.remoteWriteFailed", { error: String(error) }))}\r\n`
+          );
+        };
+        const writeRemoteInput = (data: string) => {
+          void remotePort.write(sessionId, data).catch(reportWriteFailure);
+        };
+        term.onData((data) => {
+          if (disposed || !acceptingInput || remoteExited) return;
+          if (remoteStarted) {
+            writeRemoteInput(data);
+            return;
+          }
+          // Keep startup input bounded to the backend's single-write limit. Four
+          // bytes per UTF-16 code unit is a conservative UTF-8 upper bound.
+          const estimatedBytes = data.length * 4;
+          if (pendingInputBytes + estimatedBytes > 256 * 1024) {
+            reportWriteFailure(tRef.current("terminal.remoteInputOverflow"));
+            return;
+          }
+          pendingInput.push(data);
+          pendingInputBytes += estimatedBytes;
+        });
+        term.onResize(({ cols, rows }) => {
+          latestSize = { cols: Math.max(1, cols), rows: Math.max(1, rows) };
+          if (!remoteStarted || disposed || remoteExited) return;
+          void remotePort
+            .resize(sessionId, latestSize.cols, latestSize.rows)
+            .catch(() => undefined);
+        });
+        term.write(
+          `${ansi.dim(tRef.current("terminal.remoteConnecting", { host: binding.hostAlias }))}\r\n`
+        );
+        try {
+          remoteUnlisteners.push(
+            await remotePort.onData((event) => {
+              if (!disposed && event.sessionId === sessionId) term.write(event.data);
+            })
+          );
+          if (disposed) {
+            acceptingInput = false;
+            pendingInput = [];
+            disposeRemoteListeners();
+            return;
+          }
+          remoteUnlisteners.push(
+            await remotePort.onExit((event) => {
+              if (disposed || event.sessionId !== sessionId) return;
+              remoteExited = true;
+              remoteStarted = false;
+              acceptingInput = false;
+              pendingInput = [];
+              pendingInputBytes = 0;
+              const detail = event.error ?? event.signal ?? String(event.code ?? "?");
+              term.write(
+                `\r\n${ansi.dim(tRef.current("terminal.remoteExited", { detail }))}\r\n`
+              );
+            })
+          );
+          if (disposed) {
+            acceptingInput = false;
+            pendingInput = [];
+            disposeRemoteListeners();
+            return;
+          }
+          startRequested = true;
+          await remotePort.start({
+            sessionId,
+            executionBinding: binding,
+            cols: latestSize.cols,
+            rows: latestSize.rows,
+          });
+          if (disposed) {
+            acceptingInput = false;
+            pendingInput = [];
+            void stopRemoteSession();
+            return;
+          }
+          if (remoteExited) return;
 
-      // interactive shell: keys → line discipline → pi bash RPC (classic mode only)
-      term.onData(handleTermInput);
-      if (firstOpenRef.current) {
-        firstOpenRef.current = false;
-        if (viewMode === "classic") {
+          // Startup can span a drawer animation. Fit once more so the PTY receives
+          // the final host dimensions even if ResizeObserver has not fired yet.
+          try {
+            fit.fit();
+          } catch {
+            /* host may briefly report 0 during animations */
+          }
+          remoteStarted = true;
+          void remotePort
+            .resize(sessionId, latestSize.cols, latestSize.rows)
+            .catch(() => undefined);
+          const queuedInput = pendingInput;
+          pendingInput = [];
+          pendingInputBytes = 0;
+          queuedInput.forEach(writeRemoteInput);
+        } catch (error) {
+          acceptingInput = false;
+          pendingInput = [];
+          pendingInputBytes = 0;
+          disposeRemoteListeners();
+          if (startRequested) void stopRemoteSession();
+          if (!disposed) {
+            term.write(
+              `${ansi.dim(tRef.current("terminal.remoteStartFailed", { error: String(error) }))}\r\n`
+            );
+          }
+        }
+      } else {
+        unsub = termBus.subscribe((data) => term.write(data));
+        term.onData(handleTermInput);
+        if (firstOpenRef.current) {
+          firstOpenRef.current = false;
           promptLine();
-        } else {
-          blockPromptLine();
         }
       }
       focusTerm();
 
-      // keep the terminal sized as the drawer / host changes layout
       resizeObserver = new ResizeObserver(() => {
         try {
           fit.fit();
@@ -294,7 +463,6 @@ export function TerminalDrawer() {
       });
       resizeObserver.observe(hostRef.current);
 
-      /* follow theme switches */
       observer = new MutationObserver(() => {
         term.options.theme = buildXtermTheme();
       });
@@ -305,19 +473,19 @@ export function TerminalDrawer() {
     })();
 
     host.addEventListener("mousedown", onHostMouseDown);
-    // A native paste arrived, so the clipboard-read fallback must stand down.
-    // xterm binds its own handler to the textarea and to its root element; this
-    // listens on the host those live in, so it sees the event either way.
     host.addEventListener("paste", disarmPasteFallback);
 
     return () => {
       disposed = true;
       unsub?.();
+      remoteUnlisteners.forEach((unlisten) => unlisten());
+      if (remotePort && remoteSessionId) {
+        void remotePort.stop(remoteSessionId).catch(() => undefined);
+      }
       observer?.disconnect();
       resizeObserver?.disconnect();
       host.removeEventListener("mousedown", onHostMouseDown);
       host.removeEventListener("paste", disarmPasteFallback);
-      // a pending fallback must not fire into a terminal that is going away
       disarmPasteFallback();
       webglRef.current?.dispose();
       termRef.current?.dispose();
@@ -325,8 +493,9 @@ export function TerminalDrawer() {
       fitRef.current = null;
       webglRef.current = null;
     };
+    // terminalTargetKey deliberately restarts the SSH child when host, revision, or cwd changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [terminalOpen, viewMode]);
+  }, [terminalOpen, effectiveViewMode, terminalTargetKey]);
 
   /* refit on window resize while open */
   useEffect(() => {
@@ -349,7 +518,7 @@ export function TerminalDrawer() {
       // event from also reaching a parent that might act on a right-click.
       e.preventDefault();
       const term = termRef.current;
-      const classic = viewMode === "classic";
+      const classic = effectiveViewMode === "classic";
       const selection = classic
         ? (term?.getSelection() ?? "")
         : (window.getSelection()?.toString() ?? "");
@@ -381,12 +550,19 @@ export function TerminalDrawer() {
       items.push({
         label: t("terminal.clear"),
         hint: classic ? "Ctrl+L" : undefined,
-        onSelect: () => clearTerminalView(),
+        onSelect: () => {
+          if (remoteBindingRef.current) {
+            term?.clear();
+            term?.write("\x1b[3J\x1b[2J\x1b[H");
+          } else {
+            clearTerminalView();
+          }
+        },
       });
 
       setMenu({ x: e.clientX, y: e.clientY, items });
     },
-    [viewMode, t, pasteFromClipboard]
+    [effectiveViewMode, t, pasteFromClipboard]
   );
 
   return (
@@ -394,6 +570,7 @@ export function TerminalDrawer() {
       {terminalOpen && (
         <motion.section
           key="terminal"
+          ref={dropZoneRef}
           initial={{ height: 0, opacity: 0 }}
           animate={{ height: 240, opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}
@@ -406,6 +583,8 @@ export function TerminalDrawer() {
             background: "var(--bg-sunken)",
             display: "flex",
             flexDirection: "column",
+            // anchors the drop overlay below
+            position: "relative",
           }}
         >
           {/* drawer header */}
@@ -429,7 +608,7 @@ export function TerminalDrawer() {
             >
               {t("terminal.title")}
             </span>
-            {runtime.mode === "wsl" && (
+            {runtime.mode === "wsl" && !remoteBinding && (
               <span
                 style={{
                   fontSize: 10.5,
@@ -443,11 +622,26 @@ export function TerminalDrawer() {
                 WSL{runtime.distro ? ` · ${runtime.distro}` : ""}
               </span>
             )}
+            {remoteBinding && (
+              <span
+                style={{
+                  fontSize: 10.5,
+                  color: "var(--success)",
+                  border: "1px solid color-mix(in srgb, var(--success) 35%, transparent)",
+                  borderRadius: 4,
+                  padding: "1px 5px",
+                  lineHeight: 1.4,
+                }}
+              >
+                SSH · {remoteBinding.hostAlias}
+              </span>
+            )}
             <Kbd style={{ fontSize: 10, background: "transparent", border: "none" }}>
               <Command size={10} />J
             </Kbd>
 
-            {/* View mode toggle */}
+            {/* View mode toggle: remote PTYs always use the classic xterm view. */}
+            {!remoteBinding && (
             <div
               style={{
                 marginLeft: "auto",
@@ -461,7 +655,7 @@ export function TerminalDrawer() {
             >
               <button
                 onClick={() => setViewMode("blocks")}
-                aria-label="Block view"
+                aria-label={t("terminal.blockView")}
                 style={{
                   border: "none",
                   background: viewMode === "blocks" ? "var(--accent-muted)" : "transparent",
@@ -478,11 +672,11 @@ export function TerminalDrawer() {
                 }}
               >
                 <LayoutGrid size={12} />
-                Blocks
+                {t("terminal.blocks")}
               </button>
               <button
                 onClick={() => setViewMode("classic")}
-                aria-label="Classic view"
+                aria-label={t("terminal.classicView")}
                 style={{
                   border: "none",
                   background: viewMode === "classic" ? "var(--accent-muted)" : "transparent",
@@ -499,14 +693,16 @@ export function TerminalDrawer() {
                 }}
               >
                 <TerminalIcon size={12} />
-                Classic
+                {t("terminal.classic")}
               </button>
             </div>
+            )}
 
             <button
               onClick={() => setTerminalOpen(false)}
               aria-label={t("terminal.close")}
               style={{
+                marginLeft: remoteBinding ? "auto" : undefined,
                 border: "none",
                 background: "transparent",
                 color: "var(--text-tertiary)",
@@ -525,7 +721,7 @@ export function TerminalDrawer() {
             onContextMenu={openMenu}
             style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
           >
-            {viewMode === "blocks" ? (
+            {effectiveViewMode === "blocks" ? (
               <TerminalBlocks />
             ) : (
               <div
@@ -536,7 +732,37 @@ export function TerminalDrawer() {
           </div>
 
           {/* Input row (blocks mode only) */}
-          {viewMode === "blocks" && <TerminalInput />}
+          {effectiveViewMode === "blocks" && <TerminalInput />}
+
+          {/*
+            Drop affordance. Purely visual — the drop itself is delivered by the
+            OS to the window, so this cannot be a `dragover` target and must not
+            take pointer events away from the terminal underneath it.
+          */}
+          {dropActive && (
+            <div
+              aria-hidden
+              style={{
+                position: "absolute",
+                inset: 6,
+                zIndex: 5,
+                borderRadius: 8,
+                border: "1.5px dashed var(--accent)",
+                background: "var(--accent-muted)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                fontSize: 12,
+                fontWeight: 500,
+                color: "var(--accent)",
+                pointerEvents: "none",
+              }}
+            >
+              <FileDown size={13} />
+              {t("terminal.dropHint")}
+            </div>
+          )}
 
           {menu && (
             <TerminalContextMenu state={menu} onClose={() => setMenu(null)} />

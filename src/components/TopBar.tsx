@@ -209,11 +209,9 @@ export function TopBar() {
       </button>
       )}
 
-      {!remoteMode && (
-        <IconButton label={t("topbar.toggleTerminal")} onClick={toggleTerminal} active={terminalOpen}>
-          <SquareTerminal size={16} />
-        </IconButton>
-      )}
+      <IconButton label={t("topbar.toggleTerminal")} onClick={toggleTerminal} active={terminalOpen}>
+        <SquareTerminal size={16} />
+      </IconButton>
       {/* three-way: following the OS reads as the monitor glyph, not sun/moon */}
       <IconButton
         label={

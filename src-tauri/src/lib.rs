@@ -11,6 +11,7 @@ mod provider_auth;
 mod remote_control;
 mod remote_profiles;
 mod remote_provider_sync;
+mod remote_terminal;
 mod skills_cli;
 mod updater;
 mod wsl;
@@ -87,6 +88,8 @@ fn shutdown_backend_claimed(app: &AppHandle) {
     // Stop the remote listener and cancel remote runtimes before the desktop
     // Pi process is terminated by the coordinator below.
     app.state::<RemoteControlState>().shutdown();
+    app.state::<remote_terminal::RemoteTerminalState>()
+        .shutdown();
     // Kill any browser-pending login so its loopback callback server dies with
     // the app instead of lingering on a bound port.
     app.state::<provider_auth::ProviderAuthState>().shutdown();
@@ -329,6 +332,7 @@ pub fn run() {
         .manage(PiProc::default())
         .manage(BackendLifecycle::default())
         .manage(RemoteControlState::default())
+        .manage(remote_terminal::RemoteTerminalState::default())
         .manage(provider_auth::ProviderAuthState::default())
         .manage(remote_provider_sync::RemoteProviderSyncState::default())
         .manage(chat_store::ChatDb::default())
@@ -356,6 +360,10 @@ pub fn run() {
             remote_profiles::remote_task_stop,
             remote_profiles::remote_task_reap,
             remote_profiles::ssh_config_hosts,
+            remote_terminal::remote_terminal_start,
+            remote_terminal::remote_terminal_write,
+            remote_terminal::remote_terminal_resize,
+            remote_terminal::remote_terminal_stop,
             remote_provider_sync::remote_provider_sync_candidates,
             remote_provider_sync::remote_provider_sync_prepare,
             remote_provider_sync::remote_provider_sync_apply,
