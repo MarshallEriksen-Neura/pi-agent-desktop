@@ -23,6 +23,7 @@ import "./workspace-target.test";
 // remote-exit-recovery and workspace-retarget run from isolated.test.ts — see
 // the note there.
 import "./project-switch.test";
+import "./session-delete.test";
 import "./session-lifecycle.test";
 import "./session-pin.test";
 import "./backend-provider.test";

@@ -55,6 +55,7 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
       save: async () => undefined,
       rename: async () => undefined,
       delete: async () => undefined,
+      trashSessionFile: async () => undefined,
       generateTitle: async () => "",
     },
     workspaceFs: inertWorkspaceFs,

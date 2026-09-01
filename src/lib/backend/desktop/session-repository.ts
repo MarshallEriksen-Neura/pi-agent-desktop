@@ -41,6 +41,9 @@ export const desktopSessionRepositoryPort: SessionRepositoryPort = {
 
   delete: (id: string) => desktopInvoke<void>("chat_session_delete", { id }),
 
+  trashSessionFile: (path: string) =>
+    desktopInvoke<void>("pi_session_trash", { path }),
+
   generateTitle: (input: GenerateTitleInput) =>
     desktopInvoke<string>("pi_generate_title", {
       prompt: input.prompt,

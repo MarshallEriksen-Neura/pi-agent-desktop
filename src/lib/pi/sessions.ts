@@ -218,6 +218,27 @@ async function backendDelete(id: string) {
   await sessionDependencies().repository.delete(id);
 }
 
+async function backendTrashSessionFile(path: string) {
+  await sessionDependencies().repository.trashSessionFile(path);
+}
+
+/**
+ * The transcript a delete should move to the trash, or null to leave disk alone.
+ *
+ * Two conversations are deliberately excluded. One with no pinned `sessionPath`
+ * never had a transcript to begin with (pi does not materialize the file until
+ * the first turn), and an SSH conversation's transcript lives on the remote
+ * host — the launcher has no file operations, so reaching it would need a new
+ * launcher mode and a protocol bump. Both are skips, not failures: the row still
+ * goes, and the remote file stays where the remote pi can still resume it.
+ */
+export function trashableTranscript(meta: ChatSessionMeta | undefined): string | null {
+  if (!meta) return null;
+  if ((meta.executionBinding?.kind ?? "local") !== "local") return null;
+  const path = meta.sessionPath.trim();
+  return path ? path : null;
+}
+
 /* ── helpers ── */
 
 const nowId = () =>
@@ -766,10 +787,25 @@ export const useSessions = create<SessionsStore>((set, get) => ({
   },
 
   deleteSession: async (id) => {
+    // Read before the row goes: the pinned transcript path is the only handle on
+    // pi's own session file, and it lives on the record about to be removed.
+    const transcript = trashableTranscript(get().sessions.find((x) => x.id === id));
     try {
       await backendDelete(id);
     } catch {
       return; // deletion failed — keep the row rather than lying about it
+    }
+    // Index row first, transcript second, never the reverse. If the file moved
+    // while the row survived, the next launch would resume `--session` at a path
+    // pi then recreates empty, so a delete the user was never told had succeeded
+    // would quietly eat the conversation instead. This order can only leave an
+    // orphan transcript — exactly where every delete before this already left it.
+    if (transcript) {
+      try {
+        await backendTrashSessionFile(transcript);
+      } catch {
+        // Cleanup is best effort: an orphan transcript must not fail the delete.
+      }
     }
     const wasActive = get().activeId === id;
     set((s) => ({

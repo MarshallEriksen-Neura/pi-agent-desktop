@@ -188,11 +188,26 @@ pub fn pi_start(
             let mut cmd = crate::pi_command::command(binary.as_deref())?;
             crate::pi_command::prepend_npm_bin_to_path(&mut cmd);
             cmd.args(["--mode", "rpc"]);
+            // A pin that no longer names a real transcript must not be handed to
+            // `--session`: pi would create a session *at* that path rather than
+            // resume one, so a stale row could overwrite the transcript it was
+            // meant to restore. Starting fresh instead heals the row, because the
+            // `session` announcement that follows re-pins it.
+            //
+            // Local by construction — this arm is the local binding, and a remote
+            // resume path names a file on the far host.
             if let Some(path) = resume_path
                 .as_deref()
-                .filter(|path| !path.trim().is_empty())
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
             {
-                cmd.args(["--session", path]);
+                if pi_backend_core::session_files::is_resumable(path) {
+                    cmd.args(["--session", path]);
+                } else {
+                    eprintln!(
+                        "[pi-session] pinned transcript is missing or empty; starting a fresh session rather than letting --session recreate it at {path}"
+                    );
+                }
             }
             if let Some(dir) = cwd.as_deref() {
                 cmd.current_dir(dir);

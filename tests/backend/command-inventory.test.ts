@@ -53,7 +53,10 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // handshake ever had, and it is separate from install because it decides *whether*
   // to install rather than doing it on request. The isolated remote PTY capability
   // adds start, write, resize, and stop, bringing the command inventory to 89.
-  assert.equal(result.inventory.commandUniqueCount, 89);
+  // pi_session_trash makes 90: deleting a conversation now reaches pi's own
+  // transcript, and that half is a separate command from the index-row delete
+  // because the two fail differently.
+  assert.equal(result.inventory.commandUniqueCount, 90);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -97,6 +100,7 @@ test("locks the desktop command names and Pi process event names", () => {
     "pi_fetch_models",
     "pi_generate_title",
     "pi_send",
+    "pi_session_trash",
     "pi_settings_read",
     "pi_settings_write",
     "pi_start",

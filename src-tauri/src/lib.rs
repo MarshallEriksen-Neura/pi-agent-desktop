@@ -5,6 +5,7 @@ mod pet_window;
 mod pi_bridge;
 mod pi_command;
 mod pi_models;
+mod pi_sessions;
 mod pi_settings;
 mod projects;
 mod provider_auth;
@@ -342,6 +343,7 @@ pub fn run() {
             chat_store::chat_session_save,
             chat_store::chat_session_rename,
             chat_store::chat_session_delete,
+            pi_sessions::pi_session_trash,
             pi_bridge::pi_start,
             pi_bridge::pi_send,
             pi_bridge::pi_stop,

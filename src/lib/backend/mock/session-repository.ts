@@ -64,6 +64,9 @@ export function createMockSessionRepositoryPort(
       write(read().filter((session) => session.id !== id));
     },
 
+    // Browser preview has no pi process, so there is no transcript on disk to move.
+    trashSessionFile: async () => {},
+
     generateTitle: async () => "",
   };
 }

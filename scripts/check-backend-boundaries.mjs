@@ -17,6 +17,10 @@ const EXPECTED_COMMAND_NAMES = [
   "pet_window_set_position", "pet_window_show", "pet_window_toggle", "pi_cli",
   "pi_cli_update_check", "pi_fetch_models", "pi_generate_title", "pi_send",
   "pi_settings_read", "pi_settings_write", "pi_start", "pi_stop", "project_open", "project_open_remote",
+  // Moving pi's own transcript into `~/.pi/agent/session-trash/` is a separate
+  // command from `chat_session_delete` because the index row and the file fail
+  // differently — see `pi_sessions.rs`.
+  "pi_session_trash",
   "mcp_adapter_check", "mcp_config_discover", "mcp_config_open_dir", "mcp_config_read", "mcp_config_write",
   "project_resolve",
   "project_pick", "project_remove_recent", "projects_recent", "runtime_config_read",
