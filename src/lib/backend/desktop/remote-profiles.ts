@@ -1,6 +1,7 @@
 import type {
   LauncherCapabilities,
   LauncherInstallResult,
+  LauncherUpgradeResult,
   RemotePiProfile,
   RemotePiProfileInput,
   RemoteReadinessReport,
@@ -25,6 +26,8 @@ export const desktopRemotePiProfilePort: RemotePiProfilePort = {
     }),
   capabilities: (id: string) =>
     desktopInvoke<LauncherCapabilities>("remote_profile_capabilities", { id }),
+  autoUpgradeLauncher: (id: string) =>
+    desktopInvoke<LauncherUpgradeResult>("remote_launcher_autoupgrade", { id }),
   ensureTask: (request) =>
     desktopInvoke<RemoteTaskHandle>("remote_task_ensure", {
       profileId: request.profileId,

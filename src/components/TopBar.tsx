@@ -91,34 +91,32 @@ export function TopBar() {
       }}
     >
       {/* mirrors showSidebar in page.tsx — a toggle for a panel that cannot
-          appear in this layout would be a dead button */}
-      {!remoteMode && !zenMode && (!workMode || layoutMode === "work-only") && (
+          appear in this layout would be a dead button. `remoteMode` is no longer part of
+          that condition: a remote target has a browsable tree as of V2.3. */}
+      {!zenMode && (!workMode || layoutMode === "work-only") && (
         <IconButton label={t("topbar.toggleSidebar")} onClick={toggleSidebar}>
           <PanelLeft size={16} />
         </IconButton>
       )}
 
       <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
+        {/* The first line differs because a remote target has no open file to name; the
+            second does not. `ProjectSwitcher` belongs on both paths — it is how a project
+            gets chosen, and remote targets have projects too as of V2.3. It used to be
+            suppressed here, back when remote pi was deliberately not editor-first, which
+            left remote mode with no way to pick a workspace at all. */}
         {remoteMode ? (
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
             {t("remoteAgent.mode")}
           </span>
         ) : (
-          <>
-            {layoutMode !== "work-only" && (
-              <span
-                style={{
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: "var(--text-primary)",
-                }}
-              >
-                {fileName}
-              </span>
-            )}
-            <ProjectSwitcher />
-          </>
+          layoutMode !== "work-only" && (
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+              {fileName}
+            </span>
+          )
         )}
+        <ProjectSwitcher />
       </div>
 
       {/* update reminder pill — only when a desktop update is available; tap to open the update page */}

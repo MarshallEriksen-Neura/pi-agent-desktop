@@ -139,10 +139,19 @@ export default function Home() {
   // work-only has no way back to the IDE, so the session list has to stay
   // reachable from the chat column — it would otherwise have no entry point.
   const effectiveWorkMode = workMode || remoteMode;
+  /* `remoteMode` used to force work mode here — no sidebar, no editor — from back when
+     remote pi was deliberately not editor-first. That is no longer true: a remote target
+     has a browsable filesystem (V2.3) and hash-checked writes (V2.4), so the tree and the
+     editor work there. Suppressing them left remote mode able to *choose* a project with
+     nowhere for that choice to appear.
+
+     The cost is real and worth knowing: every expand and every open is an SSH round trip,
+     so the tree is slower than a local one. That is a latency difference, not a
+     correctness one. */
   const showSidebar =
-    layoutReady && sidebarOpen && !zenMode && !remoteMode && (!workMode || layoutMode === "work-only");
+    layoutReady && sidebarOpen && !zenMode && (!workMode || layoutMode === "work-only");
   const showAgent = layoutReady && !zenMode && (remoteMode || workMode || agentPanelOpen);
-  const showEditor = layoutReady && !zenMode && !remoteMode && !workMode;
+  const showEditor = layoutReady && !zenMode && !workMode;
   /* The inspector follows the chat: it belongs to a conversation, so it appears
      wherever that conversation is and is meaningless without it. Zen mode shows
      nothing but the composer, so it stays out of the way there. */

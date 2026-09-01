@@ -1,6 +1,7 @@
 import type {
   LauncherCapabilities,
   LauncherInstallResult,
+  LauncherUpgradeResult,
   RemotePiProfile,
   RemotePiProfileInput,
   RemoteReadinessReport,
@@ -82,6 +83,15 @@ export interface RemotePiProfilePort {
    * launcher is too old to answer — see `LauncherCapabilities`.
    */
   capabilities(id: string): Promise<LauncherCapabilities>;
+  /**
+   * Brings the host's launcher up to this build when that is safe, and reports what
+   * it decided. Idempotent, and one SSH round trip when there is nothing to do.
+   *
+   * Resolves for every outcome including failure — see `LauncherUpgradeOutcome`. A
+   * caller invokes this on the way to doing something else, and must not have its own
+   * work turned into an error by a host that could not be probed.
+   */
+  autoUpgradeLauncher(id: string): Promise<LauncherUpgradeResult>;
   /**
    * Mint or reattach a detached task, so the process port only has to attach.
    *

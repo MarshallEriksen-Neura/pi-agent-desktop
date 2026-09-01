@@ -49,7 +49,10 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // reattaches a detached task before pi_start attaches to it, makes 81.
   // The detached task lifecycle adds three more — status, stop and reap are separate
   // because they are separate intents: asking, ending the work, and housekeeping.
-  assert.equal(result.inventory.commandUniqueCount, 84);
+  // remote_launcher_autoupgrade makes 85: it is the first caller the capability
+  // handshake ever had, and it is separate from install because it decides *whether*
+  // to install rather than doing it on request.
+  assert.equal(result.inventory.commandUniqueCount, 85);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -122,6 +125,9 @@ test("locks the desktop command names and Pi process event names", () => {
     "remote_conversation_get",
     "remote_conversation_messages",
     "remote_conversations_list",
+    // Brings a host's launcher up to this build when that is safe, so a mode the
+    // host predates is fixed before it is used rather than failing at the point of use
+    "remote_launcher_autoupgrade",
     // Remote Agent (SSH execution): profile CRUD, launcher install, preflight,
     // capability discovery, and ~/.ssh/config alias reading
     "remote_profile_capabilities",

@@ -16,12 +16,27 @@ payload=${2:-}
 # LAUNCHER_PROTOCOL_VERSION tracks the run/preflight payload shape. Capabilities
 # are additive and independently versioned, so a desktop must feature-detect by
 # name and never infer one capability from the presence of another.
+#
+# `launcherRevision` is this file's own build identity, and it is the only signal
+# that can order two launchers. It exists because neither of the other two can:
+# launcherProtocolVersion describes a payload shape and has stayed 1 across every
+# build, and a capability list is additive names, so a pure bugfix to an existing
+# mode is invisible in it. Bump it on every functional edit to this file; a desktop
+# that sees a lower number than its own embedded copy knows the host is behind.
+# Absent (an older launcher) reads as 0, which is correctly "older than anything".
+#
+# `statusVersion` mirrors the node-side STATUS_VERSION below, and is reported up
+# here so a desktop can decide whether replacing this file is safe *before* it
+# does: readStatus() refuses a status.json whose version is not exactly its own, so
+# overwriting across a bump would leave any live task unreadable and unstoppable.
+# The two must never drift — `the_shell_preamble_reports_the_node_side_versions`
+# pins them against these exact bytes.
 if [ "$mode" = "--capabilities" ]; then
   if [ "$#" -ne 1 ]; then
     printf '%s\n' 'capabilities_invalid_arguments' >&2
     exit 64
   fi
-  printf '%s\n' '{"launcherProtocolVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1"]}'
+  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":1,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1"]}'
   exit 0
 fi
 

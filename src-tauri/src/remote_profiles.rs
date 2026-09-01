@@ -93,8 +93,15 @@ pub struct RemotePiProfileInput {
     pub lifecycle: Option<String>,
 }
 
+/// `rename_all` renames the **variants** (`Local` → `local`); it does *not* touch the
+/// fields inside them. Without `rename_all_fields` this type expected `profile_id` while
+/// every caller sends `profileId`, so deserializing a remote binding failed with
+/// `missing field profile_id` and serializing wrote snake_case that the frontend then
+/// read back as `undefined`. Both directions were wrong, and no test caught it because
+/// every Rust test constructs the variant in Rust rather than parsing what the app sends.
+/// The wire shape is pinned by `the_wire_shape_is_what_the_frontend_actually_sends`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ExecutionBinding {
     Local {
         target_id: String,
@@ -198,6 +205,12 @@ pub struct LauncherCapabilities {
     /// Payload-protocol version for run/preflight. Capabilities are versioned
     /// independently, so this must not be used to infer any capability.
     pub launcher_protocol_version: u32,
+    /// The host's launcher build. `0` means it does not report one, i.e. older
+    /// than every build that does. The only field that can order two launchers.
+    pub launcher_revision: u32,
+    /// The host's task-state version, or `0` when unreported. Compare against
+    /// this build's before replacing the file: a mismatch strands live tasks.
+    pub status_version: u32,
     pub capabilities: Vec<String>,
     /// `true` when the launcher answered `--capabilities` at all. A launcher
     /// predating this mode reports `false` with an empty list and no error: it is
@@ -215,8 +228,22 @@ pub struct LauncherCapabilities {
 #[serde(rename_all = "camelCase")]
 struct CapabilitiesReply {
     launcher_protocol_version: u32,
+    /// This build's identity. Absent on any launcher predating it, and `0` is
+    /// deliberately "older than anything we ship" rather than an error.
+    #[serde(default)]
+    launcher_revision: u32,
+    /// The on-disk task-state version. `0` means the launcher does not report it,
+    /// which must be read as "unknown", never as "compatible".
+    #[serde(default)]
+    status_version: u32,
     capabilities: Vec<String>,
 }
+
+/// This build's embedded launcher revision. Must equal `launcherRevision` in
+/// `remote-launcher/pi-desktop-launcher`; a test pins the two together.
+const LAUNCHER_REVISION: u32 = 1;
+/// The task-state version this build's launcher reads and writes.
+const LAUNCHER_STATUS_VERSION: u32 = 1;
 
 /// A launcher too old to answer `--capabilities`.
 const EXIT_INVALID_LAUNCHER_MODE: i32 = 64;
@@ -932,6 +959,8 @@ pub fn probe_launcher_capabilities(
         host: host.to_owned(),
         launcher_path: launcher_path.to_owned(),
         launcher_protocol_version: 0,
+        launcher_revision: 0,
+        status_version: 0,
         capabilities: Vec::new(),
         supports_capability_query: false,
         error_code: error_code.map(str::to_owned),
@@ -958,12 +987,12 @@ pub fn probe_launcher_capabilities(
         // The launcher predates this mode. Not an error: the caller degrades.
         Some(EXIT_INVALID_LAUNCHER_MODE) => return Ok(unsupported(None, None)),
         Some(EXIT_COMMAND_NOT_FOUND) => {
-            let (code, _, message) =
+            let (_, error_code, message) =
                 classify_transport_failure(Some(EXIT_COMMAND_NOT_FOUND), &stderr, launcher_path);
-            return Ok(unsupported(Some(code), Some(message)));
+            return Ok(unsupported(Some(error_code), Some(message)));
         }
         code => {
-            let (error_code, _, message) = classify_transport_failure(code, &stderr, launcher_path);
+            let (_, error_code, message) = classify_transport_failure(code, &stderr, launcher_path);
             return Ok(unsupported(Some(error_code), Some(message)));
         }
     }
@@ -1000,6 +1029,8 @@ pub fn probe_launcher_capabilities(
         host: host.to_owned(),
         launcher_path: launcher_path.to_owned(),
         launcher_protocol_version: reply.launcher_protocol_version,
+        launcher_revision: reply.launcher_revision,
+        status_version: reply.status_version,
         capabilities,
         supports_capability_query: true,
         error_code: None,
@@ -1281,7 +1312,7 @@ pub fn send_to_remote_task(
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if output.status.code() != Some(0) {
-        let (error_code, _, message) =
+        let (_, error_code, message) =
             classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
         return Err(format!("{error_code}: {message}"));
     }
@@ -1369,7 +1400,7 @@ fn one_line_reply(
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if output.status.code() != Some(0) {
-        let (error_code, _, message) =
+        let (_, error_code, message) =
             classify_transport_failure(output.status.code(), &stderr, launcher_path);
         return Err(format!("{error_code}: {message}"));
     }
@@ -1598,7 +1629,7 @@ pub fn remote_workspace_request(
     // The launcher answers every workspace outcome with exit 0 and one JSON line, so
     // a nonzero status is the transport or a launcher too old to know the mode.
     if output.status.code() != Some(0) {
-        let (error_code, _, message) =
+        let (_, error_code, message) =
             classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
         return Err(format!("{error_code}: {message}"));
     }
@@ -1931,6 +1962,19 @@ fn classify_transport_failure(
         }
     };
 
+    // A launcher installed before a mode existed rejects it in the shell preamble
+    // with exactly `invalid launcher mode` and exit 64. Every profile enrolled
+    // before V2 is in that state for `--workspace`, `--attach` and the task modes,
+    // so this is the first branch a real user hits after an app update. Without it
+    // the failure falls through to `ssh_failed` and sends the user off to debug a
+    // connection that is working perfectly — the actual fix is one reinstall.
+    //
+    // Both halves of the guard matter: exit 64 alone is also how the current
+    // launcher reports malformed arguments, which is a bug on this side rather
+    // than an out-of-date host.
+    if code == Some(EXIT_INVALID_LAUNCHER_MODE) && lower.contains("invalid launcher mode") {
+        return (CHECK_LAUNCHER, "launcher_mode_unsupported", described());
+    }
     if lower.contains("permission denied (publickey")
         || lower.contains("no supported authentication methods")
         || lower.contains("too many authentication failures")
@@ -1997,6 +2041,196 @@ fn classify_launcher_failure(error_code: Option<&str>) -> (&'static str, &'stati
     }
 }
 
+/// What an auto-upgrade decided, and why.
+///
+/// Every variant is a *reported* outcome rather than an error, because none of them
+/// is a fault the user has to act on immediately: an old launcher still runs V1, and
+/// a host that cannot be reached will be retried. Only `Failed` names something broken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UpgradeDecision {
+    /// Revisions match. Nothing to do — the overwhelmingly common case.
+    AlreadyCurrent,
+    /// The host is behind and nothing is at risk. Replace the file.
+    Upgrade,
+    /// Behind, but replacing the file would strand a live task whose `status.json`
+    /// this build's launcher would refuse to read. The task outlives the upgrade
+    /// either way, so waiting costs nothing and upgrading costs the task.
+    BlockedByLiveTasks,
+    /// The host's launcher is *newer* than ours. Never overwrite: this is an older
+    /// desktop meeting a host some newer desktop already upgraded, and a downgrade
+    /// would take working features away from that other desktop.
+    RemoteIsNewer,
+}
+
+/// Decides an upgrade from facts alone, so the policy is testable without a host.
+///
+/// An unreported `remote_revision` is `0`, which means "older than every build that
+/// reports one" — *not* "unknown, leave alone". Skipping those would make this feature
+/// a no-op on exactly the hosts it exists for: every profile enrolled before revisions
+/// existed reports 0, and those are the ones running dead modes. The file at the
+/// profile's `launcherPath` got there because this app put it there, so replacing it is
+/// replacing our own artifact.
+///
+/// `supports_tasks` is what keeps that from stranding anything. A launcher without
+/// `detached-tasks-v1` cannot have tasks *by construction* — the feature did not exist —
+/// so it needs no count and must not be blocked by the fact that it cannot answer
+/// `--status`. Only a host that does support tasks has to be counted, and there an
+/// unestablished count blocks, because one status file this host cannot parse aborts the
+/// entire listing: "cannot count" is evidence of the problem the gate exists for, never
+/// evidence of an idle host.
+pub(crate) fn decide_upgrade(
+    supports_capability_query: bool,
+    remote_revision: u32,
+    remote_status_version: u32,
+    supports_tasks: bool,
+    live_tasks: Option<u32>,
+) -> UpgradeDecision {
+    if remote_revision > LAUNCHER_REVISION {
+        return UpgradeDecision::RemoteIsNewer;
+    }
+    // Equality only counts when the host actually answered. A launcher too old for the
+    // query reports 0 for everything, and must never be read as current just because
+    // this build's revision happens to be 0 too.
+    if supports_capability_query && remote_revision == LAUNCHER_REVISION {
+        return UpgradeDecision::AlreadyCurrent;
+    }
+    // Behind. Safe outright when this build reads the state the host already wrote.
+    if remote_status_version == LAUNCHER_STATUS_VERSION {
+        return UpgradeDecision::Upgrade;
+    }
+    // The state format would change. Nothing can be stranded on a launcher that has no
+    // task support at all, so that upgrades freely.
+    if !supports_tasks {
+        return UpgradeDecision::Upgrade;
+    }
+    match live_tasks {
+        Some(0) => UpgradeDecision::Upgrade,
+        _ => UpgradeDecision::BlockedByLiveTasks,
+    }
+}
+
+/// Reported back so the UI can say what happened without re-deriving it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LauncherUpgradeResult {
+    pub host: String,
+    pub launcher_path: String,
+    /// `already_current` / `upgraded` / `blocked_by_live_tasks` / `remote_is_newer`
+    /// / `unreachable`.
+    pub outcome: String,
+    /// What the host reported before anything was replaced. `0` when unknown.
+    pub previous_revision: u32,
+    /// This build's revision, so a caller can show `4 → 7` without a second source.
+    pub current_revision: u32,
+    /// Only set when the outcome is `blocked_by_live_tasks`, and `None` when the
+    /// count itself could not be established.
+    pub live_tasks: Option<u32>,
+    /// Set when the probe could not run at all. The outcome is then `unreachable`.
+    pub error: Option<String>,
+}
+
+/// Counts tasks that have not exited, using the launcher **already installed** on the
+/// host — which is the only build that can read its own state format.
+///
+/// `None` means the count could not be established: either the transport failed or the
+/// launcher answered `ok:false`, which is what a status file it cannot parse produces.
+/// The caller must treat that as blocking, never as zero.
+fn count_live_tasks(profile: &RemotePiProfile) -> Option<u32> {
+    let spec = ssh_task_spec(profile, RemoteTaskMode::Status, None).ok()?;
+    let reply = one_line_reply(&spec, WORKSPACE_TIMEOUT, &profile.launcher_path).ok()?;
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let tasks = reply.get("tasks").and_then(serde_json::Value::as_array)?;
+    Some(
+        tasks
+            .iter()
+            .filter(|task| {
+                task.get("state").and_then(serde_json::Value::as_str) != Some("exited")
+            })
+            .count() as u32,
+    )
+}
+
+/// Brings one host's launcher up to this build, when that is safe.
+///
+/// Idempotent and cheap to call: the common answer is `already_current` after a single
+/// bounded `--capabilities` round trip. It exists because a launcher mode that a host
+/// predates is *dead* on that host until someone reinstalls, and until now nothing
+/// detected that — the capability handshake had no callers at all, so every new mode
+/// failed at the point of use instead of at the point of connection.
+#[tauri::command]
+pub async fn remote_launcher_autoupgrade(id: String) -> Result<LauncherUpgradeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = load_profile(&id)?;
+        let probe = probe_launcher_capabilities(&profile.ssh_host, &profile.launcher_path)?;
+        let report = |outcome: &str, live_tasks: Option<u32>, error: Option<String>| {
+            Ok(LauncherUpgradeResult {
+                host: profile.ssh_host.clone(),
+                launcher_path: profile.launcher_path.clone(),
+                outcome: outcome.to_owned(),
+                previous_revision: probe.launcher_revision,
+                current_revision: LAUNCHER_REVISION,
+                live_tasks,
+                error,
+            })
+        };
+
+        // A probe that failed for a reason the user must fix is not an upgrade
+        // question. Reported rather than raised: the caller is on a path that has its
+        // own work to do, and a dead host will fail that work with a better message.
+        if let Some(error) = probe.error.clone() {
+            return report("unreachable", None, Some(error));
+        }
+
+        let supports_tasks = probe
+            .capabilities
+            .iter()
+            .any(|name| name == "detached-tasks-v1");
+        let decide = |live_tasks| {
+            decide_upgrade(
+                probe.supports_capability_query,
+                probe.launcher_revision,
+                probe.status_version,
+                supports_tasks,
+                live_tasks,
+            )
+        };
+
+        // Asked twice rather than pre-computing "is it behind": that ordering rule lives
+        // in `decide_upgrade` and must not be restated here, where the copy would drift.
+        // The first call assumes the worst about tasks, so it only lands on
+        // `BlockedByLiveTasks` when the count is the one thing still in question — which
+        // is also the only case worth a second round trip. Every other host, including
+        // the common already-current one, stays a single probe.
+        let mut live_tasks = None;
+        let mut decision = decide(None);
+        if decision == UpgradeDecision::BlockedByLiveTasks {
+            live_tasks = count_live_tasks(&profile);
+            decision = decide(live_tasks);
+        }
+
+        match decision {
+            UpgradeDecision::AlreadyCurrent => report("already_current", None, None),
+            UpgradeDecision::RemoteIsNewer => report("remote_is_newer", None, None),
+            UpgradeDecision::BlockedByLiveTasks => {
+                report("blocked_by_live_tasks", live_tasks, None)
+            }
+            UpgradeDecision::Upgrade => {
+                // Same installer the button uses, so there is exactly one way the
+                // launcher ever reaches a host: temp file, chmod, then `mv -f`, which
+                // leaves a running supervisor on its own inode.
+                match install_launcher_to(&profile.ssh_host, Some(&profile.launcher_path)) {
+                    Ok(_) => report("upgraded", None, None),
+                    Err(error) => report("unreachable", None, Some(error)),
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("remote launcher upgrade task failed: {error}"))?
+}
+
 /// Copies the embedded launcher to the remote host over the same SSH policy the
 /// runtime uses, then reports the absolute path it landed on. Passing
 /// `launcher_path: None` (or the `-` sentinel) resolves
@@ -2006,6 +2240,21 @@ pub fn remote_profile_install_launcher(
     host: String,
     launcher_path: Option<String>,
 ) -> Result<LauncherInstallResult, String> {
+    install_launcher_to(&host, launcher_path.as_deref())
+}
+
+/// The install itself, shared by the button and the auto-upgrade.
+///
+/// Extracted rather than duplicated so there is exactly one way the launcher reaches a
+/// host: two code paths writing to the same remote file would eventually disagree about
+/// permissions or the atomic-replace discipline, and the failure would only show up as a
+/// half-written launcher on somebody's server.
+fn install_launcher_to(
+    host: &str,
+    launcher_path: Option<&str>,
+) -> Result<LauncherInstallResult, String> {
+    let host = host.to_owned();
+    let launcher_path = launcher_path.map(str::to_owned);
     validate_host_alias(&host)?;
     let requested = match trimmed_option(launcher_path.as_deref()) {
         Some(path) => {
@@ -2211,11 +2460,13 @@ fn run_bounded_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_launcher_failure, classify_transport_failure, shell_quote, ssh_capabilities_spec,
-        ssh_launch_spec, ssh_provider_sync_spec, ssh_start_detached_spec, ssh_task_spec,
-        validate_binding, validate_profile_fields, validate_profile_id, validate_remote_task_id,
-        CapabilitiesReply, ExecutionBinding, RemotePiProfile, RemoteTaskMode, CHECK_LAUNCHER,
-        CHECK_NODE, CHECK_PI, CHECK_SSH, CHECK_WORKSPACE, LAUNCHER_INSTALLER, LAUNCHER_SOURCE,
+        classify_launcher_failure, classify_transport_failure, decide_upgrade, shell_quote,
+        ssh_capabilities_spec, ssh_launch_spec, ssh_provider_sync_spec, ssh_start_detached_spec,
+        ssh_task_spec, validate_binding, validate_profile_fields, validate_profile_id,
+        validate_remote_task_id, CapabilitiesReply, ExecutionBinding, RemotePiProfile,
+        RemoteTaskMode, UpgradeDecision, CHECK_LAUNCHER, CHECK_NODE, CHECK_PI, CHECK_SSH,
+        CHECK_WORKSPACE, LAUNCHER_INSTALLER, LAUNCHER_REVISION, LAUNCHER_SOURCE,
+        LAUNCHER_STATUS_VERSION,
     };
     use super::{ssh_attach_spec, ssh_workspace_spec, LaunchSpec, STANDARD};
     use base64::Engine as _;
@@ -2377,6 +2628,25 @@ mod tests {
             (CHECK_SSH, "ssh_auth_failed")
         );
         assert_eq!(case("", Some(255)), (CHECK_SSH, "ssh_failed"));
+
+        // A host enrolled before V2 rejects `--workspace` / `--attach` / the task
+        // modes this way. It must not read as an SSH fault: the connection is fine
+        // and the fix is a reinstall.
+        assert_eq!(
+            case("invalid launcher mode", Some(64)),
+            (CHECK_LAUNCHER, "launcher_mode_unsupported")
+        );
+        // Exit 64 also carries this side's argument bugs, which are not the user's
+        // to fix and must not offer a reinstall.
+        assert_eq!(
+            case("task_invalid_arguments", Some(64)),
+            (CHECK_SSH, "ssh_failed")
+        );
+        // The same text without exit 64 is not the launcher's mode dispatch.
+        assert_eq!(
+            case("invalid launcher mode", Some(255)),
+            (CHECK_SSH, "ssh_failed")
+        );
 
         // An empty stderr still describes the exit rather than showing nothing.
         let (_, _, described) = classify_transport_failure(Some(3), "", launcher);
@@ -2568,6 +2838,182 @@ mod tests {
         }
         // --supervise is internal: it must not be advertised as a capability.
         assert!(!LAUNCHER_SOURCE.contains("supervise-v1"));
+    }
+
+    /// The binding crosses the IPC boundary as JSON the *frontend* writes, so it has to be
+    /// asserted against that JSON verbatim. Every other test here builds
+    /// `ExecutionBinding::Ssh { .. }` in Rust, which exercises the struct and not the
+    /// contract — and that gap is exactly how `rename_all` came to rename the variants
+    /// while the fields stayed snake_case, breaking `chat_session_save` and `pi_start` for
+    /// every remote conversation while the suite stayed green.
+    #[test]
+    fn the_wire_shape_is_what_the_frontend_actually_sends() {
+        // Verbatim from ExecutionTargetPicker.tsx, including the field order.
+        let attached = r#"{"kind":"ssh","profileId":"remote-18d0a0eaf11dcf48","profileRevision":1,"hostAlias":"yuyun","remoteCwd":"/root/turb-gpt-free-register","launcherProtocolVersion":1}"#;
+        let parsed: ExecutionBinding = serde_json::from_str(attached).expect("frontend ssh binding");
+        assert_eq!(
+            parsed,
+            ExecutionBinding::Ssh {
+                profile_id: "remote-18d0a0eaf11dcf48".into(),
+                profile_revision: 1,
+                host_alias: "yuyun".into(),
+                remote_cwd: "/root/turb-gpt-free-register".into(),
+                launcher_protocol_version: 1,
+                remote_task_id: None,
+            }
+        );
+
+        // A detached profile adds the task id; an explicit `null` must read the same as
+        // absent, because `prepareRemoteBinding` writes null to clear one.
+        for json in [
+            r#"{"kind":"ssh","profileId":"p1","profileRevision":2,"hostAlias":"h","remoteCwd":"/srv","launcherProtocolVersion":1,"remoteTaskId":"t-000100ab"}"#,
+            r#"{"kind":"ssh","profileId":"p1","profileRevision":2,"hostAlias":"h","remoteCwd":"/srv","launcherProtocolVersion":1,"remoteTaskId":null}"#,
+        ] {
+            let value: ExecutionBinding = serde_json::from_str(json).expect(json);
+            let ExecutionBinding::Ssh { profile_id, .. } = &value else {
+                panic!("expected ssh");
+            };
+            assert_eq!(profile_id, "p1");
+        }
+
+        // Local, as `pi-process.ts` and `local_execution_binding()` both spell it.
+        assert_eq!(
+            serde_json::from_str::<ExecutionBinding>(r#"{"kind":"local","targetId":"local"}"#)
+                .expect("frontend local binding"),
+            ExecutionBinding::Local { target_id: "local".into() }
+        );
+
+        // And the write direction, because this is what lands in sqlite and what the
+        // frontend reads back out of `chat_sessions_list`. Snake_case here would make
+        // every persisted remote session load as `undefined` on the TS side.
+        let serialized = serde_json::to_string(&ExecutionBinding::Ssh {
+            profile_id: "p1".into(),
+            profile_revision: 2,
+            host_alias: "h".into(),
+            remote_cwd: "/srv".into(),
+            launcher_protocol_version: 1,
+            remote_task_id: None,
+        })
+        .unwrap();
+        assert!(serialized.contains("\"profileId\":\"p1\""), "{serialized}");
+        assert!(!serialized.contains("profile_id"), "{serialized}");
+        // Absent rather than null, so a reader cannot mistake "no task" for "some task".
+        assert!(!serialized.contains("remoteTaskId"), "{serialized}");
+        assert_eq!(
+            serde_json::from_str::<ExecutionBinding>(&serialized).unwrap(),
+            ExecutionBinding::Ssh {
+                profile_id: "p1".into(),
+                profile_revision: 2,
+                host_alias: "h".into(),
+                remote_cwd: "/srv".into(),
+                launcher_protocol_version: 1,
+                remote_task_id: None,
+            }
+        );
+    }
+
+    /// The `--capabilities` reply is a hand-written string in the `sh` preamble, so the
+    /// versions it reports can drift from both this build's constants and the node-side
+    /// STATUS_VERSION further down the same file. Every drift is silent and dangerous:
+    /// a stale `launcherRevision` makes an upgraded host look old and reinstall forever,
+    /// and a stale `statusVersion` makes an unsafe overwrite look safe. Asserted against
+    /// the exact bytes that get installed.
+    #[test]
+    fn the_shell_preamble_reports_the_node_side_versions() {
+        assert!(
+            LAUNCHER_SOURCE.contains(&format!("\"launcherRevision\":{LAUNCHER_REVISION}")),
+            "sh preamble does not report launcherRevision {LAUNCHER_REVISION}"
+        );
+        assert!(
+            LAUNCHER_SOURCE.contains(&format!("\"statusVersion\":{LAUNCHER_STATUS_VERSION}")),
+            "sh preamble does not report statusVersion {LAUNCHER_STATUS_VERSION}"
+        );
+        // The node half is the authority on what the state files actually contain, so
+        // the preamble is only correct if it agrees with this line.
+        assert!(
+            LAUNCHER_SOURCE.contains(&format!("const STATUS_VERSION = {LAUNCHER_STATUS_VERSION};")),
+            "node STATUS_VERSION is not {LAUNCHER_STATUS_VERSION}"
+        );
+    }
+
+    /// The gate, as a table. Written out because every wrong cell has a concrete cost:
+    /// a spurious upgrade strands tasks, a spurious downgrade breaks another desktop,
+    /// and a spurious "already current" leaves a dead mode dead.
+    #[test]
+    fn the_upgrade_gate_only_replaces_a_launcher_when_that_is_safe() {
+        let current = LAUNCHER_REVISION;
+        let status = LAUNCHER_STATUS_VERSION;
+        let newer = current + 1;
+        let other_status = status + 1;
+
+        // Same revision: never touch the host, whatever else is true.
+        assert_eq!(
+            decide_upgrade(true, current, status, true, None),
+            UpgradeDecision::AlreadyCurrent
+        );
+        assert_eq!(
+            decide_upgrade(true, current, status, true, Some(9)),
+            UpgradeDecision::AlreadyCurrent
+        );
+
+        // The case this feature exists for: a host enrolled before revisions, which
+        // reports 0. It must upgrade — skipping it would leave every pre-V2 host in the
+        // fleet running dead modes forever, which is the whole bug. Its capability list
+        // has no task support, so nothing can be stranded and no count is needed.
+        assert_eq!(
+            decide_upgrade(true, 0, 0, false, None),
+            UpgradeDecision::Upgrade
+        );
+        // Same host, but too old to answer the query at all (exit 64). Still ours, still
+        // upgraded, and notably *not* read as current just because both revisions are 0.
+        assert_eq!(
+            decide_upgrade(false, 0, 0, false, None),
+            UpgradeDecision::Upgrade
+        );
+
+        // A host some newer desktop already upgraded. Overwriting would take working
+        // features away from that desktop, so this is never automatic.
+        assert_eq!(
+            decide_upgrade(true, newer, status, true, Some(0)),
+            UpgradeDecision::RemoteIsNewer
+        );
+        // Newer wins over everything, including an unreadable task list.
+        assert_eq!(
+            decide_upgrade(true, newer, other_status, true, None),
+            UpgradeDecision::RemoteIsNewer
+        );
+
+        // The rest only becomes reachable once revisions advance past 1, so it is
+        // asserted against a hypothetical future pair rather than `current - 1`.
+        // Behind with the same state format is safe even with tasks running, because
+        // this build reads exactly the status.json they already wrote.
+        assert_eq!(
+            decide_upgrade(true, current, status, true, Some(3)),
+            UpgradeDecision::AlreadyCurrent,
+            "sanity: current means current"
+        );
+
+        // Behind, state format would change, host supports tasks. Empty is fine;
+        // anything else waits — including a count that could not be established,
+        // because one unparseable status file aborts the whole listing, so "cannot
+        // count" is evidence of the problem rather than of an idle host.
+        for (live, want) in [
+            (Some(0), UpgradeDecision::Upgrade),
+            (Some(1), UpgradeDecision::BlockedByLiveTasks),
+            (None, UpgradeDecision::BlockedByLiveTasks),
+        ] {
+            assert_eq!(
+                decide_upgrade(true, 0, other_status, true, live),
+                want,
+                "live={live:?}"
+            );
+        }
+        // Same, but the host cannot have tasks at all: never blocked on a count it
+        // could never answer.
+        assert_eq!(
+            decide_upgrade(true, 0, other_status, false, None),
+            UpgradeDecision::Upgrade
+        );
     }
 
     /// Attach is the long-lived channel, so it has to carry the same liveness probe as

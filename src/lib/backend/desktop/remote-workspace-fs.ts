@@ -6,7 +6,9 @@ import type {
 } from "../ports/remote-workspace-fs";
 import {
   REMOTE_WORKSPACE_HASH_MISMATCH,
+  REMOTE_WORKSPACE_LAUNCHER_OUTDATED,
   RemoteWorkspaceConflictError,
+  RemoteWorkspaceLauncherOutdatedError,
   RemoteWorkspaceUnsupportedError,
 } from "../ports/remote-workspace-fs";
 import { desktopInvoke } from "./invoke";
@@ -65,6 +67,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Whether a rejected `remote_workspace_request` means "this host's launcher predates
+ * the mode" rather than a transport fault.
+ *
+ * Anchored to the start of the message: the backend formats transport failures as
+ * `<errorCode>: <message>`, and matching loosely would also catch a path or a remote
+ * banner that happened to contain the code.
+ */
+function isLauncherOutdated(cause: unknown): boolean {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return message.startsWith(`${REMOTE_WORKSPACE_LAUNCHER_OUTDATED}:`);
+}
+
 /** `ssh:<profileId>` is the only remote target shape; anything else is a bug. */
 export function profileIdFromTargetId(targetId: string): string {
   const profileId = targetId.startsWith("ssh:") ? targetId.slice(4) : "";
@@ -96,16 +111,28 @@ export function createDesktopRemoteWorkspaceFsPort(
     path: string,
     options: RequestOptions = {},
   ): Promise<WorkspaceReply> {
-    const reply = await dependencies.invoke<unknown>("remote_workspace_request", {
-      id: profileId,
-      operation,
-      path,
-      ...(options.encoding ? { encoding: options.encoding } : {}),
-      ...(options.to === undefined ? {} : { to: options.to }),
-      // `in` rather than a truthiness check: `null` is a meaningful value here.
-      ...("expectedHash" in options ? { expectedHash: options.expectedHash } : {}),
-      ...(options.body === undefined ? {} : { body: options.body }),
-    });
+    let reply: unknown;
+    try {
+      reply = await dependencies.invoke<unknown>("remote_workspace_request", {
+        id: profileId,
+        operation,
+        path,
+        ...(options.encoding ? { encoding: options.encoding } : {}),
+        ...(options.to === undefined ? {} : { to: options.to }),
+        // `in` rather than a truthiness check: `null` is a meaningful value here.
+        ...("expectedHash" in options ? { expectedHash: options.expectedHash } : {}),
+        ...(options.body === undefined ? {} : { body: options.body }),
+      });
+    } catch (cause) {
+      // A transport rejection carries a `<errorCode>: <message>` string, because a
+      // launcher too old to know `--workspace` fails in its shell preamble and never
+      // reaches the JSON reply path. Translating it to a type here is what keeps the
+      // string match in one place instead of in every caller that draws an error.
+      if (isLauncherOutdated(cause)) {
+        throw new RemoteWorkspaceLauncherOutdatedError(operation, targetId);
+      }
+      throw cause;
+    }
     if (!isRecord(reply)) throw new RemoteWorkspaceError("workspaceReplyInvalid", path);
     if (reply.ok !== true) {
       const code = typeof reply.errorCode === "string" ? reply.errorCode : "workspaceReplyInvalid";

@@ -1155,6 +1155,8 @@ export const en = {
   "settings.remoteAgent.browseDirectoryAuto": "The remote home directory",
   "remoteAgent.browse.empty": "No subdirectories here",
   "remoteAgent.browse.useThis": "Use this folder",
+  "remoteAgent.browse.launcherOutdated":
+    "This host's launcher is too old to browse folders. Open Settings › Remote Agent and reinstall it, then try again.",
   "settings.remoteAgent.check": "Check",
   "settings.remoteAgent.recheck": "Check again",
   "settings.remoteAgent.checking": "Checking {host}…",
@@ -1184,6 +1186,8 @@ export const en = {
   "settings.remoteAgent.fix.ssh_unreachable": "The host did not accept a connection. Check that it is up and reachable from this network.",
   "settings.remoteAgent.fix.launcher_missing": "Install the launcher on the remote host.",
   "settings.remoteAgent.fix.launcher_not_executable": "The launcher exists but is not executable. Reinstall it.",
+  "settings.remoteAgent.fix.launcher_mode_unsupported":
+    "The launcher on this host predates the feature being used. Reinstall it to pick up the current version.",
   "settings.remoteAgent.fix.node_missing": "`node` was not found, including on a login shell's PATH. If nvm, fnm, volta or asdf manages Node.js there, the launcher normally recovers it — check what a login shell actually sees:",
   "settings.remoteAgent.fix.workspace_missing": "The directory does not exist on the remote host. Create it, or point the workspace somewhere else.",
   "settings.remoteAgent.fix.workspace_unavailable": "The directory exists but cannot be read. Check its permissions for your SSH user.",

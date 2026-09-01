@@ -24,6 +24,8 @@ const answered = (capabilities: string[]): LauncherCapabilities => ({
   host: "prod",
   launcherPath: "/opt/pi-desktop-launcher",
   launcherProtocolVersion: 1,
+  launcherRevision: 1,
+  statusVersion: 1,
   capabilities,
   supportsCapabilityQuery: true,
   errorCode: null,
@@ -34,6 +36,10 @@ const unanswered = (errorCode: string | null = null): LauncherCapabilities => ({
   host: "prod",
   launcherPath: "/opt/pi-desktop-launcher",
   launcherProtocolVersion: 0,
+  // A launcher that cannot answer reports nothing, so both versions are 0 — which
+  // means "older than every build that reports one", never "current".
+  launcherRevision: 0,
+  statusVersion: 0,
   capabilities: [],
   supportsCapabilityQuery: false,
   errorCode,
@@ -116,6 +122,8 @@ test("an old launcher degrades to the V1 surface and never to detached tasks", (
     host: "prod",
     launcherPath: "/opt/pi-desktop-launcher",
     launcherProtocolVersion: 0,
+    launcherRevision: 0,
+    statusVersion: 0,
     capabilities: [],
     supportsCapabilityQuery: false,
     errorCode: null,

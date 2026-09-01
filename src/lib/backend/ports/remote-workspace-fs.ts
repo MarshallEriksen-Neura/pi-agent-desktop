@@ -92,6 +92,30 @@ export interface HashedWorkspaceFsPort {
   renameEntryHashed(from: string, to: string): Promise<void>;
 }
 
+/**
+ * The remote host's launcher predates `--workspace` entirely.
+ *
+ * Distinct from `REMOTE_WORKSPACE_UNSUPPORTED`, which says *this build* has not
+ * implemented an operation. This one says the host has, and the user can fix it:
+ * every profile enrolled before V2 is in this state until it is reinstalled. The
+ * two need different UI, so they need different types.
+ */
+export const REMOTE_WORKSPACE_LAUNCHER_OUTDATED = "launcher_mode_unsupported";
+
+export class RemoteWorkspaceLauncherOutdatedError extends Error {
+  readonly code = REMOTE_WORKSPACE_LAUNCHER_OUTDATED;
+
+  constructor(
+    readonly operation: string,
+    readonly targetId: string,
+  ) {
+    super(
+      `The launcher on ${targetId} is too old for remote workspace access (${operation}). Reinstall it from the remote profile settings.`,
+    );
+    this.name = "RemoteWorkspaceLauncherOutdatedError";
+  }
+}
+
 /** The launcher's code for a lost update, with the live hash attached. */
 export const REMOTE_WORKSPACE_HASH_MISMATCH = "workspaceHashMismatch";
 
@@ -138,5 +162,15 @@ export function isRemoteWorkspaceUnsupported(error: unknown): boolean {
     (typeof error === "object" &&
       error !== null &&
       (error as { code?: unknown }).code === REMOTE_WORKSPACE_UNSUPPORTED)
+  );
+}
+
+/** True when the host's launcher is too old for the mode, and a reinstall fixes it. */
+export function isRemoteWorkspaceLauncherOutdated(error: unknown): boolean {
+  return (
+    error instanceof RemoteWorkspaceLauncherOutdatedError ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { code?: unknown }).code === REMOTE_WORKSPACE_LAUNCHER_OUTDATED)
   );
 }

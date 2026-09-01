@@ -1115,6 +1115,8 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.remoteAgent.browseDirectoryAuto": "远程主目录",
   "remoteAgent.browse.empty": "这里没有子目录",
   "remoteAgent.browse.useThis": "使用此文件夹",
+  "remoteAgent.browse.launcherOutdated":
+    "这台主机的 launcher 版本过旧，无法浏览目录。请到「设置 › 远程 Agent」重新安装后再试。",
   "settings.remoteAgent.check": "检查",
   "settings.remoteAgent.recheck": "重新检查",
   "settings.remoteAgent.checking": "正在检查 {host}…",
@@ -1144,6 +1146,8 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.remoteAgent.fix.ssh_unreachable": "主机没有接受连接。请确认它已开机，且当前网络能访问到它。",
   "settings.remoteAgent.fix.launcher_missing": "请在远程主机上安装启动器。",
   "settings.remoteAgent.fix.launcher_not_executable": "启动器存在但没有执行权限。请重新安装。",
+  "settings.remoteAgent.fix.launcher_mode_unsupported":
+    "这台主机上的启动器版本早于所用功能。请重新安装以更新到当前版本。",
   "settings.remoteAgent.fix.node_missing": "找不到 `node`，连登录 shell 的 PATH 里也没有。如果那台机器用 nvm / fnm / volta / asdf 管理 Node.js，启动器本应能自动找到它——请确认登录 shell 实际看到的是什么：",
   "settings.remoteAgent.fix.workspace_missing": "该目录在远程主机上不存在。请创建它，或改指到别的路径。",
   "settings.remoteAgent.fix.workspace_unavailable": "目录存在但无法读取。请检查它对你的 SSH 用户的权限。",

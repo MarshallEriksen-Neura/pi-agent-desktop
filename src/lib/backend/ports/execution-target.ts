@@ -108,6 +108,39 @@ export interface LauncherInstallResult {
   host: string;
 }
 
+/**
+ * What an auto-upgrade did to one host.
+ *
+ * - `already_current` — revisions match. The common answer, one SSH round trip.
+ * - `upgraded` — the host was behind and has been replaced in place.
+ * - `blocked_by_live_tasks` — behind, but the task-state format would change and the
+ *   host has tasks that would become unreadable and unstoppable. Deliberately left
+ *   alone; the tasks survive either way, so waiting costs nothing.
+ * - `remote_is_newer` — the host has a newer launcher than this build. Never
+ *   downgraded: some newer desktop put it there and still depends on it.
+ * - `unreachable` — the probe itself failed. Not a fault to act on here; whatever the
+ *   caller was about to do will fail with a better message.
+ */
+export type LauncherUpgradeOutcome =
+  | "already_current"
+  | "upgraded"
+  | "blocked_by_live_tasks"
+  | "remote_is_newer"
+  | "unreachable";
+
+export interface LauncherUpgradeResult {
+  host: string;
+  launcherPath: string;
+  outcome: LauncherUpgradeOutcome;
+  /** What the host reported before anything was replaced. `0` when unreported. */
+  previousRevision: number;
+  /** This build's revision, so a caller can show `0 → 1` without a second source. */
+  currentRevision: number;
+  /** Only meaningful for `blocked_by_live_tasks`; `null` when the count is unknown. */
+  liveTasks: number | null;
+  error: string | null;
+}
+
 /** Capability names this build knows how to ask for. */
 export type LauncherCapability =
   | "run-v1"
@@ -145,6 +178,19 @@ export interface LauncherCapabilities {
    * independently — never infer a capability from this number.
    */
   launcherProtocolVersion: number;
+  /**
+   * The host's launcher build, and the only field that can order two launchers.
+   * `0` means it does not report one, i.e. older than every build that does — not
+   * "unknown, leave alone". Capability names are additive, so they cannot see a
+   * bugfix to a mode that already existed; this can.
+   */
+  launcherRevision: number;
+  /**
+   * The host's on-disk task-state version, or `0` when unreported. A launcher
+   * refuses a `status.json` whose version is not exactly its own, so replacing the
+   * file across a change here strands any live task.
+   */
+  statusVersion: number;
   capabilities: string[];
   supportsCapabilityQuery: boolean;
   errorCode?: string | null;

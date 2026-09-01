@@ -9,6 +9,7 @@ import {
 import {
   createUnsupportedRemoteWorkspaceFsPort,
   isRemoteWorkspaceConflict,
+  isRemoteWorkspaceLauncherOutdated,
   isRemoteWorkspaceUnsupported,
   RemoteWorkspaceConflictError,
   supportsHashedWrites,
@@ -213,6 +214,50 @@ test("a lost update is its own error type, carrying the live hash", async () => 
     () => gone.port.writeFileHashed("/srv/project/a.txt", "mine", null),
     (error: unknown) => isRemoteWorkspaceConflict(error) && error.currentHash === null,
   );
+});
+
+test("a launcher too old for --workspace is reported as a reinstall, not a transport fault", async () => {
+  // A host enrolled before V2 rejects the mode in the launcher's shell preamble and
+  // never reaches the JSON reply path, so this arrives as a rejected invoke carrying
+  // the backend's `<errorCode>: <message>` string. Left untranslated it reads as a
+  // broken connection, and the user debugs SSH instead of pressing Install.
+  const outdated = createDesktopRemoteWorkspaceFsPort("ssh:remote-7f3a", {
+    invoke: async () => {
+      throw new Error("launcher_mode_unsupported: invalid launcher mode");
+    },
+  });
+  await assert.rejects(
+    () => outdated.listDir("/srv/project"),
+    (error: unknown) => {
+      assert.ok(isRemoteWorkspaceLauncherOutdated(error));
+      // Not the "this build cannot" signal: that one has no user-side fix.
+      assert.ok(!isRemoteWorkspaceUnsupported(error));
+      return true;
+    },
+  );
+
+  // Every other transport failure must pass through untouched — claiming a reinstall
+  // fixes a dead host would send the user to the one button that cannot help.
+  for (const message of [
+    "ssh_auth_failed: Permission denied (publickey).",
+    "ssh_unreachable: connect to host prod port 22: Connection refused",
+    // The code has to be the prefix, not merely present: a remote banner or a path
+    // that quotes it is not the launcher's mode dispatch.
+    "ssh_failed: cat: launcher_mode_unsupported: No such file",
+  ]) {
+    const other = createDesktopRemoteWorkspaceFsPort("ssh:remote-7f3a", {
+      invoke: async () => {
+        throw new Error(message);
+      },
+    });
+    await assert.rejects(
+      () => other.listDir("/srv/project"),
+      (error: unknown) =>
+        !isRemoteWorkspaceLauncherOutdated(error) &&
+        error instanceof Error &&
+        error.message === message,
+    );
+  }
 });
 
 test("a write reply without a usable hash is rejected rather than assumed", async () => {

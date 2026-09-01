@@ -349,6 +349,7 @@ pub fn run() {
             remote_profiles::remote_profile_check_draft,
             remote_profiles::remote_profile_install_launcher,
             remote_profiles::remote_profile_capabilities,
+            remote_profiles::remote_launcher_autoupgrade,
             remote_profiles::remote_workspace_request,
             remote_profiles::remote_task_ensure,
             remote_profiles::remote_task_status,

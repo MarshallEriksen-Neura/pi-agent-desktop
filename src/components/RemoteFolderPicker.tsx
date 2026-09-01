@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronRight, Folder, LoaderCircle, Server } from "lucide-react";
 import { getPort } from "@/lib/backend/composition/container";
 import type { FsEntryDto } from "@/lib/backend/ports/workspace-fs";
+import { isRemoteWorkspaceLauncherOutdated } from "@/lib/backend/ports/remote-workspace-fs";
 import type { WorkspaceTargetId } from "@/lib/workspace-target";
 import { useT } from "@/lib/i18n";
 
@@ -57,15 +58,25 @@ export function RemoteFolderPicker({
         setPath(result.path);
         setEntries(result.entries.filter((entry) => entry.isDir));
       } catch (cause) {
-        // Surfaced, not swallowed: the launcher's codes distinguish "no permission"
-        // from "gone", and a browser that silently showed an empty directory for both
-        // would be indistinguishable from a directory that really is empty.
-        setError(cause instanceof Error ? cause.message : String(cause));
+        // An out-of-date launcher gets prose naming the fix, because the raw string is
+        // a transport code that reads like a broken connection — the connection is
+        // fine, and no amount of retrying or SSH debugging will change the outcome.
+        // Every host enrolled before V2 lands here on its first browse.
+        //
+        // Otherwise: surfaced, not swallowed. The launcher's codes distinguish "no
+        // permission" from "gone", and a browser that silently showed an empty
+        // directory for both would be indistinguishable from a directory that really
+        // is empty.
+        if (isRemoteWorkspaceLauncherOutdated(cause)) {
+          setError(t("remoteAgent.browse.launcherOutdated"));
+        } else {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
       } finally {
         setLoading(false);
       }
     },
-    [targetId],
+    [targetId, t],
   );
 
   useEffect(() => {

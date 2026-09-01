@@ -75,8 +75,18 @@ function diagnosticCommand(code: string, host: string): string | undefined {
       return undefined;
   }
 }
-/** Error codes the in-app installer can fix. */
-const INSTALLABLE = new Set(["launcher_missing", "launcher_not_executable"]);
+/**
+ * Error codes the in-app installer can fix.
+ *
+ * `launcher_mode_unsupported` belongs here for the same reason as the other two: the
+ * file is present and runnable, it is just an older build, and reinstalling replaces
+ * it in place. Offering Install is the whole fix.
+ */
+const INSTALLABLE = new Set([
+  "launcher_missing",
+  "launcher_not_executable",
+  "launcher_mode_unsupported",
+]);
 /**
  * Codes that have `settings.remoteAgent.fix.*` guidance. Transport and plumbing
  * failures (timeouts, malformed responses) deliberately have none — there is no
@@ -91,6 +101,7 @@ const HAS_FIX_TEXT = new Set([
   "ssh_unreachable",
   "launcher_missing",
   "launcher_not_executable",
+  "launcher_mode_unsupported",
   "node_missing",
   "workspace_missing",
   "workspace_unavailable",

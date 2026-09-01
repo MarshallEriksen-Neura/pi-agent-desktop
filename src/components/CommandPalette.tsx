@@ -105,6 +105,7 @@ function PaletteBody() {
   const toggleLocale = useI18n((s) => s.toggleLocale);
   const wsMock = useWorkspace((s) => s.mock);
   const wsRoot = useWorkspace((s) => s.root);
+  const wsTargetId = useWorkspace((s) => s.targetId);
   const recents = useWorkspace((s) => s.recents);
   const remoteMode = useSessions((s) => s.executionBinding.kind === "ssh");
   const t = useT();
@@ -221,29 +222,44 @@ function PaletteBody() {
         },
       },
     ];
-    // project selection — folder picker + recent projects (Tauri only)
-    const fromProjects: Command[] = wsMock || remoteMode
+    // Project selection — recent projects, plus the folder picker on local targets.
+    //
+    // Scoped to the current machine: a remote path is only meaningful paired with its
+    // host, so offering another target's projects here would list directories this one
+    // cannot open. Remote projects used to be excluded entirely, which was correct only
+    // while there was no way to browse a remote host.
+    //
+    // `project-open` stays local-only on purpose: it opens a native OS dialog, and there
+    // is no version of that call that enumerates a directory over SSH. Choosing a remote
+    // folder is a listing the app draws itself, which needs more room than a palette row
+    // — it lives in the project switcher.
+    const fromProjects: Command[] = wsMock
       ? []
       : [
-          {
-            id: "project-open",
-            icon: <FolderOpen size={15} />,
-            label: t("project.open"),
-            run: () => {
-              close();
-              void useWorkspace.getState().pickProject();
-            },
-          },
+          ...(remoteMode
+            ? []
+            : [
+                {
+                  id: "project-open",
+                  icon: <FolderOpen size={15} />,
+                  label: t("project.open"),
+                  run: () => {
+                    close();
+                    void useWorkspace.getState().pickProject();
+                  },
+                },
+              ]),
           ...recents
-            .filter((r) => r.path !== wsRoot)
+            .filter((r) => r.path !== wsRoot && r.targetId === wsTargetId)
             .map((r) => ({
-              id: `project-${r.path}`,
+              id: `project-${r.targetId}-${r.path}`,
               icon: <Folder size={15} />,
               label: r.name,
               hint: r.path,
               run: () => {
                 close();
-                void useWorkspace.getState().openProject(r.path);
+                const store = useWorkspace.getState();
+                void (remoteMode ? store.openRemoteProject(r.path) : store.openProject(r.path));
               },
             })),
         ];
@@ -265,7 +281,7 @@ function PaletteBody() {
     ]);
     const visibleBase = base.filter((command) => !hiddenBaseCommands.has(command.id));
     return [...visibleBase, ...fromProjects, ...fromPi];
-  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, recents, remoteMode, t, shortcutOverrides, mac]);
+  }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, wsTargetId, recents, remoteMode, t, shortcutOverrides, mac]);
 
   if (asking) {
     return (

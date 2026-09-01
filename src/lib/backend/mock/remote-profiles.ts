@@ -1,6 +1,7 @@
 import type {
   LauncherCapabilities,
   LauncherInstallResult,
+  LauncherUpgradeResult,
   RemotePiProfileInput,
   RemotePiProfile,
   RemoteReadinessCheck,
@@ -9,6 +10,12 @@ import type {
 import type { RemotePiProfilePort } from "../ports/remote-profiles";
 
 const DEFAULT_LAUNCHER_PATH = "/usr/local/bin/pi-desktop-launcher";
+/**
+ * The revision the preview claims to have installed everywhere. Only has to be
+ * self-consistent between `capabilities` and `autoUpgradeLauncher`; the preview never
+ * talks to a real host, so it cannot drift from the shipped launcher.
+ */
+const PREVIEW_LAUNCHER_REVISION = 1;
 
 export function createMockRemotePiProfilePort(): RemotePiProfilePort {
   const profiles: RemotePiProfile[] = [];
@@ -148,6 +155,8 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
         host: profile.sshHost,
         launcherPath: profile.launcherPath,
         launcherProtocolVersion: 1,
+        launcherRevision: PREVIEW_LAUNCHER_REVISION,
+        statusVersion: 1,
         capabilities: [
           "attach-v1",
           "capabilities-v1",
@@ -160,6 +169,22 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
         ],
         supportsCapabilityQuery: true,
         errorCode: null,
+        error: null,
+      };
+    },
+    // Matches the capability reply above: a current host has nothing to upgrade. The
+    // preview models a working fleet, so reporting anything else would send anyone
+    // testing this UI chasing a host that does not exist.
+    autoUpgradeLauncher: async (id): Promise<LauncherUpgradeResult> => {
+      const profile = profiles.find((candidate) => candidate.id === id);
+      if (!profile) throw new Error(`Remote profile \`${id}\` was not found`);
+      return {
+        host: profile.sshHost,
+        launcherPath: profile.launcherPath,
+        outcome: "already_current",
+        previousRevision: PREVIEW_LAUNCHER_REVISION,
+        currentRevision: PREVIEW_LAUNCHER_REVISION,
+        liveTasks: null,
         error: null,
       };
     },
