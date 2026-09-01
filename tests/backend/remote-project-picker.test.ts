@@ -13,6 +13,14 @@ import {
   remoteHome,
 } from "../../src/lib/remote-home-cache";
 import { LOCAL_WORKSPACE_TARGET } from "../../src/lib/workspace-target";
+import {
+  draftForDir,
+  expandRemoteTilde,
+  filterRemoteEntries,
+  normalizeRemoteDir,
+  resolveRemoteDraftPath,
+  splitRemoteDraft,
+} from "../../src/lib/remote-path-draft";
 
 /**
  * The two orthogonal axes: the target picker chooses a *machine*, the project picker
@@ -172,3 +180,99 @@ test("the remote home cache only keeps absolute POSIX paths", () => {
   assert.equal(remoteHome("build-host"), "/home/u");
   assert.equal(remoteHome("never-checked"), undefined);
 });
+
+/**
+ * The typed path in the picker. Every case here decides which directory gets listed, and
+ * a listing is an SSH round trip — so "which directory does this half-typed string mean"
+ * is worth pinning down away from the component, where it is invisible.
+ */
+test("a draft splits into the directory to list and the segment to filter by", () => {
+  // The trailing slash is the whole signal: it moves the last segment from "filter" to
+  // "directory", which is what makes typing into a folder and clicking into it agree.
+  assert.deepEqual(splitRemoteDraft("/srv/app/"), { dir: "/srv/app", filter: "" });
+  assert.deepEqual(splitRemoteDraft("/srv/ap"), { dir: "/srv", filter: "ap" });
+  assert.deepEqual(splitRemoteDraft("/srv"), { dir: "/", filter: "srv" });
+  assert.deepEqual(splitRemoteDraft("/"), { dir: "/", filter: "" });
+  // Pasted paths arrive with whitespace around them far more often than directories have
+  // it at their edges.
+  assert.deepEqual(splitRemoteDraft("  /srv/app/\n"), { dir: "/srv/app", filter: "" });
+
+  // Nothing absolute has been named yet, and the alternatives — the loaded directory,
+  // `$HOME` — would list somewhere the user did not ask for.
+  assert.equal(splitRemoteDraft("srv/app"), null);
+  assert.equal(splitRemoteDraft(""), null);
+  assert.equal(splitRemoteDraft("C:\\Users"), null);
+});
+
+test("the directory half is normalized, the filter half is left verbatim", () => {
+  assert.equal(normalizeRemoteDir("/srv//app///"), "/srv/app");
+  assert.equal(normalizeRemoteDir("/srv/./app"), "/srv/app");
+  assert.equal(normalizeRemoteDir("/srv/app/.."), "/srv");
+  // Past the root there is nowhere left to go up to, and `/..` must not become "".
+  assert.equal(normalizeRemoteDir("/../.."), "/");
+  assert.equal(normalizeRemoteDir("/"), "/");
+
+  // `..` typed as the last segment is still being typed, so it stays a filter rather
+  // than silently jumping the user up a level mid-keystroke.
+  assert.deepEqual(splitRemoteDraft("/srv/app/.."), { dir: "/srv/app", filter: ".." });
+  // Once it is closed with a slash it means what it says.
+  assert.deepEqual(splitRemoteDraft("/srv/app/../"), { dir: "/srv", filter: "" });
+});
+
+test("a leading ~ expands only when the host's home is known", () => {
+  assert.equal(expandRemoteTilde("~", "/home/u"), "/home/u");
+  assert.equal(expandRemoteTilde("~/src", "/home/u"), "/home/u/src");
+  // A home with a trailing slash must not produce `//`, which the launcher would take
+  // literally in the paths it echoes back.
+  assert.equal(expandRemoteTilde("~/src", "/home/u/"), "/home/u/src");
+  assert.equal(expandRemoteTilde("~/src", "/"), "/src");
+
+  // No home cached yet (a launcher too old to report one, or no preflight this session):
+  // left alone, so it fails as a missing directory rather than resolving to the wrong one.
+  assert.equal(expandRemoteTilde("~/src", undefined), "~/src");
+  assert.equal(expandRemoteTilde("~/src", null), "~/src");
+  // Another account's home needs the remote passwd database, which nothing here has.
+  assert.equal(expandRemoteTilde("~root/src", "/home/u"), "~root/src");
+  assert.equal(splitRemoteDraft("~/src", "/home/u")?.dir, "/home/u");
+});
+
+test("the committed path is the whole draft, normalized", () => {
+  // Distinct from `splitRemoteDraft`: the button commits what the field says, filter
+  // segment included, because that is the directory the user typed.
+  assert.equal(resolveRemoteDraftPath("/srv/app"), "/srv/app");
+  assert.equal(resolveRemoteDraftPath("/srv/app/"), "/srv/app");
+  assert.equal(resolveRemoteDraftPath("/srv//app/./"), "/srv/app");
+  assert.equal(resolveRemoteDraftPath("~/app", "/home/u"), "/home/u/app");
+  assert.equal(resolveRemoteDraftPath("app"), null);
+
+  // Round trip: navigating into a directory has to produce a draft that resolves back to
+  // it, or the picker would offer to open something other than what it is showing.
+  for (const dir of ["/", "/srv", "/srv/app"]) {
+    assert.equal(resolveRemoteDraftPath(draftForDir(dir)), dir);
+    assert.equal(splitRemoteDraft(draftForDir(dir))?.filter, "");
+  }
+});
+
+test("suggestions put prefix matches first and ignore case", () => {
+  const entries = [
+    { name: "Applications" },
+    { name: "app-server" },
+    { name: "legacy-app" },
+    { name: "docs" },
+  ];
+  // Case-insensitive is safe here because the filter only decides what is *offered* —
+  // each candidate carries its own exact path, so a lenient match cannot invent one.
+  assert.deepEqual(
+    filterRemoteEntries(entries, "app").map((entry) => entry.name),
+    ["Applications", "app-server", "legacy-app"],
+  );
+  // Prefix before substring: it is what someone typing a name is aiming at.
+  assert.deepEqual(
+    filterRemoteEntries(entries, "APP-").map((entry) => entry.name),
+    ["app-server"],
+  );
+  assert.deepEqual(filterRemoteEntries(entries, "zzz"), []);
+  // An empty filter is "show the directory", not "match nothing".
+  assert.equal(filterRemoteEntries(entries, "").length, 4);
+});
+

@@ -1115,6 +1115,10 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.remoteAgent.browseDirectoryAuto": "远程主目录",
   "remoteAgent.browse.empty": "这里没有子目录",
   "remoteAgent.browse.useThis": "使用此文件夹",
+  "remoteAgent.browse.pathLabel": "这台主机上的路径",
+  "remoteAgent.browse.pathPlaceholder": "/path/to/project",
+  "remoteAgent.browse.keyboardHint": "↑↓ 选择 · Tab 补全 · Enter 打开",
+  "remoteAgent.browse.noMatch": "没有匹配「{filter}」的文件夹",
   "remoteAgent.browse.launcherOutdated":
     "这台主机的 launcher 版本过旧，无法浏览目录。请到「设置 › 远程 Agent」重新安装后再试。",
   "settings.remoteAgent.check": "检查",

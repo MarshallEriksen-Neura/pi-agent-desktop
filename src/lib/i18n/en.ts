@@ -1155,6 +1155,10 @@ export const en = {
   "settings.remoteAgent.browseDirectoryAuto": "The remote home directory",
   "remoteAgent.browse.empty": "No subdirectories here",
   "remoteAgent.browse.useThis": "Use this folder",
+  "remoteAgent.browse.pathLabel": "Path on this host",
+  "remoteAgent.browse.pathPlaceholder": "/path/to/project",
+  "remoteAgent.browse.keyboardHint": "↑↓ select · Tab complete · Enter open",
+  "remoteAgent.browse.noMatch": "No folder matches “{filter}”",
   "remoteAgent.browse.launcherOutdated":
     "This host's launcher is too old to browse folders. Open Settings › Remote Agent and reinstall it, then try again.",
   "settings.remoteAgent.check": "Check",
