@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ChevronDown, FolderOpen, Folder, Check, X } from "lucide-react";
+import { ChevronDown, FolderOpen, Folder, Check, Server, X } from "lucide-react";
 import { useWorkspace, projectName } from "@/lib/workspace";
+import { LOCAL_WORKSPACE_TARGET } from "@/lib/workspace-target";
+import { RemoteFolderPicker } from "./RemoteFolderPicker";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -13,10 +15,27 @@ import { useT } from "@/lib/i18n";
  * store (openProject stops pi, resets the tree, restarts pi in the new root).
  */
 export function ProjectSwitcher() {
-  const { root, mock, recents, switching, pickProject, openProject, removeRecent } =
-    useWorkspace();
+  const {
+    root,
+    mock,
+    recents,
+    switching,
+    targetId,
+    pickProject,
+    openProject,
+    openRemoteProject,
+    removeRecent,
+  } = useWorkspace();
   const [open, setOpen] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const t = useT();
+
+  // Scoped to the machine currently selected on the right. A remote path is only
+  // meaningful paired with its host, so showing another host's projects here would
+  // offer directories this target cannot open.
+  const remote = targetId !== LOCAL_WORKSPACE_TARGET;
+  const visibleRecents = recents.filter((recent) => recent.targetId === targetId);
+  const openRecent = (path: string) => (remote ? openRemoteProject(path) : openProject(path));
 
   // Backend kind is configured client-side, so prerendered HTML cannot know it.
   // Render nothing until hydrated — matches the server output in both modes.
@@ -77,7 +96,10 @@ export function ProjectSwitcher() {
           <>
             {/* click-away layer */}
             <div
-              onClick={() => setOpen(false)}
+              onClick={() => {
+                setOpen(false);
+                setBrowsing(false);
+              }}
               style={{ position: "fixed", inset: 0, zIndex: 60 }}
             />
             <motion.div
@@ -112,7 +134,7 @@ export function ProjectSwitcher() {
                 {t("project.recent")}
               </div>
 
-              {recents.length === 0 && (
+              {visibleRecents.length === 0 && (
                 <div
                   style={{
                     padding: "6px 10px 8px",
@@ -120,11 +142,11 @@ export function ProjectSwitcher() {
                     color: "var(--text-tertiary)",
                   }}
                 >
-                  {t("project.noRecents")}
+                  {remote ? t("project.noRecentsRemote") : t("project.noRecents")}
                 </div>
               )}
 
-              {recents.map((r) => {
+              {visibleRecents.map((r) => {
                 const current = r.path === root;
                 return (
                   <div
@@ -141,7 +163,7 @@ export function ProjectSwitcher() {
                     <button
                       onClick={() => {
                         setOpen(false);
-                        if (!current) void openProject(r.path);
+                        if (!current) void openRecent(r.path);
                       }}
                       title={r.path}
                       style={{
@@ -208,7 +230,7 @@ export function ProjectSwitcher() {
                       </span>
                     ) : (
                       <button
-                        onClick={() => void removeRecent(r.path)}
+                        onClick={() => void removeRecent(r.path, r.targetId)}
                         title={t("project.remove")}
                         style={{
                           border: "none",
@@ -235,33 +257,56 @@ export function ProjectSwitcher() {
                 }}
               />
 
-              <button
-                className="pi-row"
-                onClick={() => {
-                  setOpen(false);
-                  void pickProject();
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  width: "100%",
-                  padding: "8px 10px",
-                  border: "none",
-                  borderRadius: 8,
-                  background: "transparent",
-                  cursor: "pointer",
-                  fontSize: 12.5,
-                  color: "var(--text-primary)",
-                  textAlign: "left",
-                  fontFamily: "var(--font-ui)",
-                }}
-              >
-                <span style={{ color: "var(--accent)", display: "grid", placeItems: "center" }}>
-                  <FolderOpen size={14} />
-                </span>
-                {t("project.open")}
-              </button>
+              {/* Branches on the machine, because the two cases have nothing in
+                  common: locally the native dialog is strictly better (it knows
+                  shortcuts, drives, and the user's muscle memory), and remotely there
+                  is no dialog at all — only a listing the app draws itself. */}
+              {browsing ? (
+                <div style={{ padding: "6px 8px 4px" }}>
+                  <RemoteFolderPicker
+                    targetId={targetId}
+                    hostLabel={targetId.replace(/^ssh:/, "")}
+                    onCancel={() => setBrowsing(false)}
+                    onChoose={(path) => {
+                      setBrowsing(false);
+                      setOpen(false);
+                      void openRemoteProject(path);
+                    }}
+                  />
+                </div>
+              ) : (
+                <button
+                  className="pi-row"
+                  onClick={() => {
+                    if (remote) {
+                      setBrowsing(true);
+                      return;
+                    }
+                    setOpen(false);
+                    void pickProject();
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    width: "100%",
+                    padding: "8px 10px",
+                    border: "none",
+                    borderRadius: 8,
+                    background: "transparent",
+                    cursor: "pointer",
+                    fontSize: 12.5,
+                    color: "var(--text-primary)",
+                    textAlign: "left",
+                    fontFamily: "var(--font-ui)",
+                  }}
+                >
+                  <span style={{ color: "var(--accent)", display: "grid", placeItems: "center" }}>
+                    {remote ? <Server size={14} /> : <FolderOpen size={14} />}
+                  </span>
+                  {remote ? t("project.openRemote") : t("project.open")}
+                </button>
+              )}
             </motion.div>
           </>
         )}

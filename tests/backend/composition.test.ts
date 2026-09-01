@@ -74,6 +74,8 @@ function fakePorts(label = "fake"): BackendPorts {
       pick: async () => null,
       listRecent: async () => [],
       removeRecent: async () => [],
+      commitRemote: async () => [],
+      browse: async () => ({ path: "/", entries: [] }),
     },
     providerAuth: {
       listProviders: async () => [],

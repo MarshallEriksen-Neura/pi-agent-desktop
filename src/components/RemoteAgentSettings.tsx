@@ -34,6 +34,7 @@ import type {
   RemoteReadinessReport,
 } from "@/lib/backend/ports/execution-target";
 import { t } from "@/lib/i18n";
+import { rememberRemoteHome } from "@/lib/remote-home-cache";
 import { ProviderSyncSettings } from "./ProviderSyncSettings";
 import { GroupRow, InsetGroup } from "./settings-ui";
 
@@ -43,7 +44,7 @@ import { GroupRow, InsetGroup } from "./settings-ui";
  * per prerequisite so a failure points at the thing that fixes it.
  */
 
-const EMPTY_DRAFT: RemotePiProfileInput = { name: "", sshHost: "", remoteCwd: "" };
+const EMPTY_DRAFT: RemotePiProfileInput = { name: "", sshHost: "" };
 
 /** Display order — mirrors CHECK_ORDER in `src-tauri/src/remote_profiles.rs`. */
 const CHECK_IDS: RemoteReadinessCheckId[] = [
@@ -135,12 +136,14 @@ export function RemoteAgentSettings() {
 
   const host = draft.sshHost.trim();
   const effectiveName = draft.name.trim() || (host ? nameFromHost(host) : "");
-  const canCheck = Boolean(host && draft.remoteCwd.trim());
+  // A host alone is checkable now. The workspace is a per-conversation choice made in
+  // the project picker, so requiring one here would block setting up a machine before
+  // knowing which of its projects you want.
+  const browseDirectory = draft.remoteCwd?.trim() ?? "";
+  const canCheck = Boolean(host);
   /** The report must belong to the current draft, or Save would persist untested values. */
   const reportMatchesDraft =
-    report !== null
-    && report.host === host
-    && report.remoteCwd === draft.remoteCwd.trim();
+    report !== null && report.host === host && report.remoteCwd === browseDirectory;
   const canSave = canCheck && Boolean(effectiveName) && reportMatchesDraft && report.ok;
   const editingProfile = draft.id
     ? profiles.find((profile) => profile.id === draft.id)
@@ -179,6 +182,7 @@ export function RemoteAgentSettings() {
       remoteCwd: profile.remoteCwd,
       piExecutable: profile.piExecutable ?? undefined,
       launcherPath: profile.launcherPath,
+      lifecycle: profile.lifecycle,
     });
     setReport(null);
     setNotice(null);
@@ -190,6 +194,9 @@ export function RemoteAgentSettings() {
     try {
       const next = await profilesPort.checkDraft({ ...input, name: effectiveName || "unnamed" });
       setReport(next);
+      // A check is the cheapest place to learn the remote `$HOME`: it already paid for
+      // the round trip, and the folder browser needs somewhere to open.
+      if (input.id) rememberRemoteHome(input.id, next.home);
       setNotice({
         ok: next.ok,
         text: next.ok
@@ -300,8 +307,11 @@ export function RemoteAgentSettings() {
             iconBg="var(--accent-soft)"
             title={profile.name}
             detail={(
+              // The host, and the launcher it runs. A path here would suggest the
+              // profile owns one project; it describes a machine, and projects are
+              // chosen per conversation.
               <span
-                title={`${profile.sshHost} · ${profile.remoteCwd}`}
+                title={`${profile.sshHost} · ${profile.launcherPath}`}
                 style={{
                   display: "block",
                   overflow: "hidden",
@@ -309,7 +319,7 @@ export function RemoteAgentSettings() {
                   whiteSpace: "nowrap",
                 }}
               >
-                {profile.sshHost} · {profile.remoteCwd}
+                {profile.sshHost}
               </span>
             )}
             trailing={(
@@ -350,17 +360,15 @@ export function RemoteAgentSettings() {
         <div style={{ display: "grid", gap: 12, padding: 16 }}>
           <HostField value={draft.sshHost} options={configHosts} onChange={pickHost} />
           <Field
-            label={t("settings.remoteAgent.remoteCwd")}
-            hint={t("settings.remoteAgent.remoteCwdHint")}
-            value={draft.remoteCwd}
-            placeholder={t("settings.remoteAgent.remoteCwdPlaceholder")}
-            onChange={(value) => update("remoteCwd", value)}
-          />
-          <Field
             label={t("settings.remoteAgent.name")}
             value={draft.name}
             placeholder={host ? nameFromHost(host) : t("settings.remoteAgent.namePlaceholder")}
             onChange={(value) => update("name", value)}
+          />
+          <LifecycleField
+            value={draft.lifecycle ?? "attached"}
+            editing={Boolean(draft.id)}
+            onChange={(value) => update("lifecycle", value)}
           />
           <Disclosure
             open={advanced}
@@ -380,6 +388,17 @@ export function RemoteAgentSettings() {
               value={draft.piExecutable ?? ""}
               placeholder="pi"
               onChange={(value) => update("piExecutable", value)}
+            />
+            {/* Demoted from a required top-level field to an optional hint. It is only
+                where the folder browser opens; the workspace pi actually runs in is
+                chosen per conversation in the project picker. Empty falls back to the
+                remote `$HOME` that preflight reports. */}
+            <Field
+              label={t("settings.remoteAgent.browseDirectory")}
+              hint={t("settings.remoteAgent.browseDirectoryHint")}
+              value={draft.remoteCwd ?? ""}
+              placeholder={report?.home ?? t("settings.remoteAgent.browseDirectoryAuto")}
+              onChange={(value) => update("remoteCwd", value)}
             />
           </Disclosure>
 
@@ -413,7 +432,7 @@ export function RemoteAgentSettings() {
           )}
 
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-            {(draft.id || host || draft.remoteCwd) && (
+            {(draft.id || host) && (
               <Button variant="ghost" size="sm" onClick={resetDraft} disabled={busy !== null}>
                 {t("common.cancel")}
               </Button>
@@ -657,6 +676,69 @@ function FieldShell({
         <span style={{ fontSize: 11.5, color: "var(--text-tertiary)" }}>{hint}</span>
       )}
     </div>
+  );
+}
+
+/**
+ * Attached or detached, as two labelled choices rather than a switch.
+ *
+ * A switch would need a name for the *off* state, and there isn't a good one — these are
+ * two different execution models, not a feature being enabled. The consequence that
+ * matters is in the description: detached work survives losing the connection, which is
+ * also why closing the app stops being the way to stop it.
+ */
+function LifecycleField({
+  value,
+  editing,
+  onChange,
+}: {
+  value: "attached" | "detached";
+  editing: boolean;
+  onChange: (value: "attached" | "detached") => void;
+}) {
+  return (
+    <FieldShell
+      label={t("settings.remoteAgent.lifecycle")}
+      hint={
+        editing
+          ? // Bindings are persisted per conversation, so changing this cannot retroactively
+            // move work that is already running. Saying so is better than silently
+            // surprising someone who expected their open conversation to change.
+            t("settings.remoteAgent.lifecycleExistingHint")
+          : t(`settings.remoteAgent.lifecycle.${value}Hint`)
+      }
+    >
+      <div style={{ display: "flex", gap: 8 }}>
+        {(["attached", "detached"] as const).map((option) => {
+          const active = value === option;
+          return (
+            <button
+              key={option}
+              onClick={() => onChange(option)}
+              style={{
+                flex: 1,
+                display: "grid",
+                gap: 2,
+                textAlign: "left",
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: `1px solid ${active ? "var(--accent)" : "var(--separator)"}`,
+                background: active ? "var(--accent-muted)" : "transparent",
+                cursor: "pointer",
+                fontFamily: "var(--font-ui)",
+              }}
+            >
+              <span style={{ fontSize: 12.5, color: "var(--text-primary)" }}>
+                {t(`settings.remoteAgent.lifecycle.${option}`)}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+                {t(`settings.remoteAgent.lifecycle.${option}Short`)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </FieldShell>
   );
 }
 

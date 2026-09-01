@@ -18,9 +18,25 @@ import { t } from "@/lib/i18n";
 import { useExtUi } from "@/lib/pi/ext-ui";
 import { useSessions } from "@/lib/pi/sessions";
 import { usePi } from "@/lib/pi/store";
-import { useWorkspace } from "@/lib/workspace";
+import { rememberRemoteHome } from "@/lib/remote-home-cache";
+import { useWorkspace, type RecentProject } from "@/lib/workspace";
+import type { WorkspaceTargetId } from "@/lib/workspace-target";
 
 const LOCAL_BINDING: ExecutionBinding = { kind: "local", targetId: "local" };
+
+/**
+ * The most recent project on one machine.
+ *
+ * Switching hosts should land where that host was left, not on whatever directory the
+ * profile happens to name — the recents list is already ordered most-recent-first, so
+ * the first match is the answer.
+ */
+function lastProjectFor(
+  targetId: WorkspaceTargetId,
+  recents: RecentProject[],
+): string | undefined {
+  return recents.find((recent) => recent.targetId === targetId)?.path;
+}
 
 export function ExecutionTargetPicker() {
   const profilesPort = getPort("remoteProfiles");
@@ -29,6 +45,7 @@ export function ExecutionTargetPicker() {
   const binding = useSessions((state) => state.executionBinding);
   const switchTarget = useSessions((state) => state.switchExecutionTarget);
   const workspaceRoot = useWorkspace((state) => state.root) ?? "";
+  const recents = useWorkspace((state) => state.recents);
   const status = usePi((state) => state.status);
 
   const reload = useCallback(async () => {
@@ -97,12 +114,30 @@ export function ExecutionTargetPicker() {
             : t("remoteAgent.target.notReady", { host: preflight.host }),
         );
       }
+      // Kept so the folder browser opens somewhere useful. `$HOME` cannot be expanded
+      // locally and the launcher only takes absolute paths, so without this the first
+      // browse would start at `/`.
+      rememberRemoteHome(profile.id, preflight.home);
+      // Opportunistic housekeeping, deliberately not on a timer: acceptance showed
+      // orphans need a real network partition, so this is a cold path and a resident
+      // reaper would be machinery for an event that almost never fires. Switching to a
+      // host is the natural moment — it is the point where stale task directories from a
+      // previous session are most likely and least in the way.
+      //
+      // Fire-and-forget: housekeeping must never be what stops a user connecting.
+      if (profile.lifecycle === "detached") {
+        void profilesPort.reapTasks(profile.id).catch(() => undefined);
+      }
+      // The workspace comes from the last project used on this host, not from the
+      // profile — one machine holds many projects. With none, the target switches with
+      // no project and the project picker asks for one.
+      const previous = lastProjectFor(`ssh:${profile.id}`, recents);
       await switchTarget({
         kind: "ssh",
         profileId: profile.id,
         profileRevision: profile.revision,
         hostAlias: profile.sshHost,
-        remoteCwd: profile.remoteCwd,
+        remoteCwd: previous ?? profile.remoteCwd ?? preflight.home ?? "/",
         launcherProtocolVersion: profile.launcherProtocolVersion,
       }, workspaceRoot);
     } catch (error) {
@@ -171,6 +206,11 @@ export function ExecutionTargetPicker() {
                     <Server size={14} />
                     <span style={{ display: "grid", flex: 1, minWidth: 0 }}>
                       <span>{profile.name}</span>
+                      {/* The host, and only the host. This picker answers "which
+                          machine"; the project picker answers "which directory on it".
+                          Showing a path here made one config out of two independent
+                          choices, and made it look as though a profile owned exactly
+                          one project. */}
                       <span
                         style={{
                           color: "var(--text-tertiary)",
@@ -180,7 +220,7 @@ export function ExecutionTargetPicker() {
                           whiteSpace: "nowrap",
                         }}
                       >
-                        {profile.sshHost} · {profile.remoteCwd}
+                        {profile.sshHost}
                       </span>
                     </span>
                     {active && <Check size={14} />}

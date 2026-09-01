@@ -15,7 +15,7 @@ import { desktopSessionRepositoryPort } from "../desktop/session-repository";
 import { desktopUpdaterPort } from "../desktop/updater";
 import { desktopWindowPort } from "../desktop/window";
 import { desktopWorkspaceFsPort } from "../desktop/workspace-fs";
-import { createUnsupportedRemoteWorkspaceFsPort } from "../ports/remote-workspace-fs";
+import { createDesktopRemoteWorkspaceFsPort } from "../desktop/remote-workspace-fs";
 import {
   configureDesktopBackend,
   type BackendPorts,
@@ -27,12 +27,13 @@ export function createDesktopBackendPorts(): BackendPorts {
     createPiProcess: (taskId, executionBinding) => createDesktopPiProcessPort(taskId, executionBinding),
     sessionRepository: desktopSessionRepositoryPort,
     workspaceFs: desktopWorkspaceFsPort,
-    // An SSH binding resolves to a port that refuses every call rather than to
-    // the local bridge, so a remote path cannot reach the local filesystem even
-    // if a caller forgets to check the target. V2.3 replaces the read half.
+    // An SSH binding never resolves to the local bridge, so a remote path cannot
+    // reach the local filesystem even if a caller forgets to check the target. The
+    // read half is real as of V2.3; the mutating half still refuses until V2.4
+    // adds the hash check a remote write needs.
     createWorkspaceFs: (targetId) =>
       targetId && targetId !== "local"
-        ? createUnsupportedRemoteWorkspaceFsPort(targetId)
+        ? createDesktopRemoteWorkspaceFsPort(targetId)
         : desktopWorkspaceFsPort,
     projectCatalog: desktopProjectCatalogPort,
     providerAuth: createDesktopProviderAuthPort(),

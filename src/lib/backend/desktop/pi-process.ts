@@ -8,6 +8,7 @@ import { DEFAULT_TASK_ID } from "../ports/pi-process";
 import type { ExecutionBinding } from "../ports/execution-target";
 import { desktopInvoke } from "./invoke";
 import type { PiCommand } from "../../pi/protocol";
+import { createAttachCursor } from "../../pi/remote-attach";
 
 type Unlisten = () => void;
 type EventHandler = (event: { payload: unknown }) => void;
@@ -21,6 +22,20 @@ const DEFAULT_DEPENDENCIES: DesktopPiProcessDependencies = {
   listen: (event, handler) => listen<unknown>(event, handler),
   invoke: (command, args) => desktopInvoke(command, args),
 };
+
+/**
+ * A key for one outbound message, matching the launcher's `[A-Za-z0-9_.-]{1,128}`.
+ *
+ * Monotonic counter plus a per-process random prefix: the counter alone would collide
+ * across desktop restarts against a task that outlived one, and the launcher treats a
+ * repeated key with a *different* payload as a conflict rather than a retry.
+ */
+const KEY_PREFIX = Math.random().toString(36).slice(2, 10);
+let keySequence = 0;
+function nextIdempotencyKey(): string {
+  keySequence += 1;
+  return `k-${KEY_PREFIX}-${keySequence}`;
+}
 
 /** Payload shape of the `pi://line` / `pi://stderr` events. */
 interface PiLineEventPayload {
@@ -83,6 +98,14 @@ export class DesktopPiProcessPort implements PiProcessPort {
   private stopEpoch = 0;
   private startOperation: Promise<void> | null = null;
   private pendingEvents: PendingEvent[] = [];
+  private readonly transcriptResetHandlers = new Set<() => void>();
+  /**
+   * Non-null exactly when the child is `--attach`, i.e. a detached remote target.
+   *
+   * Created per start, because a reattach replays from a cursor the caller supplies and
+   * the decoder has to begin counting from there rather than from zero.
+   */
+  private cursor: ReturnType<typeof createAttachCursor> | null = null;
 
   constructor(
     taskId = DEFAULT_TASK_ID,
@@ -107,6 +130,10 @@ export class DesktopPiProcessPort implements PiProcessPort {
     const startStopEpoch = this.stopEpoch;
     const binding =
       options.executionBinding ?? this.executionBinding ?? { kind: "local", targetId: "local" };
+    // The binding already carries the signal: `remoteTaskId` is present exactly when the
+    // profile is detached, an invariant `validate_binding` enforces on the Rust side. So
+    // the adapter needs no second source of truth for the lifecycle.
+    const detached = binding.kind === "ssh" && Boolean(binding.remoteTaskId);
     this.targetId = targetIdForBinding(binding);
     this.generation = null;
     this.starting = true;
@@ -116,12 +143,17 @@ export class DesktopPiProcessPort implements PiProcessPort {
       if (startStopEpoch !== this.stopEpoch) {
         throw new Error("Pi start was cancelled");
       }
+      // A detached remote target speaks attach frames, so the decoder has to exist
+      // before the first line can arrive. Seeded with the caller's cursor: it counts
+      // forward from what has already been applied, not from zero.
+      this.cursor = detached ? createAttachCursor(options.attachAfter ?? 0) : null;
       const started = await this.dependencies.invoke<PiStartResult>("pi_start", {
         taskId: this.taskId,
         cwd: options.cwd ?? null,
         binary: null,
         resumePath: options.resumePath ?? null,
         executionBinding: binding,
+        attachAfter: options.attachAfter ?? null,
       });
       if (started.targetId !== this.targetId) {
         await stopExpectedProcess(this.dependencies.invoke, this.taskId, started.generation, started.targetId).catch(
@@ -158,6 +190,15 @@ export class DesktopPiProcessPort implements PiProcessPort {
       line: JSON.stringify(command),
       expectedGeneration: this.generation,
       expectedTargetId: this.targetId,
+      // Only for a detached target: on any other transport the write either reaches pi's
+      // stdin or throws, with no ambiguous middle state to protect against.
+      //
+      // Per *call* rather than per attempt is the point. A transport-level retry of this
+      // same send has to reuse the key, because a disconnect leaves it unknown whether the
+      // first attempt landed — retrying blind would duplicate a turn, and not retrying
+      // would lose one. A caller deciding to send again is a different message and gets a
+      // different key.
+      idempotencyKey: this.cursor !== null ? nextIdempotencyKey() : null,
     });
   }
 
@@ -236,6 +277,36 @@ export class DesktopPiProcessPort implements PiProcessPort {
   private dispatchEvent(event: PendingEvent): void {
     if (event.payload.generation !== this.generation) return;
     if (event.kind === "line") {
+      // On a detached target the child is `--attach`, so a line is a frame wrapping a
+      // journal record rather than raw pi JSONL. This is the only place that knows the
+      // difference: everything downstream receives pi lines either way.
+      if (this.cursor !== null) {
+        const step = this.cursor.accept(event.payload.line);
+        if (step.failure !== undefined) {
+          // The launcher refused the attach outright. Reported as a channel end, since
+          // that is what it is — and pointedly *not* as pi exiting.
+          this.finishExit({ code: null });
+          return;
+        }
+        if (step.resetTranscript) {
+          this.transcriptResetHandlers.forEach((handler) => handler());
+        }
+        step.lines.forEach((line) => {
+          this.lineHandlers.forEach((handler) => handler(line));
+        });
+        step.diagnostics.forEach((line) => {
+          this.stderrHandlers.forEach((handler) => handler(line));
+        });
+        if (step.detached !== undefined) {
+          this.finishExit({
+            // Only `taskExited` carries pi's own code. The other two are the channel's
+            // outcomes, and reporting a code for them would claim pi died when it did not.
+            code: step.detached.reason === "taskExited" ? step.detached.exitCode : null,
+            detachReason: step.detached.reason,
+          });
+        }
+        return;
+      }
       this.lineHandlers.forEach((handler) => handler(event.payload.line));
       return;
     }
@@ -243,11 +314,38 @@ export class DesktopPiProcessPort implements PiProcessPort {
       this.stderrHandlers.forEach((handler) => handler(event.payload.line));
       return;
     }
+    this.finishExit({ code: event.payload.code ?? null });
+  }
+
+  /**
+   * The highest sequence handed to the chat pipeline, or `null` on a target that has no
+   * journal.
+   *
+   * Survives the process generation on purpose: a reattach is a new generation against
+   * the same remote task, so this is what makes replay resumable rather than repeated.
+   */
+  get appliedSequence(): number | null {
+    return this.cursor?.appliedSequence ?? null;
+  }
+
+  /**
+   * The transcript is incomplete from here — records were evicted before this attach
+   * could read them, so the caller has to discard what it has and rebuild from what
+   * follows.
+   */
+  onTranscriptReset(handler: () => void): () => void {
+    this.transcriptResetHandlers.add(handler);
+    return once(() => {
+      this.transcriptResetHandlers.delete(handler);
+    });
+  }
+
+  private finishExit(exit: PiProcessExit): void {
     this.generation = null;
     this.starting = false;
     this.pendingEvents = [];
     this.cleanupListeners();
-    this.exitHandlers.forEach((handler) => handler({ code: event.payload.code ?? null }));
+    this.exitHandlers.forEach((handler) => handler(exit));
   }
 
   private cleanupListeners(): void {

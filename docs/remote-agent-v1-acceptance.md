@@ -188,3 +188,69 @@ A real turn then ran end to end: `novol/gpt-5.6-sol` answered `SOL_OK` over the 
 `lost` and `orphaned` being distinct is the whole point: V1 collapses them into "unknown" and then guessed wrong.
 
 Remaining gaps are narrow and none of them block the protocol document: ProxyJump/cert auth affect the transport assumption, and scenarios 8/13 affect timing constants that can be filled in from a host with credentials. Both should be closed before V2.1 ships, not before it starts.
+
+## Detached tasks against the real `pi` (V2.1–V2.4)
+
+Measured on `yuyun` 2026-09-01 via `node scripts/remote-agent-acceptance.mjs detached`.
+Until this run every launcher test used a fake `pi`, which cannot show the three things
+that matter here: argv rewriting, surviving a dead channel, and a real stop.
+
+### `pi` does not just rewrite its argv — it pads it
+
+`/proc/<pid>/cmdline` is **56 bytes**: `pi` followed by 54 NULs. `strings` finds nothing
+(it wants 4+ printable chars; `pi` is 2), which is why an empty result plus a nonzero
+byte count is the finding rather than a failed probe.
+
+| Probe against the recorded pid | Result |
+| --- | --- |
+| `pgrep -f "pi --mode rpc"` | **does not match** |
+| `pgrep -x pi` | matches |
+
+So a reaper that identifies pi by command line is blind — confirmed directly, not
+inferred. `pi.pid` exists for exactly this reason. Note that `pgrep -f` run through
+`sh -c` *does* return a pid: its own shell, whose cmdline contains the pattern. Comparing
+against the recorded pid is the only honest form of the question.
+
+### The task outlives every channel
+
+| Event | Task state | pi alive |
+| --- | --- | --- |
+| starting channel closed (`--start-detached` returned) | `running`, not stale | yes |
+| live `--attach --follow` SIGKILLed after 35 frames | `running`, not stale | **yes** |
+
+The second row is the one detached mode exists for. In attached mode the same event kills
+the remote pi within ~2s — the OS sends FIN/RST, sshd tears down the channel, and `--run`
+forwards SIGHUP. It is also what a crashed desktop looks like from the host's side.
+
+### A real model turn through the FIFO
+
+`novol/gpt-5.6-sol`, prompt to `agent_settled` in **24.2–27.8s** across runs.
+
+- 34 journal records, 11.7 KB, longest record 668 bytes — far below the 8513-char line
+  the attached long-output scenario produced, because this reply was one short turn.
+- **0 stderr records**, consistent with every earlier scenario.
+- `--send` with an idempotency key: first call `duplicate: false`, replay of the same key
+  `duplicate: true`, and the journal shows the turn **once**.
+- `--attach --after 2 --follow false` replayed from sequence 3 and ended `caughtUp`.
+
+### Stop is fast when the supervisor is signalled directly
+
+`stopRequestedAt` → `stopConfirmedAt` is **12–13ms**, and `--stop` returns in ~2.3s
+(dominated by the SSH round trip). `exitCode` is **143** (SIGTERM), and both timestamps
+persist.
+
+This does *not* contradict the 3.4s figure earlier in this document, and the difference
+matters: that measured process death after **channel close**, where death waits on sshd
+tearing the session down. `--stop` signals the supervisor, which forwards SIGTERM
+immediately. Recording both timestamps is still right — they diverge whenever pi ignores
+SIGTERM and the 4s SIGKILL escalation has to fire — but the 17x gap that originally
+motivated recording both is specific to the attached path.
+
+### Two harness traps worth keeping
+
+- **A scratch `HOME` breaks the launcher's node discovery.** Its absolute-path fallback
+  looks under `$HOME/.nvm`, which is the *primary* path on a host whose `.bashrc` returns
+  early — so overriding `HOME` tests a configuration the desktop never produces. This
+  scenario runs under the real `$HOME` and isolates by unique task id instead.
+- **`"\0"` in a template literal is a real NUL**, and Node refuses to put one in argv, so
+  `tr "\0" " " < …/cmdline` fails to spawn at all. Use `strings`, or `tr -c "[:print:]"`.

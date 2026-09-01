@@ -14,7 +14,13 @@ import {
   type BackendPorts,
 } from "../../src/lib/backend/composition/container";
 import type { PiConfigurationPort, SettingsScopeFileDto } from "../../src/lib/backend/ports";
-import { usePiModels, type ModelsJson } from "../../src/lib/pi/models";
+import {
+  providerModels,
+  usePiModels,
+  type CustomProvider,
+  type ModelsJson,
+  type ProviderConfig,
+} from "../../src/lib/pi/models";
 import { usePiSettings, type PiSettings } from "../../src/lib/pi/settings";
 import { pruneModelsFromScope, type ModelRefLike } from "../../src/lib/pi/model-scope";
 
@@ -86,6 +92,24 @@ function reset() {
   });
 }
 
+/**
+ * The connection fields a writer takes. Every models.json field is optional (pi's
+ * own schema), so a caller has to decide what a missing one means; the page
+ * passes "" and lets the store omit the key.
+ */
+function cfgOf(provider: CustomProvider | undefined): ProviderConfig {
+  return {
+    baseUrl: provider?.baseUrl ?? "",
+    api: provider?.api ?? "",
+    apiKey: provider?.apiKey,
+  };
+}
+
+/** A provider that must exist — reads through the store's own guard. */
+function storedModelIds(data: ModelsJson, providerId: string): string[] {
+  return providerModels(data.providers[providerId]).map((m) => m.id);
+}
+
 /** The page's pruneEnabled, minus React. */
 async function pruneEnabled(removed: ModelRefLike[], allModels: ModelRefLike[]) {
   for (const scope of ["global", "project"] as const) {
@@ -108,9 +132,10 @@ test("fetch diff: syncModels adds fresh ids and deletes the selected stale ones"
   await usePiModels.getState().load();
 
   const provider = usePiModels.getState().data.providers[PROVIDER];
+  const stored = providerModels(provider);
   const upstream = new Set(["gpt-4o", "gpt-5"]);
-  const fresh = ["gpt-4o", "gpt-5"].filter((id) => !provider.models.some((m) => m.id === id));
-  const stale = provider.models.map((m) => m.id).filter((id) => !upstream.has(id));
+  const fresh = ["gpt-4o", "gpt-5"].filter((id) => !stored.some((m) => m.id === id));
+  const stale = stored.map((m) => m.id).filter((id) => !upstream.has(id));
   assert.deepEqual(fresh, ["gpt-5"]);
   assert.deepEqual(stale, ["retired-model"]);
 
@@ -118,14 +143,14 @@ test("fetch diff: syncModels adds fresh ids and deletes the selected stale ones"
     .getState()
     .syncModels(
       PROVIDER,
-      { baseUrl: provider.baseUrl, api: provider.api, apiKey: provider.apiKey },
+      cfgOf(provider),
       fresh.map((id) => ({ id, name: id })),
       stale
     );
 
-  const ids = disk.models().providers[PROVIDER].models.map((m) => m.id);
+  const ids = storedModelIds(disk.models(), PROVIDER);
   assert.deepEqual(ids, ["gpt-4o", "gpt-5"], "retired model is gone, fresh one added");
-  assert.equal(disk.models().providers[PROVIDER].apiKey, "sk-stub", "credentials survive a sync");
+  assert.equal(disk.models().providers[PROVIDER]?.apiKey, "sk-stub", "credentials survive a sync");
   reset();
 });
 
@@ -135,11 +160,7 @@ test("removing every model keeps the provider (and its key) alive", async () => 
   await usePiModels.getState().load();
   const provider = usePiModels.getState().data.providers[PROVIDER];
 
-  await usePiModels
-    .getState()
-    .syncModels(PROVIDER, { baseUrl: provider.baseUrl, api: provider.api, apiKey: provider.apiKey }, [], [
-      "only-model",
-    ]);
+  await usePiModels.getState().syncModels(PROVIDER, cfgOf(provider), [], ["only-model"]);
 
   const after = disk.models().providers[PROVIDER];
   assert.ok(after, "provider is not dropped by a sync that empties it");
@@ -159,13 +180,9 @@ test("a stale model's enabledModels ref is pruned from global settings", async (
   await usePiSettings.getState().load();
 
   const provider = usePiModels.getState().data.providers[PROVIDER];
-  const all = provider.models.map((m) => ({ provider: PROVIDER, id: m.id }));
+  const all = providerModels(provider).map((m) => ({ provider: PROVIDER, id: m.id }));
 
-  await usePiModels
-    .getState()
-    .syncModels(PROVIDER, { baseUrl: provider.baseUrl, api: provider.api, apiKey: provider.apiKey }, [], [
-      "retired-model",
-    ]);
+  await usePiModels.getState().syncModels(PROVIDER, cfgOf(provider), [], ["retired-model"]);
   await pruneEnabled([{ provider: PROVIDER, id: "retired-model" }], all);
 
   assert.deepEqual(disk.settings("global").enabledModels, [`${PROVIDER}/gpt-4o`]);
@@ -221,12 +238,11 @@ test("an empty upstream list yields no stale set — nothing is offered for dele
   await usePiModels.getState().load();
   const provider = usePiModels.getState().data.providers[PROVIDER];
 
-  const list = await usePiModels
-    .getState()
-    .fetchModels(provider.baseUrl, provider.api, provider.apiKey);
+  const cfg = cfgOf(provider);
+  const list = await usePiModels.getState().fetchModels(cfg.baseUrl, cfg.api, cfg.apiKey);
   // mirrors handleFetch: a zero-length response is a failed enumeration, not a
   // provider that dropped its whole catalogue
-  const stale = list.length > 0 ? provider.models.map((m) => m.id).filter(() => true) : [];
+  const stale = list.length > 0 ? providerModels(provider).map((m) => m.id) : [];
   assert.deepEqual(stale, []);
   reset();
 });
@@ -242,9 +258,74 @@ test("syncModels refuses to touch a models.json it couldn't parse", async () => 
     .syncModels(PROVIDER, { baseUrl: "", api: "", apiKey: undefined }, [], ["gpt-4o"]);
 
   assert.deepEqual(
-    disk.models().providers[PROVIDER].models.map((m) => m.id),
+    storedModelIds(disk.models(), PROVIDER),
     ["gpt-4o"],
     "unparseable file is left untouched"
   );
+  reset();
+});
+
+test("a blank baseUrl is omitted, never written as \"\"", async () => {
+  reset();
+  // pi types baseUrl/api as String({ minLength: 1 }) and rejects the *whole*
+  // models.json on a schema error, so persisting "" for a field the user left
+  // blank would take every other provider's models down with it.
+  const disk = stubBackend({ stored: ["gpt-4o"], upstream: [] });
+  await usePiModels.getState().load();
+
+  await usePiModels
+    .getState()
+    .updateProvider("creds-only", { baseUrl: "", api: "", apiKey: "sk-new" });
+
+  const written = disk.models().providers["creds-only"];
+  assert.ok(written, "the provider is created");
+  assert.equal("baseUrl" in written, false, "no empty baseUrl key");
+  assert.equal("api" in written, false, "no empty api key");
+  assert.equal(written.apiKey, "sk-new");
+  assert.equal(
+    "models" in written,
+    false,
+    "and no empty models array — absent is how pi says 'no override'"
+  );
+  // The pre-existing provider is untouched.
+  assert.deepEqual(storedModelIds(disk.models(), PROVIDER), ["gpt-4o"]);
+  reset();
+});
+
+test("clearing baseUrl in the provider editor removes the override", async () => {
+  reset();
+  const disk = stubBackend({ stored: ["gpt-4o"], upstream: [] });
+  await usePiModels.getState().load();
+
+  await usePiModels.getState().updateProvider(PROVIDER, {
+    baseUrl: "",
+    api: "openai-completions",
+    apiKey: "sk-stub",
+  });
+
+  const written = disk.models().providers[PROVIDER];
+  assert.equal("baseUrl" in written!, false, "blanking the field clears it, not writes \"\"");
+  assert.equal(written?.api, "openai-completions");
+  assert.deepEqual(storedModelIds(disk.models(), PROVIDER), ["gpt-4o"], "models are preserved");
+  reset();
+});
+
+test("addModel on a credential-only provider keeps its key and starts a models list", async () => {
+  reset();
+  const disk = stubBackend({ stored: ["gpt-4o"], upstream: [] });
+  await usePiModels.getState().load();
+  // Seed the shape that used to crash the page.
+  usePiModels.setState({
+    data: { providers: { anthropic: { apiKey: "sk-ant-stub" } } },
+  });
+
+  await usePiModels
+    .getState()
+    .addModel("anthropic", { baseUrl: "", api: "", apiKey: "" }, { id: "claude-opus-5" });
+
+  const written = disk.models().providers.anthropic;
+  assert.equal(written?.apiKey, "sk-ant-stub", "the existing credential survives");
+  assert.deepEqual(storedModelIds(disk.models(), "anthropic"), ["claude-opus-5"]);
+  assert.equal("baseUrl" in written!, false, "and no empty baseUrl is introduced");
   reset();
 });

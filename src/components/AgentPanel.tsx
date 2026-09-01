@@ -39,6 +39,7 @@ import { RetryBanner } from "./RetryBanner";
 import { ExtStatusLine, ExtWidgets } from "./ExtensionSurfaces";
 import { SessionHistoryMenu } from "./SessionHistoryMenu";
 import { ExecutionTargetPicker } from "./ExecutionTargetPicker";
+import { RemoteTaskBadge } from "./RemoteTaskBadge";
 import { IconButton, SectionLabel } from "./primitives";
 import {
   Square,
@@ -352,6 +353,7 @@ function LocalAgentPanel({ width }: { width?: number }) {
               can't render the sidebar at all, so a toggle there flips a flag
               nothing reads and the button reads as dead. */}
           <ExecutionTargetPicker />
+          <RemoteTaskBadge />
           <SessionHistoryMenu />
           <IconButton
             label={t("agent.newSession")}

@@ -12,6 +12,12 @@ import "./remote-profiles.test";
 import "./remote-provider-sync.test";
 import "./remote-workspace-guard.test";
 import "./launcher-capabilities.test";
+import "./remote-attach.test";
+import "./remote-workspace-fs.test";
+import "./remote-project-picker.test";
+import "./doc-conflict.test";
+import "./remote-task-binding.test";
+import "./remote-connection-state.test";
 import "./workspace-target.test";
 // remote-exit-recovery and workspace-retarget run from isolated.test.ts — see
 // the note there.
@@ -24,6 +30,7 @@ import "./skills-install.test";
 import "./package-install.test";
 import "./model-scope.test";
 import "./model-sync.test";
+import "./provider-entries.test";
 import "./composer-shortcut.test";
 import "./shortcuts.test";
 import "./pet-animator.test";

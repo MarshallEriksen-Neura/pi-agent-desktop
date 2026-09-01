@@ -26,6 +26,15 @@ fn desktop_json_path() -> Result<PathBuf, String> {
         .join("desktop.json"))
 }
 
+/// The machine a recent project lives on. `"local"` or `"ssh:<profileId>"`, matching
+/// the pi-process target id exactly — a remote path is only unambiguous when paired
+/// with the host it belongs to, and `/srv/app` can exist on several.
+pub const LOCAL_TARGET_ID: &str = "local";
+
+fn default_target_id() -> String {
+    LOCAL_TARGET_ID.to_owned()
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentProject {
@@ -33,6 +42,10 @@ pub struct RecentProject {
     pub name: String,
     /// Unix epoch milliseconds — sortable without a datetime dependency.
     pub last_opened_at: u64,
+    /// Defaulted so entries written before remote projects existed stay readable and
+    /// keep meaning what they meant: local.
+    #[serde(default = "default_target_id")]
+    pub target_id: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -147,13 +160,19 @@ pub fn last_project() -> Result<Option<String>, String> {
     Ok(read_state()?.last_project.filter(|p| Path::new(p).is_dir()))
 }
 
-/// Recent projects whose directories still exist, most recent first.
+/// Recent projects, most recent first.
+///
+/// Local entries are filtered by whether the directory still exists. Remote ones are
+/// **not**: checking a remote path costs an SSH round trip, and doing that per entry
+/// while rendering a list would make opening a menu wait on the network — or, worse,
+/// silently drop every remote entry when the host is simply asleep. A remote path that
+/// has gone away is reported when it is opened.
 #[tauri::command]
 pub fn projects_recent() -> Result<Vec<RecentProject>, String> {
     Ok(read_state()?
         .recent_projects
         .into_iter()
-        .filter(|r| Path::new(&r.path).is_dir())
+        .filter(|r| r.target_id != LOCAL_TARGET_ID || Path::new(&r.path).is_dir())
         .collect())
 }
 
@@ -189,13 +208,16 @@ pub fn project_open(
 
     update_state(|state| {
         state.last_project = Some(root.clone());
-        state.recent_projects.retain(|recent| recent.path != root);
+        state
+            .recent_projects
+            .retain(|recent| recent.path != root || recent.target_id != LOCAL_TARGET_ID);
         state.recent_projects.insert(
             0,
             RecentProject {
                 path: root.clone(),
                 name,
                 last_opened_at: now_ms(),
+                target_id: default_target_id(),
             },
         );
         state.recent_projects.truncate(MAX_RECENTS);
@@ -215,10 +237,91 @@ pub fn project_open(
     Ok(root)
 }
 
-/// Drop one entry from the recents list (the current project is untouched).
+/// `local` or `ssh:<profileId>`. Validated so a malformed id cannot become a key that
+/// nothing will ever match again.
+fn validate_target_id(target_id: &str) -> Result<(), String> {
+    if target_id == LOCAL_TARGET_ID {
+        return Ok(());
+    }
+    let profile_id = target_id
+        .strip_prefix("ssh:")
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| format!("unsupported execution target `{target_id}`"))?;
+    if !profile_id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(format!("unsupported execution target `{target_id}`"));
+    }
+    Ok(())
+}
+
+/// Record a project opened on a remote host.
+///
+/// Separate from `project_open` because almost none of that applies: there is nothing
+/// to canonicalize (the path is already absolute POSIX and belongs to another machine),
+/// no WSL rule to check, and no phone gateway to sync — the LAN gateway shares *this*
+/// desktop's project, and a directory on an SSH host is not it. `last_project` is left
+/// alone for the same reason: it becomes the local workspace root on next launch.
+///
+/// Existence is the caller's business, checked with the workspace port's `stat` before
+/// this is called, so a failure lands on the open action rather than on a menu.
 #[tauri::command]
-pub fn project_remove_recent(path: String) -> Result<Vec<RecentProject>, String> {
-    update_state(|state| state.recent_projects.retain(|recent| recent.path != path))?;
+pub fn project_open_remote(
+    path: String,
+    target_id: String,
+) -> Result<Vec<RecentProject>, String> {
+    validate_target_id(&target_id)?;
+    if target_id == LOCAL_TARGET_ID {
+        return Err("project_open_remote requires a remote execution target".into());
+    }
+    if path.trim() != path
+        || !path.starts_with('/')
+        || path.len() > 4096
+        || path.chars().any(char::is_control)
+    {
+        return Err("remote project path must be an absolute POSIX path".into());
+    }
+    let name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or("/")
+        .to_owned();
+    update_state(|state| {
+        state
+            .recent_projects
+            .retain(|recent| recent.path != path || recent.target_id != target_id);
+        state.recent_projects.insert(
+            0,
+            RecentProject {
+                path,
+                name,
+                last_opened_at: now_ms(),
+                target_id,
+            },
+        );
+        state.recent_projects.truncate(MAX_RECENTS);
+    })?;
+    projects_recent()
+}
+
+/// Drop one entry from the recents list (the current project is untouched).
+///
+/// `target_id` is part of the identity: the same path can exist on several machines,
+/// and forgetting one must not forget the others.
+#[tauri::command]
+pub fn project_remove_recent(
+    path: String,
+    target_id: Option<String>,
+) -> Result<Vec<RecentProject>, String> {
+    let target_id = target_id.unwrap_or_else(default_target_id);
+    validate_target_id(&target_id)?;
+    update_state(|state| {
+        state
+            .recent_projects
+            .retain(|recent| recent.path != path || recent.target_id != target_id);
+    })?;
     projects_recent()
 }
 

@@ -118,6 +118,15 @@ impl PiProc {
     }
 }
 
+/// Start or reattach a task's pi process.
+///
+/// `attach_after` applies to detached bindings only: it is the caller's cursor, because
+/// only the caller knows which sequences it has already applied. `None` replays from the
+/// oldest record still retained, which is what a fresh attach wants.
+///
+/// Deliberately **not** derived from `generation`: every reattach opens a new local ssh
+/// child and so a new generation, against the *same* remote task. Filtering replayed
+/// events by generation would drop all of them.
 #[tauri::command]
 pub fn pi_start(
     app: AppHandle,
@@ -127,6 +136,7 @@ pub fn pi_start(
     binary: Option<String>,
     resume_path: Option<String>,
     execution_binding: Option<ExecutionBinding>,
+    attach_after: Option<u64>,
 ) -> Result<PiStartResult, String> {
     let task = task_key(task_id);
     let binding = execution_binding.unwrap_or(ExecutionBinding::Local {
@@ -196,8 +206,21 @@ pub fn pi_start(
         ExecutionBinding::Ssh { profile_id, .. } => {
             let profile = remote_profiles::load_profile(profile_id)?;
             remote_profiles::validate_binding(&profile, &binding)?;
-            let spec =
-                remote_profiles::ssh_launch_spec(&profile, &binding, resume_path.as_deref())?;
+            // Detached and attached differ in what this long-lived child *is*. Attached
+            // spawns pi itself over `--run`. Detached spawns a read-only `--attach`
+            // against a task that is already running — started separately by
+            // `remote_task_ensure`, because that costs two SSH round trips and this
+            // command holds the runtime mutex.
+            //
+            // Everything downstream is unchanged: one child, stdout is a stream of
+            // lines, exit means the channel ended. What differs is that the lines are
+            // attach frames rather than raw pi JSONL, which the desktop unwraps, and
+            // that the channel ending no longer means pi died.
+            let spec = if profile.lifecycle == "detached" {
+                remote_profiles::ssh_attach_spec(&profile, &binding, attach_after, true)?
+            } else {
+                remote_profiles::ssh_launch_spec(&profile, &binding, resume_path.as_deref())?
+            };
             (spec, requested_target_id.clone(), "ssh".to_owned())
         }
     };
@@ -267,26 +290,63 @@ pub fn pi_start(
     })
 }
 
+/// Send one JSONL command to a task's pi.
+///
+/// Two transports, because a detached task has no writable channel: `--attach` is
+/// read-only by construction, so its input goes through a separate short-lived
+/// `--send`. `idempotency_key` is what makes that safe to retry — a disconnect tells the
+/// desktop nothing about whether the write landed, and the reply may already be in the
+/// journal.
+///
+/// `async` for the detached case: one SSH round trip, ~300ms measured. The attached and
+/// local cases still complete without awaiting anything, so nothing that works today
+/// gets slower.
 #[tauri::command]
-pub fn pi_send(
+pub async fn pi_send(
     state: State<'_, PiProc>,
     task_id: Option<String>,
     line: String,
     expected_generation: u64,
     expected_target_id: String,
+    idempotency_key: Option<String>,
 ) -> Result<(), String> {
     let task = task_key(task_id);
-    let runtime = state
-        .0
-        .lock()
-        .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
-    let managed = runtime.processes.get(&task).ok_or("pi is not running")?;
-    validate_process_identity(managed, expected_generation, &expected_target_id)?;
-    let process = managed.process.clone();
-    drop(runtime);
-    process
-        .send_json_line(&line)
-        .map_err(|error| format!("write to pi failed: {error}"))
+    // The lock is released before any await: holding it across an SSH round trip would
+    // stall every other task for the duration.
+    let detached = {
+        let runtime = state
+            .0
+            .lock()
+            .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
+        let managed = runtime.processes.get(&task).ok_or("pi is not running")?;
+        validate_process_identity(managed, expected_generation, &expected_target_id)?;
+        match &managed.execution_binding {
+            ExecutionBinding::Ssh {
+                profile_id,
+                remote_task_id: Some(remote_task_id),
+                ..
+            } => Some((profile_id.clone(), remote_task_id.clone())),
+            // Local, or attached remote: the child's stdin *is* pi's stdin.
+            _ => {
+                let process = managed.process.clone();
+                drop(runtime);
+                return process
+                    .send_json_line(&line)
+                    .map_err(|error| format!("write to pi failed: {error}"));
+            }
+        }
+    };
+    let (profile_id, remote_task_id) = detached.ok_or("pi is not running")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        remote_profiles::send_to_remote_task(
+            &profile_id,
+            &remote_task_id,
+            &line,
+            idempotency_key.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("remote send failed: {error}"))?
 }
 
 #[tauri::command]

@@ -10,6 +10,16 @@ export type ExecutionBinding =
       hostAlias: string;
       remoteCwd: string;
       launcherProtocolVersion: number;
+      /**
+       * Which remote task this binding drives. Present exactly when the profile is
+       * `detached`.
+       *
+       * Deliberately orthogonal to the process `generation`: generation is a local
+       * per-spawn counter, and attaching to a task opens a new local ssh child — a
+       * new generation against the *same* remote task. Conflating the two makes
+       * replayed events get filtered out.
+       */
+      remoteTaskId?: string | null;
     };
 
 export interface RemotePiProfile {
@@ -17,21 +27,36 @@ export interface RemotePiProfile {
   revision: number;
   name: string;
   sshHost: string;
-  remoteCwd: string;
+  /**
+   * Where a folder browser opens on this host, **not** where pi runs.
+   *
+   * The workspace lives on `ExecutionBinding` because it is a per-conversation choice,
+   * not host configuration — a profile describes a machine, and one machine holds many
+   * projects. `null` falls back to the remote `$HOME` reported by preflight.
+   */
+  remoteCwd?: string | null;
   piExecutable?: string | null;
   launcherPath: string;
   launcherProtocolVersion: number;
-  lifecycle: "attached";
+  /**
+   * `attached`: pi's lifetime is the SSH channel's — it dies with it.
+   * `detached`: pi outlives the channel under the launcher's supervisor.
+   * See docs/remote-agent-v2-supervisor-protocol.md.
+   */
+  lifecycle: "attached" | "detached";
 }
 
 export interface RemotePiProfileInput {
   id?: string;
   name: string;
   sshHost: string;
-  remoteCwd: string;
+  /** Optional browse starting point — see `RemotePiProfile.remoteCwd`. */
+  remoteCwd?: string | null;
   piExecutable?: string | null;
   launcherPath?: string;
   launcherProtocolVersion?: number;
+  /** Omitted keeps an existing profile's lifecycle and defaults a new one to `attached`. */
+  lifecycle?: "attached" | "detached";
 }
 
 /** Prerequisites the setup checklist reports on, in display order. */
@@ -62,9 +87,18 @@ export interface RemoteReadinessReport {
   ok: boolean;
   profileId?: string;
   host: string;
+  /** The browse directory that was checked, or `""` when none was. */
   remoteCwd: string;
   launcherPath: string;
   piVersion?: string;
+  /**
+   * The remote `$HOME`, so a folder browser has somewhere to open.
+   *
+   * The desktop cannot expand `$HOME` locally and the launcher only accepts absolute
+   * paths, so without this a first browse would have to start at `/`. Absent from a
+   * launcher that predates it, and from any failed check.
+   */
+  home?: string | null;
   checks: RemoteReadinessCheck[];
 }
 
@@ -79,7 +113,20 @@ export type LauncherCapability =
   | "run-v1"
   | "preflight-v1"
   | "provider-sync-v1"
-  | "capabilities-v1";
+  | "capabilities-v1"
+  /** `--start-detached`, `--status`, `--stop`, `--send`, `--reap`, as one unit. */
+  | "detached-tasks-v1"
+  /** `--attach`: cursor replay and live tailing over a task's journal. */
+  | "attach-v1"
+  /** `--workspace` read half: list, read, stat. */
+  | "workspace-v1"
+  /**
+   * `--workspace` write half: hash-checked write/create/mkdir/delete/rename.
+   *
+   * Separate from `workspace-v1` so a host whose launcher predates writes can still
+   * offer browsing, with editing refused rather than attempted.
+   */
+  | "workspace-writes-v1";
 
 /**
  * What a host's launcher reports it can do.

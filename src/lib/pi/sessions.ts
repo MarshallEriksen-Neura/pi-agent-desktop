@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { getChatStore, clearChatStores, type ChatMessage } from "./chat";
 import { getPiStore, clearPiStores } from "./store";
 import { getPiClient, disposeAllPiClients, disposePiClient } from "./client";
+import { prepareRemoteBinding } from "./remote-task-binding";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
 import type { GenerateTitleInput, SessionRepositoryPort } from "../backend/ports";
@@ -282,6 +283,39 @@ const titleAttempts = new Set<string>();
  */
 const SYNC_DELAYS_MS = [2_000, 5_000, 10_000];
 
+/**
+ * Persist a binding the remote lifecycle changed — a minted or replaced `remoteTaskId`.
+ *
+ * It has to survive a restart: reattaching means presenting the *same* id, and a lost one
+ * would start a second pi over the same session file, which is the V1 defect the one-id
+ * rule exists to prevent. No schema change is needed because the binding is already part
+ * of the session record.
+ */
+function persistExecutionBinding(taskId: string, binding: ExecutionBinding): void {
+  const current = useSessions.getState().sessions.find((session) => session.id === taskId);
+  if (!current) return;
+  useSessions.setState((state) => ({
+    sessions: state.sessions.map((session) =>
+      session.id === taskId ? { ...session, executionBinding: binding } : session,
+    ),
+  }));
+  const meta = useSessions.getState().sessions.find((session) => session.id === taskId);
+  if (meta) void backendSave(meta, getChatStore(taskId).getState().messages);
+}
+
+/**
+ * The cursor a reattach should resume from.
+ *
+ * Read off the live process port rather than stored separately: it is the only thing that
+ * knows which sequences actually reached the chat pipeline. `undefined` means no attach
+ * has run yet, so replay starts from the oldest retained record.
+ */
+function appliedSequenceFor(taskId: string): number | undefined {
+  const port = getPiClient(taskId).process;
+  const applied = (port as { appliedSequence?: number | null } | undefined)?.appliedSequence;
+  return typeof applied === "number" && applied > 0 ? applied : undefined;
+}
+
 /** Persist a task's session with the current chat transcript right now. */
 async function flushSave(taskId?: string) {
   const id = taskId ?? useSessions.getState().activeId;
@@ -480,12 +514,32 @@ async function ensureTaskStarted(
   if (!chat.getState().initialized) chat.getState().init();
   hookAutosave(taskId);
 
-  const pi = getPiStore(taskId, opts.executionBinding);
+  // A detached binding has to be completed before anything attaches to it: it needs a
+  // live `remoteTaskId`, and getting one is two SSH round trips. Doing it here rather
+  // than inside the process port keeps `pi_start` synchronous, and puts the result where
+  // it can be persisted — the binding is part of the session record.
+  let binding = opts.executionBinding;
+  let attachAfter: number | undefined;
+  if (binding !== undefined && binding.kind === "ssh") {
+    const prepared = await prepareRemoteBinding(binding);
+    const completed = prepared.binding;
+    if (!sameExecutionBinding(binding, completed)) {
+      persistExecutionBinding(taskId, completed);
+    }
+    binding = completed;
+    // A replaced task is a different journal, so a cursor from the old one would resume
+    // at a sequence that means something else entirely. Start from the beginning of the
+    // new one instead.
+    attachAfter = prepared.taskReplaced ? undefined : appliedSequenceFor(taskId);
+  }
+
+  const pi = getPiStore(taskId, binding);
   if (pi.getState().status === "disconnected") {
     await pi.getState().connect({
       cwd: opts.cwd,
       resumePath: opts.resumePath,
-      executionBinding: opts.executionBinding,
+      executionBinding: binding,
+      attachAfter,
     });
   }
 

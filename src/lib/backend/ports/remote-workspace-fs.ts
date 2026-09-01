@@ -51,6 +51,86 @@ export function createUnsupportedRemoteWorkspaceFsPort(targetId: string): Worksp
   };
 }
 
+/**
+ * Hash-checked writes (V2.4), as an extension rather than a widening of
+ * `WorkspaceFsPort`.
+ *
+ * A remote write needs optimistic concurrency because pi is editing the same tree from
+ * the same host at the same time: a blind write loses whichever change landed first,
+ * with nothing to say it happened. `expectedHash` is an If-Match token the *launcher*
+ * minted on a previous read — never a checksum the desktop computed, so no encoding
+ * subtlety here can turn a valid write into a phantom conflict.
+ *
+ * An extension because the local bridge has no hashes yet. The store discovers this
+ * with `supportsHashedWrites` and uses it when present, so the two ports stay
+ * interchangeable and the base interface keeps refusing the hashless mutators.
+ */
+export interface HashedReadResult {
+  content: string;
+  /** Opaque; pass back verbatim as `expectedHash`. */
+  hash: string;
+}
+
+export interface HashedWriteResult {
+  /** The token for what was just stored, so an editor can keep going without a re-read. */
+  hash: string;
+  bytes: number;
+}
+
+export interface HashedWorkspaceFsPort {
+  readFileHashed(path: string): Promise<HashedReadResult>;
+  /** `expectedHash: null` asserts the path does not exist yet. */
+  writeFileHashed(
+    path: string,
+    content: string,
+    expectedHash: string | null,
+  ): Promise<HashedWriteResult>;
+  createFileHashed(path: string): Promise<HashedWriteResult>;
+  createDirHashed(path: string): Promise<void>;
+  /** A file needs its hash; a directory must be empty and takes none. */
+  deleteEntryHashed(path: string, expectedHash: string | null): Promise<void>;
+  renameEntryHashed(from: string, to: string): Promise<void>;
+}
+
+/** The launcher's code for a lost update, with the live hash attached. */
+export const REMOTE_WORKSPACE_HASH_MISMATCH = "workspaceHashMismatch";
+
+export class RemoteWorkspaceConflictError extends Error {
+  readonly code = REMOTE_WORKSPACE_HASH_MISMATCH;
+
+  constructor(
+    readonly path: string,
+    /** What the file hashes to now; `null` when it no longer exists. */
+    readonly currentHash: string | null,
+  ) {
+    super(`Remote file changed since it was read: ${path}`);
+    this.name = "RemoteWorkspaceConflictError";
+  }
+}
+
+/** True when a write was refused because the file changed under it. */
+export function isRemoteWorkspaceConflict(
+  error: unknown,
+): error is RemoteWorkspaceConflictError {
+  return (
+    error instanceof RemoteWorkspaceConflictError ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { code?: unknown }).code === REMOTE_WORKSPACE_HASH_MISMATCH)
+  );
+}
+
+/** Whether `port` can do hash-checked writes. Absent ⇒ read-only remote workspace. */
+export function supportsHashedWrites(
+  port: unknown,
+): port is WorkspaceFsPort & HashedWorkspaceFsPort {
+  return (
+    typeof port === "object" &&
+    port !== null &&
+    typeof (port as HashedWorkspaceFsPort).writeFileHashed === "function"
+  );
+}
+
 /** True when `error` is the "this target has no filesystem access" signal. */
 export function isRemoteWorkspaceUnsupported(error: unknown): boolean {
   return (

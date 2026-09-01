@@ -1,0 +1,5 @@
+# The remote launcher is embedded with `include_str!` and executed by `sh` on a POSIX
+# host. Under `core.autocrlf=true` the working tree copy is CRLF, so a Windows build
+# would compile CRLF into the binary and the shebang line would fail on Linux. Pinning
+# it to LF makes the checked-out bytes the shipped bytes.
+remote-launcher/pi-desktop-launcher text eol=lf

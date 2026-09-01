@@ -15,6 +15,7 @@
  * the V2 status state machine is designed from — does not require one.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const scenario = args.find((a) => !a.startsWith("--")) ?? "";
@@ -131,6 +132,55 @@ function remoteState() {
       .filter((l) => l.startsWith("detail:"))
       .map((l) => l.slice("detail:".length).trim()),
   };
+}
+
+/** The journal, decoded. Each call is one ssh round trip, so callers poll it sparingly. */
+function readJournal(run, taskId) {
+  const attach = run(
+    `'--attach' ${shellQuote(
+      Buffer.from(JSON.stringify({ protocolVersion: 1, remoteTaskId: taskId, follow: false })).toString("base64"),
+    )}`,
+  );
+  return attach
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((frame) => frame.type === "event");
+}
+
+/**
+ * Polls the journal until `done`. Not a stream: `--attach --follow` would hold the
+ * channel open, and this harness measures one round trip at a time on purpose.
+ */
+async function waitForJournal(run, taskId, done, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let records = [];
+  while (Date.now() < deadline) {
+    records = readJournal(run, taskId);
+    if (done(records)) return records;
+    await sleep(1500);
+  }
+  throw new Error(`journal never satisfied the predicate (${records.length} records)`);
+}
+
+/** `set_model` through the FIFO, then confirm pi acknowledged it in the journal. */
+async function selectModelDetached(run, taskId) {
+  const before = readJournal(run, taskId).length;
+  const request = JSON.stringify({ type: "set_model", id: "sel", provider: MODEL_PROVIDER, modelId: MODEL_ID });
+  probe(
+    `printf %s ${shellQuote(`${request}
+`)} | ` +
+      `sh ${shellQuote("/tmp/pi-detached-acceptance/launcher")} '--send' ${shellQuote(taskId)}`,
+  );
+  await waitForJournal(
+    run,
+    taskId,
+    (records) =>
+      records.slice(before).some(
+        (r) => r.stream === "stdout" && /"command"s*:s*"set_model"/.test(r.data ?? ""),
+      ),
+    60_000,
+  );
 }
 
 const MODEL_PROVIDER = flag("provider", "novol");
@@ -612,6 +662,156 @@ const scenarios = {
       bytesPerSecond: Math.round(Buffer.byteLength(record.stdout) / (elapsed / 1000)),
       stderrBytes: Buffer.byteLength(record.stderr),
     };
+  },
+
+  /**
+   * V2.1-V2.4 against the real `pi`, which every launcher unit test fakes.
+   *
+   * A fake pi does not rewrite its argv, does not produce 138x-amplified JSONL, and
+   * disappears the moment it is signalled — so the three things this measures are
+   * exactly the three a fake cannot show: that the recorded pid survives argv
+   * rewriting, that the task outlives its starting channel, and that stop has two
+   * timestamps seconds apart.
+   *
+   * Ships the current launcher to a scratch path rather than using the installed one,
+   * which has drifted. Runs under the real `$HOME`, because the launcher's node
+   * discovery is `$HOME`-relative on this class of host — overriding it would test a
+   * configuration the desktop never produces. Isolation is the unique task id, and
+   * the finally block removes that task directory as well as stopping the task.
+   */
+  async detached() {
+    const dir = "/tmp/pi-detached-acceptance";
+    const launcher = `${dir}/launcher`;
+    const taskId = `acc-${Date.now().toString(36)}`;
+    const source = readFileSync("remote-launcher/pi-desktop-launcher", "utf8").replaceAll("\r\n", "\n");
+    const run = (script) => probe(`sh ${shellQuote(launcher)} ${script}`);
+    const task = (mode, argument) =>
+      JSON.parse(run(`${shellQuote(mode)} ${argument ? shellQuote(argument) : ""}`).split("\n").filter(Boolean).pop());
+
+    const install = spawnSync("ssh", [...SSH_OPTIONS, HOST, `rm -rf ${dir} && mkdir -p ${dir} && cat > ${launcher} && chmod 700 ${launcher}`], {
+      input: source,
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    if (install.status !== 0) throw new Error(`could not install the launcher: ${(install.stderr ?? "").trim()}`);
+
+    const result = { scenario: "detached real pi", remoteTaskId: taskId };
+    try {
+      const startedAt = Date.now();
+      const started = task("--start-detached", payload({ remoteTaskId: taskId }));
+      if (started.ok !== true) throw new Error(`start failed: ${JSON.stringify(started)}`);
+      result.msToStart = Date.now() - startedAt;
+      result.pid = started.pid;
+      result.supervisorPid = started.supervisorPid;
+      result.stdinReady = started.stdinReady;
+
+      // The launcher's own view, and the host's. If pi rewrote its argv to a bare `pi`
+      // — it does — then only the recorded pid finds it, which is the whole reason
+      // pi.pid exists.
+      result.argvAfterRewrite = probe(`strings /proc/${started.pid}/cmdline 2>/dev/null | tr "\n" " " || echo "(unreadable)"`).trim() || "(empty)";
+      result.argvBytes = probe(`wc -c < /proc/${started.pid}/cmdline 2>/dev/null || echo -1`).trim();
+      result.argvRendered = probe(`tr -c "[:print:]" "." < /proc/${started.pid}/cmdline 2>/dev/null || echo "(unreadable)"`).trim();
+      const pgrepF = probe(`pgrep -f "pi --mode rpc" 2>/dev/null | tr "\n" "," || true`).trim();
+      // Excludes the probe's own shell, whose cmdline necessarily contains the pattern.
+      result.recordedPidFoundByPgrepF = pgrepF.split(",").filter(Boolean).includes(String(started.pid));
+      result.recordedPidFoundByPgrepX = probe(`pgrep -x pi 2>/dev/null | tr "\n" "," || true`)
+        .trim().split(",").filter(Boolean).includes(String(started.pid));
+
+      // The point of detached: the channel that started it has already closed, and each
+      // probe below is a *new* ssh session.
+      const afterStart = task("--status", taskId);
+      result.stateAfterStartingChannelClosed = afterStart.task.state;
+      result.staleAfterStartingChannelClosed = afterStart.task.stale;
+
+      // A real model turn, driven through the FIFO by --send with an idempotency key.
+      await selectModelDetached(run, taskId);
+      const askedAt = Date.now();
+      const key = `acc-${taskId}`;
+      const sent = probe(
+        `printf %s ${shellQuote(JSON.stringify({ idempotencyKey: key, payload: `${JSON.stringify({ type: "prompt", id: "t", message: "Reply with exactly: SOL_OK" })}
+` }))}` +
+          ` | sh ${shellQuote(launcher)} '--send' ${shellQuote(taskId)}`,
+      );
+      result.send = JSON.parse(sent.split("\n").filter(Boolean).pop());
+
+      const settled = await waitForJournal(run, taskId, (records) =>
+        records.some((r) => r.stream === "stdout" && /"type"s*:s*"agent_settled"/.test(r.data ?? "")), 180_000);
+      result.msToSettled = Date.now() - askedAt;
+      result.journalLines = settled.length;
+      result.journalBytes = settled.reduce((sum, r) => sum + Buffer.byteLength(JSON.stringify(r)), 0);
+      result.longestJournalLine = Math.max(...settled.map((r) => Buffer.byteLength(JSON.stringify(r))));
+      result.stderrRecords = settled.filter((r) => r.stream === "stderr").length;
+      result.assistantText = settled
+        .filter((r) => r.stream === "stdout")
+        .flatMap((r) => { try { return [JSON.parse(r.data)]; } catch { return []; } })
+        .filter((e) => e.type === "message_end")
+        .flatMap((e) => (e.message?.content ?? []).filter((c) => c.type === "text").map((c) => c.text))
+        .join("")
+        .trim()
+        .slice(0, 120);
+
+      // A retry of the same key must not produce a second turn.
+      const replay = probe(
+        `printf %s ${shellQuote(JSON.stringify({ idempotencyKey: key, payload: `${JSON.stringify({ type: "prompt", id: "t", message: "Reply with exactly: SOL_OK" })}
+` }))}` +
+          ` | sh ${shellQuote(launcher)} '--send' ${shellQuote(taskId)}`,
+      );
+      result.sendReplayDuplicate = JSON.parse(replay.split("\n").filter(Boolean).pop()).duplicate;
+
+      // Attach from a cursor: what a reconnect would replay.
+      const attach = run(`'--attach' ${shellQuote(Buffer.from(JSON.stringify({ protocolVersion: 1, remoteTaskId: taskId, after: 2, follow: false })).toString("base64"))}`);
+      const frames = attach.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+      result.attachHandshake = frames[0]?.type;
+      result.attachSnapshotRequired = frames[0]?.snapshotRequired;
+      result.attachFirstSequence = frames.find((f) => f.type === "event")?.sequence;
+      result.attachDetachReason = frames.at(-1)?.reason;
+
+      // What detached mode exists for. In attached mode, killing the local ssh child
+      // kills the remote pi within ~2s — the OS sends FIN/RST, sshd tears down the
+      // channel, and `--run` forwards SIGHUP. A detached task must survive the same
+      // event, which is also what a crashed desktop looks like from the host.
+      const live = spawn("ssh", [
+        ...SSH_OPTIONS,
+        HOST,
+        `sh ${shellQuote(launcher)} '--attach' ${shellQuote(
+          Buffer.from(
+            JSON.stringify({ protocolVersion: 1, remoteTaskId: taskId, follow: true }),
+          ).toString("base64"),
+        )}`,
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      let attachedFrames = 0;
+      live.stdout.on("data", (chunk) => {
+        attachedFrames += chunk.toString().split("\n").filter(Boolean).length;
+      });
+      await sleep(3000);
+      result.framesBeforeAttachKilled = attachedFrames;
+      live.kill("SIGKILL");
+      await sleep(4000);
+      const afterAttachKilled = task("--status", taskId);
+      result.stateAfterAttachKilled = afterAttachKilled.task.state;
+      result.staleAfterAttachKilled = afterAttachKilled.task.stale;
+      result.piAliveAfterAttachKilled = remoteState().piPids.includes(String(started.pid));
+
+      // Stop: the two timestamps that were measured 17x apart on a real pi.
+      const stoppedAt = Date.now();
+      const stopped = task("--stop", taskId);
+      result.msToStopReturn = Date.now() - stoppedAt;
+      result.exitCode = stopped.task.exitCode;
+      result.stopRequestedAt = stopped.task.stopRequestedAt;
+      result.stopConfirmedAt = stopped.task.stopConfirmedAt;
+      result.msBetweenStopRequestAndConfirm =
+        stopped.task.stopConfirmedAt && stopped.task.stopRequestedAt
+          ? stopped.task.stopConfirmedAt - stopped.task.stopRequestedAt
+          : null;
+      result.staleAfterStop = stopped.task.stale;
+      result.piAliveAfterStop = remoteState().piPids.includes(String(started.pid));
+    } finally {
+      // Never leave a live pi behind, even on a thrown assertion.
+      try { probe(`sh ${shellQuote(launcher)} '--stop' ${shellQuote(taskId)} >/dev/null 2>&1; echo done`); } catch { /* already gone */ }
+      try { probe(`rm -rf ${dir} "$HOME/.pi-desktop/tasks/${taskId}"; echo cleaned`); } catch { /* best effort */ }
+      result.remainingPi = remoteState().piPids;
+    }
+    return result;
   },
 
   /** Leftovers from earlier runs, so a scenario never inherits another's state. */

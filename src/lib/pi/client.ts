@@ -11,6 +11,7 @@ import {
   DEFAULT_TASK_ID,
   type PiProcessExit,
   type PiProcessPort,
+  type PiProcessStartOptions,
 } from "../backend/ports/pi-process";
 import { getActiveTaskId } from "./task-context";
 import type { ExecutionBinding } from "../backend/ports/execution-target";
@@ -147,7 +148,9 @@ export class PiClient {
     dispatchAnyTask(this.taskId, ev);
   }
 
-  async start(opts: { cwd?: string; resumePath?: string; executionBinding?: ExecutionBinding } = {}) {
+  // The port's own type rather than a restatement: this signature drifted from the port
+  // once already, which is why one new option had to be added in three places.
+  async start(opts: PiProcessStartOptions = {}) {
     if (this.started) return;
     await this.process.start(opts);
     this.started = true;

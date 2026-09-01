@@ -2,12 +2,15 @@
 
 import dynamic from "next/dynamic";
 import { AnimatePresence, motion } from "motion/react";
-import { Folder, FolderOpen } from "lucide-react";
+import { Folder, FolderOpen, Lock } from "lucide-react";
 import { useUI } from "@/lib/store";
 import { useChat } from "@/lib/pi/chat";
 import { useWorkspace } from "@/lib/workspace";
 import { useT } from "@/lib/i18n";
 import { isImageFile } from "@/lib/image-files";
+import { supportsHashedWrites } from "@/lib/backend/ports/remote-workspace-fs";
+import { workspaceFsFor } from "@/lib/workspace-target";
+import { DocConflictBar } from "./DocConflictBar";
 
 /**
  * CodeMirror is ~490 KB of the first-load bundle and nothing is editable until
@@ -45,8 +48,12 @@ function EditorSkeleton() {
 export function EditorCanvas() {
   const { activeFile, zenMode, agentRunning } = useUI();
   const streaming = useChat((s) => s.streaming);
-  const { root, mock, initialized } = useWorkspace();
+  const { root, mock, initialized, targetId } = useWorkspace();
   const piBusy = agentRunning || streaming;
+  // Asked of the port rather than derived from the target: a launcher too old for
+  // hash-checked writes resolves to a read-only port on a target that otherwise looks
+  // fully capable, and the editor has to reflect the port it actually got.
+  const readOnly = !mock && !supportsHashedWrites(workspaceFsFor(targetId)) && targetId !== "local";
   const t = useT();
 
   // no workspace root could be resolved — offer project selection instead
@@ -112,7 +119,26 @@ export function EditorCanvas() {
               {t("editor.piEditing")}
             </span>
           )}
+          {/* On a remote target the editor is read-only until a save can be
+              hash-checked. Saying so here is the difference between "this app cannot do
+              that" and a save that silently does nothing. */}
+          {readOnly && (
+            <span
+              title={t("editor.readOnlyRemoteHint")}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                color: "var(--text-tertiary)",
+              }}
+            >
+              <Lock size={11} />
+              {t("editor.readOnlyRemote")}
+            </span>
+          )}
         </div>
+
+        <DocConflictBar path={activeFile} />
 
         <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
           {isImageFile(activeFile) ? (

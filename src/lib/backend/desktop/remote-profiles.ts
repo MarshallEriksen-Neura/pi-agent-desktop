@@ -6,6 +6,7 @@ import type {
   RemoteReadinessReport,
 } from "../ports/execution-target";
 import type { RemotePiProfilePort } from "../ports/remote-profiles";
+import type { RemoteTaskHandle, RemoteTaskReport } from "../ports/remote-profiles";
 import { desktopInvoke } from "./invoke";
 
 export const desktopRemotePiProfilePort: RemotePiProfilePort = {
@@ -24,5 +25,18 @@ export const desktopRemotePiProfilePort: RemotePiProfilePort = {
     }),
   capabilities: (id: string) =>
     desktopInvoke<LauncherCapabilities>("remote_profile_capabilities", { id }),
+  ensureTask: (request) =>
+    desktopInvoke<RemoteTaskHandle>("remote_task_ensure", {
+      profileId: request.profileId,
+      remoteTaskId: request.remoteTaskId ?? null,
+      remoteCwd: request.remoteCwd,
+      resumePath: request.resumePath ?? null,
+    }),
+  taskStatus: (profileId: string, remoteTaskId: string) =>
+    desktopInvoke<RemoteTaskReport>("remote_task_status", { profileId, remoteTaskId }),
+  stopTask: (profileId: string, remoteTaskId: string) =>
+    desktopInvoke<RemoteTaskReport>("remote_task_stop", { profileId, remoteTaskId }),
+  reapTasks: (profileId: string) =>
+    desktopInvoke<unknown>("remote_task_reap", { profileId }),
   sshConfigHosts: () => desktopInvoke<string[]>("ssh_config_hosts"),
 };

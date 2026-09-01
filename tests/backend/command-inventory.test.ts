@@ -43,8 +43,13 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // skills_cli (the `npx skills` bridge) makes 66, skills_search 67. Remote
   // Agent's 7 (remote_profile_* and ssh_config_hosts) had the same drift and
   // made 74; provider sync's 3 make 77. remote_profile_capabilities — the
-  // launcher capability handshake — makes 78.
-  assert.equal(result.inventory.commandUniqueCount, 78);
+  // launcher capability handshake — makes 78. remote_workspace_request, the
+  // read-only remote browsing bridge, makes 79. project_open_remote — recording a
+  // project opened on an SSH host — makes 80. remote_task_ensure, which mints or
+  // reattaches a detached task before pi_start attaches to it, makes 81.
+  // The detached task lifecycle adds three more — status, stop and reap are separate
+  // because they are separate intents: asking, ending the work, and housekeeping.
+  assert.equal(result.inventory.commandUniqueCount, 84);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -93,6 +98,8 @@ test("locks the desktop command names and Pi process event names", () => {
     "pi_start",
     "pi_stop",
     "project_open",
+    // a project opened on an SSH host: recorded in recents, but nothing local moves
+    "project_open_remote",
     "project_pick",
     "project_remove_recent",
     "project_resolve",
@@ -129,6 +136,18 @@ test("locks the desktop command names and Pi process event names", () => {
     "remote_provider_sync_apply",
     "remote_provider_sync_candidates",
     "remote_provider_sync_prepare",
+    // mints or reattaches a detached remote task; two SSH round trips, so it is
+    // deliberately not part of the synchronous pi_start
+    "remote_task_ensure",
+    // asking the host what a task is doing — the only way out of `lost`, since a
+    // partitioned pi outlives the desktop's knowledge by up to ~2h
+    "remote_task_reap",
+    "remote_task_status",
+    // stops the work, as opposed to pi_stop which only closes the local channel
+    "remote_task_stop",
+    // read-only remote browsing: list a directory, read a file. Writes stay
+    // refused until V2.4 adds the hash check
+    "remote_workspace_request",
     "runtime_config_read",
     "runtime_config_write",
     // `npx skills …` — skill install/remove/update, allowlisted subcommands only

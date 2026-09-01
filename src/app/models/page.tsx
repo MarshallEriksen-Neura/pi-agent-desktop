@@ -33,8 +33,14 @@ import {
   API_TYPES,
   type CustomModelDef,
   type CustomProvider,
+  providerModels,
   usePiModels,
 } from "@/lib/pi/models";
+import {
+  type ProviderEntry,
+  buildProviderEntries,
+  groupPiModels,
+} from "@/lib/pi/provider-entries";
 import {
   type ModelRefLike,
   isModelEnabled,
@@ -204,7 +210,7 @@ export default function ModelsPage() {
     const list = piModels.map((m) => ({ provider: m.provider, id: m.id }));
     const seen = new Set(list.map((m) => modelRef(m.provider, m.id)));
     for (const [providerId, provider] of Object.entries(customProviders)) {
-      for (const m of provider.models ?? []) {
+      for (const m of providerModels(provider)) {
         const ref = modelRef(providerId, m.id);
         if (seen.has(ref)) continue;
         seen.add(ref);
@@ -249,8 +255,8 @@ export default function ModelsPage() {
   };
   const handleSaveProvider = async (providerId: string, provider: CustomProvider) => {
     await piModelsStore.updateProvider(providerId, {
-      baseUrl: provider.baseUrl,
-      api: provider.api,
+      baseUrl: provider.baseUrl ?? "",
+      api: provider.api ?? "",
       apiKey: provider.apiKey,
     });
     setAddingProvider(false);
@@ -261,7 +267,7 @@ export default function ModelsPage() {
     const target = pendingRemoval;
     if (!target) return;
     if (target.kind === "provider") {
-      const gone = (customProviders[target.providerId]?.models ?? []).map((m) => ({
+      const gone = providerModels(customProviders[target.providerId]).map((m) => ({
         provider: target.providerId,
         id: m.id,
       }));
@@ -305,26 +311,30 @@ export default function ModelsPage() {
   /** Model count of the provider queued for removal — drives the warning copy. */
   const pendingProviderModelCount =
     pendingRemoval?.kind === "provider"
-      ? customProviders[pendingRemoval.providerId]?.models?.length ?? 0
+      ? providerModels(customProviders[pendingRemoval.providerId]).length
       : 0;
 
   const handleFetch = async (providerId: string) => {
     const provider = customProviders[providerId];
-    if (!provider) return;
+    // No baseUrl means no /models endpoint to ask; the button is disabled too.
+    if (!provider?.baseUrl) return;
     setFetchingProviderId(providerId);
     setFetchError(null);
     try {
-      const list = await piModelsStore.fetchModels(provider.baseUrl, provider.api, provider.apiKey);
+      const own = providerModels(provider);
+      const list = await piModelsStore.fetchModels(
+        provider.baseUrl,
+        provider.api ?? API_TYPES[0],
+        provider.apiKey
+      );
       const upstream = new Set(list);
-      const existing = new Set(provider.models.map((m) => m.id));
+      const existing = new Set(own.map((m) => m.id));
       const fresh = list.filter((id) => !existing.has(id));
       // An empty upstream list is far more often a bad key or a proxy that
       // doesn't implement /models than a provider that really dropped
       // everything — diffing against it would offer to delete the lot.
       const stale =
-        list.length > 0
-          ? provider.models.map((m) => m.id).filter((id) => !upstream.has(id))
-          : [];
+        list.length > 0 ? own.map((m) => m.id).filter((id) => !upstream.has(id)) : [];
       setFetchResult({
         providerId,
         upstreamCount: list.length,
@@ -351,8 +361,8 @@ export default function ModelsPage() {
     await piModelsStore.syncModels(
       providerId,
       {
-        baseUrl: provider.baseUrl,
-        api: provider.api,
+        baseUrl: provider.baseUrl ?? "",
+        api: provider.api ?? "",
         apiKey: provider.apiKey,
       },
       selectedAdd.map((id) => ({ id, name: id })),
@@ -362,66 +372,13 @@ export default function ModelsPage() {
     setFetchResult(null);
   };
 
-  /**
-   * Built-in providers rendered as provider cards alongside the models.json
-   * ones, so a subscription signed in under Settings → Accounts is visible where
-   * users already look instead of only in the list at the foot of the page.
-   *
-   * pi reports models.json providers too, so anything already in
-   * `customProviders` is skipped — otherwise every custom provider would render
-   * twice, and the editable card is the one worth keeping. That also settles the
-   * overlap case (a provider both built in and overridden in models.json, like
-   * `openrouter`): the override wins, matching pi's own resolution order.
-   */
-  const builtinProviders = useMemo<Record<string, CustomProvider>>(() => {
-    const out: Record<string, CustomProvider> = {};
-    for (const model of piModels) {
-      if (customProviders[model.provider]) continue;
-      const entry = (out[model.provider] ??= {
-        // Built-in catalogs live in pi, not models.json: there is no baseUrl or
-        // api to show, and nothing here is editable.
-        baseUrl: "",
-        api: "",
-        models: [],
-      });
-      entry.models.push({
-        id: model.id,
-        name: model.name,
-        reasoning: model.reasoning,
-        contextWindow: model.contextWindow,
-      });
-    }
-    return out;
-  }, [piModels, customProviders]);
+  /** What pi reports, grouped by provider — its merged catalog, all providers. */
+  const piProviderModels = useMemo(() => groupPiModels(piModels), [piModels]);
 
-  const filteredProviderEntries = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    const entries: Array<{
-      providerId: string;
-      provider: CustomProvider;
-      matchedModels: CustomModelDef[];
-      providerMatch: boolean;
-      builtin: boolean;
-    }> = [];
-    const collect = (source: Record<string, CustomProvider>, builtin: boolean) => {
-      for (const [providerId, provider] of Object.entries(source)) {
-        const providerMatch = providerId.toLowerCase().includes(term);
-        const matchedModels = provider.models.filter(
-          (m) =>
-            providerMatch ||
-            m.id.toLowerCase().includes(term) ||
-            (m.name && m.name.toLowerCase().includes(term))
-        );
-        entries.push({ providerId, provider, matchedModels, providerMatch, builtin });
-      }
-    };
-    // Custom first: these are the ones the user configured by hand.
-    collect(customProviders, false);
-    collect(builtinProviders, true);
-    return entries.filter(
-      ({ matchedModels, providerMatch }) => providerMatch || matchedModels.length > 0
-    );
-  }, [customProviders, builtinProviders, search]);
+  const filteredProviderEntries = useMemo<ProviderEntry[]>(
+    () => buildProviderEntries(customProviders, piProviderModels, search),
+    [customProviders, piProviderModels, search]
+  );
 
   // Scroll-spy: highlight the provider whose card is nearest the top of the
   // viewport — the rail's "where am I" cue (Wayfinding).
@@ -533,22 +490,23 @@ export default function ModelsPage() {
             transition={{ ...spring, delay: 0.1 }}
             style={{ display: "grid", gap: 14 }}
           >
-            {filteredProviderEntries.map(({ providerId, provider, matchedModels, builtin }) => {
+            {filteredProviderEntries.map(
+              ({ providerId, provider, allModels, localIds, matchedModels, builtin }) => {
               const isOpen = !!expanded[providerId];
-              const enabledCount = provider.models.filter((m) =>
+              const enabledCount = allModels.filter((m) =>
                 isModelEnabled(enabledModels, providerId, m.id)
               ).length;
               const cardQuery = (cardFilter[providerId] ?? "").trim().toLowerCase();
-              const localModels = cardQuery
+              const visibleModels = cardQuery
                 ? matchedModels.filter(
                     (m) =>
                       (m.name || m.id).toLowerCase().includes(cardQuery) ||
                       m.id.toLowerCase().includes(cardQuery)
                   )
                 : matchedModels;
-              const cardLetters = providerLetterIndex(provider.models);
+              const cardLetters = providerLetterIndex(allModels);
               const cardLettersPresent = new Set(
-                localModels.map((m) => firstLetter(m.id))
+                visibleModels.map((m) => firstLetter(m.id))
               );
               return (
                 <div
@@ -596,7 +554,7 @@ export default function ModelsPage() {
                           className="truncate text-xs"
                           style={{ color: "var(--muted-foreground)" }}
                         >
-                          {t("models.modelCount", { n: provider.models.length })}
+                          {t("models.modelCount", { n: allModels.length })}
                           {enabledCount > 0 && (
                             <>
                               {" · "}
@@ -607,7 +565,7 @@ export default function ModelsPage() {
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      {provider.models.length > 0 && (
+                      {allModels.length > 0 && (
                         <span
                           className="hidden text-xs sm:inline"
                           style={{ color: "var(--muted-foreground)" }}
@@ -670,7 +628,12 @@ export default function ModelsPage() {
                             </button>
                             <button
                               onClick={() => handleFetch(providerId)}
-                              disabled={fetchingProviderId === providerId}
+                              // No baseUrl (a credential-only override) means
+                              // there is no /models endpoint to ask.
+                              disabled={
+                                fetchingProviderId === providerId || !provider.baseUrl
+                              }
+                              title={provider.baseUrl ? undefined : t("models.baseUrl")}
                               className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
                               style={{
                                 background: "var(--input-bg)",
@@ -714,7 +677,7 @@ export default function ModelsPage() {
                           )}
 
                           {/* In-card filter + A–Z jump — keeps large providers navigable */}
-                          {provider.models.length > 12 && (
+                          {allModels.length > 12 && (
                             <CardModelIndex
                               filter={cardFilter[providerId] ?? ""}
                               onFilterChange={(v) => setCardFilterFor(providerId, v)}
@@ -725,7 +688,7 @@ export default function ModelsPage() {
                           )}
 
                           {/* Models grid */}
-                          {localModels.length === 0 ? (
+                          {visibleModels.length === 0 ? (
                             <div
                               className="rounded-2xl py-8 text-center text-sm"
                               style={{
@@ -737,12 +700,16 @@ export default function ModelsPage() {
                             </div>
                           ) : (
                             <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
-                              {localModels.map((model, rowIndex) => {
+                              {visibleModels.map((model, rowIndex) => {
                                 const enabled = isModelEnabled(
                                   enabledModels,
                                   providerId,
                                   model.id
                                 );
+                                // Only a models.json definition can be edited or
+                                // deleted — a built-in row has nothing local
+                                // behind it, even on an editable provider card.
+                                const editable = localIds.has(model.id);
                                 const meta = resolveModelMetaOrFallback(model.id, providerId);
                                 return (
                                   <div
@@ -785,15 +752,15 @@ export default function ModelsPage() {
                                     </span>
                                     <div
                                       className={
-                                        builtin
-                                          ? "min-w-0 flex-1"
-                                          : "min-w-0 flex-1 cursor-pointer"
+                                        editable
+                                          ? "min-w-0 flex-1 cursor-pointer"
+                                          : "min-w-0 flex-1"
                                       }
                                       title={model.id}
                                       onClick={
-                                        builtin
-                                          ? undefined
-                                          : () => setEditingModel({ providerId, model })
+                                        editable
+                                          ? () => setEditingModel({ providerId, model })
+                                          : undefined
                                       }
                                     >
                                       <p
@@ -809,7 +776,7 @@ export default function ModelsPage() {
                                         {model.id}
                                       </p>
                                     </div>
-                                    {!builtin && (
+                                    {editable && (
                                       <button
                                         onClick={() =>
                                           setPendingRemoval({
@@ -835,7 +802,8 @@ export default function ModelsPage() {
                   </AnimatePresence>
                 </div>
               );
-            })}
+              }
+            )}
 
             {filteredProviderEntries.length === 0 &&
               customLoaded &&
@@ -1007,13 +975,7 @@ function ProviderRail({
   onCollapseAll,
   onBackTop,
 }: {
-  entries: Array<{
-    providerId: string;
-    provider: CustomProvider;
-    matchedModels: CustomModelDef[];
-    providerMatch: boolean;
-    builtin: boolean;
-  }>;
+  entries: ProviderEntry[];
   activeProvider: string | null;
   onJump: (id: string) => void;
   onExpandAll: () => void;
@@ -1068,7 +1030,7 @@ function ProviderRail({
       </div>
 
       <div style={{ display: "grid", gap: 2 }}>
-        {entries.map(({ providerId, provider }) => {
+        {entries.map(({ providerId, allModels }) => {
           const active = activeProvider === providerId;
           return (
             <motion.button
@@ -1092,7 +1054,7 @@ function ProviderRail({
                 className="text-[10.5px] tabular-nums"
                 style={{ color: "var(--muted-foreground)" }}
               >
-                {provider.models.length}
+                {allModels.length}
               </span>
             </motion.button>
           );

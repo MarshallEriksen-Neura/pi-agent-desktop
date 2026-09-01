@@ -33,9 +33,12 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
   function report(
     profileId: string | undefined,
     host: string,
-    remoteCwd: string,
+    remoteCwd: string | null | undefined,
     launcherPath: string,
   ): RemoteReadinessReport {
+    // Mirrors the native command: a workspace is only checked when one is known, so a
+    // profile with no browse directory still gets a full host verdict.
+    const browseDirectory = remoteCwd?.trim() || "";
     const checks: RemoteReadinessCheck[] = [];
     const skip = (...ids: RemoteReadinessCheck["id"][]) => {
       for (const id of ids) checks.push({ id, status: "skipped" });
@@ -44,7 +47,7 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
     if (!host) {
       checks.push({ id: "ssh", status: "failed", errorCode: "ssh_host_unknown", error: "No SSH host alias" });
       skip("launcher", "node", "workspace", "pi", "piAuth");
-      return { ok: false, profileId, host, remoteCwd, launcherPath, checks };
+      return { ok: false, profileId, host, remoteCwd: browseDirectory, launcherPath, checks };
     }
     checks.push({ id: "ssh", status: "ok", detail: host });
 
@@ -56,12 +59,16 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
         error: `No launcher at ${launcherPath}`,
       });
       skip("node", "workspace", "pi", "piAuth");
-      return { ok: false, profileId, host, remoteCwd, launcherPath, checks };
+      return { ok: false, profileId, host, remoteCwd: browseDirectory, launcherPath, checks };
     }
     checks.push({ id: "launcher", status: "ok", detail: launcherPath });
     checks.push({ id: "node", status: "ok", detail: "v20.0.0" });
 
-    if (!remoteCwd.startsWith("/")) {
+    if (browseDirectory.length === 0) {
+      // No browse directory configured is not a failure: the host is still fully
+      // checkable, and the workspace is validated when a project is picked.
+      skip("workspace");
+    } else if (!browseDirectory.startsWith("/")) {
       checks.push({
         id: "workspace",
         status: "failed",
@@ -69,12 +76,22 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
         error: "Remote workspace must be an absolute POSIX path",
       });
       skip("pi", "piAuth");
-      return { ok: false, profileId, host, remoteCwd, launcherPath, checks };
+      return { ok: false, profileId, host, remoteCwd: browseDirectory, launcherPath, checks };
+    } else {
+      checks.push({ id: "workspace", status: "ok", detail: browseDirectory });
     }
-    checks.push({ id: "workspace", status: "ok", detail: remoteCwd });
     checks.push({ id: "pi", status: "ok", detail: "pi 0.0.0-mock" });
     checks.push({ id: "piAuth", status: "ok" });
-    return { ok: true, profileId, host, remoteCwd, launcherPath, piVersion: "pi 0.0.0-mock", checks };
+    return {
+      ok: true,
+      profileId,
+      host,
+      remoteCwd: browseDirectory,
+      launcherPath,
+      piVersion: "pi 0.0.0-mock",
+      home: "/home/preview",
+      checks,
+    };
   }
 
   return {
@@ -87,11 +104,12 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
         revision: (existing?.revision ?? 0) + 1,
         name: input.name.trim(),
         sshHost: input.sshHost.trim(),
-        remoteCwd: input.remoteCwd.trim(),
+        remoteCwd: input.remoteCwd?.trim() || null,
         piExecutable: input.piExecutable?.trim() || null,
         launcherPath: input.launcherPath?.trim() || DEFAULT_LAUNCHER_PATH,
         launcherProtocolVersion: input.launcherProtocolVersion ?? 1,
-        lifecycle: "attached",
+        // Omitted keeps an existing profile's lifecycle, matching the native command.
+        lifecycle: input.lifecycle ?? existing?.lifecycle ?? "attached",
       };
       const index = existing ? profiles.indexOf(existing) : -1;
       if (index >= 0) profiles[index] = profile;
@@ -112,7 +130,7 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
       report(
         input.id,
         input.sshHost.trim(),
-        input.remoteCwd.trim(),
+        input.remoteCwd?.trim() ?? null,
         input.launcherPath?.trim() || DEFAULT_LAUNCHER_PATH,
       ),
     installLauncher: async (host, launcherPath): Promise<LauncherInstallResult> => {
@@ -130,12 +148,66 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
         host: profile.sshHost,
         launcherPath: profile.launcherPath,
         launcherProtocolVersion: 1,
-        capabilities: ["capabilities-v1", "preflight-v1", "provider-sync-v1", "run-v1"],
+        capabilities: [
+          "attach-v1",
+          "capabilities-v1",
+          "detached-tasks-v1",
+          "preflight-v1",
+          "provider-sync-v1",
+          "run-v1",
+          "workspace-v1",
+          "workspace-writes-v1",
+        ],
         supportsCapabilityQuery: true,
         errorCode: null,
         error: null,
       };
     },
+    // The preview has no SSH transport, so a detached task cannot be started here. It
+    // answers with a stable handle rather than throwing, so the UI paths that depend on a
+    // completed binding stay exercisable — but `state: "exited"` keeps it honest about
+    // there being nothing to attach to.
+    ensureTask: async (request) => ({
+      remoteTaskId: request.remoteTaskId ?? "t-preview0000",
+      state: "exited" as const,
+      pid: null,
+      supervisorPid: null,
+      startedAt: null,
+      previousTaskId: null,
+      started: false,
+      baseSequence: null,
+      nextSequence: null,
+    }),
+    // No SSH transport in preview, so a task can only ever be reported gone. Honest
+    // rather than convenient: a fabricated `running` would make the UI show a live
+    // remote task that nothing could stop.
+    taskStatus: async (_profileId: string, remoteTaskId: string) => ({
+      remoteTaskId,
+      state: "exited" as const,
+      stale: false,
+      exists: false,
+      pid: null,
+      piAlive: false,
+      exitCode: null,
+      stopRequestedAt: null,
+      stopConfirmedAt: null,
+      baseSequence: null,
+      nextSequence: null,
+    }),
+    stopTask: async (_profileId: string, remoteTaskId: string) => ({
+      remoteTaskId,
+      state: "exited" as const,
+      stale: false,
+      exists: false,
+      pid: null,
+      piAlive: false,
+      exitCode: null,
+      stopRequestedAt: null,
+      stopConfirmedAt: null,
+      baseSequence: null,
+      nextSequence: null,
+    }),
+    reapTasks: async () => ({ ok: true, repaired: 0, orphansKilled: 0, removed: 0 }),
     sshConfigHosts: async () => [],
   };
 }

@@ -84,16 +84,48 @@ test("no probe at all grants nothing", () => {
  */
 test("the launcher's real reply parses into the expected capability set", () => {
   const wire = JSON.parse(
-    '{"launcherProtocolVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1"]}',
+    '{"launcherProtocolVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1"]}',
   ) as { launcherProtocolVersion: number; capabilities: string[] };
   const probe = answered(wire.capabilities);
+  // Capabilities are versioned independently of the payload protocol: detached
+  // tasks and attach both shipped without moving it, so inferring one from the
+  // other is wrong.
   assert.equal(wire.launcherProtocolVersion, 1);
   for (const capability of [
     "run-v1",
     "preflight-v1",
     "provider-sync-v1",
     "capabilities-v1",
+    "detached-tasks-v1",
+    "attach-v1",
+    "workspace-v1",
+    "workspace-writes-v1",
   ] as const) {
     assert.equal(hasLauncherCapability(probe, capability), true, capability);
   }
+});
+
+/**
+ * An already-installed launcher predates detached tasks and cannot answer the
+ * query at all. It still has the V1 surface, so the degradation must grant exactly
+ * that and nothing more — a desktop that inferred detached support here would send
+ * `--start-detached` to a launcher that answers `invalid launcher mode`.
+ */
+test("an old launcher degrades to the V1 surface and never to detached tasks", () => {
+  const probe = {
+    host: "prod",
+    launcherPath: "/opt/pi-desktop-launcher",
+    launcherProtocolVersion: 0,
+    capabilities: [],
+    supportsCapabilityQuery: false,
+    errorCode: null,
+    error: null,
+  };
+  assert.equal(hasLauncherCapability(probe, "run-v1"), true);
+  assert.equal(hasLauncherCapability(probe, "preflight-v1"), true);
+  assert.equal(hasLauncherCapability(probe, "detached-tasks-v1"), false);
+  assert.equal(hasLauncherCapability(probe, "attach-v1"), false);
+  assert.equal(hasLauncherCapability(probe, "workspace-v1"), false);
+  assert.equal(hasLauncherCapability(probe, "workspace-writes-v1"), false);
+  assert.equal(hasLauncherCapability(probe, "provider-sync-v1"), false);
 });

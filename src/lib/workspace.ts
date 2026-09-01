@@ -10,6 +10,21 @@ import {
   workspaceFsFor,
   type WorkspaceTargetId,
 } from "./workspace-target";
+import {
+  isRemoteWorkspaceConflict,
+  supportsHashedWrites,
+} from "./backend/ports/remote-workspace-fs";
+
+/** One file changed under an edit. `currentHash` is what the host holds now. */
+export interface DocConflict {
+  currentHash: string | null;
+}
+
+const withoutKey = <T,>(record: Record<string, T>, key: string): Record<string, T> => {
+  const next = { ...record };
+  delete next[key];
+  return next;
+};
 
 export interface FsEntry {
   name: string;
@@ -21,6 +36,15 @@ export interface RecentProject {
   path: string;
   name: string;
   lastOpenedAt: number;
+  /**
+   * The machine this project lives on — `"local"` or `"ssh:<profileId>"`, matching the
+   * pi-process target id.
+   *
+   * Part of the identity, not a decoration: `/srv/app` can exist on several hosts, and
+   * a bare path is only unambiguous paired with the one it belongs to. Entries written
+   * before remote projects existed default to `"local"`.
+   */
+  targetId: WorkspaceTargetId;
 }
 
 interface WorkspaceStore {
@@ -41,6 +65,17 @@ interface WorkspaceStore {
   /** a project switch is in flight (pi restarting, tree reloading) */
   switching: boolean;
   recents: RecentProject[];
+  /**
+   * If-Match token per open document, minted by the launcher on read.
+   *
+   * Only populated on a target that supports hash-checked writes. Never computed
+   * here: hashing decoded text would disagree with the file bytes for anything
+   * containing invalid UTF-8, turning one file in a hundred into a conflict nobody
+   * can reproduce.
+   */
+  docHashes: Record<string, string>;
+  /** Files whose last save was refused because the host copy moved. */
+  conflicts: Record<string, DocConflict>;
   /** children per directory path ("" = root in mock mode) */
   entries: Record<string, FsEntry[]>;
   expanded: Record<string, boolean>;
@@ -58,9 +93,16 @@ interface WorkspaceStore {
   loadRecents: () => Promise<void>;
   /** Switch to the project at `path`: persist, reset state, reload tree, restart pi. */
   openProject: (path: string) => Promise<void>;
+  /** Open a directory on the current *remote* target. Local paths use `openProject`. */
+  openRemoteProject: (path: string) => Promise<void>;
   /** Native folder picker → openProject. */
   pickProject: () => Promise<void>;
-  removeRecent: (path: string) => Promise<void>;
+  /** `targetId` defaults to the store's current one — the pair is the identity. */
+  removeRecent: (path: string, targetId?: WorkspaceTargetId) => Promise<void>;
+  /** Discard local edits, take the host copy. */
+  resolveConflictWithRemote: (path: string) => Promise<void>;
+  /** Keep local edits, overwrite the host copy — re-checked against its current hash. */
+  resolveConflictWithLocal: (path: string) => Promise<void>;
   toggleDir: (path: string) => Promise<void>;
   /**
    * Load a file's text into `docs` without changing what the editor shows.
@@ -104,6 +146,8 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
   initialized: false,
   switching: false,
   recents: [],
+  docHashes: {},
+  conflicts: {},
   entries: {},
   expanded: {},
   docs: {},
@@ -203,10 +247,50 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     }
   },
 
-  removeRecent: async (path) => {
+  /**
+   * Open a directory on the store's current remote target.
+   *
+   * Not `openProject` with a flag: that path canonicalizes through the OS, moves the
+   * local workspace root, and notifies the phone gateway — none of which apply to a
+   * directory on another machine. What is shared is only the shape: list the root, then
+   * make it the tree.
+   *
+   * The listing is also the existence check. A remote `stat` would be a second round
+   * trip to learn what a failed `listDir` already tells us.
+   */
+  openRemoteProject: async (path) => {
+    const targetId = get().targetId;
+    if (targetId === LOCAL_WORKSPACE_TARGET) return;
+    if (get().mock || get().switching) return;
+    set({ switching: true, loadError: null });
+    try {
+      const top = await workspaceFsFor(targetId).listDir(path);
+      set({
+        root: path,
+        entries: { [path]: top },
+        expanded: {},
+        docs: {},
+        loadError: null,
+      });
+      // Whatever was open belonged to the previous project, and on a remote target it
+      // may not even exist here.
+      useUI.getState().setActiveFile("");
+      const recents = await getPort("projectCatalog").commitRemote(path, targetId);
+      set({ recents });
+    } catch (e) {
+      set({ loadError: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ switching: false });
+    }
+  },
+
+  removeRecent: async (path, targetId) => {
     if (get().mock) return;
     try {
-      const recents = await getPort("projectCatalog").removeRecent(path);
+      const recents = await getPort("projectCatalog").removeRecent(
+        path,
+        targetId ?? get().targetId,
+      );
       set({ recents });
     } catch {
       // list stays as-is on failure
@@ -232,7 +316,19 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     if (isImageFile(path)) return true;
     if (get().docs[path] !== undefined) return true;
     try {
-      const content = await fs().readFile(path);
+      const port = fs();
+      // On a target that supports it, the read also yields the token a later write has
+      // to present. pi edits the same tree at the same time, so a blind write would
+      // lose whichever change landed first with nothing to say it happened.
+      if (supportsHashedWrites(port)) {
+        const { content, hash } = await port.readFileHashed(path);
+        set((s) => ({
+          docs: { ...s.docs, [path]: content },
+          docHashes: { ...s.docHashes, [path]: hash },
+        }));
+        return true;
+      }
+      const content = await port.readFile(path);
       set((s) => ({ docs: { ...s.docs, [path]: content } }));
       return true;
     } catch (e) {
@@ -274,8 +370,75 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     get().updateDoc(path, content);
     if (get().mock) return; // nowhere to persist in browser preview
     try {
-      await fs().writeFile(path, content);
+      const port = fs();
+      if (supportsHashedWrites(port)) {
+        // `null` asserts the file is new. Omitting the assertion entirely is refused by
+        // the launcher, because a caller that has not decided is how a concurrent
+        // create gets clobbered.
+        const expected = get().docHashes[path] ?? null;
+        const { hash } = await port.writeFileHashed(path, content, expected);
+        set((s) => ({ docHashes: { ...s.docHashes, [path]: hash } }));
+        return;
+      }
+      await port.writeFile(path, content);
     } catch (e) {
+      // A conflict is not a failed save, it is a different outcome: the file moved
+      // under us and the user has to choose. It is surfaced as its own state so the
+      // editor can offer reload-or-overwrite rather than a red error string.
+      if (isRemoteWorkspaceConflict(e)) {
+        set((s) => ({
+          conflicts: { ...s.conflicts, [path]: { currentHash: e.currentHash } },
+        }));
+        return;
+      }
+      set({ loadError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  /** Discard local edits and take what is on the host now. */
+  resolveConflictWithRemote: async (path) => {
+    const port = fs();
+    if (!supportsHashedWrites(port)) return;
+    try {
+      const { content, hash } = await port.readFileHashed(path);
+      set((s) => ({
+        docs: { ...s.docs, [path]: content },
+        docHashes: { ...s.docHashes, [path]: hash },
+        conflicts: withoutKey(s.conflicts, path),
+      }));
+    } catch (e) {
+      set({ loadError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  /**
+   * Keep local edits and overwrite the host.
+   *
+   * Deliberately a second write against the *current* hash rather than a "force" flag:
+   * if the file changed again between the conflict and this click, the write is refused
+   * again instead of overwriting a change nobody has seen.
+   */
+  resolveConflictWithLocal: async (path) => {
+    const port = fs();
+    const conflict = get().conflicts[path];
+    if (!supportsHashedWrites(port) || conflict === undefined) return;
+    try {
+      const { hash } = await port.writeFileHashed(
+        path,
+        get().docs[path] ?? "",
+        conflict.currentHash,
+      );
+      set((s) => ({
+        docHashes: { ...s.docHashes, [path]: hash },
+        conflicts: withoutKey(s.conflicts, path),
+      }));
+    } catch (e) {
+      if (isRemoteWorkspaceConflict(e)) {
+        set((s) => ({
+          conflicts: { ...s.conflicts, [path]: { currentHash: e.currentHash } },
+        }));
+        return;
+      }
       set({ loadError: e instanceof Error ? e.message : String(e) });
     }
   },

@@ -21,7 +21,7 @@ if [ "$mode" = "--capabilities" ]; then
     printf '%s\n' 'capabilities_invalid_arguments' >&2
     exit 64
   fi
-  printf '%s\n' '{"launcherProtocolVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1"]}'
+  printf '%s\n' '{"launcherProtocolVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1"]}'
   exit 0
 fi
 
@@ -31,7 +31,31 @@ if [ "$mode" = "--provider-sync" ]; then
     exit 64
   fi
   decoded=""
-elif [ "$mode" = "--run" ] || [ "$mode" = "--preflight" ]; then
+elif [ "$mode" = "--reap" ]; then
+  if [ "$#" -ne 1 ]; then
+    printf '%s\n' 'task_invalid_arguments' >&2
+    exit 64
+  fi
+  decoded=""
+elif [ "$mode" = "--status" ]; then
+  # The only mode that takes an optional argument: with an id it reports one
+  # task, without one it lists them.
+  if [ "$#" -gt 2 ]; then
+    printf '%s\n' 'task_invalid_arguments' >&2
+    exit 64
+  fi
+  decoded="$payload"
+elif [ "$mode" = "--stop" ] || [ "$mode" = "--send" ]; then
+  # A task id is already constrained to [a-z0-9-], so it travels as itself
+  # rather than base64 — encoding it would only hide a malformed one.
+  if [ "$#" -ne 2 ] || [ -z "$payload" ]; then
+    printf '%s\n' 'task_invalid_arguments' >&2
+    exit 64
+  fi
+  decoded="$payload"
+elif [ "$mode" = "--run" ] || [ "$mode" = "--preflight" ] || \
+     [ "$mode" = "--start-detached" ] || [ "$mode" = "--supervise" ] || \
+     [ "$mode" = "--attach" ] || [ "$mode" = "--workspace" ]; then
   if [ "$#" -ne 2 ] || [ -z "$payload" ]; then
     printf '%s\n' 'missing launcher payload' >&2
     exit 64
@@ -93,6 +117,9 @@ fi
 
 export PI_DESKTOP_LAUNCHER_PAYLOAD="$decoded"
 export PI_DESKTOP_LAUNCHER_MODE="$mode"
+# `--start-detached` re-enters this same file as `--supervise`, so it needs its own
+# path. `node -e` leaves nothing useful in argv, but `sh` still has $0.
+export PI_DESKTOP_LAUNCHER_SELF="$0"
 exec node -e 'eval(require("node:fs").readFileSync(3, "utf8"))' 3<<'__PI_DESKTOP_NODE__'
 const { spawn } = require("node:child_process");
 
@@ -571,153 +598,1570 @@ function runProviderSync() {
 
 if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--provider-sync") runProviderSync();
 
+// --- detached tasks (V2.1) -------------------------------------------------
+// Contract: docs/remote-agent-v2-supervisor-protocol.md. Every bound below comes
+// from a measurement in docs/remote-agent-v1-acceptance.md, not an estimate.
+const TASK_MODES = ["--start-detached", "--supervise", "--status", "--stop", "--send", "--reap", "--attach"];
+const STATUS_VERSION = 1;
+/** Longest JSONL line observed was 8513 chars; this bounds a runaway one. */
+const MAX_EVENT_BYTES = 1024 * 1024;
+/** Rotation granularity, not a task limit. */
+const SEGMENT_MAX_BYTES = 16 * 1024 * 1024;
+/** ~2h at the measured 12.8 KB/s is ~90 MB; this clears the orphan ceiling. */
+const TASK_MAX_BYTES = 192 * 1024 * 1024;
+const MAX_TOTAL_TASK_BYTES = 512 * 1024 * 1024;
+/** Must exceed the ~2h orphan ceiling so a live-but-quiet task is never reaped. */
+const TASK_IDLE_TTL_MS = 6 * 60 * 60 * 1000;
+/** Per host. The launcher has no profile concept; a desktop may cap tighter. */
+const MAX_LIVE_TASKS = 8;
+const MAX_TASK_LIST = 64;
+const SUPERVISOR_START_TIMEOUT_MS = 15_000;
+const STOP_CONFIRM_TIMEOUT_MS = 5_000;
+const STDIN_LOCK_TIMEOUT_MS = 5_000;
+const MAX_SEND_BYTES = 1024 * 1024;
+const STATUS_THROTTLE_MS = 1_000;
+// Where the "journal adds a hop, so latency is bounded but nonzero" cost lands.
+const ATTACH_POLL_MS = 100;
+// Both scaled down from task_manager.rs: a per-task file needs nothing like its
+// 4096 global entries.
+const SEND_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_SEND_RECORDS = 256;
+const TASK_ID_PATTERN = /^[a-z0-9][a-z0-9-]{7,63}$/;
+const SEGMENT_PATTERN = /^events-(\d{12})\.jsonl$/;
+// Read-only workspace browsing (V2.3). Bounded because the reply crosses ssh as one
+// line: a directory with 100k entries or a 200 MB file must fail loudly, not stall a
+// channel the desktop is waiting on synchronously.
+const MAX_WORKSPACE_PATH_BYTES = 4096;
+const MAX_WORKSPACE_ENTRIES = 2_000;
+const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
+// The file cap bounds what is read; this bounds what is sent. JSON-escaping utf8 can
+// expand a byte into six (a \uXXXX escape), so a file inside the file cap can still serialize
+// into something no channel should be asked to carry.
+const MAX_WORKSPACE_REPLY_BYTES = 8 * 1024 * 1024;
+
+function taskReply(value) {
+  writeReplySync(`${JSON.stringify(value)}\n`);
+  process.exit(0);
+}
+
+/**
+ * `process.exit()` discards whatever is still queued in an async stdout write, and a
+ * POSIX pipe holds only 64 KiB — so any reply larger than that was silently truncated
+ * on the way back through ssh, arriving as unterminated JSON. Measured on a real host
+ * with a 2 MiB `--workspace` read: cut at 182720 bytes.
+ *
+ * A synchronous, fully-drained write is the only shape that is safe to follow with an
+ * immediate exit. Partial writes and EAGAIN are both normal on fd 1.
+ */
+function writeReplySync(text) {
+  const fs = require("node:fs");
+  const buffer = Buffer.from(text);
+  let offset = 0;
+  while (offset < buffer.length) {
+    try {
+      offset += fs.writeSync(1, buffer, offset, buffer.length - offset);
+    } catch (error) {
+      if (error?.code === "EAGAIN") continue;
+      throw error;
+    }
+  }
+}
+
+/**
+ * Loud on both channels. A probe that answered failure with silence would be
+ * indistinguishable from a host that genuinely has no tasks — the exact trap that
+ * made a V1 status check report "no remote processes" for a spawn error.
+ */
+function taskFail(errorCode, detail) {
+  process.stderr.write("task_failed\n");
+  taskReply(detail === undefined ? { ok: false, errorCode } : { ok: false, errorCode, detail });
+}
+
+// `--supervise` is the one mode that returns instead of exiting, because it has to
+// stay in the event loop. That makes this an either/or rather than a fall-through.
+if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--workspace") runWorkspaceMode();
+else if (TASK_MODES.includes(process.env.PI_DESKTOP_LAUNCHER_MODE)) runTaskMode();
+else runLauncherMode();
+
 function fail(message, code = 65) {
   process.stderr.write(`${message}\n`);
   process.exit(code);
 }
 
-let payload;
-try {
-  payload = JSON.parse(process.env.PI_DESKTOP_LAUNCHER_PAYLOAD);
-} catch {
-  fail("invalid launcher payload");
+/** Run and preflight: the original V1 surface, now explicitly not reachable
+ *  from a task mode. Keeping it in a function is what makes the two mutually
+ *  exclusive structurally — a task mode that returns instead of exiting used to
+ *  fall through here and start a second pi on the same session. */
+function runLauncherMode() {
+  let payload;
+  try {
+    payload = JSON.parse(process.env.PI_DESKTOP_LAUNCHER_PAYLOAD);
+  } catch {
+    fail("invalid launcher payload");
+  }
+
+  const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
+  const MAX_REMOTE_PATH_BYTES = 4096;
+  const validRemotePath = (value) =>
+    typeof value === "string" &&
+    value.startsWith("/") &&
+    Buffer.byteLength(value) <= MAX_REMOTE_PATH_BYTES &&
+    !CONTROL_CHAR.test(value);
+  const validExecutable = (value) =>
+    typeof value === "string" &&
+    value.length > 0 &&
+    Buffer.byteLength(value) <= MAX_REMOTE_PATH_BYTES &&
+    !CONTROL_CHAR.test(value);
+
+  const mode = process.env.PI_DESKTOP_LAUNCHER_MODE;
+  // `cwd` is required to run pi and optional to preflight it. A workspace is chosen
+  // per conversation rather than stored on a profile, so checking a host's readiness
+  // has to be possible before any directory has been picked.
+  const cwdOptional = mode === "--preflight" && (payload?.cwd === null || payload?.cwd === undefined);
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    payload.protocolVersion !== 1 ||
+    (!cwdOptional && !validRemotePath(payload.cwd)) ||
+    !validExecutable(payload.piExecutable) ||
+    (payload.resumePath !== null &&
+      payload.resumePath !== undefined &&
+      !validRemotePath(payload.resumePath))
+  ) {
+    fail("unsupported launcher payload");
+  }
+
+  if (mode === "--preflight") {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const piAuthConfigured = () => {
+      try {
+        const stat = fs.statSync(path.join(os.homedir(), ".pi", "agent", "auth.json"), {
+          throwIfNoEntry: false,
+        });
+        return Boolean(stat?.isFile() && stat.size > 2);
+      } catch {
+        return false;
+      }
+    };
+    let completed = false;
+    const finish = (result) => {
+      if (completed) return;
+      completed = true;
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    };
+
+    // Without a cwd there is no workspace row to report, and `$HOME` stands in as the
+    // directory `pi --version` runs from — it only has to exist, not be a project.
+    const home = os.homedir();
+    if (!cwdOptional) {
+      let workspace;
+      try {
+        workspace = fs.statSync(payload.cwd, { throwIfNoEntry: false });
+      } catch {
+        finish({ ok: false, errorCode: "workspace_unavailable", error: "remote cwd is not accessible" });
+        process.exit(0);
+      }
+      if (!workspace?.isDirectory()) {
+        finish({ ok: false, errorCode: "workspace_missing", error: "remote cwd does not exist" });
+        process.exit(0);
+      }
+    }
+
+    const child = spawn(payload.piExecutable, ["--version"], {
+      cwd: cwdOptional ? home : payload.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    const appendBounded = (current, chunk) =>
+      (current + chunk.toString()).slice(0, MAX_DIAGNOSTIC_BYTES);
+    child.stdout.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
+
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish({ ok: false, errorCode: "pi_timeout", error: "pi --version timed out" });
+    }, PREFLIGHT_TIMEOUT_MS);
+
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      finish({ ok: false, errorCode: "pi_not_found", error: error.message });
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      if (completed) return;
+      if (code === 0) {
+        finish({
+          ok: true,
+          piVersion: stdout.trim(),
+          nodeVersion: process.version,
+          // Shows when the shell had to recover node from a login PATH: the path
+          // will sit under .nvm/.fnm/.volta rather than a system bin.
+          nodePath: process.execPath,
+          // Weak evidence on purpose: pi owns auth.json and exposes no CLI query,
+          // so a nonempty file is the most the launcher can honestly report. The
+          // desktop app surfaces a false value as a warning, never a blocker.
+          piAuthConfigured: piAuthConfigured(),
+          // Where a remote folder browser should open. The desktop cannot expand
+          // `$HOME` locally and the launcher only accepts absolute paths, so without
+          // this the first browse would have to start at `/`.
+          home,
+        });
+      } else finish({
+        ok: false,
+        errorCode: "pi_unavailable",
+        error: stderr.trim() || `pi exited with ${code}`,
+      });
+    });
+  } else {
+    const args = ["--mode", "rpc"];
+    if (typeof payload.resumePath === "string" && payload.resumePath.length > 0) {
+      args.push("--session", payload.resumePath);
+    }
+
+    const child = spawn(payload.piExecutable, args, {
+      cwd: payload.cwd,
+      stdio: "inherit",
+    });
+    let stopping = false;
+    const forward = (signal) => {
+      if (stopping) return;
+      stopping = true;
+      try {
+        child.kill(signal);
+      } catch {
+        process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143);
+      }
+      setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+      }, 4_000).unref();
+    };
+    process.on("SIGTERM", () => forward("SIGTERM"));
+    process.on("SIGINT", () => forward("SIGINT"));
+    process.on("SIGHUP", () => forward("SIGHUP"));
+    child.once("error", (error) => {
+      process.stderr.write(`cannot start pi: ${error.message}\n`);
+      process.exit(127);
+    });
+    child.once("close", (code, signal) => {
+      const signalExitCodes = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143, SIGKILL: 137 };
+      process.exit(code ?? signalExitCodes[signal] ?? 1);
+    });
+  }
 }
 
-const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
-const MAX_REMOTE_PATH_BYTES = 4096;
-const validRemotePath = (value) =>
-  typeof value === "string" &&
-  value.startsWith("/") &&
-  Buffer.byteLength(value) <= MAX_REMOTE_PATH_BYTES &&
-  !CONTROL_CHAR.test(value);
-const validExecutable = (value) =>
-  typeof value === "string" &&
-  value.length > 0 &&
-  Buffer.byteLength(value) <= MAX_REMOTE_PATH_BYTES &&
-  !CONTROL_CHAR.test(value);
+// Read-only workspace browsing (V2.3). One bounded request, one JSON reply line,
+// exit 0 either way — the same envelope discipline every other mode uses.
+//
+// Deliberately not sandboxed to the profile's remoteCwd: the whole point is to let a
+// user *choose* that directory, so browsing has to be able to go above it. This grants
+// no authority the ssh user does not already have with `cat`, and pretending to
+// sandbox would be false comfort. Containment of the project tree is the store's job.
+function runWorkspaceMode() {
+  const fs = require("node:fs");
+  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+  const controlChar = /[\u0000-\u001f\u007f]/;
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const fail = (errorCode, detail, extra) => {
+    process.stderr.write("workspace_failed\n");
+    const body = { ok: false, errorCode, ...(detail === undefined ? {} : { detail }), ...extra };
+    writeReplySync(`${JSON.stringify(body)}\n`);
+    process.exit(0);
+  };
+  const reply = (value) => {
+    const line = `${JSON.stringify(value)}\n`;
+    if (Buffer.byteLength(line) > MAX_WORKSPACE_REPLY_BYTES) {
+      fail("workspaceTooLarge", String(Buffer.byteLength(line)));
+    }
+    writeReplySync(line);
+    process.exit(0);
+  };
+  const readFailure = (code) =>
+    code === "ENOENT" || code === "ENOTDIR"
+      ? "workspaceNotFound"
+      : code === "EACCES" || code === "EPERM"
+        ? "workspacePermissionDenied"
+        : "workspaceReadFailed";
 
-const mode = process.env.PI_DESKTOP_LAUNCHER_MODE;
-if (
-  payload === null ||
-  typeof payload !== "object" ||
-  payload.protocolVersion !== 1 ||
-  !validRemotePath(payload.cwd) ||
-  !validExecutable(payload.piExecutable) ||
-  (payload.resumePath !== null &&
-    payload.resumePath !== undefined &&
-    !validRemotePath(payload.resumePath))
-) {
-  fail("unsupported launcher payload");
+  let request;
+  try {
+    request = JSON.parse(process.env.PI_DESKTOP_LAUNCHER_PAYLOAD ?? "");
+  } catch {
+    fail("workspacePayloadInvalid", "payload is not JSON");
+  }
+  const validPath = (value) =>
+    typeof value === "string" &&
+    value.startsWith("/") &&
+    Buffer.byteLength(value) <= MAX_WORKSPACE_PATH_BYTES &&
+    !controlChar.test(value);
+  // The hash is a token this launcher minted, not a checksum the caller computed —
+  // an If-Match/ETag, so no encoding subtlety on the desktop side can make a valid
+  // write look like a conflict.
+  const HASH_PATTERN = /^sha256-[0-9a-f]{64}$/;
+  const hashOf = (bytes) =>
+    `sha256-${require("node:crypto").createHash("sha256").update(bytes).digest("hex")}`;
+  const READ_OPERATIONS = ["list", "read", "stat"];
+  const WRITE_OPERATIONS = ["write", "create", "mkdir", "delete", "rename"];
+  const operation = request?.operation;
+  const expectsHash = request?.expectedHash;
+  if (
+    !isObject(request) ||
+    request.protocolVersion !== 1 ||
+    !(READ_OPERATIONS.includes(operation) || WRITE_OPERATIONS.includes(operation)) ||
+    !validPath(request.path) ||
+    (request.encoding !== undefined && !["utf8", "base64"].includes(request.encoding)) ||
+    (expectsHash !== undefined && expectsHash !== null && !HASH_PATTERN.test(expectsHash)) ||
+    // `to` belongs to rename and to nothing else, so a stray one is a caller bug
+    // rather than a field to ignore.
+    (operation === "rename" ? !validPath(request.to) : request.to !== undefined)
+  ) {
+    fail("workspacePayloadInvalid");
+  }
+  const target = request.path;
+
+  // lstat, never stat: following a link here would let one inside the workspace pull
+  // in a file outside it, with nothing in the reply to say so.
+  const peek = (path) => {
+    try {
+      return fs.lstatSync(path);
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      return fail(readFailure(error?.code), error?.code);
+    }
+  };
+  const readBytes = (path) => {
+    let fd;
+    try {
+      fd = fs.openSync(path, fs.constants.O_RDONLY | noFollow);
+      return fs.readFileSync(fd);
+    } catch (error) {
+      return fail(
+        error?.code === "ELOOP" ? "workspaceSymlinkRejected" : readFailure(error?.code),
+        error?.code,
+      );
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  };
+
+  if (WRITE_OPERATIONS.includes(operation)) {
+    runWorkspaceWrite({
+      fs,
+      request,
+      operation,
+      target,
+      fail,
+      reply,
+      peek,
+      readBytes,
+      readFailure,
+      hashOf,
+      noFollow,
+    });
+  }
+
+  let info = peek(target);
+  if (info === null) fail("workspaceNotFound", "ENOENT");
+  if (info.isSymbolicLink()) fail("workspaceSymlinkRejected");
+
+  if (request.operation === "stat") {
+    reply({
+      ok: true,
+      operation: "stat",
+      path: target,
+      kind: info.isDirectory() ? "dir" : info.isFile() ? "file" : "other",
+      bytes: info.isFile() ? info.size : 0,
+      modifiedAt: Math.trunc(info.mtimeMs),
+    });
+  }
+
+  if (request.operation === "list") {
+    if (!info.isDirectory()) fail("workspaceNotADirectory");
+    let found;
+    try {
+      found = fs.readdirSync(target, { withFileTypes: true });
+    } catch (error) {
+      fail(readFailure(error?.code), error?.code);
+    }
+    // Sorted here so every host answers in the same order and a tree does not
+    // reshuffle between two listings of the same directory.
+    found.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    const truncated = found.length > MAX_WORKSPACE_ENTRIES;
+    reply({
+      ok: true,
+      operation: "list",
+      path: target,
+      truncated,
+      entries: found.slice(0, MAX_WORKSPACE_ENTRIES).map((entry) => ({
+        name: entry.name,
+        path: target === "/" ? `/${entry.name}` : `${target}/${entry.name}`,
+        // A symlink is a leaf: descending it would leave the workspace and reading it
+        // is refused, so presenting it as a directory would be a lie the tree acts on.
+        isDir: entry.isDirectory() && !entry.isSymbolicLink(),
+      })),
+    });
+  }
+
+  if (!info.isFile()) fail("workspaceNotAFile");
+  if (info.size > MAX_WORKSPACE_FILE_BYTES) fail("workspaceTooLarge", String(info.size));
+  const encoding = request.encoding ?? "utf8";
+  let bytes;
+  let failureCode = null;
+  let fd;
+  try {
+    // O_NOFOLLOW as well as the lstat above: the two are a TOCTOU pair, and only the
+    // open is authoritative about what actually got read.
+    fd = fs.openSync(target, fs.constants.O_RDONLY | noFollow);
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile()) failureCode = "workspaceNotAFile";
+    else if (opened.size > MAX_WORKSPACE_FILE_BYTES) failureCode = "workspaceTooLarge";
+    else bytes = fs.readFileSync(fd);
+  } catch (error) {
+    failureCode = error?.code === "ELOOP" ? "workspaceSymlinkRejected" : readFailure(error?.code);
+  } finally {
+    // Closed before replying, because `reply` exits and a finally block does not run
+    // through `process.exit`.
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  if (failureCode !== null || bytes === undefined) fail(failureCode ?? "workspaceReadFailed");
+  reply({
+    ok: true,
+    operation: "read",
+    path: target,
+    encoding,
+    content: encoding === "base64" ? bytes.toString("base64") : bytes.toString("utf8"),
+    bytes: bytes.length,
+    // Hashed over the raw bytes, so the desktop holds an opaque token and never has to
+    // reproduce it from decoded text — a lossy utf8 round trip would otherwise turn one
+    // file in a hundred into a phantom conflict.
+    hash: hashOf(bytes),
+  });
 }
 
-if (mode === "--preflight") {
+/**
+ * Hash-checked writes (V2.4). Split out because the read half has no business knowing
+ * about temp files, and because the two halves fail differently: a failed read is
+ * always safe to retry, while a failed write has to leave the target either fully
+ * replaced or completely untouched.
+ *
+ * `expectedHash` is If-Match: the token from a previous read, echoed back. `null`
+ * asserts the path does not exist yet. Concurrency here is real, not theoretical — pi
+ * is editing the same tree from the same host at the same time.
+ */
+function runWorkspaceWrite(context) {
+  const { fs, request, operation, target, fail, reply, peek, readBytes, hashOf, noFollow } = context;
+  const path = require("node:path");
+  const expected = request.expectedHash === undefined ? null : request.expectedHash;
+
+  const fsyncDir = (directory) => {
+    if (process.platform === "win32") return;
+    try {
+      const fd = fs.openSync(directory, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY ?? 0));
+      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    } catch { /* durability is best-effort; the rename already happened */ }
+  };
+  const requireNotSymlink = (info, code = "workspaceSymlinkRejected") => {
+    if (info?.isSymbolicLink()) fail(code);
+  };
+  // Reports the live hash alongside the refusal, so the desktop can decide between
+  // reload and overwrite without a second round trip.
+  const conflict = (current) =>
+    fail("workspaceHashMismatch", undefined, { currentHash: current, path: target });
+
+  if (operation === "mkdir") {
+    if (expected !== null) fail("workspacePayloadInvalid", "mkdir takes no expectedHash");
+    const existing = peek(target);
+    requireNotSymlink(existing);
+    if (existing?.isDirectory()) reply({ ok: true, operation, path: target, created: false });
+    if (existing !== null) fail("workspaceExists");
+    try {
+      // Recursive, matching the local bridge: creating one level at a time over ssh
+      // would be a round trip per path segment.
+      fs.mkdirSync(target, { recursive: true });
+    } catch (error) {
+      fail(error?.code === "EACCES" ? "workspacePermissionDenied" : "workspaceWriteFailed", error?.code);
+    }
+    reply({ ok: true, operation, path: target, created: true });
+  }
+
+  if (operation === "create") {
+    if (expected !== null) fail("workspacePayloadInvalid", "create takes no expectedHash");
+    let fd;
+    try {
+      // O_EXCL is the check: an exists() test first would be a TOCTOU window, and the
+      // point of create is that it cannot clobber.
+      fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow, 0o644);
+    } catch (error) {
+      fail(
+        error?.code === "EEXIST"
+          ? "workspaceExists"
+          : error?.code === "EACCES"
+            ? "workspacePermissionDenied"
+            : "workspaceWriteFailed",
+        error?.code,
+      );
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+    reply({ ok: true, operation, path: target, hash: hashOf(Buffer.alloc(0)), bytes: 0 });
+  }
+
+  if (operation === "delete") {
+    const existing = peek(target);
+    if (existing === null) fail("workspaceNotFound", "ENOENT");
+    // A link is refused rather than unlinked: deleting one is a legitimate operation,
+    // but it is not one the desktop's tree can currently express, and guessing between
+    // "remove the link" and "remove the target" is the kind of guess that loses data.
+    requireNotSymlink(existing);
+    if (existing.isDirectory()) {
+      if (expected !== null) fail("workspacePayloadInvalid", "a directory has no hash");
+      let names;
+      try { names = fs.readdirSync(target); } catch (error) { fail("workspaceWriteFailed", error?.code); }
+      // Empty only. The local bridge deletes a tree recursively, and that divergence is
+      // deliberate: an irreversible recursive delete on a machine the user is not
+      // looking at needs a confirmation flow that does not exist yet.
+      if (names.length > 0) fail("workspaceDirectoryNotEmpty", String(names.length));
+      try { fs.rmdirSync(target); } catch (error) { fail("workspaceWriteFailed", error?.code); }
+      reply({ ok: true, operation, path: target, kind: "dir" });
+    }
+    if (!existing.isFile()) fail("workspaceNotAFile");
+    if (expected === null) fail("workspaceHashRequired");
+    const current = hashOf(readBytes(target));
+    if (current !== expected) conflict(current);
+    try { fs.unlinkSync(target); } catch (error) { fail("workspaceWriteFailed", error?.code); }
+    fsyncDir(path.dirname(target));
+    reply({ ok: true, operation, path: target, kind: "file" });
+  }
+
+  if (operation === "rename") {
+    if (expected !== null) fail("workspacePayloadInvalid", "rename takes no expectedHash");
+    const source = peek(target);
+    if (source === null) fail("workspaceNotFound", "ENOENT");
+    requireNotSymlink(source);
+    const destination = peek(request.to);
+    requireNotSymlink(destination);
+    // Refused rather than overwritten. POSIX `rename` would silently replace the
+    // destination, which is a lost file with no record that it existed.
+    if (destination !== null) fail("workspaceExists", request.to);
+    try {
+      fs.renameSync(target, request.to);
+    } catch (error) {
+      fail(error?.code === "EXDEV" ? "workspaceCrossDevice" : "workspaceWriteFailed", error?.code);
+    }
+    fsyncDir(path.dirname(target));
+    fsyncDir(path.dirname(request.to));
+    reply({ ok: true, operation, path: target, to: request.to });
+  }
+
+  // write: the only operation that carries a body, and it arrives on stdin rather than
+  // in argv — a 2 MiB base64 payload would blow past ARG_MAX on the way through ssh.
+  const encoding = request.encoding ?? "utf8";
+  const chunks = [];
+  let size = 0;
+  const buffer = Buffer.alloc(64 * 1024);
+  for (;;) {
+    let count;
+    try { count = fs.readSync(0, buffer, 0, buffer.length, null); } catch { break; }
+    if (count === 0) break;
+    size += count;
+    if (size > MAX_WORKSPACE_FILE_BYTES * 2) fail("workspaceTooLarge", String(size));
+    chunks.push(Buffer.from(buffer.subarray(0, count)));
+  }
+  const received = Buffer.concat(chunks, size);
+  const content = encoding === "base64" ? Buffer.from(received.toString("utf8").trim(), "base64") : received;
+  if (content.length > MAX_WORKSPACE_FILE_BYTES) fail("workspaceTooLarge", String(content.length));
+
+  const existing = peek(target);
+  requireNotSymlink(existing);
+  if (existing === null) {
+    // `expectedHash: null` is an assertion, not a default: it means "I believe this
+    // path is free". Omitting it on a write to a missing file is a caller that has not
+    // decided, and guessing for it is how a concurrent create gets clobbered.
+    if (request.expectedHash === undefined) fail("workspaceHashRequired");
+    if (expected !== null) conflict(null);
+  } else {
+    if (!existing.isFile()) fail("workspaceNotAFile");
+    if (expected === null) conflict(hashOf(readBytes(target)));
+    const current = hashOf(readBytes(target));
+    if (current !== expected) conflict(current);
+  }
+
+  // temp + rename, so a failure leaves the target either fully replaced or untouched —
+  // never half-written, which for a source file the agent is also reading would be
+  // worse than either outcome.
+  const directory = path.dirname(target);
+  const temporary = path.join(directory, `.pi-write-${process.pid}-${Date.now()}.tmp`);
+  const mode = existing === null ? 0o644 : existing.mode & 0o777;
+  let fd;
+  try {
+    fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow, mode);
+    fs.writeFileSync(fd, content);
+    fs.fsyncSync(fd);
+    fs.fchmodSync(fd, mode);
+  } catch (error) {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+    try { fs.unlinkSync(temporary); } catch { /* never created */ }
+    fail(error?.code === "EACCES" ? "workspacePermissionDenied" : "workspaceWriteFailed", error?.code);
+  }
+  try { fs.closeSync(fd); } catch { /* already closed */ }
+  try {
+    fs.renameSync(temporary, target);
+  } catch (error) {
+    try { fs.unlinkSync(temporary); } catch { /* already gone */ }
+    fail("workspaceWriteFailed", error?.code);
+  }
+  fsyncDir(directory);
+  reply({ ok: true, operation: "write", path: target, bytes: content.length, hash: hashOf(content) });
+}
+
+function runTaskMode() {
   const fs = require("node:fs");
   const path = require("node:path");
   const os = require("node:os");
-  const piAuthConfigured = () => {
+  const mode = process.env.PI_DESKTOP_LAUNCHER_MODE;
+  const argument = process.env.PI_DESKTOP_LAUNCHER_PAYLOAD ?? "";
+  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+  const tasksRoot = path.join(os.homedir(), ".pi-desktop", "tasks");
+  const waitArray = new Int32Array(new SharedArrayBuffer(4));
+  const sleep = (milliseconds) => Atomics.wait(waitArray, 0, 0, milliseconds);
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const taskDir = (taskId) => path.join(tasksRoot, taskId);
+  const statusPath = (taskId) => path.join(taskDir(taskId), "status.json");
+  const segmentName = (base) => `events-${String(base).padStart(12, "0")}.jsonl`;
+
+  const assertNotSymlink = (target) => {
     try {
-      const stat = fs.statSync(path.join(os.homedir(), ".pi", "agent", "auth.json"), {
-        throwIfNoEntry: false,
-      });
-      return Boolean(stat?.isFile() && stat.size > 2);
-    } catch {
-      return false;
+      if (fs.lstatSync(target).isSymbolicLink()) taskFail("taskSymlinkRejected", target);
+    } catch (error) {
+      if (error?.code !== "ENOENT") taskFail("taskWriteFailed", error?.message);
     }
   };
-  let completed = false;
-  const finish = (result) => {
-    if (completed) return;
-    completed = true;
-    process.stdout.write(`${JSON.stringify(result)}\n`);
+
+  // Windows cannot open or fsync a directory. Tasks run remotely on POSIX hosts;
+  // this only keeps the launcher's own test suite executable, exactly as the
+  // provider-sync section already does.
+  const fsyncDirectory = (target) => {
+    if (process.platform === "win32") return;
+    try {
+      const fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY ?? 0));
+      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    } catch { /* a durability best-effort must not fail the operation */ }
   };
 
-  let workspace;
-  try {
-    workspace = fs.statSync(payload.cwd, { throwIfNoEntry: false });
-  } catch {
-    finish({ ok: false, errorCode: "workspace_unavailable", error: "remote cwd is not accessible" });
-    process.exit(0);
+  const pidAlive = (pid) => {
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      // EPERM means the pid exists and belongs to someone else.
+      return error?.code === "EPERM";
+    }
+  };
+
+  // `undefined` means "cannot tell" — no /proc on macOS or Windows. An unknown
+  // parent must never be read as evidence that a task died.
+  const parentPidOf = (pid) => {
+    try {
+      const match = /^PPid:\s*(\d+)$/m.exec(fs.readFileSync(`/proc/${pid}/status`, "utf8"));
+      return match ? Number(match[1]) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const readStatus = (taskId) => {
+    const target = statusPath(taskId);
+    assertNotSymlink(target);
+    let fd;
+    try {
+      fd = fs.openSync(target, fs.constants.O_RDONLY | noFollow);
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.size > MAX_EVENT_BYTES) taskFail("taskWriteFailed", "status.json is not a bounded file");
+      const value = JSON.parse(fs.readFileSync(fd, "utf8"));
+      if (!isObject(value) || value.statusVersion !== STATUS_VERSION) {
+        taskFail("taskWriteFailed", "unsupported status version");
+      }
+      return value;
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      taskFail("taskWriteFailed", error?.message);
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  };
+
+  /**
+   * Atomic replace, so a reader never sees a half-written status. Same
+   * temp+rename+fsync discipline as provider-sync, and the temp name carries the
+   * writer's pid so two writers cannot collide on it.
+   */
+  const writeStatus = (taskId, status) => {
+    const directory = taskDir(taskId);
+    const temporary = path.join(directory, `.status-${process.pid}.tmp`);
+    assertNotSymlink(temporary);
+    const bytes = Buffer.from(`${JSON.stringify({ ...status, updatedAt: Date.now() }, null, 2)}\n`);
+    const fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | noFollow, 0o600);
+    try {
+      fs.writeFileSync(fd, bytes);
+      fs.fsyncSync(fd);
+      fs.fchmodSync(fd, 0o600);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temporary, statusPath(taskId));
+    fsyncDirectory(directory);
+  };
+
+  const listSegments = (directory) => {
+    try {
+      return fs.readdirSync(directory).filter((name) => SEGMENT_PATTERN.test(name)).sort();
+    } catch {
+      return [];
+    }
+  };
+
+  const directoryBytes = (directory) => {
+    let total = 0;
+    let names;
+    try { names = fs.readdirSync(directory); } catch { return 0; }
+    for (const name of names) {
+      try { total += fs.statSync(path.join(directory, name)).size; } catch { /* raced */ }
+    }
+    return total;
+  };
+
+  const hasOnlyTaskKeys = (value, allowed) =>
+    isObject(value) && Object.keys(value).every((key) => allowed.includes(key));
+
+  // The `(key, fingerprint, expiry)` triple comes from task_manager.rs. A malformed
+  // file is treated as empty rather than fatal: losing idempotency history degrades
+  // a retry into a possible duplicate, but refusing to send at all would strand the
+  // task with no way back.
+  const readSendRecords = (target) => {
+    let text;
+    try { text = fs.readFileSync(target, "utf8"); } catch { return []; }
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { return []; }
+    if (!isObject(parsed) || !Array.isArray(parsed.sends)) return [];
+    return parsed.sends.filter((record) =>
+      hasOnlyTaskKeys(record, ["key", "fingerprint", "bytes", "sentAt", "expiresAt"]) &&
+      typeof record.key === "string" && typeof record.fingerprint === "string" &&
+      Number.isSafeInteger(record.bytes) && Number.isSafeInteger(record.sentAt) &&
+      Number.isSafeInteger(record.expiresAt));
+  };
+
+  const writeSendRecords = (target, directory, records) => {
+    const temporary = path.join(directory, `.sends-${process.pid}.tmp`);
+    assertNotSymlink(temporary);
+    const bytes = Buffer.from(`${JSON.stringify({ sendsVersion: 1, sends: records }, null, 2)}\n`);
+    const fd = fs.openSync(
+      temporary,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | noFollow,
+      0o600,
+    );
+    try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); fs.fchmodSync(fd, 0o600); }
+    finally { fs.closeSync(fd); }
+    fs.renameSync(temporary, target);
+    fsyncDirectory(directory);
+  };
+
+  /**
+   * A status file is a claim, not evidence. A supervisor killed with SIGKILL
+   * leaves `running` on disk forever, so every read is checked against the
+   * recorded pids before it is reported or acted on.
+   */
+  const describe = (taskId, status) => {
+    const terminal = status.state === "exited";
+    const supervisorAlive = !terminal && pidAlive(status.supervisorPid);
+    const piAlive = pidAlive(status.pid);
+    const stale = !terminal && !supervisorAlive;
+    return {
+      remoteTaskId: taskId,
+      previousTaskId: status.previousTaskId ?? null,
+      state: stale ? "exited" : status.state,
+      // Once a death has been recorded as unwitnessed it stays that way: a repaired
+      // record must not read as a clean exit on the next poll.
+      stale: stale || status.stale === true,
+      pid: status.pid ?? null,
+      supervisorPid: status.supervisorPid ?? null,
+      piAlive,
+      exitCode: status.exitCode ?? null,
+      exitSignal: status.exitSignal ?? null,
+      startedAt: status.startedAt ?? null,
+      updatedAt: status.updatedAt ?? null,
+      stopRequestedAt: status.stopRequestedAt ?? null,
+      stopConfirmedAt: status.stopConfirmedAt ?? null,
+      cwd: status.cwd ?? null,
+      journal: status.journal ?? null,
+    };
+  };
+
+  const listTaskIds = () => {
+    let names;
+    try { names = fs.readdirSync(tasksRoot); } catch { return []; }
+    return names.filter((name) => TASK_ID_PATTERN.test(name)).sort();
+  };
+
+  const loadTasks = () => {
+    const tasks = [];
+    for (const taskId of listTaskIds()) {
+      const status = readStatus(taskId);
+      if (status) tasks.push(describe(taskId, status));
+    }
+    tasks.sort((left, right) => (right.startedAt ?? 0) - (left.startedAt ?? 0));
+    return tasks;
+  };
+
+  const decodeArgumentPayload = () => {
+    // Local copies: this runs before the run-mode constants below are
+    // initialized, because a task mode's argument is not the run payload and must
+    // never reach that parser.
+    const controlChar = /[\u0000-\u001f\u007f]/;
+    const maxPathBytes = 4096;
+    let payload;
+    try { payload = JSON.parse(argument); } catch { taskFail("taskPayloadInvalid", "payload is not JSON"); }
+    const validPath = (value) => typeof value === "string" && value.startsWith("/") &&
+      Buffer.byteLength(value) <= maxPathBytes && !controlChar.test(value);
+    if (!isObject(payload) || payload.protocolVersion !== 1 ||
+        !validPath(payload.cwd) ||
+        typeof payload.piExecutable !== "string" || payload.piExecutable.length === 0 ||
+        Buffer.byteLength(payload.piExecutable) > maxPathBytes ||
+        controlChar.test(payload.piExecutable) ||
+        (payload.resumePath !== null && payload.resumePath !== undefined && !validPath(payload.resumePath)) ||
+        (payload.previousTaskId !== null && payload.previousTaskId !== undefined &&
+          !TASK_ID_PATTERN.test(payload.previousTaskId))) {
+      taskFail("taskPayloadInvalid");
+    }
+    if (typeof payload.remoteTaskId !== "string" || !TASK_ID_PATTERN.test(payload.remoteTaskId)) {
+      taskFail("taskIdInvalid");
+    }
+    return payload;
+  };
+
+  /**
+   * The supervisor is the only writer of `status.json` and the journal while it
+   * lives — that is what keeps sequence bookkeeping single-writer and lock-free.
+   * Every other mode may write only after proving the supervisor pid is dead, at
+   * which point there is no one to race.
+   */
+  const repairTerminal = (taskId, status, extra = {}) => {
+    const next = {
+      ...status,
+      state: "exited",
+      exitCode: status.exitCode ?? null,
+      exitSignal: status.exitSignal ?? null,
+      stale: true,
+      ...extra,
+    };
+    try { writeStatus(taskId, next); } catch { /* reporting matters more than repair */ }
+    return next;
+  };
+
+  if (mode === "--status") {
+    if (argument.length === 0) {
+      taskReply({ ok: true, tasks: loadTasks().slice(0, MAX_TASK_LIST) });
+    }
+    if (!TASK_ID_PATTERN.test(argument)) taskFail("taskIdInvalid");
+    const status = readStatus(argument);
+    if (!status) taskFail("taskNotFound");
+    const reported = describe(argument, status);
+    if (reported.stale) repairTerminal(argument, status);
+    taskReply({ ok: true, task: reported });
   }
-  if (!workspace?.isDirectory()) {
-    finish({ ok: false, errorCode: "workspace_missing", error: "remote cwd does not exist" });
-    process.exit(0);
+
+  if (mode === "--stop") {
+    if (!TASK_ID_PATTERN.test(argument)) taskFail("taskIdInvalid");
+    const status = readStatus(argument);
+    if (!status) taskFail("taskNotFound");
+    const reported = describe(argument, status);
+    // Idempotent: a repeated stop reports the recorded outcome rather than
+    // signalling a pid that has since been recycled by the OS.
+    if (reported.state === "exited") {
+      if (reported.stale) repairTerminal(argument, status);
+      taskReply({ ok: true, task: reported, alreadyStopped: true });
+    }
+    // Informational marker for the supervisor's own journal record; the signal is
+    // what actually initiates the stop, so a failure here is not fatal.
+    try {
+      fs.writeFileSync(path.join(taskDir(argument), "stop.request"),
+        `${JSON.stringify({ requestedAt: Date.now(), pid: process.pid })}\n`, { mode: 0o600 });
+    } catch { /* best effort */ }
+    try { process.kill(status.supervisorPid, "SIGTERM"); } catch { /* already gone */ }
+    const deadline = Date.now() + STOP_CONFIRM_TIMEOUT_MS;
+    let latest = status;
+    while (Date.now() < deadline) {
+      sleep(100);
+      latest = readStatus(argument) ?? latest;
+      if (latest.state === "exited") taskReply({ ok: true, task: describe(argument, latest) });
+    }
+    // Escalation, in pid order that cannot orphan pi: pi first, then its parent.
+    for (const pid of [status.pid, status.supervisorPid]) {
+      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    }
+    sleep(300);
+    latest = readStatus(argument) ?? latest;
+    const final = latest.state === "exited"
+      ? describe(argument, latest)
+      : describe(argument, repairTerminal(argument, latest, { stopConfirmedAt: Date.now() }));
+    taskReply({ ok: true, task: final, escalated: true });
   }
 
-  const child = spawn(payload.piExecutable, ["--version"], {
-    cwd: payload.cwd,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  const appendBounded = (current, chunk) =>
-    (current + chunk.toString()).slice(0, MAX_DIAGNOSTIC_BYTES);
-  child.stdout.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
-  child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
+  if (mode === "--send") {
+    if (!TASK_ID_PATTERN.test(argument)) taskFail("taskIdInvalid");
+    const status = readStatus(argument);
+    if (!status) taskFail("taskNotFound");
+    const reported = describe(argument, status);
+    if (reported.state !== "running") taskFail("taskNotRunning", reported.state);
+    const directory = taskDir(argument);
+    const lockPath = path.join(directory, "stdin.lock");
+    const ownerPath = path.join(lockPath, "owner.json");
+    const fifo = path.join(directory, "stdin.pipe");
+    const sendsPath = path.join(directory, "stdin.sends.json");
+    for (const target of [lockPath, ownerPath, fifo, sendsPath]) assertNotSymlink(target);
 
-  const timeout = setTimeout(() => {
-    child.kill("SIGKILL");
-    finish({ ok: false, errorCode: "pi_timeout", error: "pi --version timed out" });
-  }, PREFLIGHT_TIMEOUT_MS);
+    // Read stdin before taking the lock: the bytes arrive over ssh, and holding an
+    // exclusive lock across a network read would stall every other writer.
+    const chunks = [];
+    let size = 0;
+    const buffer = Buffer.alloc(64 * 1024);
+    for (;;) {
+      let count;
+      try { count = fs.readSync(0, buffer, 0, buffer.length, null); } catch { break; }
+      if (count === 0) break;
+      size += count;
+      if (size > MAX_SEND_BYTES) taskFail("taskPayloadInvalid", "stdin exceeded its size limit");
+      chunks.push(Buffer.from(buffer.subarray(0, count)));
+    }
+    let bytes = Buffer.concat(chunks, size);
 
-  child.once("error", (error) => {
-    clearTimeout(timeout);
-    finish({ ok: false, errorCode: "pi_not_found", error: error.message });
-  });
-  child.once("close", (code) => {
-    clearTimeout(timeout);
-    if (completed) return;
-    if (code === 0) {
-      finish({
-        ok: true,
-        piVersion: stdout.trim(),
-        nodeVersion: process.version,
-        // Shows when the shell had to recover node from a login PATH: the path
-        // will sit under .nvm/.fnm/.volta rather than a system bin.
-        nodePath: process.execPath,
-        // Weak evidence on purpose: pi owns auth.json and exposes no CLI query,
-        // so a nonempty file is the most the launcher can honestly report. The
-        // desktop app surfaces a false value as a warning, never a blocker.
-        piAuthConfigured: piAuthConfigured(),
-      });
-    } else finish({
-      ok: false,
-      errorCode: "pi_unavailable",
-      error: stderr.trim() || `pi exited with ${code}`,
+    // A keyed envelope is recognised only by its exact shape, so a bare pi command
+    // — which is also a JSON object — can never be mistaken for one.
+    let idempotencyKey = null;
+    const envelope = (() => {
+      const text = bytes.toString("utf8");
+      const firstLine = text.split("\n", 1)[0];
+      if (!firstLine.startsWith("{") || !firstLine.includes("idempotencyKey")) return null;
+      let parsed;
+      try { parsed = JSON.parse(firstLine); } catch { return null; }
+      if (!isObject(parsed) || !hasOnlyTaskKeys(parsed, ["idempotencyKey", "payload"])) return null;
+      return parsed;
+    })();
+    if (envelope) {
+      if (typeof envelope.idempotencyKey !== "string" || !/^[A-Za-z0-9_.-]{1,128}$/.test(envelope.idempotencyKey) ||
+          typeof envelope.payload !== "string" || envelope.payload.length === 0) {
+        taskFail("sendPayloadInvalid");
+      }
+      idempotencyKey = envelope.idempotencyKey;
+      bytes = Buffer.from(envelope.payload, "utf8");
+    }
+    const fingerprint = require("node:crypto").createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+
+    // Exclusive writer, same mkdir lock provider-sync uses: two desktops attached to
+    // one task must not interleave halves of two JSONL lines into pi's stdin. Held
+    // for one send, not a whole session, so a second desktop can take over without
+    // waiting for the first to disconnect.
+    let owned = false;
+    const release = () => {
+      if (!owned) return;
+      try { fs.unlinkSync(ownerPath); } catch { /* already gone */ }
+      try { fs.rmdirSync(lockPath); } catch { /* already gone */ }
+      owned = false;
+    };
+    process.once("exit", release);
+    const deadline = Date.now() + STDIN_LOCK_TIMEOUT_MS;
+    while (!owned && Date.now() < deadline) {
+      try {
+        fs.mkdirSync(lockPath, { mode: 0o700 });
+        owned = true;
+        fs.writeFileSync(ownerPath, `${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`, { mode: 0o600 });
+      } catch (error) {
+        if (error?.code !== "EEXIST") taskFail("taskWriteFailed", error?.message);
+        sleep(50);
+      }
+    }
+    if (!owned) taskFail("taskLockTimeout");
+    const fail = (errorCode, detail) => { release(); taskFail(errorCode, detail); };
+
+    // Written under the same lock that guards the FIFO, so the record and the write
+    // it describes cannot disagree.
+    let records = [];
+    if (idempotencyKey !== null) {
+      const stored = readSendRecords(sendsPath);
+      const now = Date.now();
+      records = stored.filter((record) => record.expiresAt > now);
+      const existing = records.find((record) => record.key === idempotencyKey);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) fail("sendIdempotencyConflict", idempotencyKey);
+        release();
+        taskReply({
+          ok: true,
+          remoteTaskId: argument,
+          bytes: existing.bytes,
+          duplicate: true,
+          idempotencyKey,
+          sentAt: existing.sentAt,
+        });
+      }
+    }
+    let written = 0;
+    try {
+      const fd = fs.openSync(fifo, fs.constants.O_WRONLY | noFollow);
+      try {
+        fs.writeSync(fd, bytes);
+        written = bytes.length;
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch (error) {
+      fail("taskWriteFailed", error?.message);
+    }
+    if (idempotencyKey !== null) {
+      const sentAt = Date.now();
+      records.push({ key: idempotencyKey, fingerprint, bytes: written, sentAt, expiresAt: sentAt + SEND_IDEMPOTENCY_TTL_MS });
+      // Oldest-first so a burst of new keys cannot evict the one being retried.
+      while (records.length > MAX_SEND_RECORDS) records.shift();
+      try { writeSendRecords(sendsPath, directory, records); } catch { /* the write already happened */ }
+      release();
+      taskReply({ ok: true, remoteTaskId: argument, bytes: written, duplicate: false, idempotencyKey, sentAt });
+    }
+    release();
+    taskReply({ ok: true, remoteTaskId: argument, bytes: written });
+  }
+
+  if (mode === "--reap") {
+    const removeTask = (taskId) => {
+      const directory = taskDir(taskId);
+      assertNotSymlink(directory);
+      try { fs.rmSync(directory, { recursive: true, force: true }); return true; }
+      catch { return false; }
+    };
+    let repaired = 0;
+    let orphansKilled = 0;
+    let removed = 0;
+    const terminal = [];
+    for (const taskId of listTaskIds()) {
+      const status = readStatus(taskId);
+      if (!status) {
+        // A directory with no readable status has no owner and no journal
+        // bookkeeping to protect. Nothing can attach to it.
+        if (removeTask(taskId)) removed += 1;
+        continue;
+      }
+      const reported = describe(taskId, status);
+      if (reported.state !== "exited") continue;
+      if (reported.stale && status.state !== "exited") {
+        // Only pids this launcher recorded are ever signalled. `pgrep -x pi` would
+        // also match a pi the user started by hand — and since pi rewrites its
+        // argv to a bare `pi`, there is no way to tell those apart, so a broad
+        // sweep would be a coin flip on someone else's session.
+        if (reported.piAlive) {
+          const parent = parentPidOf(status.pid);
+          const stillOwned = parent !== undefined && parent === status.supervisorPid && pidAlive(parent);
+          if (!stillOwned) {
+            try { process.kill(status.pid, "SIGTERM"); } catch { /* already gone */ }
+            sleep(200);
+            if (pidAlive(status.pid)) { try { process.kill(status.pid, "SIGKILL"); } catch { /* raced */ } }
+            orphansKilled += 1;
+          }
+        }
+        repairTerminal(taskId, status);
+        repaired += 1;
+      }
+      terminal.push({ taskId, updatedAt: status.updatedAt ?? 0, bytes: directoryBytes(taskDir(taskId)) });
+    }
+    const cutoff = Date.now() - TASK_IDLE_TTL_MS;
+    const survivors = [];
+    for (const entry of terminal) {
+      if (entry.updatedAt < cutoff) {
+        if (removeTask(entry.taskId)) removed += 1;
+      } else survivors.push(entry);
+    }
+    survivors.sort((left, right) => left.updatedAt - right.updatedAt);
+    let total = survivors.reduce((sum, entry) => sum + entry.bytes, 0);
+    while (total > MAX_TOTAL_TASK_BYTES && survivors.length > 0) {
+      const oldest = survivors.shift();
+      if (removeTask(oldest.taskId)) removed += 1;
+      total -= oldest.bytes;
+    }
+    taskReply({ ok: true, repaired, orphansKilled, removed, liveTasks: loadTasks().filter((task) => task.state !== "exited").length });
+  }
+
+  if (mode === "--attach") {
+    // Read-only by construction: no lock, nothing written, any number of clients on
+    // one task. SIGHUP is deliberately NOT ignored here — unlike the supervisor,
+    // this channel is supposed to die with the ssh session that owns it.
+    const controlChar = /[\u0000-\u001f\u007f]/;
+    let payload;
+    try { payload = JSON.parse(argument); } catch { taskFail("attachPayloadInvalid", "payload is not JSON"); }
+    const cursorValid = payload?.after === null || payload?.after === undefined ||
+      (Number.isSafeInteger(payload.after) && payload.after >= 0);
+    if (!isObject(payload) || payload.protocolVersion !== 1 || !cursorValid ||
+        (payload.follow !== undefined && typeof payload.follow !== "boolean") ||
+        typeof payload.remoteTaskId !== "string" || controlChar.test(payload.remoteTaskId)) {
+      taskFail("attachPayloadInvalid");
+    }
+    if (!TASK_ID_PATTERN.test(payload.remoteTaskId)) taskFail("taskIdInvalid");
+    const taskId = payload.remoteTaskId;
+    const directory = taskDir(taskId);
+    const opening = readStatus(taskId);
+    if (!opening) taskFail("taskNotFound");
+    const follow = payload.follow !== false;
+    const after = payload.after ?? 0;
+
+    let alive = true;
+    const emit = (frame) => {
+      try {
+        // Synchronous so a frame cannot be left queued when the loop exits, and so a
+        // dead channel surfaces here as EPIPE rather than as a lost tail.
+        writeReplySync(`${JSON.stringify(frame)}\n`);
+        return true;
+      } catch {
+        // The ssh channel is gone. Nothing to report it to.
+        alive = false;
+        return false;
+      }
+    };
+    const baseOf = (name) => Number(SEGMENT_PATTERN.exec(name)[1]);
+    const oldestBase = () => {
+      const names = listSegments(directory);
+      return names.length > 0 ? baseOf(names[0]) : 1;
+    };
+    // Converts a sequence into (segment, byte offset) by counting newlines. One scan
+    // of one segment, bounded by SEGMENT_MAX_BYTES, paid once per attach.
+    const locate = (target) => {
+      const names = listSegments(directory);
+      if (names.length === 0) return null;
+      let chosen = names[0];
+      for (const name of names) if (baseOf(name) <= target) chosen = name;
+      const base = baseOf(chosen);
+      if (base >= target) return { name: chosen, offset: 0, sequence: base };
+      let bytes;
+      try { bytes = fs.readFileSync(path.join(directory, chosen)); } catch { return null; }
+      let sequence = base;
+      let offset = 0;
+      while (sequence < target) {
+        const index = bytes.indexOf(0x0a, offset);
+        if (index === -1) break;
+        offset = index + 1;
+        sequence += 1;
+      }
+      return { name: chosen, offset, sequence };
+    };
+
+    // event_hub's exact predicate: outside the window iff the record right after the
+    // cursor has been evicted, so the desktop cannot know what it missed. Consumes no
+    // sequence space and mutates nothing, so a retry gets the same answer.
+    let base = oldestBase();
+    const snapshotRequired = after > 0 && after + 1 < base;
+    const described = describe(taskId, opening);
+    emit({
+      type: "attached",
+      remoteTaskId: taskId,
+      state: described.state,
+      after: payload.after ?? null,
+      baseSequence: base,
+      nextSequence: opening.journal?.nextSequence ?? base,
+      snapshotRequired,
+      pid: described.pid,
+      supervisorPid: described.supervisorPid,
     });
-  });
-} else {
-  const args = ["--mode", "rpc"];
-  if (typeof payload.resumePath === "string" && payload.resumePath.length > 0) {
-    args.push("--session", payload.resumePath);
+
+    let position = locate(snapshotRequired ? base : after + 1)
+      ?? { name: segmentName(base), offset: 0, sequence: base };
+    let emitted = position.sequence - 1;
+    // The supervisor is the journal's only writer, so a reader needs no
+    // coordination — just a position and a poll.
+    const drain = () => {
+      let fd;
+      try {
+        fd = fs.openSync(path.join(directory, position.name), fs.constants.O_RDONLY | noFollow);
+      } catch (error) {
+        // ENOENT means the cap evicted this segment while we were behind it.
+        return error?.code === "ENOENT" ? "evicted" : "gone";
+      }
+      try {
+        const size = fs.fstatSync(fd).size;
+        if (size > position.offset) {
+          const length = size - position.offset;
+          const buffer = Buffer.alloc(length);
+          fs.readSync(fd, buffer, 0, length, position.offset);
+          let start = 0;
+          for (;;) {
+            // Only complete LF-terminated lines: a partial tail is a write in
+            // progress, and emitting it would resume replay mid-object.
+            const index = buffer.indexOf(0x0a, start);
+            if (index === -1) break;
+            const line = buffer.subarray(start, index).toString("utf8");
+            start = index + 1;
+            emitted += 1;
+            let record;
+            try {
+              record = JSON.parse(line);
+            } catch {
+              record = { ts: null, stream: "control", event: "unparseable" };
+            }
+            if (!emit({ type: "event", sequence: emitted, ...record })) return "closed";
+          }
+          position.offset += start;
+        }
+        // Advance only once the current segment is fully drained, so no record is
+        // skipped at a rotation boundary.
+        if (position.offset >= size) {
+          const names = listSegments(directory);
+          const index = names.indexOf(position.name);
+          if (index >= 0 && index + 1 < names.length) {
+            position = { name: names[index + 1], offset: 0, sequence: emitted + 1 };
+            return "advanced";
+          }
+        }
+        return "drained";
+      } finally {
+        fs.closeSync(fd);
+      }
+    };
+
+    const finish = (reason, exitCode) => {
+      emit({ type: "detached", reason, exitCode: exitCode ?? null, nextSequence: emitted + 1 });
+      process.exit(0);
+    };
+
+    for (;;) {
+      const outcome = drain();
+      if (outcome === "closed" || !alive) process.exit(0);
+      if (outcome === "advanced") continue;
+      if (outcome === "gone") finish("taskGone", null);
+      if (outcome === "evicted") {
+        const names = listSegments(directory);
+        // No segments left at all means the task was reaped out from under us.
+        // Without this the eviction branch would re-open a path that can never
+        // exist and spin, emitting a gap frame per iteration.
+        if (names.length === 0) finish("taskGone", null);
+        const recovered = oldestBase();
+        if (recovered <= emitted + 1) {
+          // Nothing new to jump to; the eviction raced a rotation. Wait rather than
+          // re-reading the same missing file at full speed.
+          sleep(ATTACH_POLL_MS);
+          position = locate(emitted + 1) ?? position;
+          continue;
+        }
+        emit({ type: "gap", fromSequence: emitted + 1, toSequence: recovered - 1 });
+        base = recovered;
+        position = locate(recovered) ?? { name: segmentName(recovered), offset: 0, sequence: recovered };
+        emitted = position.sequence - 1;
+        continue;
+      }
+      const current = readStatus(taskId);
+      if (!current) finish("taskGone", null);
+      const state = describe(taskId, current);
+      // Checked only after a full drain, and the supervisor appends its `exited`
+      // record *before* committing the terminal status — so a terminal status here
+      // guarantees that record is already on disk and already emitted. Depending on
+      // `journal.nextSequence` instead would race its one-second throttle.
+      if (state.state === "exited") finish("taskExited", state.exitCode);
+      if (!follow) finish("caughtUp", state.exitCode);
+      sleep(ATTACH_POLL_MS);
+    }
   }
 
-  const child = spawn(payload.piExecutable, args, {
-    cwd: payload.cwd,
-    stdio: "inherit",
-  });
-  let stopping = false;
-  const forward = (signal) => {
-    if (stopping) return;
-    stopping = true;
+  if (mode === "--start-detached") {
+    const payload = decodeArgumentPayload();
+    const taskId = payload.remoteTaskId;
+    const rootDir = path.join(os.homedir(), ".pi-desktop");
+    for (const target of [rootDir, tasksRoot]) assertNotSymlink(target);
     try {
-      child.kill(signal);
-    } catch {
-      process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143);
+      fs.mkdirSync(rootDir, { recursive: true, mode: 0o700 });
+      fs.mkdirSync(tasksRoot, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") taskFail("taskWriteFailed", error?.message);
     }
-    setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch {}
-    }, 4_000).unref();
-  };
-  process.on("SIGTERM", () => forward("SIGTERM"));
-  process.on("SIGINT", () => forward("SIGINT"));
-  process.on("SIGHUP", () => forward("SIGHUP"));
-  child.once("error", (error) => {
-    process.stderr.write(`cannot start pi: ${error.message}\n`);
-    process.exit(127);
-  });
-  child.once("close", (code, signal) => {
-    const signalExitCodes = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143, SIGKILL: 137 };
-    process.exit(code ?? signalExitCodes[signal] ?? 1);
-  });
+    for (const target of [rootDir, tasksRoot]) assertNotSymlink(target);
+    const live = loadTasks().filter((task) => task.state !== "exited");
+    if (live.length >= MAX_LIVE_TASKS) taskFail("taskLimitReached", String(live.length));
+    const directory = taskDir(taskId);
+    assertNotSymlink(directory);
+    // One id = one pi process for its whole life, so an existing directory is
+    // never reused — not even a terminal one. Continuing means minting a new id
+    // with `previousTaskId` set, which is what keeps a sequence gap unambiguous.
+    try {
+      fs.mkdirSync(directory, { mode: 0o700 });
+    } catch (error) {
+      taskFail(error?.code === "EEXIST" ? "taskAlreadyRunning" : "taskWriteFailed", error?.message);
+    }
+    // A FIFO, not a regular file: with a file, a writer's bytes can land after the
+    // supervisor has already read past that offset and are then lost silently.
+    const fifo = path.join(directory, "stdin.pipe");
+    const made = require("node:child_process").spawnSync("mkfifo", ["-m", "600", fifo], { stdio: "ignore" });
+    const fifoReady = made.error === undefined && made.status === 0;
+    if (!fifoReady && process.platform !== "win32") taskFail("taskWriteFailed", "mkfifo is unavailable");
+    writeStatus(taskId, {
+      statusVersion: STATUS_VERSION,
+      remoteTaskId: taskId,
+      previousTaskId: payload.previousTaskId ?? null,
+      state: "starting",
+      pid: null,
+      supervisorPid: null,
+      startedAt: Date.now(),
+      exitCode: null,
+      exitSignal: null,
+      stopRequestedAt: null,
+      stopConfirmedAt: null,
+      cwd: payload.cwd,
+      piExecutable: payload.piExecutable,
+      resumePath: payload.resumePath ?? null,
+      journal: { liveSegment: segmentName(1), baseSequence: 1, liveBaseSequence: 1, nextSequence: 1, totalBytes: 0 },
+    });
+    // Re-enters this same file at its installed absolute path, so the supervisor
+    // is never a second copy of the source that could drift from this one.
+    const self = process.env.PI_DESKTOP_LAUNCHER_SELF;
+    if (typeof self !== "string" || self.length === 0) taskFail("supervisorStartFailed", "launcher path is unknown");
+    const supervisor = spawn("sh", [self, "--supervise", Buffer.from(JSON.stringify(payload)).toString("base64")], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, PI_DESKTOP_SUPERVISOR: "1" },
+    });
+    supervisor.unref();
+    const deadline = Date.now() + SUPERVISOR_START_TIMEOUT_MS;
+    const started = (current) => taskReply({
+      ok: true,
+      remoteTaskId: taskId,
+      pid: current.pid,
+      supervisorPid: current.supervisorPid,
+      startedAt: current.startedAt,
+      stdinReady: fifoReady,
+      state: current.state,
+      exitCode: current.exitCode ?? null,
+    });
+    while (Date.now() < deadline) {
+      sleep(100);
+      const current = readStatus(taskId);
+      if (!current) continue;
+      if (current.state === "running") started(current);
+      if (current.state === "exited") {
+        // A pi that exits inside the start window still started. Only the
+        // supervisor's own `errorCode` means it never got off the ground — without
+        // that distinction, a script whose whole job is to run and exit would be
+        // reported as a launch failure.
+        if (typeof current.errorCode === "string") taskFail(current.errorCode, current.error ?? null);
+        started(current);
+      }
+    }
+    taskFail("supervisorStartFailed", "supervisor did not report running");
+  }
+
+  if (mode === "--supervise") {
+    // Internal. Not advertised in --capabilities and not part of the desktop
+    // contract; only --start-detached sets this variable.
+    if (process.env.PI_DESKTOP_SUPERVISOR !== "1") taskFail("supervisorNotInvokable");
+    const payload = decodeArgumentPayload();
+    const taskId = payload.remoteTaskId;
+    const directory = taskDir(taskId);
+    const initial = readStatus(taskId);
+    if (!initial) taskFail("taskNotFound");
+
+    let liveBase = 1;
+    let nextSequence = 1;
+    let segmentBytes = 0;
+    let totalBytes = 0;
+    let segmentFd = null;
+    let journalBroken = false;
+    let dirty = false;
+    let stopRequestedAt = null;
+    let current = { ...initial };
+    let lastStatusWrite = 0;
+
+    const oldestBase = () => {
+      const names = listSegments(directory);
+      const match = names.length > 0 ? SEGMENT_PATTERN.exec(names[0]) : null;
+      return match ? Number(match[1]) : liveBase;
+    };
+    const openLive = (base) => {
+      const target = path.join(directory, segmentName(base));
+      assertNotSymlink(target);
+      segmentFd = fs.openSync(
+        target,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | noFollow,
+        0o600,
+      );
+      segmentBytes = fs.fstatSync(segmentFd).size;
+    };
+    const commit = (patch, force = false) => {
+      current = {
+        ...current,
+        ...patch,
+        journal: {
+          liveSegment: segmentName(liveBase),
+          baseSequence: oldestBase(),
+          liveBaseSequence: liveBase,
+          nextSequence,
+          totalBytes,
+        },
+      };
+      const now = Date.now();
+      if (!force && now - lastStatusWrite < STATUS_THROTTLE_MS) return;
+      lastStatusWrite = now;
+      dirty = false;
+      // The journal is the record of truth; a failed status write must not take
+      // the task down with it.
+      try { writeStatus(taskId, current); } catch { /* retried by the heartbeat */ }
+    };
+    // Caps are byte-based, never per-line: an 8513-char JSONL line is legitimate,
+    // and a split line makes replay resume mid-object.
+    const enforceTaskCap = () => {
+      while (totalBytes > TASK_MAX_BYTES) {
+        const names = listSegments(directory);
+        if (names.length <= 1) return;
+        const oldest = path.join(directory, names[0]);
+        let size = 0;
+        try { size = fs.statSync(oldest).size; } catch { /* raced */ }
+        try { fs.unlinkSync(oldest); } catch { return; }
+        totalBytes -= size;
+      }
+    };
+    const append = (record) => {
+      if (journalBroken) return;
+      const line = Buffer.from(`${JSON.stringify(record)}\n`);
+      if (segmentBytes > 0 && segmentBytes + line.length > SEGMENT_MAX_BYTES) {
+        try {
+          fs.closeSync(segmentFd);
+          liveBase = nextSequence;
+          openLive(liveBase);
+        } catch { journalBroken = true; return; }
+      }
+      try { fs.writeSync(segmentFd, line); } catch { journalBroken = true; return; }
+      segmentBytes += line.length;
+      totalBytes += line.length;
+      nextSequence += 1;
+      dirty = true;
+      if (totalBytes > TASK_MAX_BYTES) enforceTaskCap();
+    };
+    const emit = (stream, bytes, truncated = false) => {
+      // Strip one trailing CR so a CRLF host does not embed \r in every record.
+      const end = bytes.length > 0 && bytes[bytes.length - 1] === 0x0d ? bytes.length - 1 : bytes.length;
+      const record = { ts: Date.now(), stream, data: bytes.subarray(0, end).toString("utf8") };
+      if (truncated) record.truncated = true;
+      append(record);
+    };
+    const framer = (stream) => {
+      let pending = Buffer.alloc(0);
+      return {
+        push(chunk) {
+          pending = pending.length > 0 ? Buffer.concat([pending, chunk]) : chunk;
+          for (;;) {
+            const index = pending.indexOf(0x0a);
+            if (index === -1) break;
+            emit(stream, pending.subarray(0, index));
+            pending = pending.subarray(index + 1);
+          }
+          if (pending.length > MAX_EVENT_BYTES) {
+            emit(stream, pending.subarray(0, MAX_EVENT_BYTES), true);
+            pending = Buffer.alloc(0);
+          }
+        },
+        flush() {
+          if (pending.length === 0) return;
+          emit(stream, pending);
+          pending = Buffer.alloc(0);
+        },
+      };
+    };
+
+    const abort = (errorCode, detail) => {
+      commit({ state: "exited", exitCode: null, exitSignal: null, stale: true, errorCode, error: detail ?? null }, true);
+      process.exit(0);
+    };
+    try { openLive(liveBase); } catch (error) { abort("taskWriteFailed", error?.message); }
+    try {
+      fs.writeFileSync(path.join(directory, "supervisor.pid"), `${process.pid}\n`, { mode: 0o600 });
+    } catch { /* the pid also lives in status.json */ }
+
+    const args = ["--mode", "rpc"];
+    if (typeof payload.resumePath === "string" && payload.resumePath.length > 0) {
+      args.push("--session", payload.resumePath);
+    }
+    let child;
+    try {
+      child = spawn(payload.piExecutable, args, { cwd: payload.cwd, stdio: ["pipe", "pipe", "pipe"] });
+    } catch (error) {
+      abort("piStartFailed", error?.message);
+    }
+    let closed = false;
+    // libuv detects an exec failure through a pipe before spawn() returns, so an
+    // unusable `piExecutable` leaves pid undefined here rather than surfacing only
+    // as an async error. Checking it synchronously is what keeps --start-detached
+    // from ever observing `running` for a pi that never existed.
+    if (child.pid === undefined) abort("piStartFailed", `cannot execute ${payload.piExecutable}`);
+    child.once("error", (error) => {
+      if (closed) return;
+      abort("piStartFailed", error?.message);
+    });
+    try {
+      fs.writeFileSync(path.join(directory, "pi.pid"), `${child.pid}\n`, { mode: 0o600 });
+    } catch { /* the pid also lives in status.json */ }
+    append({ ts: Date.now(), stream: "control", event: "started", pid: child.pid, supervisorPid: process.pid });
+    commit({ state: "running", pid: child.pid, supervisorPid: process.pid }, true);
+
+    const outFramer = framer("stdout");
+    const errFramer = framer("stderr");
+    child.stdout.on("data", (chunk) => outFramer.push(chunk));
+    child.stderr.on("data", (chunk) => errFramer.push(chunk));
+
+    // O_RDWR, not O_RDONLY: a read-only FIFO reports EOF every time its last
+    // writer closes, which would end input forwarding after the first --send.
+    try {
+      const net = require("node:net");
+      const fifoFd = fs.openSync(
+        path.join(directory, "stdin.pipe"),
+        fs.constants.O_RDWR | (fs.constants.O_NONBLOCK ?? 0),
+      );
+      const socket = new net.Socket({ fd: fifoFd, readable: true, writable: false });
+      socket.on("error", () => { /* a broken pipe must not kill the task */ });
+      socket.on("data", (chunk) => { try { child.stdin.write(chunk); } catch { /* pi is gone */ } });
+      socket.unref();
+    } catch { /* no FIFO on this platform; --send reports it */ }
+
+    // Deliberately ignored. Run mode forwards SIGHUP to its pi child, and that
+    // forwarding is exactly what makes an attached task die with its channel — so
+    // a detached task must invert it. SIGTERM and SIGINT still mean a real stop.
+    process.on("SIGHUP", () => { /* survive channel loss */ });
+    const requestStop = (signal) => {
+      if (stopRequestedAt !== null) return;
+      stopRequestedAt = Date.now();
+      append({ ts: stopRequestedAt, stream: "control", event: "stop_requested", signal });
+      commit({ state: "stopping", stopRequestedAt }, true);
+      try { child.kill("SIGTERM"); } catch { /* already gone */ }
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 4_000).unref();
+    };
+    process.on("SIGTERM", () => requestStop("SIGTERM"));
+    process.on("SIGINT", () => requestStop("SIGINT"));
+
+    const heartbeat = setInterval(() => { if (dirty) commit({}, true); }, STATUS_THROTTLE_MS);
+    heartbeat.unref();
+
+    child.once("close", (code, signal) => {
+      closed = true;
+      outFramer.flush();
+      errFramer.flush();
+      const exitedAt = Date.now();
+      append({ ts: exitedAt, stream: "control", event: "exited", exitCode: code ?? null, exitSignal: signal ?? null });
+      // Both stop timestamps are recorded because they were measured 17x apart:
+      // pi acknowledges `abort` in 204ms, but the process only disappears ~3.4s
+      // later. The ack proves generation stopped; this proves the session file was
+      // released.
+      commit({
+        state: "exited",
+        exitCode: code ?? null,
+        exitSignal: signal ?? null,
+        stopConfirmedAt: stopRequestedAt === null ? null : exitedAt,
+      }, true);
+      try { fs.closeSync(segmentFd); } catch { /* already closed */ }
+      process.exit(0);
+    });
+    return;
+  }
+
+  taskFail("taskPayloadInvalid", `unhandled task mode ${mode}`);
 }
 __PI_DESKTOP_NODE__

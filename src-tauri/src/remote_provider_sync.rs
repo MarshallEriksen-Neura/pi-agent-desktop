@@ -1100,7 +1100,7 @@ mod tests {
             revision: 1,
             name: "Test".into(),
             ssh_host: "host-alias".into(),
-            remote_cwd: "/srv/work".into(),
+            remote_cwd: Some("/srv/work".into()),
             pi_executable: None,
             launcher_path: "/home/me/.local/bin/pi-desktop-launcher".into(),
             launcher_protocol_version: 1,

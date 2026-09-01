@@ -36,7 +36,13 @@ interface PiStore {
   modelsError: string | null;
   lastError: string | null;
 
-  connect: (opts?: { cwd?: string; resumePath?: string; executionBinding?: ExecutionBinding }) => Promise<void>;
+  connect: (opts?: {
+    cwd?: string;
+    resumePath?: string;
+    executionBinding?: ExecutionBinding;
+    /** Detached remote only: resume the journal after this sequence. */
+    attachAfter?: number;
+  }) => Promise<void>;
   /** Stop pi and reconnect — used when the working directory changes. */
   restart: (
     cwd?: string,
@@ -187,6 +193,7 @@ export function createPiStore(taskId: string, executionBinding?: ExecutionBindin
             cwd: opts?.cwd,
             resumePath: opts?.resumePath,
             executionBinding: opts?.executionBinding,
+            attachAfter: opts?.attachAfter,
           });
           // A new process boots at settings.json's default, so the remembered
           // level has to be re-applied to this one.

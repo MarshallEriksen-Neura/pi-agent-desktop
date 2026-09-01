@@ -44,6 +44,14 @@ const MAX_HOST_ALIAS_BYTES: usize = 256;
 const MAX_REMOTE_PATH_BYTES: usize = 4096;
 const MAX_PROFILE_ID_BYTES: usize = 128;
 const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
+/// pi's channel and its lifetime are the same thing: it dies with the SSH session.
+const LIFECYCLE_ATTACHED: &str = "attached";
+/// pi outlives the channel, supervised by the launcher's detached-task modes.
+/// See docs/remote-agent-v2-supervisor-protocol.md.
+const LIFECYCLE_DETACHED: &str = "detached";
+/// Minted by the desktop, never by the launcher, and matched verbatim there.
+const MAX_REMOTE_TASK_ID_BYTES: usize = 64;
+const MIN_REMOTE_TASK_ID_BYTES: usize = 8;
 static PROFILE_STORE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -53,7 +61,15 @@ pub struct RemotePiProfile {
     pub revision: u64,
     pub name: String,
     pub ssh_host: String,
-    pub remote_cwd: String,
+    /// Where a folder browser opens on this host, **not** where pi runs.
+    ///
+    /// The workspace moved to `ExecutionBinding` because it is a per-conversation
+    /// choice, not host configuration — a profile describes a machine, and one machine
+    /// holds many projects. This stays only so browsing has a useful starting point;
+    /// `None` falls back to the remote `$HOME` from preflight. Profiles written before
+    /// the split keep their value and it keeps meaning the same thing.
+    #[serde(default)]
+    pub remote_cwd: Option<String>,
     pub pi_executable: Option<String>,
     pub launcher_path: String,
     pub launcher_protocol_version: u32,
@@ -66,10 +82,15 @@ pub struct RemotePiProfileInput {
     pub id: Option<String>,
     pub name: String,
     pub ssh_host: String,
-    pub remote_cwd: String,
+    /// Optional browse starting point — see `RemotePiProfile::remote_cwd`.
+    #[serde(default)]
+    pub remote_cwd: Option<String>,
     pub pi_executable: Option<String>,
     pub launcher_path: Option<String>,
     pub launcher_protocol_version: Option<u32>,
+    /// Omitted keeps an existing profile's lifecycle and defaults a new one to
+    /// `attached`, so a caller that predates detached tasks cannot flip one.
+    pub lifecycle: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -84,6 +105,15 @@ pub enum ExecutionBinding {
         host_alias: String,
         remote_cwd: String,
         launcher_protocol_version: u32,
+        /// Which remote task this binding drives. Present exactly when the profile
+        /// is `detached`.
+        ///
+        /// Deliberately orthogonal to `generation`: generation is a local
+        /// per-spawn counter in `pi_bridge.rs`, and attaching to a task opens a new
+        /// local ssh child — a new generation against the *same* remote task.
+        /// Conflating the two makes replayed events get filtered out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote_task_id: Option<String>,
     },
 }
 
@@ -131,6 +161,10 @@ pub struct RemoteReadinessReport {
     pub remote_cwd: String,
     pub launcher_path: String,
     pub pi_version: Option<String>,
+    /// The remote `$HOME`, so a folder browser has somewhere to open. The desktop
+    /// cannot expand it locally and the launcher only accepts absolute paths, so
+    /// without this the first browse would start at `/`.
+    pub home: Option<String>,
     pub checks: Vec<RemoteReadinessCheck>,
 }
 
@@ -196,10 +230,74 @@ const MAX_CAPABILITY_NAME_BYTES: usize = 64;
 #[serde(rename_all = "camelCase")]
 struct LauncherPayload<'a> {
     protocol_version: u32,
-    cwd: &'a str,
+    /// Absent only for a preflight with no workspace chosen yet — the launcher then
+    /// runs `pi --version` from `$HOME` and reports no workspace row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<&'a str>,
     pi_executable: &'a str,
     resume_path: Option<&'a str>,
+    /// Only present for `--start-detached`; the run payload has no task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_task_id: Option<&'a str>,
 }
+
+/// `--attach`'s payload is its own shape: it addresses a task rather than describing
+/// how to launch one, so it carries no cwd, executable, or resume path.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachPayload<'a> {
+    protocol_version: u32,
+    remote_task_id: &'a str,
+    after: Option<u64>,
+    follow: bool,
+}
+
+/// One workspace request. `encoding` applies to `read` and `write`; `to` to `rename`;
+/// `expected_hash` to `write` and `delete`.
+///
+/// `expected_hash` is `Option<Option<String>>` because the three states are distinct
+/// and the launcher acts differently on each: absent means the caller has not decided
+/// (refused), explicit `null` asserts the path is free, and a token is If-Match.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspacePayload<'a> {
+    protocol_version: u32,
+    operation: &'a str,
+    path: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encoding: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected_hash: Option<Option<&'a str>>,
+}
+
+/// Whatever the launcher answered, passed through untyped.
+///
+/// Deliberately not a per-operation enum: the reply already carries `ok` and
+/// `operation`, the frontend port is the thing that discriminates them, and adding a
+/// second Rust-side schema would mean two places to update for every new field.
+/// Bounded by `WORKSPACE_OUTPUT_MAX_BYTES` on the way in.
+pub type RemoteWorkspaceReply = serde_json::Value;
+
+/// Read-only browsing replies can be large — a 2 MiB file, or a 2000-entry listing —
+/// so they get their own ceiling rather than the 64 KiB one preflight uses. The
+/// launcher refuses to send more than 8 MiB; this leaves room for that plus framing.
+const WORKSPACE_OUTPUT_MAX_BYTES: usize = 9 * 1024 * 1024;
+const WORKSPACE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longer than the rest: `--stop` waits up to 5s for the supervisor to confirm the
+/// process actually died before escalating to SIGKILL, and that wait is on the far side.
+const STOP_TIMEOUT: Duration = Duration::from_secs(45);
+const WORKSPACE_OPERATIONS: [&str; 8] =
+    ["list", "read", "stat", "write", "create", "mkdir", "delete", "rename"];
+/// The operations that mutate. Only these accept a body, and only `write` has one.
+const WORKSPACE_WRITE_OPERATIONS: [&str; 5] = ["write", "create", "mkdir", "delete", "rename"];
+const WORKSPACE_ENCODINGS: [&str; 2] = ["utf8", "base64"];
+/// Matches the launcher: a token it minted, not a checksum the caller computed.
+const WORKSPACE_HASH_PREFIX: &str = "sha256-";
+const WORKSPACE_HASH_HEX_LEN: usize = 64;
+/// The launcher caps a file at 2 MiB; base64 inflates that by 4/3 on the way up.
+const WORKSPACE_BODY_MAX_BYTES: usize = 3 * 1024 * 1024;
 
 fn profile_path() -> Result<PathBuf, String> {
     Ok(crate::pi_settings::home_dir()?
@@ -312,7 +410,7 @@ fn trimmed_option(value: Option<&str>) -> Option<&str> {
 fn validate_profile_fields(
     name: &str,
     host: &str,
-    cwd: &str,
+    cwd: Option<&str>,
     pi_executable: Option<&str>,
     launcher: &str,
     protocol_version: u32,
@@ -324,7 +422,10 @@ fn validate_profile_fields(
         return Err("remote profile name must be between 1 and 256 bytes".into());
     }
     validate_host_alias(host)?;
-    validate_remote_path(cwd, "remote cwd")?;
+    // A browse starting point is optional; only a present one has to be well formed.
+    if let Some(cwd) = cwd {
+        validate_remote_path(cwd, "remote browse directory")?;
+    }
     validate_remote_path(launcher, "remote launcher")?;
     if let Some(executable) = pi_executable {
         if executable.trim().is_empty()
@@ -343,21 +444,46 @@ fn validate_profile_fields(
     Ok(())
 }
 
+fn validate_lifecycle(lifecycle: &str) -> Result<(), String> {
+    if lifecycle != LIFECYCLE_ATTACHED && lifecycle != LIFECYCLE_DETACHED {
+        return Err(format!("unsupported remote lifecycle `{lifecycle}`"));
+    }
+    Ok(())
+}
+
+/// Mirrors the launcher's `^[a-z0-9][a-z0-9-]{7,63}$` exactly. Both ends validate
+/// it: the desktop so a malformed id never reaches a host, the launcher so it never
+/// trusts one it was handed.
+fn validate_remote_task_id(task_id: &str) -> Result<(), String> {
+    let first_is_alphanumeric = task_id
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    if task_id.len() < MIN_REMOTE_TASK_ID_BYTES
+        || task_id.len() > MAX_REMOTE_TASK_ID_BYTES
+        || !first_is_alphanumeric
+        || !task_id
+            .chars()
+            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+    {
+        return Err("remote task id is invalid".into());
+    }
+    Ok(())
+}
+
 fn validate_profile(profile: &RemotePiProfile) -> Result<(), String> {
     validate_profile_id(&profile.id)?;
-    if profile.revision == 0
-        || profile.revision > MAX_SAFE_JS_INTEGER
-        || profile.lifecycle != "attached"
-    {
+    if profile.revision == 0 || profile.revision > MAX_SAFE_JS_INTEGER {
         return Err(format!(
             "remote profile `{}` has invalid metadata",
             profile.id
         ));
     }
+    validate_lifecycle(&profile.lifecycle)?;
     validate_profile_fields(
         &profile.name,
         &profile.ssh_host,
-        &profile.remote_cwd,
+        profile.remote_cwd.as_deref(),
         profile.pi_executable.as_deref(),
         &profile.launcher_path,
         profile.launcher_protocol_version,
@@ -378,10 +504,12 @@ pub fn remote_profile_save(profile: RemotePiProfileInput) -> Result<RemotePiProf
         .launcher_protocol_version
         .unwrap_or(LAUNCHER_PROTOCOL_VERSION);
     let pi_executable = trimmed_option(profile.pi_executable.as_deref());
+    // A cleared form field means "unset", not "the empty path".
+    let browse_directory = trimmed_option(profile.remote_cwd.as_deref());
     validate_profile_fields(
         &profile.name,
         &profile.ssh_host,
-        &profile.remote_cwd,
+        browse_directory,
         pi_executable,
         launcher,
         protocol_version,
@@ -412,16 +540,27 @@ pub fn remote_profile_save(profile: RemotePiProfileInput) -> Result<RemotePiProf
         Some(item) => item.revision + 1,
         None => 1,
     };
+    // An omitted lifecycle keeps whatever the profile already had, so a caller that
+    // predates detached tasks round-trips a profile without silently downgrading it.
+    let lifecycle = match trimmed_option(profile.lifecycle.as_deref()) {
+        Some(value) => {
+            validate_lifecycle(value)?;
+            value.to_owned()
+        }
+        None => existing
+            .as_ref()
+            .map_or_else(|| LIFECYCLE_ATTACHED.to_owned(), |item| item.lifecycle.clone()),
+    };
     let saved = RemotePiProfile {
         id,
         revision,
         name: profile.name.trim().to_owned(),
         ssh_host: profile.ssh_host,
-        remote_cwd: profile.remote_cwd,
+        remote_cwd: browse_directory.map(str::to_owned),
         pi_executable: pi_executable.map(str::to_owned),
         launcher_path: launcher.to_owned(),
         launcher_protocol_version: protocol_version,
-        lifecycle: "attached".into(),
+        lifecycle,
     };
     validate_profile(&saved)?;
     if let Some(index) = profiles.iter().position(|item| item.id == saved.id) {
@@ -483,6 +622,7 @@ pub fn validate_binding(
         host_alias,
         remote_cwd,
         launcher_protocol_version,
+        remote_task_id,
     } = binding
     else {
         return Ok(());
@@ -497,12 +637,31 @@ pub fn validate_binding(
         ));
     }
     if host_alias != &profile.ssh_host
-        || remote_cwd != &profile.remote_cwd
         || *launcher_protocol_version != profile.launcher_protocol_version
     {
         return Err("remote execution binding does not match the stored profile".into());
     }
-    Ok(())
+    // `remote_cwd` is deliberately NOT compared against the profile.
+    //
+    // It used to be, back when a profile owned exactly one workspace. The workspace is
+    // now a per-conversation choice — one machine holds many projects — so a binding
+    // pointing somewhere the profile does not mention is normal, not drift. The
+    // revision check above still guards what it was always meant to guard: host
+    // configuration. A directory never was host configuration.
+    //
+    // It still has to be a well-formed absolute path, because it becomes pi's cwd.
+    validate_remote_path(remote_cwd, "remote workspace")?;
+    // The task id is present exactly when the profile is detached. A detached
+    // binding without one has nothing to attach to; an attached binding with one
+    // would name a task no attached run can reach.
+    match (profile.lifecycle.as_str(), remote_task_id.as_deref()) {
+        (LIFECYCLE_DETACHED, Some(task_id)) => validate_remote_task_id(task_id),
+        (LIFECYCLE_DETACHED, None) => {
+            Err("a detached remote binding must carry a remote task id".into())
+        }
+        (_, Some(_)) => Err("an attached remote binding cannot carry a remote task id".into()),
+        (_, None) => Ok(()),
+    }
 }
 
 pub fn ssh_launch_spec(
@@ -519,11 +678,18 @@ pub fn ssh_launch_spec(
         return Err("SSH launch requested for a local execution binding".into());
     };
     validate_binding(profile, binding)?;
+    // Fail closed rather than silently doing the attached thing: `--run` holds the
+    // channel open for pi's stdio, which is the one shape a detached task must not
+    // have. Attaching to a detached task is V2.2 and gets its own path.
+    if profile.lifecycle == LIFECYCLE_DETACHED {
+        return Err("a detached remote profile cannot be launched with --run".into());
+    }
     let encoded = encode_launcher_payload(
-        remote_cwd,
+        Some(remote_cwd),
         profile.pi_executable.as_deref().unwrap_or("pi"),
         *launcher_protocol_version,
         resume_path,
+        None,
     )?;
     Ok(ssh_spec_for(
         &profile.ssh_host,
@@ -533,11 +699,160 @@ pub fn ssh_launch_spec(
     ))
 }
 
+/// `--start-detached`: same payload as `--run` plus the task id. The reply is one
+/// JSON line and the channel closes immediately — the task outlives it.
+///
+/// Not called yet. V2.1 owns the protocol and its argv policy; the desktop call
+/// sites arrive with V2.2 attach, which is the first thing that has a task to
+/// attach to. Kept here, with tests, so the argv can be locked down before a
+/// consumer depends on it.
+#[allow(dead_code)]
+pub fn ssh_start_detached_spec(
+    profile: &RemotePiProfile,
+    binding: &ExecutionBinding,
+    resume_path: Option<&str>,
+) -> Result<LaunchSpec, String> {
+    let ExecutionBinding::Ssh {
+        remote_cwd,
+        launcher_protocol_version,
+        remote_task_id,
+        ..
+    } = binding
+    else {
+        return Err("detached launch requested for a local execution binding".into());
+    };
+    validate_binding(profile, binding)?;
+    if profile.lifecycle != LIFECYCLE_DETACHED {
+        return Err("an attached remote profile cannot be started detached".into());
+    }
+    let task_id = remote_task_id
+        .as_deref()
+        .ok_or("a detached remote binding must carry a remote task id")?;
+    let encoded = encode_launcher_payload(
+        Some(remote_cwd),
+        profile.pi_executable.as_deref().unwrap_or("pi"),
+        *launcher_protocol_version,
+        resume_path,
+        Some(task_id),
+    )?;
+    Ok(ssh_spec_for(
+        &profile.ssh_host,
+        &profile.launcher_path,
+        "--start-detached",
+        &encoded,
+    ))
+}
+
+/// `--status`, `--stop` and `--send` take a bare task id, not a base64 payload: an
+/// id is already constrained to `[a-z0-9-]`, so encoding it would only hide a
+/// malformed one. `--reap` takes nothing.
+///
+/// Not called yet — see `ssh_start_detached_spec`.
+#[allow(dead_code)]
+pub fn ssh_task_spec(
+    profile: &RemotePiProfile,
+    mode: RemoteTaskMode,
+    task_id: Option<&str>,
+) -> Result<LaunchSpec, String> {
+    validate_profile(profile)?;
+    let mut spec = LaunchSpec::new("ssh");
+    for &argument in ssh_options() {
+        spec = spec.arg(argument);
+    }
+    spec = spec
+        .arg(profile.ssh_host.clone())
+        .arg(shell_quote(&profile.launcher_path))
+        .arg(mode.as_argument());
+    match (mode, task_id) {
+        (RemoteTaskMode::Reap, Some(_)) => Err("--reap takes no task id".into()),
+        (RemoteTaskMode::Stop | RemoteTaskMode::Send, None) => {
+            Err(format!("{} requires a task id", mode.as_argument()))
+        }
+        (_, Some(task_id)) => {
+            validate_remote_task_id(task_id)?;
+            Ok(spec.arg(shell_quote(task_id)))
+        }
+        (_, None) => Ok(spec),
+    }
+}
+
+/// The launcher modes that address an existing task. `--start-detached` is not one
+/// of them: it carries a payload, not an id.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteTaskMode {
+    Status,
+    Stop,
+    Send,
+    Reap,
+}
+
+impl RemoteTaskMode {
+    fn as_argument(self) -> &'static str {
+        match self {
+            Self::Status => "--status",
+            Self::Stop => "--stop",
+            Self::Send => "--send",
+            Self::Reap => "--reap",
+        }
+    }
+}
+
+/// `--attach`: the long-lived read-only channel over a detached task's journal.
+///
+/// Shaped like `--run` on purpose — one ssh child whose stdout is a stream of lines —
+/// so it drops into the existing `pi://line` plumbing. The difference is that each
+/// line is an attach frame wrapping a journal record, and the desktop unwraps it and
+/// tracks `sequence` as its cursor. See docs/remote-agent-v2-session-recovery.md.
+///
+/// `after` is the highest sequence the caller has already applied; `None` starts from
+/// the oldest record still retained. Not called yet — see `ssh_start_detached_spec`.
+#[allow(dead_code)]
+pub fn ssh_attach_spec(
+    profile: &RemotePiProfile,
+    binding: &ExecutionBinding,
+    after: Option<u64>,
+    follow: bool,
+) -> Result<LaunchSpec, String> {
+    let ExecutionBinding::Ssh { remote_task_id, .. } = binding else {
+        return Err("attach requested for a local execution binding".into());
+    };
+    validate_binding(profile, binding)?;
+    if profile.lifecycle != LIFECYCLE_DETACHED {
+        return Err("only a detached remote profile has a task to attach to".into());
+    }
+    let task_id = remote_task_id
+        .as_deref()
+        .ok_or("a detached remote binding must carry a remote task id")?;
+    validate_remote_task_id(task_id)?;
+    if after.is_some_and(|cursor| cursor > MAX_SAFE_JS_INTEGER) {
+        return Err("remote attach cursor is out of range".into());
+    }
+    let payload = AttachPayload {
+        protocol_version: LAUNCHER_PROTOCOL_VERSION,
+        remote_task_id: task_id,
+        after,
+        follow,
+    };
+    let encoded = STANDARD.encode(
+        serde_json::to_vec(&payload).map_err(|e| format!("encode attach payload: {e}"))?,
+    );
+    Ok(ssh_spec_for(
+        &profile.ssh_host,
+        &profile.launcher_path,
+        "--attach",
+        &encoded,
+    ))
+}
+
+/// `remote_cwd` is `None` only for a preflight with no workspace chosen yet — every
+/// run payload has one, because pi has to start somewhere.
 fn encode_launcher_payload(
-    remote_cwd: &str,
+    remote_cwd: Option<&str>,
     pi_executable: &str,
     protocol_version: u32,
     resume_path: Option<&str>,
+    remote_task_id: Option<&str>,
 ) -> Result<String, String> {
     let resume_path = resume_path.filter(|path| !path.is_empty());
     if let Some(path) = resume_path {
@@ -549,11 +864,15 @@ fn encode_launcher_payload(
             return Err("remote session path is invalid".into());
         }
     }
+    if let Some(task_id) = remote_task_id {
+        validate_remote_task_id(task_id)?;
+    }
     let payload = LauncherPayload {
         protocol_version,
         cwd: remote_cwd,
         pi_executable,
         resume_path,
+        remote_task_id,
     };
     Ok(STANDARD
         .encode(serde_json::to_vec(&payload).map_err(|e| format!("encode launcher payload: {e}"))?))
@@ -619,7 +938,7 @@ pub fn probe_launcher_capabilities(
         error,
     };
 
-    let output = match run_bounded_command(&spec, CAPABILITIES_TIMEOUT, None) {
+    let output = match run_bounded_command(&spec, CAPABILITIES_TIMEOUT, None, PREFLIGHT_OUTPUT_MAX_BYTES) {
         Ok(output) => output,
         // A local failure to even launch ssh is worth surfacing verbatim.
         Err(error) => return Ok(unsupported(Some("sshUnavailable"), Some(error))),
@@ -688,10 +1007,617 @@ pub fn probe_launcher_capabilities(
     })
 }
 
+fn validate_workspace_hash(hash: &str) -> Result<(), String> {
+    let hex = hash
+        .strip_prefix(WORKSPACE_HASH_PREFIX)
+        .ok_or("remote workspace hash is invalid")?;
+    if hex.len() != WORKSPACE_HASH_HEX_LEN
+        || !hex.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("remote workspace hash is invalid".into());
+    }
+    Ok(())
+}
+
+fn ssh_workspace_spec(
+    profile: &RemotePiProfile,
+    operation: &str,
+    path: &str,
+    encoding: Option<&str>,
+    to: Option<&str>,
+    expected_hash: Option<Option<&str>>,
+) -> Result<LaunchSpec, String> {
+    validate_profile(profile)?;
+    if !WORKSPACE_OPERATIONS.contains(&operation) {
+        return Err(format!("unsupported remote workspace operation `{operation}`"));
+    }
+    if let Some(encoding) = encoding {
+        if !WORKSPACE_ENCODINGS.contains(&encoding) {
+            return Err(format!("unsupported remote workspace encoding `{encoding}`"));
+        }
+    }
+    // Validated here as well as in the launcher: the desktop must not put a
+    // malformed path on the wire, and the launcher must not trust one it is handed.
+    validate_remote_path(path, "remote workspace path")?;
+    match (operation, to) {
+        ("rename", Some(destination)) => validate_remote_path(destination, "remote rename target")?,
+        ("rename", None) => return Err("rename requires a destination path".into()),
+        (_, Some(_)) => return Err(format!("`{operation}` takes no destination path")),
+        (_, None) => {}
+    }
+    if let Some(Some(hash)) = expected_hash {
+        validate_workspace_hash(hash)?;
+    }
+    let payload = WorkspacePayload {
+        protocol_version: LAUNCHER_PROTOCOL_VERSION,
+        operation,
+        path,
+        encoding,
+        to,
+        expected_hash,
+    };
+    let encoded = STANDARD.encode(
+        serde_json::to_vec(&payload).map_err(|e| format!("encode workspace payload: {e}"))?,
+    );
+    Ok(ssh_spec_for(
+        &profile.ssh_host,
+        &profile.launcher_path,
+        "--workspace",
+        &encoded,
+    ))
+}
+
+/// What `--status` reports about one task, as the desktop sees it.
+///
+/// These are **process** states, observed from the same host as pi. The four *connection*
+/// states the UI shows — `running` / `lost` / `exited` / `orphaned` — are derived on the
+/// desktop side, because `lost` and `orphaned` describe the channel, which a launcher
+/// standing next to pi cannot see.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTaskReport {
+    pub remote_task_id: String,
+    pub state: String,
+    /// `true` when the death was never witnessed — the supervisor was gone when asked.
+    pub stale: bool,
+    pub exists: bool,
+    pub pid: Option<i64>,
+    pub pi_alive: bool,
+    pub exit_code: Option<i64>,
+    pub stop_requested_at: Option<i64>,
+    pub stop_confirmed_at: Option<i64>,
+    pub base_sequence: Option<u64>,
+    pub next_sequence: Option<u64>,
+}
+
+/// Ask the host what a task is doing.
+///
+/// The desktop cannot infer this: a partitioned pi stays alive for up to ~2h after the
+/// local transport gives up at 24.2s, so guessing is wrong for exactly as long as it
+/// matters. This is the only way to tell `lost` from `exited`.
+#[tauri::command]
+pub async fn remote_task_status(
+    profile_id: String,
+    remote_task_id: String,
+) -> Result<RemoteTaskReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = load_profile(&profile_id)?;
+        validate_remote_task_id(&remote_task_id)?;
+        let spec = ssh_task_spec(&profile, RemoteTaskMode::Status, Some(&remote_task_id))?;
+        let reply = one_line_reply(&spec, WORKSPACE_TIMEOUT, &profile.launcher_path)?;
+        if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            // A spent id is a normal answer, not a failure — the conversation simply has
+            // no live task any more.
+            if reply.get("errorCode").and_then(serde_json::Value::as_str) == Some("taskNotFound") {
+                return Ok(RemoteTaskReport {
+                    remote_task_id,
+                    state: "exited".into(),
+                    stale: false,
+                    exists: false,
+                    pid: None,
+                    pi_alive: false,
+                    exit_code: None,
+                    stop_requested_at: None,
+                    stop_confirmed_at: None,
+                    base_sequence: None,
+                    next_sequence: None,
+                });
+            }
+            return Err(format!(
+                "remote task status failed: {}",
+                reply
+                    .get("errorCode")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unreadable reply")
+            ));
+        }
+        Ok(task_report(&remote_task_id, &reply))
+    })
+    .await
+    .map_err(|error| format!("remote task status failed: {error}"))?
+}
+
+/// Stop the remote task itself — not the channel to it.
+///
+/// Deliberately separate from `pi_stop`, which on a detached target only closes the local
+/// attach. Those are two different intents: "I am done looking at this" versus "stop
+/// working". Conflating them would make every window close kill remote work, which is the
+/// exact opposite of why detached mode exists.
+#[tauri::command]
+pub async fn remote_task_stop(
+    profile_id: String,
+    remote_task_id: String,
+) -> Result<RemoteTaskReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = load_profile(&profile_id)?;
+        validate_remote_task_id(&remote_task_id)?;
+        let spec = ssh_task_spec(&profile, RemoteTaskMode::Stop, Some(&remote_task_id))?;
+        // Up to a 5s stop-confirmation wait on the far side, plus the round trip.
+        let reply = one_line_reply(&spec, STOP_TIMEOUT, &profile.launcher_path)?;
+        if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+            let code = reply
+                .get("errorCode")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("remoteStopFailed");
+            // Stopping something already gone is the desired end state, not an error.
+            if code == "taskNotFound" {
+                return Ok(RemoteTaskReport {
+                    remote_task_id,
+                    state: "exited".into(),
+                    stale: false,
+                    exists: false,
+                    pid: None,
+                    pi_alive: false,
+                    exit_code: None,
+                    stop_requested_at: None,
+                    stop_confirmed_at: None,
+                    base_sequence: None,
+                    next_sequence: None,
+                });
+            }
+            return Err(code.to_owned());
+        }
+        Ok(task_report(&remote_task_id, &reply))
+    })
+    .await
+    .map_err(|error| format!("remote task stop failed: {error}"))?
+}
+
+/// Opportunistic housekeeping: reap orphans and expired task directories.
+///
+/// Called alongside other work rather than on a timer, because acceptance showed orphans
+/// only happen on a real network partition — a rare, cold path. A resident reaper would be
+/// machinery for an event that almost never fires.
+#[tauri::command]
+pub async fn remote_task_reap(profile_id: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = load_profile(&profile_id)?;
+        let spec = ssh_task_spec(&profile, RemoteTaskMode::Reap, None)?;
+        one_line_reply(&spec, WORKSPACE_TIMEOUT, &profile.launcher_path)
+    })
+    .await
+    .map_err(|error| format!("remote task reap failed: {error}"))?
+}
+
+fn task_report(remote_task_id: &str, reply: &serde_json::Value) -> RemoteTaskReport {
+    let task = reply.get("task").unwrap_or(&serde_json::Value::Null);
+    let number = |key: &str| task.get(key).and_then(serde_json::Value::as_i64);
+    let sequence = |key: &str| {
+        task.get("journal")
+            .and_then(|journal| journal.get(key))
+            .and_then(serde_json::Value::as_u64)
+    };
+    RemoteTaskReport {
+        remote_task_id: remote_task_id.to_owned(),
+        state: task
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("exited")
+            .to_owned(),
+        stale: task
+            .get("stale")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        exists: true,
+        pid: number("pid"),
+        pi_alive: task
+            .get("piAlive")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        exit_code: number("exitCode"),
+        stop_requested_at: number("stopRequestedAt"),
+        stop_confirmed_at: number("stopConfirmedAt"),
+        base_sequence: sequence("baseSequence"),
+        next_sequence: sequence("nextSequence"),
+    }
+}
+
+/// One line into a detached task's stdin, through `--send`.
+///
+/// `idempotency_key` is opt-in and the reason `--send` is more than a pipe: a disconnect
+/// at the measured 24.2s detection window tells the desktop nothing about whether the
+/// write landed, so retrying blind duplicates a turn and not retrying loses one. With a
+/// key, the launcher recognises the replay and does not forward it twice.
+///
+/// A duplicate is **success**, not an error: the caller's intent — "this message reached
+/// pi exactly once" — is satisfied either way.
+pub fn send_to_remote_task(
+    profile_id: &str,
+    remote_task_id: &str,
+    line: &str,
+    idempotency_key: Option<&str>,
+) -> Result<(), String> {
+    let profile = load_profile(profile_id)?;
+    if profile.lifecycle != LIFECYCLE_DETACHED {
+        return Err("remote send requires a detached remote profile".into());
+    }
+    validate_remote_task_id(remote_task_id)?;
+    let spec = ssh_task_spec(&profile, RemoteTaskMode::Send, Some(remote_task_id))?;
+    // pi reads newline-delimited JSON, and the launcher forwards stdin verbatim, so the
+    // terminator has to be here rather than assumed downstream.
+    let body = match idempotency_key {
+        Some(key) => {
+            if key.is_empty() || key.len() > 128 || !key.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+            }) {
+                return Err("remote send idempotency key is invalid".into());
+            }
+            serde_json::to_string(&serde_json::json!({
+                "idempotencyKey": key,
+                "payload": format!("{line}\n"),
+            }))
+            .map_err(|error| format!("encode send envelope: {error}"))?
+        }
+        None => format!("{line}\n"),
+    };
+    let output = run_bounded_command(
+        &spec,
+        WORKSPACE_TIMEOUT,
+        Some(&body),
+        PREFLIGHT_OUTPUT_MAX_BYTES,
+    )?;
+    if output.timed_out {
+        return Err("remote send timed out".into());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if output.status.code() != Some(0) {
+        let (error_code, _, message) =
+            classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
+        return Err(format!("{error_code}: {message}"));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or("remote send returned no reply")?;
+    let reply: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|error| format!("invalid send reply: {error}"))?;
+    if reply.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    let code = reply
+        .get("errorCode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("remoteSendFailed");
+    Err(code.to_owned())
+}
+
+/// The launcher's `--status` reply for one task, reduced to what the desktop acts on.
+struct RemoteTaskStatus {
+    state: String,
+    pid: Option<i64>,
+    supervisor_pid: Option<i64>,
+    started_at: Option<i64>,
+    base_sequence: Option<u64>,
+    next_sequence: Option<u64>,
+}
+
+/// `--status <id>`. `Ok(None)` means the task genuinely does not exist — distinct from
+/// an error, because a spent id and an unreachable host need different handling.
+fn read_remote_task(
+    profile: &RemotePiProfile,
+    task_id: &str,
+) -> Result<Option<RemoteTaskStatus>, String> {
+    let spec = ssh_task_spec(profile, RemoteTaskMode::Status, Some(task_id))?;
+    let reply = one_line_reply(&spec, WORKSPACE_TIMEOUT, &profile.launcher_path)?;
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return match reply.get("errorCode").and_then(serde_json::Value::as_str) {
+            Some("taskNotFound") => Ok(None),
+            Some(code) => Err(format!("remote task status failed: {code}")),
+            None => Err("remote task status returned an unreadable reply".into()),
+        };
+    }
+    let task = reply
+        .get("task")
+        .ok_or("remote task status reply had no task")?;
+    let number = |key: &str| task.get(key).and_then(serde_json::Value::as_i64);
+    let sequence = |key: &str| {
+        task.get("journal")
+            .and_then(|journal| journal.get(key))
+            .and_then(serde_json::Value::as_u64)
+    };
+    Ok(Some(RemoteTaskStatus {
+        state: task
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("exited")
+            .to_owned(),
+        pid: number("pid"),
+        supervisor_pid: number("supervisorPid"),
+        started_at: number("startedAt"),
+        base_sequence: sequence("baseSequence"),
+        next_sequence: sequence("nextSequence"),
+    }))
+}
+
+/// Runs one launcher mode and parses its single JSON reply line.
+///
+/// Every task mode answers with exactly one line and exit 0 even on failure, so a
+/// nonzero status is the transport or a launcher too old to know the mode.
+fn one_line_reply(
+    spec: &LaunchSpec,
+    timeout: Duration,
+    launcher_path: &str,
+) -> Result<serde_json::Value, String> {
+    let output = run_bounded_command(spec, timeout, None, PREFLIGHT_OUTPUT_MAX_BYTES)?;
+    if output.timed_out {
+        return Err(format!(
+            "remote task command timed out after {}s",
+            timeout.as_secs()
+        ));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if output.status.code() != Some(0) {
+        let (error_code, _, message) =
+            classify_transport_failure(output.status.code(), &stderr, launcher_path);
+        return Err(format!("{error_code}: {message}"));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Last nonempty line: a login shell may print a banner ahead of the answer.
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or("remote task command returned no reply")?;
+    serde_json::from_str(line.trim()).map_err(|error| format!("invalid task reply: {error}"))
+}
+
+/// `t-` plus 12 hex chars, which satisfies the launcher's `^[a-z0-9][a-z0-9-]{7,63}$`.
+///
+/// Random rather than sequential: ids are minted on two sides of a network and a
+/// collision would mean two conversations sharing one journal.
+fn mint_remote_task_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    format!("t-{:08x}{:04x}", millis & 0xffff_ffff, nanos & 0xffff)
+}
+
+/// What a detached task looks like to the desktop after `remote_task_ensure`.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTaskHandle {
+    /// The id to put on the binding and persist with the conversation.
+    pub remote_task_id: String,
+    /// `starting` | `running` | `stopping` | `exited`, from the launcher.
+    pub state: String,
+    pub pid: Option<i64>,
+    pub supervisor_pid: Option<i64>,
+    pub started_at: Option<i64>,
+    /// Set when this call had to mint a new id because the previous task was dead.
+    ///
+    /// One `remoteTaskId` is one remote pi process for its whole life, so continuing
+    /// after pi exits means a new id — and a caller holding a cursor into the old
+    /// journal has to know its transcript does not continue here.
+    pub previous_task_id: Option<String>,
+    /// `true` when this call started the task rather than finding it alive.
+    pub started: bool,
+    /// Oldest sequence still in the journal, so a stale cursor is detectable up front.
+    pub base_sequence: Option<u64>,
+    pub next_sequence: Option<u64>,
+}
+
+/// Mint or reattach a detached task, so `pi_start` only ever has to spawn the attach.
+///
+/// Kept out of `pi_start` because this is the part that talks to the host: two bounded
+/// SSH round trips, ~2.5s measured. `pi_start` is a synchronous command holding the
+/// runtime mutex, and blocking it for that long would stall every other task.
+///
+/// Three cases, one entry point:
+/// - no id ⇒ mint one and `--start-detached`
+/// - id, alive ⇒ return it untouched, for a reattach
+/// - id, dead ⇒ mint a new one with `previous_task_id` set, and start that
+#[tauri::command]
+pub async fn remote_task_ensure(
+    profile_id: String,
+    remote_task_id: Option<String>,
+    remote_cwd: String,
+    resume_path: Option<String>,
+) -> Result<RemoteTaskHandle, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_remote_task(
+            &profile_id,
+            remote_task_id.as_deref(),
+            &remote_cwd,
+            resume_path.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("remote task setup failed: {error}"))?
+}
+
+fn ensure_remote_task(
+    profile_id: &str,
+    remote_task_id: Option<&str>,
+    remote_cwd: &str,
+    resume_path: Option<&str>,
+) -> Result<RemoteTaskHandle, String> {
+    let profile = load_profile(profile_id)?;
+    if profile.lifecycle != LIFECYCLE_DETACHED {
+        return Err("remote task setup requires a detached remote profile".into());
+    }
+    validate_remote_path(remote_cwd, "remote workspace")?;
+
+    let mut previous_task_id = None;
+    let mut task_id = match remote_task_id {
+        Some(existing) => {
+            validate_remote_task_id(existing)?;
+            let status = read_remote_task(&profile, existing)?;
+            match status {
+                // Alive: reattach to exactly this task. Starting a second pi over one
+                // journal is the V1 defect this whole id rule exists to prevent.
+                Some(task) if task.state != "exited" => {
+                    return Ok(RemoteTaskHandle {
+                        remote_task_id: existing.to_owned(),
+                        state: task.state,
+                        pid: task.pid,
+                        supervisor_pid: task.supervisor_pid,
+                        started_at: task.started_at,
+                        previous_task_id: None,
+                        started: false,
+                        base_sequence: task.base_sequence,
+                        next_sequence: task.next_sequence,
+                    });
+                }
+                // Dead, or gone entirely: the id is spent either way.
+                _ => {
+                    previous_task_id = Some(existing.to_owned());
+                    mint_remote_task_id()
+                }
+            }
+        }
+        None => mint_remote_task_id(),
+    };
+    task_id = task_id.trim().to_owned();
+    validate_remote_task_id(&task_id)?;
+
+    let binding = ExecutionBinding::Ssh {
+        profile_id: profile.id.clone(),
+        profile_revision: profile.revision,
+        host_alias: profile.ssh_host.clone(),
+        remote_cwd: remote_cwd.to_owned(),
+        launcher_protocol_version: profile.launcher_protocol_version,
+        remote_task_id: Some(task_id.clone()),
+    };
+    let spec = ssh_start_detached_spec(&profile, &binding, resume_path)?;
+    let reply = one_line_reply(&spec, WORKSPACE_TIMEOUT, &profile.launcher_path)?;
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        let code = reply
+            .get("errorCode")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("taskStartFailed");
+        let detail = reply
+            .get("detail")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        return Err(format!("{code}{}{detail}", if detail.is_empty() { "" } else { ": " }));
+    }
+    let number = |key: &str| reply.get(key).and_then(serde_json::Value::as_i64);
+    Ok(RemoteTaskHandle {
+        remote_task_id: task_id,
+        state: reply
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("running")
+            .to_owned(),
+        pid: number("pid"),
+        supervisor_pid: number("supervisorPid"),
+        started_at: number("startedAt"),
+        previous_task_id,
+        started: true,
+        // A task that has just started has an empty journal, so the first attach starts
+        // from the beginning and no cursor can be stale.
+        base_sequence: Some(1),
+        next_sequence: Some(1),
+    })
+}
+
+/// One workspace request against a stored profile.
+///
+/// Gate reads on `hasLauncherCapability(probe, "workspace-v1")` and writes on
+/// `"workspace-writes-v1"`: a launcher that predates a mode answers `invalid launcher
+/// mode` with exit 64, and the desktop should offer a reinstall rather than surface a
+/// transport error.
+///
+/// `expected_hash` is `Option<Option<String>>` on purpose — see `WorkspacePayload`.
+/// Serde maps a missing field to `None` and an explicit `null` to `Some(None)`, which
+/// is exactly the distinction a hash-checked write depends on.
+#[tauri::command]
+pub fn remote_workspace_request(
+    id: String,
+    operation: String,
+    path: String,
+    encoding: Option<String>,
+    to: Option<String>,
+    expected_hash: Option<Option<String>>,
+    body: Option<String>,
+) -> Result<RemoteWorkspaceReply, String> {
+    let profile = load_profile(&id)?;
+    // A body belongs to `write` and to nothing else. Accepting one elsewhere would
+    // leave a caller believing content was stored when the launcher ignored it.
+    match (operation.as_str(), body.as_deref()) {
+        ("write", None) => return Err("a remote write requires a body".into()),
+        ("write", Some(content)) if content.len() > WORKSPACE_BODY_MAX_BYTES => {
+            return Err("remote write body exceeded its size limit".into());
+        }
+        ("write", Some(_)) => {}
+        (other, Some(_)) => return Err(format!("`{other}` takes no body")),
+        (_, None) => {}
+    }
+    if !WORKSPACE_WRITE_OPERATIONS.contains(&operation.as_str()) && expected_hash.is_some() {
+        return Err(format!("`{operation}` takes no expected hash"));
+    }
+    let spec = ssh_workspace_spec(
+        &profile,
+        &operation,
+        &path,
+        encoding.as_deref(),
+        to.as_deref(),
+        expected_hash.as_ref().map(|hash| hash.as_deref()),
+    )?;
+    let output = run_bounded_command(
+        &spec,
+        WORKSPACE_TIMEOUT,
+        body.as_deref(),
+        WORKSPACE_OUTPUT_MAX_BYTES,
+    )?;
+    if output.timed_out {
+        return Err(format!(
+            "remote workspace request timed out after {}s",
+            WORKSPACE_TIMEOUT.as_secs()
+        ));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    // The launcher answers every workspace outcome with exit 0 and one JSON line, so
+    // a nonzero status is the transport or a launcher too old to know the mode.
+    if output.status.code() != Some(0) {
+        let (error_code, _, message) =
+            classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
+        return Err(format!("{error_code}: {message}"));
+    }
+    if output.stdout.len() > WORKSPACE_OUTPUT_MAX_BYTES {
+        return Err("remote workspace reply exceeded its size limit".into());
+    }
+    // Last nonempty line: a login shell may print a banner ahead of the answer.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or("remote workspace request returned no reply")?;
+    serde_json::from_str(line.trim()).map_err(|error| format!("invalid workspace reply: {error}"))
+}
+
 /// Capability probe for a stored profile.
 #[tauri::command]
-pub fn remote_profile_capabilities(id: String) -> Result<LauncherCapabilities, String> {
-    let profile = load_profile(&id)?;
+pub fn remote_profile_capabilities(id: String) -> Result<LauncherCapabilities, String> {    let profile = load_profile(&id)?;
     probe_launcher_capabilities(&profile.ssh_host, &profile.launcher_path)
 }
 
@@ -746,7 +1672,10 @@ pub fn remote_profile_preflight(id: String) -> Result<RemoteReadinessReport, Str
     Ok(check_readiness(
         Some(profile.id.clone()),
         &profile.ssh_host,
-        &profile.remote_cwd,
+        // Checked only when the profile carries a browse starting point. A profile
+        // without one is still fully checkable — host readiness is what this answers,
+        // and the workspace is validated when one is actually picked.
+        profile.remote_cwd.as_deref(),
         &profile.launcher_path,
         profile.pi_executable.as_deref().unwrap_or("pi"),
         profile.launcher_protocol_version,
@@ -765,8 +1694,11 @@ pub fn remote_profile_check_draft(
         .launcher_protocol_version
         .unwrap_or(LAUNCHER_PROTOCOL_VERSION);
     let pi_executable = trimmed_option(profile.pi_executable.as_deref());
+    let browse_directory = trimmed_option(profile.remote_cwd.as_deref());
     validate_host_alias(&profile.ssh_host)?;
-    validate_remote_path(&profile.remote_cwd, "remote cwd")?;
+    if let Some(directory) = browse_directory {
+        validate_remote_path(directory, "remote browse directory")?;
+    }
     validate_remote_path(launcher, "remote launcher")?;
     if protocol_version != LAUNCHER_PROTOCOL_VERSION {
         return Err(format!(
@@ -779,7 +1711,7 @@ pub fn remote_profile_check_draft(
     Ok(check_readiness(
         profile.id.clone(),
         &profile.ssh_host,
-        &profile.remote_cwd,
+        browse_directory,
         launcher,
         pi_executable.unwrap_or("pi"),
         protocol_version,
@@ -797,10 +1729,17 @@ const CHECK_ORDER: [&str; 6] = [
     CHECK_PI_AUTH,
 ];
 
+/// Host readiness, and — only when a workspace is already known — that workspace too.
+///
+/// `remote_cwd` is optional because a workspace is chosen per conversation rather than
+/// stored on a profile, so a host has to be checkable before any directory has been
+/// picked. With no cwd the launcher runs `pi --version` from `$HOME` and the workspace
+/// row comes back `skipped`; the directory a user actually picks is validated at
+/// open time through `remote_workspace_request`'s `stat`.
 fn check_readiness(
     profile_id: Option<String>,
     host: &str,
-    remote_cwd: &str,
+    remote_cwd: Option<&str>,
     launcher_path: &str,
     pi_executable: &str,
     protocol_version: u32,
@@ -809,25 +1748,27 @@ fn check_readiness(
         ok: false,
         profile_id,
         host: host.to_owned(),
-        remote_cwd: remote_cwd.to_owned(),
+        remote_cwd: remote_cwd.unwrap_or_default().to_owned(),
         launcher_path: launcher_path.to_owned(),
         pi_version: None,
+        home: None,
         checks: Vec::new(),
     };
 
-    let encoded = match encode_launcher_payload(remote_cwd, pi_executable, protocol_version, None) {
-        Ok(value) => value,
-        Err(error) => {
-            report
-                .checks
-                .push(RemoteReadinessCheck::failed(CHECK_SSH, "invalid_payload", error));
-            return finish_report(report);
-        }
-    };
+    let encoded =
+        match encode_launcher_payload(remote_cwd, pi_executable, protocol_version, None, None) {
+            Ok(value) => value,
+            Err(error) => {
+                report
+                    .checks
+                    .push(RemoteReadinessCheck::failed(CHECK_SSH, "invalid_payload", error));
+                return finish_report(report);
+            }
+        };
     let spec = ssh_spec_for(host, launcher_path, "--preflight", &encoded);
     // Preflight owns stdout and expects exactly one small JSON document. Pi runs
     // use PiProcess instead, where stdout remains the Pi JSONL stream.
-    let output = match run_bounded_command(&spec, PREFLIGHT_TIMEOUT, None) {
+    let output = match run_bounded_command(&spec, PREFLIGHT_TIMEOUT, None, PREFLIGHT_OUTPUT_MAX_BYTES) {
         Ok(output) => output,
         Err(error) => {
             report
@@ -915,10 +1856,16 @@ fn check_readiness(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
     {
-        report.checks.push(RemoteReadinessCheck::ok(
-            CHECK_WORKSPACE,
-            Some(remote_cwd.to_owned()),
-        ));
+        // Only reported when a workspace was actually part of the request. With none,
+        // the row stays `skipped` — claiming a directory is fine when none was checked
+        // is exactly the kind of false green this split exists to remove.
+        match remote_cwd {
+            Some(cwd) => report
+                .checks
+                .push(RemoteReadinessCheck::ok(CHECK_WORKSPACE, Some(cwd.to_owned()))),
+            None => report.checks.push(RemoteReadinessCheck::skipped(CHECK_WORKSPACE)),
+        }
+        report.home = field("home");
         report.pi_version = field("piVersion");
         report
             .checks
@@ -1084,7 +2031,7 @@ pub fn remote_profile_install_launcher(
         .arg("pi-desktop-launcher-install")
         .arg(shell_quote(&requested));
 
-    let output = run_bounded_command(&spec, INSTALL_TIMEOUT, Some(LAUNCHER_SOURCE))?;
+    let output = run_bounded_command(&spec, INSTALL_TIMEOUT, Some(LAUNCHER_SOURCE), PREFLIGHT_OUTPUT_MAX_BYTES)?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if output.timed_out {
         return Err(format!(
@@ -1184,6 +2131,7 @@ fn run_bounded_command(
     spec: &LaunchSpec,
     timeout: Duration,
     stdin_body: Option<&str>,
+    max_output_bytes: usize,
 ) -> Result<BoundedCommandOutput, String> {
     let mut child = Command::new(&spec.program)
         .args(&spec.args)
@@ -1214,14 +2162,14 @@ fn run_bounded_command(
     let stdout_reader = thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout
-            .take((PREFLIGHT_OUTPUT_MAX_BYTES + 1) as u64)
+            .take((max_output_bytes + 1) as u64)
             .read_to_end(&mut bytes)
             .map(|_| bytes)
     });
     let stderr_reader = thread::spawn(move || {
         let mut bytes = Vec::new();
         stderr
-            .take((PREFLIGHT_OUTPUT_MAX_BYTES + 1) as u64)
+            .take((max_output_bytes + 1) as u64)
             .read_to_end(&mut bytes)
             .map(|_| bytes)
     });
@@ -1264,10 +2212,13 @@ fn run_bounded_command(
 mod tests {
     use super::{
         classify_launcher_failure, classify_transport_failure, shell_quote, ssh_capabilities_spec,
-        ssh_launch_spec, ssh_provider_sync_spec, validate_binding, validate_profile_fields,
-        validate_profile_id, CapabilitiesReply, ExecutionBinding, RemotePiProfile, CHECK_LAUNCHER,
+        ssh_launch_spec, ssh_provider_sync_spec, ssh_start_detached_spec, ssh_task_spec,
+        validate_binding, validate_profile_fields, validate_profile_id, validate_remote_task_id,
+        CapabilitiesReply, ExecutionBinding, RemotePiProfile, RemoteTaskMode, CHECK_LAUNCHER,
         CHECK_NODE, CHECK_PI, CHECK_SSH, CHECK_WORKSPACE, LAUNCHER_INSTALLER, LAUNCHER_SOURCE,
     };
+    use super::{ssh_attach_spec, ssh_workspace_spec, LaunchSpec, STANDARD};
+    use base64::Engine as _;
 
     fn profile() -> RemotePiProfile {
         RemotePiProfile {
@@ -1275,7 +2226,7 @@ mod tests {
             revision: 2,
             name: "Server".into(),
             ssh_host: "prod".into(),
-            remote_cwd: "/srv/project with spaces".into(),
+            remote_cwd: Some("/srv/project with spaces".into()),
             pi_executable: None,
             launcher_path: "/opt/pi launcher".into(),
             launcher_protocol_version: 1,
@@ -1288,8 +2239,9 @@ mod tests {
             profile_id: profile.id.clone(),
             profile_revision: profile.revision,
             host_alias: profile.ssh_host.clone(),
-            remote_cwd: profile.remote_cwd.clone(),
+            remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: profile.launcher_protocol_version,
+            remote_task_id: None,
         }
     }
 
@@ -1307,7 +2259,7 @@ mod tests {
         assert!(validate_profile_fields(
             "Server",
             "prod.example",
-            "/srv/project",
+            Some("/srv/project"),
             Some("pi"),
             "/usr/local/bin/pi-desktop-launcher",
             1,
@@ -1316,7 +2268,7 @@ mod tests {
         assert!(validate_profile_fields(
             "Server",
             "-oProxyCommand=bad",
-            "/srv/project",
+            Some("/srv/project"),
             None,
             "/usr/local/bin/pi-desktop-launcher",
             1,
@@ -1325,7 +2277,7 @@ mod tests {
         assert!(validate_profile_fields(
             "Server",
             "prod",
-            "relative/project",
+            Some("relative/project"),
             None,
             "/usr/local/bin/pi-desktop-launcher",
             1,
@@ -1334,7 +2286,7 @@ mod tests {
         assert!(validate_profile_fields(
             "Server",
             "prod",
-            "/srv/project",
+            Some("/srv/project"),
             None,
             "/usr/local/bin/pi-desktop-launcher",
             2,
@@ -1352,8 +2304,9 @@ mod tests {
             profile_id: profile.id.clone(),
             profile_revision: profile.revision - 1,
             host_alias: profile.ssh_host.clone(),
-            remote_cwd: profile.remote_cwd.clone(),
+            remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: profile.launcher_protocol_version,
+            remote_task_id: None,
         };
         assert!(validate_binding(&profile, &stale).is_err());
 
@@ -1363,6 +2316,7 @@ mod tests {
             host_alias: profile.ssh_host.clone(),
             remote_cwd: "/srv/other".into(),
             launcher_protocol_version: profile.launcher_protocol_version,
+            remote_task_id: None,
         };
         assert!(validate_binding(&profile, &moved).is_err());
     }
@@ -1464,8 +2418,9 @@ mod tests {
             profile_id: "p1".into(),
             profile_revision: 2,
             host_alias: "prod".into(),
-            remote_cwd: profile.remote_cwd.clone(),
+            remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: 1,
+            remote_task_id: None,
         };
         let spec = ssh_launch_spec(&profile, &binding, Some("/remote/session path")).unwrap();
         let args = spec
@@ -1498,6 +2453,260 @@ mod tests {
         // `exec node` is what every other mode ends at; the reply must precede it.
         let exec_node = source.find("exec node").expect("launcher must exec node");
         assert!(capability_branch < exec_node);
+    }
+
+    fn detached_profile() -> RemotePiProfile {
+        RemotePiProfile { lifecycle: "detached".into(), ..profile() }
+    }
+
+    fn argv(spec: &LaunchSpec) -> Vec<String> {
+        spec.args
+            .iter()
+            .map(|argument| argument.to_string_lossy().to_string())
+            .collect()
+    }
+
+    fn detached_binding(profile: &RemotePiProfile, task_id: Option<&str>) -> ExecutionBinding {
+        ExecutionBinding::Ssh {
+            profile_id: profile.id.clone(),
+            profile_revision: profile.revision,
+            host_alias: profile.ssh_host.clone(),
+            remote_cwd: profile.remote_cwd.clone().unwrap(),
+            launcher_protocol_version: profile.launcher_protocol_version,
+            remote_task_id: task_id.map(str::to_owned),
+        }
+    }
+
+    /// The same pattern the launcher enforces. Both ends check it: the desktop so a
+    /// malformed id never reaches a host, the launcher so it never trusts one.
+    #[test]
+    fn remote_task_ids_match_the_launcher_pattern() {
+        for accepted in ["task-0001", "t0000000", "abcdefgh-0123", &"a".repeat(64)] {
+            assert!(validate_remote_task_id(accepted).is_ok(), "{accepted}");
+        }
+        for rejected in ["short7", "Task-0001", "-leading", "task_0001", "task 0001", &"a".repeat(65)] {
+            assert!(validate_remote_task_id(rejected).is_err(), "{rejected}");
+        }
+    }
+
+    /// The task id is present exactly when the profile is detached. A detached
+    /// binding with no id has nothing to attach to, and an attached binding with one
+    /// names a task no attached run can reach — both are programming errors, not
+    /// states to tolerate.
+    #[test]
+    fn a_task_id_belongs_to_a_detached_binding_and_only_to_one() {
+        let detached = detached_profile();
+        assert!(validate_binding(&detached, &detached_binding(&detached, Some("task-0001"))).is_ok());
+        assert!(validate_binding(&detached, &detached_binding(&detached, None)).is_err());
+        assert!(validate_binding(&detached, &detached_binding(&detached, Some("BAD"))).is_err());
+
+        let attached = profile();
+        assert!(validate_binding(&attached, &binding(&attached)).is_ok());
+        assert!(validate_binding(&attached, &detached_binding(&attached, Some("task-0001"))).is_err());
+    }
+
+    /// Fail closed rather than silently doing the attached thing: `--run` holds the
+    /// channel open for pi's stdio, which is the one shape a detached task must not
+    /// have.
+    #[test]
+    fn the_two_lifecycles_cannot_borrow_each_other_s_launch_path() {
+        let detached = detached_profile();
+        let attached = profile();
+        assert!(ssh_launch_spec(&detached, &detached_binding(&detached, Some("task-0001")), None).is_err());
+        assert!(ssh_start_detached_spec(&attached, &binding(&attached), None).is_err());
+    }
+
+    #[test]
+    fn detached_start_carries_the_task_id_inside_the_payload_not_the_argv() {
+        let profile = detached_profile();
+        let binding = detached_binding(&profile, Some("task-0001"));
+        let spec = ssh_start_detached_spec(&profile, &binding, Some("/remote/session path")).unwrap();
+        let args = argv(&spec);
+        assert_eq!(args[args.len() - 2], "'--start-detached'");
+        // The id travels base64-encoded with the rest of the payload; the argv shows
+        // one opaque token, so a remote path can never be read as a shell word.
+        let encoded = args.last().cloned().unwrap();
+        assert!(!encoded.contains("task-0001"));
+        let decoded = STANDARD.decode(encoded.trim_matches('\'')).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
+        assert_eq!(payload["remoteTaskId"], "task-0001");
+        assert_eq!(payload["cwd"], profile.remote_cwd.clone().unwrap());
+        assert_eq!(payload["resumePath"], "/remote/session path");
+        assert!(args.contains(&"ServerAliveInterval=15".to_owned()));
+    }
+
+    /// `--status`/`--stop`/`--send` take the id as itself. Encoding an id already
+    /// constrained to `[a-z0-9-]` would only hide a malformed one.
+    #[test]
+    fn task_modes_pass_the_id_unencoded_and_refuse_the_wrong_arity() {
+        let profile = detached_profile();
+        let status = ssh_task_spec(&profile, RemoteTaskMode::Status, Some("task-0001")).unwrap();
+        assert_eq!(argv(&status).last().map(String::as_str), Some("'task-0001'"));
+        // --status with no id lists every task; the other two require one.
+        assert!(ssh_task_spec(&profile, RemoteTaskMode::Status, None).is_ok());
+        assert!(ssh_task_spec(&profile, RemoteTaskMode::Stop, None).is_err());
+        assert!(ssh_task_spec(&profile, RemoteTaskMode::Send, None).is_err());
+        assert!(ssh_task_spec(&profile, RemoteTaskMode::Reap, Some("task-0001")).is_err());
+        assert!(ssh_task_spec(&profile, RemoteTaskMode::Stop, Some("Bad Id")).is_err());
+        for mode in [RemoteTaskMode::Status, RemoteTaskMode::Reap] {
+            let spec = ssh_task_spec(&profile, mode, None).unwrap();
+            assert!(argv(&spec).contains(&"ServerAliveInterval=15".to_owned()), "{mode:?}");
+        }
+    }
+
+    /// The shipped launcher and this build's capability names must not drift: the
+    /// source is embedded with `include_str!`, so the assertion is against the exact
+    /// bytes that get installed.
+    #[test]
+    fn the_embedded_launcher_advertises_and_implements_every_task_mode() {
+        assert!(LAUNCHER_SOURCE.contains("detached-tasks-v1"));
+        assert!(LAUNCHER_SOURCE.contains("attach-v1"));
+        for mode in [
+            "--start-detached", "--supervise", "--status", "--stop", "--send", "--reap", "--attach",
+        ] {
+            assert!(LAUNCHER_SOURCE.contains(mode), "{mode}");
+        }
+        // --supervise is internal: it must not be advertised as a capability.
+        assert!(!LAUNCHER_SOURCE.contains("supervise-v1"));
+    }
+
+    /// Attach is the long-lived channel, so it has to carry the same liveness probe as
+    /// `--run`: without it a partition leaves the local ssh blocked on a socket that
+    /// will never answer, and the UI stays "running" with no exit event.
+    #[test]
+    fn attach_carries_the_cursor_in_its_payload_and_the_liveness_probe_in_its_argv() {
+        let profile = detached_profile();
+        let binding = detached_binding(&profile, Some("task-0001"));
+        let spec = ssh_attach_spec(&profile, &binding, Some(41), true).unwrap();
+        let args = argv(&spec);
+        assert_eq!(args[args.len() - 2], "'--attach'");
+        assert!(args.contains(&"ServerAliveInterval=15".to_owned()));
+        assert!(args.contains(&"ServerAliveCountMax=3".to_owned()));
+        let decoded = STANDARD.decode(args.last().unwrap().trim_matches('\'')).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
+        assert_eq!(payload["remoteTaskId"], "task-0001");
+        assert_eq!(payload["after"], 41);
+        assert_eq!(payload["follow"], true);
+        // Addresses a task rather than describing a launch, so none of the run
+        // payload's fields belong here.
+        for absent in ["cwd", "piExecutable", "resumePath"] {
+            assert!(payload.get(absent).is_none(), "{absent}");
+        }
+        // A fresh attach starts from the oldest retained record.
+        let fresh = ssh_attach_spec(&profile, &binding, None, false).unwrap();
+        let fresh_payload: serde_json::Value = serde_json::from_slice(
+            &STANDARD.decode(argv(&fresh).last().unwrap().trim_matches('\'')).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fresh_payload["after"], serde_json::Value::Null);
+        assert_eq!(fresh_payload["follow"], false);
+    }
+
+    /// Workspace browsing is profile-scoped and lifecycle-agnostic: an attached
+    /// profile browses the same host the same way. Only the operation, the path and
+    /// the encoding are constrained.
+    #[test]
+    fn workspace_requests_are_constrained_and_travel_base64_encoded() {
+        let profile = profile();
+        let spec = ssh_workspace_spec(&profile, "read", "/srv/project with spaces/a.txt", Some("base64"), None, None)
+                .unwrap();
+        let args = argv(&spec);
+        assert_eq!(args[args.len() - 2], "--workspace");
+        assert!(args.contains(&"ServerAliveInterval=15".to_owned()));
+        // One opaque token: a remote path with a space or a quote can never be read
+        // as a shell word.
+        let encoded = args.last().cloned().unwrap();
+        assert!(!encoded.contains("a.txt"));
+        let payload: serde_json::Value =
+            serde_json::from_slice(&STANDARD.decode(encoded.trim_matches('\'')).unwrap()).unwrap();
+        assert_eq!(payload["operation"], "read");
+        assert_eq!(payload["path"], "/srv/project with spaces/a.txt");
+        assert_eq!(payload["encoding"], "base64");
+        assert_eq!(payload["protocolVersion"], 1);
+
+        // Omitted encoding stays omitted rather than defaulting on the wire: the
+        // launcher owns that default, so only one side gets to choose it.
+        let listing = ssh_workspace_spec(&profile, "list", "/srv", None, None, None).unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(
+            &STANDARD.decode(argv(&listing).last().unwrap().trim_matches('\'')).unwrap(),
+        )
+        .unwrap();
+        assert!(listed.get("encoding").is_none());
+
+        for (operation, path, encoding) in [
+            ("delete", "/srv", None),
+            ("list", "relative", None),
+            ("read", "/srv/a.txt", Some("hex")),
+            ("stat", "/srv/evil", None),
+        ] {
+            assert!(
+                ssh_workspace_spec(&profile, operation, path, encoding, None, None).is_err(),
+                "{operation} {path}"
+            );
+        }
+    }
+    /// The three states of `expectedHash` are distinct and the launcher acts
+    /// differently on each, so the wire has to preserve all three: absent means the
+    /// caller has not decided (refused), explicit null asserts the path is free, and a
+    /// token is If-Match.
+    #[test]
+    fn a_write_preserves_all_three_expected_hash_states() {
+        let profile = profile();
+        let decode = |spec: &LaunchSpec| -> serde_json::Value {
+            serde_json::from_slice(
+                &STANDARD.decode(argv(spec).last().unwrap().trim_matches('\'')).unwrap(),
+            )
+            .unwrap()
+        };
+        let token = format!("sha256-{}", "a".repeat(64));
+
+        let absent = decode(&ssh_workspace_spec(&profile, "write", "/srv/a.txt", Some("utf8"), None, None).unwrap());
+        assert!(absent.get("expectedHash").is_none());
+
+        let free = decode(&ssh_workspace_spec(&profile, "write", "/srv/a.txt", Some("utf8"), None, Some(None)).unwrap());
+        assert_eq!(free["expectedHash"], serde_json::Value::Null);
+
+        let matched = decode(
+            &ssh_workspace_spec(&profile, "write", "/srv/a.txt", Some("utf8"), None, Some(Some(&token))).unwrap(),
+        );
+        assert_eq!(matched["expectedHash"], token);
+        assert_eq!(matched["operation"], "write");
+    }
+
+    /// A malformed hash is a caller bug, and letting one through would surface as a
+    /// mysterious mismatch from the far end instead of an error at the boundary.
+    #[test]
+    fn a_malformed_hash_or_a_stray_destination_is_refused_locally() {
+        let profile = profile();
+        for hash in ["deadbeef", "sha256-", &format!("sha256-{}", "A".repeat(64)), &format!("sha256-{}", "a".repeat(63))] {
+            assert!(
+                ssh_workspace_spec(&profile, "write", "/srv/a.txt", None, None, Some(Some(hash))).is_err(),
+                "{hash}"
+            );
+        }
+        // `to` belongs to rename and to nothing else.
+        assert!(ssh_workspace_spec(&profile, "rename", "/srv/a.txt", None, None, None).is_err());
+        assert!(ssh_workspace_spec(&profile, "write", "/srv/a.txt", None, Some("/srv/b.txt"), None).is_err());
+        assert!(ssh_workspace_spec(&profile, "rename", "/srv/a.txt", None, Some("relative"), None).is_err());
+        let renamed = ssh_workspace_spec(&profile, "rename", "/srv/a.txt", None, Some("/srv/b.txt"), None).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(
+            &STANDARD.decode(argv(&renamed).last().unwrap().trim_matches('\'')).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["to"], "/srv/b.txt");
+    }
+    #[test]
+    fn only_a_detached_binding_can_be_attached() {        let attached = profile();
+        assert!(ssh_attach_spec(&attached, &binding(&attached), None, true).is_err());
+        let detached = detached_profile();
+        assert!(ssh_attach_spec(&detached, &detached_binding(&detached, None), None, true).is_err());
+        assert!(ssh_attach_spec(
+            &detached,
+            &ExecutionBinding::Local { target_id: "local".into() },
+            None,
+            true
+        )
+        .is_err());
     }
 
     #[test]
@@ -1541,8 +2750,9 @@ mod tests {
             profile_id: "p1".into(),
             profile_revision: 2,
             host_alias: "prod".into(),
-            remote_cwd: profile.remote_cwd.clone(),
+            remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: 1,
+            remote_task_id: None,
         };
         let specs = [
             ssh_launch_spec(&profile, &binding, None).unwrap(),
