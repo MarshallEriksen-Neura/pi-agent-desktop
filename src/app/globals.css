@@ -718,6 +718,18 @@ body {
 .panel-resizer[data-edge="left"] { left: 0; }
 .panel-resizer[data-edge="right"] { right: 0; }
 
+/* Horizontal variant: the same handle laid across a panel's top seam, dragged
+   up and down. The terminal drawer is the one panel resized on this axis. */
+.panel-resizer[data-edge="top"] {
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: auto;
+  width: auto;
+  height: 9px;
+  cursor: row-resize;
+}
+
 /* the visible line — a hairline that thickens into the accent on hover/drag */
 .panel-resizer::after {
   content: "";
@@ -730,13 +742,29 @@ body {
   background: transparent;
   transition:
     background var(--duration-fast) var(--spring-smooth),
-    width var(--duration-fast) var(--spring-smooth);
+    width var(--duration-fast) var(--spring-smooth),
+    height var(--duration-fast) var(--spring-smooth);
+}
+.panel-resizer[data-edge="top"]::after {
+  top: 50%;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  translate: 0 -50%;
+  width: auto;
+  height: 1px;
 }
 .panel-resizer:hover::after,
 .panel-resizer:focus-visible::after,
 .panel-resizer:active::after {
   width: 2px;
   background: var(--accent);
+}
+.panel-resizer[data-edge="top"]:hover::after,
+.panel-resizer[data-edge="top"]:focus-visible::after,
+.panel-resizer[data-edge="top"]:active::after {
+  width: auto;
+  height: 2px;
 }
 .panel-resizer:focus-visible::after { opacity: 0.85; }
 

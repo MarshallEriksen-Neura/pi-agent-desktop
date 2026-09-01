@@ -325,6 +325,7 @@ export const en = {
   // terminal drawer
   "terminal.title": "Terminal",
   "terminal.close": "Close terminal",
+  "terminal.resize": "Drag to resize the terminal · double-click to reset",
   "terminal.copy": "Copy",
   "terminal.paste": "Paste",
   "terminal.selectAll": "Select all",

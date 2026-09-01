@@ -9,7 +9,13 @@ import type { Unicode11Addon } from "@xterm/addon-unicode11";
 import type { WebLinksAddon } from "@xterm/addon-web-links";
 import type { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
-import { useUI } from "@/lib/store";
+import {
+  APP_MIN_HEIGHT_BESIDE_TERMINAL,
+  TERMINAL_HEIGHT_MAX,
+  TERMINAL_HEIGHT_MIN,
+  useUI,
+} from "@/lib/store";
+import { PanelResizer } from "./PanelResizer";
 import { isMacPlatform } from "@/lib/shortcuts";
 import { ansi, termBus } from "@/lib/terminal-bus";
 import { useT } from "@/lib/i18n";
@@ -82,7 +88,16 @@ function nextRemoteTerminalSessionId(): string {
 
 /** Bottom drawer terminal — slides up with a spring, themed by tokens. */
 export function TerminalDrawer() {
-  const { terminalOpen, setTerminalOpen } = useUI();
+  const {
+    terminalOpen,
+    setTerminalOpen,
+    terminalHeight,
+    terminalResizing,
+    setTerminalHeight,
+    persistTerminalHeight,
+    setTerminalResizing,
+    resetTerminalHeight,
+  } = useUI();
   const { viewMode, setViewMode } = useTerminalBlocks();
   const runtime = useRuntime((state) => state.persistedConfig);
   const executionBinding = useSessions((state) => state.executionBinding);
@@ -497,13 +512,41 @@ export function TerminalDrawer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terminalOpen, effectiveViewMode, terminalTargetKey]);
 
-  /* refit on window resize while open */
+  /**
+   * On a window resize, refit xterm and re-measure the viewport.
+   *
+   * Both belong to the same event: the drawer shares the window's height with
+   * the chat and the editor, so unlike the side columns its ceiling is not a
+   * constant — a height that was reasonable on a maximised window would swallow
+   * the conversation on a small one, and shrinking the window has to pull the
+   * drawer back down with it.
+   */
+  const [viewportHeight, setViewportHeight] = useState(0);
   useEffect(() => {
     if (!terminalOpen) return;
-    const onResize = () => fitRef.current?.fit();
+    const onResize = () => {
+      setViewportHeight(window.innerHeight);
+      fitRef.current?.fit();
+    };
+    onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [terminalOpen]);
+
+  const terminalBounds = useCallback(() => {
+    const room = viewportHeight
+      ? viewportHeight - APP_MIN_HEIGHT_BESIDE_TERMINAL
+      : TERMINAL_HEIGHT_MAX;
+    return {
+      min: TERMINAL_HEIGHT_MIN,
+      // Clamp up rather than inverting the range: on a very short window the
+      // floor wins and the drawer stays usable.
+      max: Math.max(TERMINAL_HEIGHT_MIN, Math.min(TERMINAL_HEIGHT_MAX, room)),
+    };
+  }, [viewportHeight]);
+
+  /** What the drawer is actually drawn at, capped against the window right now. */
+  const effectiveHeight = Math.min(terminalHeight, terminalBounds().max);
 
   /**
    * Build the right-click menu against whatever is selected right now.
@@ -572,9 +615,15 @@ export function TerminalDrawer() {
           key="terminal"
           ref={dropZoneRef}
           initial={{ height: 0, opacity: 0 }}
-          animate={{ height: 240, opacity: 1 }}
+          animate={{ height: effectiveHeight, opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}
-          transition={{ type: "spring", stiffness: 300, damping: 32 }}
+          /* The spring is right for open/close but wrong for a drag — it would
+             trail the pointer, and xterm would refit against a stale height. */
+          transition={
+            terminalResizing
+              ? { duration: 0 }
+              : { type: "spring", stiffness: 300, damping: 32 }
+          }
           onAnimationComplete={() => fitRef.current?.fit()}
           style={{
             overflow: "hidden",
@@ -587,6 +636,19 @@ export function TerminalDrawer() {
             position: "relative",
           }}
         >
+          {/* Drag the top seam to resize. Mounted first so it sits above the
+              header's padding rather than under the row's controls. */}
+          <PanelResizer
+            edge="top"
+            width={effectiveHeight}
+            bounds={terminalBounds}
+            onResize={setTerminalHeight}
+            onResizeStateChange={setTerminalResizing}
+            onCommit={persistTerminalHeight}
+            onReset={resetTerminalHeight}
+            label={t("terminal.resize")}
+          />
+
           {/* drawer header */}
           <div
             style={{

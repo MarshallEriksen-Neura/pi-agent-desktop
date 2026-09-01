@@ -91,6 +91,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initSubagentPanelWidth();
     // restore the dragged width of the file inspector column
     useUI.getState().initInspectorPanelWidth();
+    // restore the dragged height of the terminal drawer
+    useUI.getState().initTerminalHeight();
     // restore user-customized appearance (colors, background, text scale)
     useAppearance.getState().init();
     try {

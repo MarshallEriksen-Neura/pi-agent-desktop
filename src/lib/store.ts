@@ -46,6 +46,7 @@ const CLOSE_BEHAVIOR_STORAGE_KEY = "pi-desktop.closeBehavior";
 const AGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.agentPanelWidth";
 const SUBAGENT_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.subagentPanelWidth";
 const INSPECTOR_PANEL_WIDTH_STORAGE_KEY = "pi-desktop.inspectorPanelWidth";
+const TERMINAL_HEIGHT_STORAGE_KEY = "pi-desktop.terminalHeight";
 const SEND_SHORTCUT_STORAGE_KEY = "pi-desktop.sendShortcut";
 const SHORTCUTS_STORAGE_KEY = "pi-desktop.shortcuts";
 const LAYOUT_MODE_STORAGE_KEY = "pi-desktop.layoutMode";
@@ -77,6 +78,25 @@ export const INSPECTOR_PANEL_WIDTH_DEFAULT = 480;
 /** Below this the two gutters plus a sign plus code stops being worth reading. */
 export const INSPECTOR_PANEL_WIDTH_MIN = 360;
 export const INSPECTOR_PANEL_WIDTH_MAX = 860;
+
+/**
+ * Terminal drawer height, in px — the one panel measured on the vertical axis.
+ *
+ * The ceiling is not a constant here the way the column ceilings are: the drawer
+ * shares the window's height with the chat and the editor, so how tall it may
+ * grow depends on the viewport. The drawer caps itself against that at drag
+ * time; these bounds are the absolute floor and the sanity ceiling.
+ */
+export const TERMINAL_HEIGHT_DEFAULT = 240;
+/** Header plus a couple of rows — below this the shell stops being usable. */
+export const TERMINAL_HEIGHT_MIN = 120;
+export const TERMINAL_HEIGHT_MAX = 900;
+/**
+ * How much of the window the drawer must leave to everything above it: the top
+ * bar, a few transcript rows, and the composer. Past that the drawer has taken
+ * over a window it only shares.
+ */
+export const APP_MIN_HEIGHT_BESIDE_TERMINAL = 260;
 
 // what happens when the user closes the main window
 export type CloseBehavior = "ask" | "minimize" | "quit";
@@ -121,6 +141,9 @@ const clampInspectorPanelWidth = (px: number) =>
     Math.min(INSPECTOR_PANEL_WIDTH_MAX, Math.max(INSPECTOR_PANEL_WIDTH_MIN, px)),
   );
 
+const clampTerminalHeight = (px: number) =>
+  Math.round(Math.min(TERMINAL_HEIGHT_MAX, Math.max(TERMINAL_HEIGHT_MIN, px)));
+
 export interface NotificationSettings {
   enabled: boolean;
 }
@@ -161,6 +184,9 @@ interface UIState {
   inspectorPanelResizing: boolean;
   commandPaletteOpen: boolean;
   terminalOpen: boolean;
+  /** user-dragged height of the terminal drawer (px) */
+  terminalHeight: number;
+  terminalResizing: boolean;
   activeFile: string;
 
   /* agent run state */
@@ -224,6 +250,11 @@ interface UIState {
   initInspectorPanelWidth: () => void;
   toggleTerminal: () => void;
   setTerminalOpen: (open: boolean) => void;
+  setTerminalHeight: (px: number) => void;
+  persistTerminalHeight: () => void;
+  setTerminalResizing: (resizing: boolean) => void;
+  resetTerminalHeight: () => void;
+  initTerminalHeight: () => void;
   setCommandPalette: (open: boolean) => void;
   setActiveFile: (file: string) => void;
 
@@ -292,6 +323,8 @@ export const useUI = create<UIState>((set) => ({
   activeFile: "src/lib/agent.ts",
 
   terminalOpen: false,
+  terminalHeight: TERMINAL_HEIGHT_DEFAULT,
+  terminalResizing: false,
   agentRunning: false,
   demoTick: 0,
   pendingReview: null,
@@ -524,6 +557,45 @@ export const useUI = create<UIState>((set) => ({
 
   toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
   setTerminalOpen: (open) => set({ terminalOpen: open }),
+
+  /* terminal drawer height — the column contract, on the vertical axis */
+  setTerminalHeight: (px) =>
+    set((s) => {
+      const height = clampTerminalHeight(px);
+      return height === s.terminalHeight ? {} : { terminalHeight: height };
+    }),
+  persistTerminalHeight: () => {
+    try {
+      localStorage.setItem(
+        TERMINAL_HEIGHT_STORAGE_KEY,
+        String(useUI.getState().terminalHeight),
+      );
+    } catch {
+      // storage unavailable (private mode) — the height stays for this session only
+    }
+  },
+  setTerminalResizing: (resizing) => set({ terminalResizing: resizing }),
+  resetTerminalHeight: () =>
+    set(() => {
+      try {
+        localStorage.removeItem(TERMINAL_HEIGHT_STORAGE_KEY);
+      } catch {
+        // storage unavailable — the in-memory reset still applies
+      }
+      return { terminalHeight: TERMINAL_HEIGHT_DEFAULT };
+    }),
+  initTerminalHeight: () =>
+    set(() => {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(TERMINAL_HEIGHT_STORAGE_KEY);
+      } catch {
+        // storage unavailable — stay on the default drawer height
+      }
+      const px = saved === null ? NaN : Number(saved);
+      if (!Number.isFinite(px)) return {};
+      return { terminalHeight: clampTerminalHeight(px) };
+    }),
 
   beginAgentRun: () => set((s) => (s.agentRunning ? {} : { agentRunning: true })),
   endAgentRun: () => set({ agentRunning: false }),

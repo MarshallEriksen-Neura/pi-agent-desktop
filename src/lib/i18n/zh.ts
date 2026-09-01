@@ -325,6 +325,7 @@ export const zh: Record<keyof typeof en, string> = {
   // terminal drawer
   "terminal.title": "终端",
   "terminal.close": "关闭终端",
+  "terminal.resize": "拖动调整终端高度 · 双击恢复默认",
   "terminal.copy": "复制",
   "terminal.paste": "粘贴",
   "terminal.selectAll": "全选",
