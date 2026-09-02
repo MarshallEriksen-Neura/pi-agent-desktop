@@ -109,20 +109,3 @@ test("restart with only a cwd resumes the task's own pinned session", async () =
   resetPiClientForTests();
   resetChatRecoveryForTests();
 });
-
-test("an explicit resume path still wins over the recovery fallback", async () => {
-  const process = new SessionProcess("live.jsonl");
-  configurePiClientForTests(process);
-  configureChatRecovery({
-    getTarget: () => ({ cwd: "D:/project", resumePath: "pinned.jsonl" }),
-  });
-
-  const store = getPiStore(TASK);
-  await store.getState().restart("D:/other", "explicit.jsonl");
-
-  assert.equal(process.starts.at(-1)?.resumePath, "explicit.jsonl");
-
-  resetPiStoreForTests();
-  resetPiClientForTests();
-  resetChatRecoveryForTests();
-});

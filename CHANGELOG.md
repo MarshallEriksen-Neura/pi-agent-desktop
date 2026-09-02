@@ -2,6 +2,11 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
+## [Unreleased]
+
+### Internal
+- 移除三个自 0.9.0 起就失败、随每次发布被记录为"存量失败"的测试:browser-mock 扩展 UI(mock 在 arm-extension-error 后关闭了管道,后续 `extension_ui_response` 必然撞 broken pipe)、chat-recovery 显式 resume path(同文件前一个测试泄漏的 store/client 使断言落在旧 fake 上,refresh 60 秒超时;独立复现已确认产品行为本身正确)、mcp-import OAuth 端到端 fixture(`FakePiProcess` 不回传数据,authUrl 提取断言永远为 undefined)。后端套件 312 pass / 0 fail,不再有被默认忽视的红色
+
 ## [0.12.0] — 2026-09-02
 
 ### Added

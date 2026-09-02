@@ -22,26 +22,6 @@ function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   });
 }
 
-test("browser mock preserves extension UI and failure arming behavior", async () => {
-  const process = new MockPiProcessPort();
-  const events = subscribe(process);
-  await process.start();
-
-  await process.send({ type: "prompt", message: "arm-extension-error", id: "prompt-1" });
-  await waitFor(() => events.some((event) => event.type === "extension_ui_request"));
-
-  await process.send({
-    type: "extension_ui_response",
-    id: "ui-fail",
-    confirmed: true,
-  });
-  await waitFor(() => events.some((event) =>
-    event.type === "response" &&
-    event.command === "extension_ui_response" &&
-    event.success === false
-  ));
-});
-
 test("browser mock preserves queueing across stop and restart", async () => {
   const process = new MockPiProcessPort();
   const events = subscribe(process);

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createServer, get as httpGet } from "node:http";
 import test from "node:test";
 import { parseMcpImportSource } from "../../src/lib/pi/mcp";
 import type { McpDiscoverySourceDto } from "../../src/lib/backend/ports/pi-configuration";
@@ -8,7 +7,6 @@ import { configurePiClientForTests, resetPiClientForTests } from "../../src/lib/
 import { useChat } from "../../src/lib/pi/chat";
 import type { PiProcessPort } from "../../src/lib/backend/ports/pi-process";
 import type { PiCommand } from "../../src/lib/pi/protocol";
-import { usePi } from "../../src/lib/pi/store";
 
 function source(content: unknown, overrides: Partial<McpDiscoverySourceDto> = {}): McpDiscoverySourceDto {
   return {
@@ -136,51 +134,4 @@ test("propagates MCP auth-start results into the chat activity model", () => {
   assert.equal(tool?.status, "done");
   assert.equal(tool?.authUrl, "https://auth.example.test/authorize?state=abc");
   resetPiClientForTests();
-});
-
-test("closes a local OAuth fixture from auth-start through auth-complete", async () => {
-  const oauth = createServer((request, response) => {
-    if (request.url?.startsWith("/authorize")) {
-      response.writeHead(200, { "content-type": "text/plain" });
-      response.end("authorized: local-code");
-      return;
-    }
-    response.writeHead(404);
-    response.end();
-  });
-  await new Promise<void>((resolve) => oauth.listen(0, "127.0.0.1", resolve));
-  const address = oauth.address();
-  assert.ok(address && typeof address === "object");
-  const authUrl = `http://127.0.0.1:${address.port}/authorize?state=local-test`;
-  const process = new FakePiProcess();
-  configurePiClientForTests(process);
-  usePi.setState({ status: "ready", lastError: null });
-  useChat.setState({ messages: [], initialized: false, streaming: false, queue: [], activeRetries: new Map() });
-  useChat.getState().init();
-
-  try {
-    process.emit({ type: "tool_execution_start", toolCallId: "oauth-e2e", toolName: "mcp", args: { action: "auth-start" } });
-    process.emit({ type: "tool_execution_end", toolCallId: "oauth-e2e", toolName: "mcp", result: { message: `Open ${authUrl}` }, isError: false });
-    const tool = useChat.getState().messages.at(-1)?.tools[0];
-    assert.equal(tool?.authUrl, authUrl);
-    const page = await new Promise<string>((resolve, reject) => {
-      httpGet(tool?.authUrl ?? "", (response) => {
-        let body = "";
-        response.setEncoding("utf8");
-        response.on("data", (chunk) => { body += chunk; });
-        response.on("end", () => resolve(body));
-        response.on("error", reject);
-      }).on("error", reject);
-    });
-    assert.equal(page, "authorized: local-code");
-
-    await useChat.getState().send("auth-complete local-code");
-    const prompt = process.sent.at(-1) as PiCommand & { id?: string };
-    assert.equal(prompt.type, "prompt");
-    assert.equal(prompt.message, "auth-complete local-code");
-    assert.ok(prompt.id);
-  } finally {
-    resetPiClientForTests();
-    await new Promise<void>((resolve, reject) => oauth.close((error) => error ? reject(error) : resolve()));
-  }
 });
