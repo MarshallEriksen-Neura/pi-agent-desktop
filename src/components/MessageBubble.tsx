@@ -31,6 +31,7 @@ import {
 import { htmlEditTarget } from "@/lib/pi/html-preview";
 import { isSubagentTool, useSubagents } from "@/lib/pi/subagents";
 import { useToolDiffStat } from "@/lib/pi/diff-stat";
+import { isPlanTool, summarizePlanCall, type PlanCallSummary } from "@/lib/pi/plan";
 import { useFileInspector } from "@/lib/file-inspector";
 import { useSubagentRow } from "./Subagents";
 import type { ChatToolCall } from "@/lib/pi/chat";
@@ -102,7 +103,10 @@ export function hasRenderableContent(m: ChatMessage): boolean {
   return Boolean(
     hasText(m) ||
       m.thinking ||
-      m.tools?.length ||
+      // Not `tools.length`: a message whose only calls are pi's `list`/`get` plan
+      // reads draws no rows, and counting it here is how an invisible message ends
+      // up holding a Virtuoso row and its margin.
+      (m.tools?.length ? toolRows(m.tools).length > 0 : false) ||
       m.isError ||
       m.images?.length ||
       m.delivery
@@ -334,6 +338,12 @@ function AssistantMessage({
     setMenuOpen(false);
   };
 
+  /* What the transcript shows for this message's tool calls. Plan calls do not map
+     one-to-one onto rows: pi's `list`/`get` reads produce none at all, and a burst
+     of `create`s collapses into a single "added N steps" line. Before this, a
+     seven-step plan wrote seven identical rows saying `todo`. */
+  const rows = useMemo(() => toolRows(m.tools), [m.tools]);
+
   return (
     <motion.div
       initial={animateIn ? { opacity: 0, y: 8 } : false}
@@ -357,17 +367,28 @@ function AssistantMessage({
 
       {m.isError && <ErrorNotice m={m} />}
 
-      {m.tools.map((tool, i) => (
-        <div key={tool.id}>
-          <ToolRow
-            tool={tool}
-            // only the freshly-started row slides in; earlier rows are already
-            // settled, so a virtualized re-mount must not replay the whole list
-            animateIn={animateIn && i === m.tools.length - 1}
+      {rows.map((row, i) =>
+        row.type === "plan" ? (
+          <PlanToolRow
+            key={row.id}
+            summary={row.summary}
+            count={row.count}
+            animateIn={animateIn && i === rows.length - 1}
           />
-          {tool.authUrl && <McpAuthHint url={tool.authUrl} toolName={tool.name} args={tool.args} />}
-        </div>
-      ))}
+        ) : (
+          <div key={row.tool.id}>
+            <ToolRow
+              tool={row.tool}
+              // only the freshly-started row slides in; earlier rows are already
+              // settled, so a virtualized re-mount must not replay the whole list
+              animateIn={animateIn && i === rows.length - 1}
+            />
+            {row.tool.authUrl && (
+              <McpAuthHint url={row.tool.authUrl} toolName={row.tool.name} args={row.tool.args} />
+            )}
+          </div>
+        ),
+      )}
 
       {(hasText(m) || m.streaming) && (
         <div style={{ position: "relative", display: "flex", gap: 4, alignItems: "flex-start", minWidth: 0 }}>
@@ -499,6 +520,80 @@ function AssistantMessage({
         />
       )}
     </motion.div>
+  );
+}
+
+/**
+ * What the transcript shows for one message's tool calls.
+ *
+ * Not one row per call. pi's `todo` tool is chatty — a plan written in one go is a
+ * run of `create`s, and it re-reads the list with `list`/`get` constantly — and
+ * before this every one of those was its own row reading `todo`. Reads produce no
+ * row and a run of creates collapses to one, so the plan takes the transcript the
+ * one line it is worth.
+ */
+type ToolRowItem =
+  | { type: "tool"; tool: ChatToolCall }
+  | { type: "plan"; id: string; summary: PlanCallSummary; count: number };
+
+function toolRows(tools: readonly ChatToolCall[]): ToolRowItem[] {
+  const rows: ToolRowItem[] = [];
+  for (const tool of tools) {
+    if (!isPlanTool(tool.name)) {
+      rows.push({ type: "tool", tool });
+      continue;
+    }
+    const summary = summarizePlanCall(tool);
+    // the model reading its own notes back is not an event
+    if (!summary) continue;
+    const last = rows[rows.length - 1];
+    // Only `created` collapses. Starting and finishing steps are distinct events
+    // and reading them as a chronology is the point.
+    if (summary.kind === "created" && last?.type === "plan" && last.summary.kind === "created") {
+      last.count += 1;
+      continue;
+    }
+    rows.push({ type: "plan", id: tool.id, summary, count: 1 });
+  }
+  return rows;
+}
+
+/** The plan's one line in the transcript, and the way into the full checklist. */
+function PlanToolRow({
+  summary,
+  count,
+  animateIn,
+}: {
+  summary: PlanCallSummary;
+  count: number;
+  animateIn: boolean;
+}) {
+  const t = useT();
+  const active = useFileInspector((s) => s.open && s.segment === "task");
+  const label =
+    summary.label ??
+    (summary.step !== undefined ? t("plan.rowStep", { step: summary.step }) : undefined);
+
+  let title: string;
+  if (count > 1) title = t("plan.rowCreatedMany", { count });
+  else if (summary.kind === "removed") title = t("plan.rowRemoved");
+  else if (label === undefined) title = t("plan.rowChanged");
+  else if (summary.kind === "created") title = t("plan.rowCreated", { label });
+  else if (summary.kind === "started") title = t("plan.rowStarted", { label });
+  else if (summary.kind === "completed") title = t("plan.rowCompleted", { label });
+  else title = t("plan.rowChanged");
+
+  return (
+    <ActivityLine
+      status="done"
+      toolName="todo"
+      title={title}
+      animateIn={animateIn}
+      onClick={() => useFileInspector.getState().openTask("plan")}
+      active={active}
+      ariaLabel={t("plan.open")}
+      trailing={<ChevronRight size={12} />}
+    />
   );
 }
 

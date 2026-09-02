@@ -4,8 +4,10 @@
  * Agent bridge — turns the real pi event stream into UI motion:
  *
  *  - agent_start/agent_settled        → agentRunning (composer busy state)
+ *  - agent_start                      → opens the turn window "本轮改动" reads against
  *  - edit-ish tools on workspace files → reload from disk, open in the editor,
  *                                        streaming-diff highlight on changed lines
+ *  - `todo` tool calls                → the folded plan (see plan.ts)
  *  - bash tool output                 → streamed into the terminal drawer
  *
  * The scripted showcase (`demo` / startDemo) stays untouched — this module is
@@ -17,12 +19,15 @@ import { useSessions } from "./sessions";
 import { getActiveTaskId, useTaskContext } from "./task-context";
 import { useUI } from "@/lib/store";
 import { useWorkspace } from "@/lib/workspace";
+import { workspaceTargetIdFor } from "@/lib/workspace-target";
 import { termBus, ansi } from "@/lib/terminal-bus";
 import { editorBus } from "@/lib/editor-bus";
 import { destroyPetBridge, initPetBridge } from "@/lib/pet/bridge";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
 import { diffStatFromArgs, diffStatFromResult, useDiffStats } from "./diff-stat";
 import { buildDiff, useFileDiffs } from "./file-diffs";
+import { isPlanTool, usePlan } from "./plan";
+import { useTurn } from "./turn";
 import { isFollowingAgent, useFileInspector } from "@/lib/file-inspector";
 import {
   BASH_TOOL,
@@ -57,6 +62,14 @@ interface ToolRec {
    * workspace store resolved differently than the agent did.
    */
   args?: Record<string, unknown>;
+  /**
+   * A `todo` call's arguments, carried from start to end.
+   *
+   * The plan folds at `tool_execution_end` so a failed call cannot advance a
+   * step, but on that event both `toolName` and `args` are optional in the
+   * protocol — the start event is the only place either is guaranteed.
+   */
+  planArgs?: Record<string, unknown>;
   /** chars of the bash partialResult already streamed to the terminal */
   streamed: number;
   /** block ID if in block mode */
@@ -96,11 +109,31 @@ function parentDir(p: string): string {
   return i > 0 ? p.slice(0, i) : p;
 }
 
-/** Whether this task is bound to a remote execution target. */
-function remoteTask(taskId: string): boolean {
+/** The execution binding in force for one task. */
+function taskBinding(taskId: string) {
   const state = useSessions.getState();
   const session = state.sessions.find((item) => item.id === taskId);
-  return (session?.executionBinding ?? state.executionBinding).kind === "ssh";
+  return session?.executionBinding ?? state.executionBinding;
+}
+
+/** Whether this task is bound to a remote execution target. */
+function remoteTask(taskId: string): boolean {
+  return taskBinding(taskId).kind === "ssh";
+}
+
+/**
+ * Whether the workspace store is currently pointed at the host this task runs
+ * on — the precondition for snapshotting and diffing its edits.
+ *
+ * The store holds one target at a time and the check has to happen per call, not
+ * once at bind time: switching the execution target retargets the store
+ * asynchronously, and reading the *local* file at a remote path (or the other way
+ * round) would publish a diff for a file the agent never touched.
+ */
+function workspaceMatchesTask(taskId: string): boolean {
+  return (
+    useWorkspace.getState().targetId === workspaceTargetIdFor(taskBinding(taskId))
+  );
 }
 
 const HIGHLIGHT_CAP = 400;
@@ -138,7 +171,12 @@ function bindAgentBridge(taskId: string) {
   const remote = remoteTask(taskId);
 
   bridgeUnlisteners.push(
-    client.on("agent_start", () => useUI.getState().beginAgentRun()),
+    client.on("agent_start", () => {
+      useUI.getState().beginAgentRun();
+      // A new turn retires the previous window. Doing it here rather than on
+      // agent_end is what lets the changes stay reviewable after the turn ends.
+      useTurn.getState().begin(taskId);
+    }),
   );
   const settle = () => useUI.getState().endAgentRun();
   bridgeUnlisteners.push(
@@ -155,16 +193,39 @@ function bindAgentBridge(taskId: string) {
 
     // pi can start tools before/without agent_start (e.g. sub-turns)
     if (!ui.agentRunning) ui.beginAgentRun();
+    // …and for the same reason the turn window can still be missing here. Open
+    // it rather than let the turn's edits fall outside every window.
+    if (useTurn.getState().starts[taskId] === undefined) {
+      useTurn.getState().begin(taskId);
+    }
 
     const rec: ToolRec = { kind: "other", streamed: 0 };
-    // Remote paths and command output belong to the remote Pi transcript. Do not
-    // feed them into local workspace, editor, diff, or terminal state.
-    if (remote) {
+
+    // Captured for remote tasks too: the plan is pi's own bookkeeping, not
+    // workspace state, so it needs no filesystem on this side to be readable.
+    if (isPlanTool(e.toolName)) rec.planArgs = args;
+
+    /* Remote command output stays out of the local terminal drawer: it belongs to
+       the remote Pi transcript, and a local drawer rendering it would be lying
+       about which machine ran it.
+
+       File edits used to be excluded on the same line, and are not any more. The
+       workspace store is target-aware (`fs()` in workspace.ts resolves a port per
+       targetId), so a remote edit snapshots and diffs through exactly the same
+       path as a local one — which is what makes the changes roll-up work over
+       SSH. It costs two extra SSH round trips per edit; that is latency, not
+       correctness. The guard that remains is that the store is pointed at this
+       task's host (see workspaceMatchesTask). */
+    if (BASH_TOOL.test(e.toolName) && remote) {
       recs.set(e.toolCallId, rec);
       return;
     }
 
     if (EDIT_TOOL.test(e.toolName)) {
+      if (!workspaceMatchesTask(taskId)) {
+        recs.set(e.toolCallId, rec);
+        return;
+      }
       const raw = argPath(args);
       if (raw) {
         rec.kind = "edit";
@@ -248,6 +309,22 @@ function bindAgentBridge(taskId: string) {
     if (e.type !== "tool_execution_end") return;
     const rec = recs.get(e.toolCallId);
     recs.delete(e.toolCallId);
+
+    /* Fold the plan ahead of the `rec` guard: it is pi's own bookkeeping, not
+       workspace state, so it does not depend on the snapshot record surviving.
+       Skipped when the call failed — an errored `todo` did not move the step. */
+    const planArgs =
+      rec?.planArgs ??
+      (e.toolName !== undefined && isPlanTool(e.toolName) ? asRecord(e.args) : undefined);
+    if (planArgs && !e.isError) {
+      usePlan.getState().apply(taskId, {
+        id: e.toolCallId,
+        name: e.toolName ?? "todo",
+        args: planArgs,
+        status: "done",
+      });
+    }
+
     if (!rec) return;
 
     if (rec.kind === "bash") {
@@ -303,7 +380,7 @@ function bindAgentBridge(taskId: string) {
             ? buildDiff(oldText, newText)
             : undefined;
         if (body) {
-          useFileDiffs.getState().record(toolCallId, path, body);
+          useFileDiffs.getState().record(toolCallId, path, body, taskId);
           useFileInspector.getState().noteAgentEdit(path, toolCallId);
         }
 

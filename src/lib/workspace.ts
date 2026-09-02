@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { isImageFile } from "./image-files";
 import { useUI } from "./store";
+import { useFileIndex } from "./file-index";
 import { getBackendKind, getPort } from "./backend/composition/container";
 import { switchWorkspaceProject } from "./orchestration/project-switch";
 import {
@@ -449,6 +450,11 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     try {
       await fs().createFile(path);
       await get().refreshDir(dirPath);
+      // The mention index is a snapshot of the tree, so anything that adds, removes
+      // or moves a path makes it stale. Invalidated rather than patched: keeping a
+      // second copy correct means getting every case right (a renamed directory
+      // moves every path beneath it), and the walk is authoritative and cheap.
+      useFileIndex.getState().invalidate();
       // open the new empty file in the editor
       set((s) => ({ docs: { ...s.docs, [path]: "" } }));
       useUI.getState().setActiveFile(path);
@@ -463,6 +469,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     try {
       await fs().createDir(path);
       await get().refreshDir(dirPath);
+      useFileIndex.getState().invalidate();
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
     }
@@ -472,6 +479,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     if (get().mock) return;
     try {
       await fs().deleteEntry(path);
+      useFileIndex.getState().invalidate();
       // remove from docs cache
       set((s) => {
         const docs = { ...s.docs };
@@ -511,6 +519,7 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     const newPath = `${parent}/${newName}`;
     try {
       await fs().renameEntry(oldPath, newPath);
+      useFileIndex.getState().invalidate();
       // migrate cached doc content to new key
       set((s) => {
         const docs = { ...s.docs };

@@ -1,14 +1,24 @@
 "use client";
 
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { Square, ArrowUp, X, Zap, ListPlus } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
 import { ThinkingPicker } from "./ThinkingPicker";
 import { ImageLightbox } from "./ImageLightbox";
+import { FileMentionMenu, type MentionStatus } from "./FileMentionMenu";
 import type { DeliveryMode, QueueEntry } from "@/lib/pi/chat";
 import { useT } from "@/lib/i18n";
 import { useUI } from "@/lib/store";
+import { useWorkspace } from "@/lib/workspace";
+import { MENTION_RESULT_LIMIT, useFileIndex } from "@/lib/file-index";
+import {
+  buildMentionValue,
+  isDirectoryPath,
+  mentionTokenAt,
+  rankPaths,
+} from "@/lib/file-match";
+import { composerBus } from "@/lib/composer-bus";
 import { formatSendShortcut, matchSendIntent } from "@/lib/composer-shortcut";
 
 interface ComposerInputProps {
@@ -71,6 +81,114 @@ export function ComposerInput({
   const steerCount = queue.filter((q) => q.kind === "steer").length;
   const queuedCount = queue.filter((q) => q.kind === "followUp").length;
 
+  /* ── @-mention completion ──────────────────────────────────────────────────
+     Caret-based, unlike the slash menu: `@` can open a token anywhere in the
+     sentence, so the draft alone does not say which one is being typed. That is
+     the only reason the caret is state here. */
+  const [caret, setCaret] = useState(0);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const root = useWorkspace((s) => s.root);
+  const workspaceTarget = useWorkspace((s) => s.targetId);
+  const indexPaths = useFileIndex((s) => s.paths);
+  const indexLoading = useFileIndex((s) => s.loading);
+  const indexUnsupported = useFileIndex((s) => s.unsupported);
+  const indexTruncated = useFileIndex((s) => s.truncated);
+
+  /* The two menus are mutually exclusive by construction — a slash query holds no
+     spaces, and any query containing `@` matches no command name — but saying so
+     here makes it structural instead of an argument, and costs only the
+     pathological `/a=@b` case. Without it both would claim Enter. */
+  const slashPrefixActive = draft.startsWith("/") && !draft.includes(" ");
+  const mentionToken =
+    mentionDismissed || slashPrefixActive ? null : mentionTokenAt(draft, caret);
+  const mentionQuery = mentionToken?.query ?? null;
+
+  /* Walk the project the first time a mention is actually typed. Doing it at
+     project-open time would put a filesystem traversal on the startup path. */
+  useEffect(() => {
+    if (mentionQuery === null) return;
+    useFileIndex.getState().ensure(root, workspaceTarget);
+  }, [mentionQuery, root, workspaceTarget]);
+
+  const mentionItems = useMemo(
+    () => (mentionQuery === null ? [] : rankPaths(mentionQuery, indexPaths, MENTION_RESULT_LIMIT)),
+    [mentionQuery, indexPaths]
+  );
+  const mentionOpen = mentionToken !== null;
+  /* A stale list being refreshed behind the scenes still has rows, so `ready`
+     wins over `loading` — the menu must not blink back to a spinner mid-typing. */
+  const mentionStatus: MentionStatus = indexUnsupported
+    ? "unsupported"
+    : mentionItems.length > 0
+      ? "ready"
+      : indexLoading
+        ? "loading"
+        : "empty";
+
+  useEffect(() => setMentionIndex(0), [mentionQuery]);
+
+  /**
+   * Replace the token under the caret with `path`.
+   *
+   * A directory keeps its trailing slash, gets no closing space and leaves the menu
+   * open: picking `src/lib/` is the user drilling down, not finishing a mention.
+   */
+  const pickMention = (path: string) => {
+    if (!mentionToken) return;
+    const isDir = isDirectoryPath(path);
+    const value = buildMentionValue(path, { quoted: mentionToken.quoted, open: isDir });
+    const before = draft.slice(0, mentionToken.start);
+    const after = draft.slice(mentionToken.end);
+    const gap = isDir || after.startsWith(" ") ? "" : " ";
+    const nextCaret = before.length + value.length + gap.length;
+    setDraft(before + value + gap + after);
+    setCaret(nextCaret);
+    setMentionDismissed(false);
+    /* One frame later: React writes the new `value` onto the textarea when it
+       commits, and a selection set before that write is discarded with it. */
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+
+  /* Insertions from outside the composer (the file tree's context menu). Held in
+     refs so the subscription survives every keystroke instead of being torn down
+     and re-established — same reason `useFileDropZone` keeps its handler in one. */
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const caretRef = useRef(caret);
+  caretRef.current = caret;
+  const setDraftRef = useRef(setDraft);
+  setDraftRef.current = setDraft;
+
+  useEffect(
+    () =>
+      composerBus.subscribe(({ text }) => {
+        const current = draftRef.current;
+        const at = Math.min(caretRef.current, current.length);
+        const before = current.slice(0, at);
+        const after = current.slice(at);
+        // Separated from whatever it lands next to: dropped straight against the
+        // previous word, the mention would parse as part of that token.
+        const lead = before.length > 0 && !/\s$/.test(before) ? " " : "";
+        const trail = after.startsWith(" ") ? "" : " ";
+        const nextCaret = before.length + lead.length + text.length + trail.length;
+        setDraftRef.current(before + lead + text + trail + after);
+        setCaret(nextCaret);
+        requestAnimationFrame(() => {
+          const textarea = textareaRef.current;
+          if (!textarea) return;
+          textarea.focus();
+          textarea.setSelectionRange(nextCaret, nextCaret);
+        });
+      }),
+    []
+  );
+
   // Auto-resize textarea based on content (2-12 lines).
   // scrollHeight includes the vertical padding (14 top + 40 bottom), so it
   // must be subtracted before converting to a line count.
@@ -95,7 +213,36 @@ export function ComposerInput({
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Parent first: with the ↩ preference the slash menu is bound to the same
+    /* Mention menu first, before the parent's slash handling and before the send
+       shortcut. It only claims keys while it has rows to offer — showing "no
+       matching files" must not also swallow the Enter that sends the message. */
+    if (mentionOpen) {
+      if (e.key === "Escape") {
+        setMentionDismissed(true);
+        return;
+      }
+      if (mentionItems.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setMentionIndex((i) => (i + 1) % mentionItems.length);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setMentionIndex((i) => (i - 1 + mentionItems.length) % mentionItems.length);
+          return;
+        }
+        // ⌘/Ctrl+↩ still sends, as with the slash menu: only the plain Enter
+        // family is claimed, so an Enter-to-send preference does not steal the pick.
+        if ((e.key === "Enter" && !e.metaKey && !e.ctrlKey) || e.key === "Tab") {
+          e.preventDefault();
+          pickMention(mentionItems[mentionIndex] ?? mentionItems[0]);
+          return;
+        }
+      }
+    }
+
+    // Parent next: with the ↩ preference the slash menu is bound to the same
     // key we send on, and picking a command has to win over sending. It signals
     // that it consumed the key by calling preventDefault().
     onKeyDown(e);
@@ -107,6 +254,11 @@ export function ComposerInput({
     onSubmit(intent === "altSend"); // altSend flips steer↔queue for this send
   };
 
+  /** Caret moves that no `onChange` reports: arrows, clicks, drag-selection. */
+  const syncCaret = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    setCaret(e.currentTarget.selectionStart ?? 0);
+  };
+
   return (
     <div
       style={{
@@ -115,6 +267,19 @@ export function ComposerInput({
         position: "relative",
       }}
     >
+      {/* "@" surfaces project files. Rendered here rather than beside the slash
+          menu in AgentPanel because picking a row edits at the caret, which only
+          this component can read. */}
+      <FileMentionMenu
+        open={mentionOpen}
+        items={mentionItems}
+        activeIndex={mentionIndex}
+        status={mentionStatus}
+        truncated={indexTruncated}
+        onHover={setMentionIndex}
+        onSelect={pickMention}
+      />
+
       {/* Pending-with-pi chip. Informational on purpose: the RPC protocol has no
           un-queue command, so the only way to drop these is Stop (abort). */}
       {queue.length > 0 && (
@@ -243,8 +408,15 @@ export function ComposerInput({
         <textarea
           ref={textareaRef}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setCaret(e.target.selectionStart ?? e.target.value.length);
+            setMentionDismissed(false); // typing re-opens an escaped menu
+          }}
           onKeyDown={handleKeyDown}
+          onKeyUp={syncCaret}
+          onClick={syncCaret}
+          onSelect={syncCaret}
           onPaste={onPaste}
           placeholder={
             streaming

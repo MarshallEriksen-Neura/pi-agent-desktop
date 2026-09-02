@@ -64,6 +64,13 @@ export interface PiConfigurationPort {
   checkPiCliUpdate(): Promise<PiCliUpdateInfo>;
   readSkillFile(path: string): Promise<string>;
   listSkillDirectory(path: string): Promise<PiSkillDirectoryEntryDto[]>;
+  /**
+   * Raw `package-lock.json` of a settings scope's npm tree — the only record of
+   * which version of each plugin package is actually installed. `null` when the
+   * scope has no npm tree yet, which is the normal state for a project that
+   * declares nothing, not an error.
+   */
+  readPackageLock(path: string): Promise<string | null>;
 }
 
 export type PiSettingsDto = PiSettings;

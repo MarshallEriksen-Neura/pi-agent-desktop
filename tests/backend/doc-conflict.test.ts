@@ -6,7 +6,11 @@ import type {
   HashedWorkspaceFsPort,
   HashedWriteResult,
 } from "../../src/lib/backend/ports/remote-workspace-fs";
-import type { FsEntryDto, WorkspaceFsPort } from "../../src/lib/backend/ports/workspace-fs";
+import type {
+  FileIndexDto,
+  FsEntryDto,
+  WorkspaceFsPort,
+} from "../../src/lib/backend/ports/workspace-fs";
 
 /**
  * The store's conflict handling, exercised against a port that behaves like the
@@ -43,6 +47,8 @@ function fakeHost(initial: Record<string, string> = {}): FakeHost {
   const port = {
     root: async (): Promise<string> => refuse(),
     listDir: async (): Promise<FsEntryDto[]> => [],
+    // this suite reads and writes named files; it never walks for an index
+    indexFiles: async (): Promise<FileIndexDto> => refuse(),
     readFile: async (path: string) => files.get(path) ?? refuse(),
     readFileBase64: async (): Promise<string> => refuse(),
     writeFile: refuse,

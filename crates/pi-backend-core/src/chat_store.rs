@@ -5,7 +5,7 @@ use thiserror::Error;
 pub const MAX_SESSION_MESSAGES_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SESSION_NAME_BYTES: usize = 512;
 pub const MAX_SESSION_PREVIEW_BYTES: usize = 8 * 1024;
-pub const CHAT_SCHEMA_VERSION: i64 = 2;
+pub const CHAT_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Error)]
 pub enum ChatStoreError {
@@ -34,6 +34,9 @@ pub fn configure_and_migrate(
            messages TEXT NOT NULL DEFAULT '[]',
            project_root TEXT NOT NULL DEFAULT '',
            execution_binding TEXT NOT NULL DEFAULT '{\"kind\":\"local\",\"targetId\":\"local\"}',
+           target_key TEXT NOT NULL DEFAULT 'local',
+           authority_session_id TEXT,
+           source TEXT NOT NULL DEFAULT 'cache',
            created_at INTEGER NOT NULL,
            updated_at INTEGER NOT NULL
          );",
@@ -64,9 +67,63 @@ pub fn configure_and_migrate(
             "ALTER TABLE chat_sessions ADD COLUMN execution_binding TEXT NOT NULL DEFAULT '{\"kind\":\"local\",\"targetId\":\"local\"}';",
         )?;
     }
+    let has_target_key: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name = 'target_key'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_target_key == 0 {
+        transaction.execute_batch(
+            "ALTER TABLE chat_sessions ADD COLUMN target_key TEXT NOT NULL DEFAULT 'local';
+             UPDATE chat_sessions
+             SET target_key = CASE
+               WHEN json_valid(execution_binding)
+                AND json_extract(execution_binding, '$.kind') = 'ssh'
+                AND COALESCE(json_extract(execution_binding, '$.profileId'), '') <> ''
+               THEN 'ssh:' || json_extract(execution_binding, '$.profileId')
+               ELSE 'local'
+             END;",
+        )?;
+    }
+    let has_authority_session_id: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name = 'authority_session_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_authority_session_id == 0 {
+        transaction
+            .execute_batch("ALTER TABLE chat_sessions ADD COLUMN authority_session_id TEXT;")?;
+    }
+    let has_source: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('chat_sessions') WHERE name = 'source'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_source == 0 {
+        transaction.execute_batch(
+            "ALTER TABLE chat_sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'cache';",
+        )?;
+    }
     transaction.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_project
-           ON chat_sessions (project_root, updated_at DESC);",
+        "CREATE TABLE IF NOT EXISTS chat_session_tombstones (
+           tombstone_id INTEGER PRIMARY KEY AUTOINCREMENT,
+           target_key TEXT NOT NULL,
+           authority_session_id TEXT,
+           session_path TEXT,
+           deleted_at INTEGER NOT NULL,
+           CHECK (authority_session_id IS NOT NULL OR session_path IS NOT NULL)
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_tombstone_authority
+           ON chat_session_tombstones (target_key, authority_session_id)
+           WHERE authority_session_id IS NOT NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_tombstone_path
+           ON chat_session_tombstones (target_key, session_path)
+           WHERE session_path IS NOT NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_sessions_authority
+           ON chat_sessions (target_key, authority_session_id)
+           WHERE authority_session_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_chat_sessions_scope
+           ON chat_sessions (target_key, project_root, updated_at DESC);",
     )?;
     transaction.pragma_update(None, "user_version", CHAT_SCHEMA_VERSION)?;
     transaction.commit()?;

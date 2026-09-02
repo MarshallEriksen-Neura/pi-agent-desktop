@@ -55,8 +55,11 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // adds start, write, resize, and stop, bringing the command inventory to 89.
   // pi_session_trash makes 90: deleting a conversation now reaches pi's own
   // transcript, and that half is a separate command from the index-row delete
-  // because the two fail differently.
-  assert.equal(result.inventory.commandUniqueCount, 90);
+  // because the two fail differently. fs_index_files — the flat path list behind
+  // `@`-mention completion — makes 91; it is separate from fs_list_dir because the
+  // tree wants one directory's entries and completion wants the whole project's
+  // paths, ignore rules applied.
+  assert.equal(result.inventory.commandUniqueCount, 91);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -74,6 +77,7 @@ test("locks the desktop command names and Pi process event names", () => {
     "fs_create_dir",
     "fs_create_file",
     "fs_delete",
+    "fs_index_files",
     "fs_list_dir",
     "fs_read_file",
     "fs_read_file_base64",

@@ -56,11 +56,11 @@ function harness(failures: { delete?: boolean; trash?: boolean } = {}): Harness 
     load: async () => [],
     save: async () => {},
     rename: async () => {},
-    delete: async (id: string) => {
+    delete: async (_scope: unknown, id: string) => {
       order.push(`delete:${id}`);
       if (failures.delete) throw new Error("index write failed");
     },
-    trashSessionFile: async (path: string) => {
+    trashSessionFile: async (_scope: unknown, path: string) => {
       order.push(`trash:${path}`);
       if (failures.trash) throw new Error("rename failed");
     },

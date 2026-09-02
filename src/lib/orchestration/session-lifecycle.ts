@@ -19,16 +19,19 @@ export function getCurrentPiModel(taskId?: string): { provider: string; id: stri
  */
 export async function readCurrentPiSessionPath(taskId?: string): Promise<{
   path: string;
+  authoritySessionId: string | null;
   failure: string;
 }> {
   let failure = "";
   let path = "";
+  let authoritySessionId: string | null = null;
   try {
     const client = getPiClient(taskId);
     const response = await client.request<PiState>({ type: "get_state" });
     if (!response.success) {
       failure = response.error || "get_state failed";
     } else {
+      authoritySessionId = response.data?.sessionId ?? null;
       path =
         response.data?.sessionFile ??
         response.data?.sessionId ??
@@ -38,7 +41,12 @@ export async function readCurrentPiSessionPath(taskId?: string): Promise<{
   } catch (error) {
     failure = piRequestErrorText(error);
   }
-  return { path: path || getPiClient(taskId).lastSessionId, failure };
+  const fallbackId = getPiClient(taskId).lastSessionId;
+  return {
+    path: path || fallbackId,
+    authoritySessionId: authoritySessionId || fallbackId || null,
+    failure,
+  };
 }
 
 export async function syncPiSessionName(taskId: string, name: string): Promise<void> {

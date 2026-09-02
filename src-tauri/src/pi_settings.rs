@@ -85,33 +85,41 @@ pub struct CliResult {
 }
 
 #[tauri::command]
-pub fn pi_cli(args: Vec<String>, cwd: Option<String>) -> Result<CliResult, String> {
+pub async fn pi_cli(args: Vec<String>, cwd: Option<String>) -> Result<CliResult, String> {
     const ALLOWED: &[&str] = &["install", "remove", "uninstall", "list", "update"];
     match args.first().map(String::as_str) {
         Some(sub) if ALLOWED.contains(&sub) => {}
         _ => return Err("only pi package subcommands are allowed".into()),
     }
 
-    let mut cmd = crate::pi_command::command(None)?;
-    cmd.args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
+    // `pi update --extensions` clones/reinstalls every package and can run for
+    // tens of seconds; keep it off the synchronous command threads so the
+    // window does not freeze while it works (mirrors `skills_cli`).
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut cmd = crate::pi_command::command(None)?;
+        crate::pi_command::prepend_npm_bin_to_path(&mut cmd);
+        cmd.args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
-    let out = cmd.output().map_err(|e| format!("failed to run pi: {e}"))?;
-    Ok(CliResult {
-        code: out.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        let out = cmd.output().map_err(|e| format!("failed to run pi: {e}"))?;
+        Ok(CliResult {
+            code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }

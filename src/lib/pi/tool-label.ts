@@ -31,7 +31,17 @@ export const BASH_TOOL = /^(bash|shell|power[_-]?shell|pwsh|run[_-]?command|exec
 const READ_TOOL = /^(read|view|cat|open[_-]?file|read[_-]?file)$/i;
 const SEARCH_TOOL = /^(grep|search|glob|find|rg|ls|list[_-]?(dir|files)?)$/i;
 const WEB_TOOL = /^(web[_-]?(search|fetch)|fetch|http|browse|curl)$/i;
-const TASK_TOOL = /^(todo(?:[_-]?write)?|task|plan)$/i;
+/**
+ * Planning tools. pi's live todo list is plain `todo`; `plan_mode_question` and
+ * `plan_mode_complete` are what plan mode calls instead, and used to fall through
+ * to the generic wrench. Like BASH_TOOL and EDIT_TOOL this mirrors pi's tool
+ * surface by hand, so re-check it against `defaultTools` when upgrading pi.
+ *
+ * Only for picking a row icon. The fold that builds the actual plan matches `todo`
+ * and nothing else — see `isPlanTool` in plan.ts.
+ */
+const TASK_TOOL =
+  /^(todo(?:[_-]?write)?|task|plan(?:[_-]mode[_-](?:question|complete))?)$/i;
 const AGENT_TOOL = /^((sub)?agent|dispatch[_-]?agent|task[_-]?agent)$/i;
 const MCP_TOOL = /^mcp(?:$|(?:__|:|\/))/i;
 

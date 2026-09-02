@@ -371,6 +371,7 @@ pub fn run() {
             remote_provider_sync::remote_provider_sync_apply,
             fs_bridge::workspace_root,
             fs_bridge::fs_list_dir,
+            fs_bridge::fs_index_files,
             fs_bridge::fs_read_file,
             fs_bridge::fs_read_file_base64,
             fs_bridge::fs_write_file,

@@ -90,7 +90,12 @@ export type {
 } from "./remote-control";
 export type { RemoteConversationsPort } from "./remote-conversations";
 export type { RuntimeConfigPort, WslValidationInput, WslValidationResult } from "./runtime-config";
-export type { GenerateTitleInput, SessionRepositoryPort, SessionSaveInput } from "./session-repository";
+export type {
+  GenerateTitleInput,
+  SessionRepositoryPort,
+  SessionSaveInput,
+  SessionScope,
+} from "./session-repository";
 export type { UpdaterPort } from "./updater";
 export type { WindowCloseRequest, WindowEventName, WindowPort } from "./window";
-export type { FsEntryDto, WorkspaceFsPort } from "./workspace-fs";
+export type { FileIndexDto, FsEntryDto, WorkspaceFsPort } from "./workspace-fs";

@@ -95,20 +95,63 @@ export function IconButton({
 }
 
 /** Section label used in sidebar / panels (iOS grouped-list header). */
-export function SectionLabel({ children }: { children: React.ReactNode }) {
+export function SectionLabel({
+  children,
+  onClick,
+  title,
+  ariaLabel,
+}: {
+  children: React.ReactNode;
+  /** Makes the label the control — renders a real button so it stays reachable. */
+  onClick?: () => void;
+  title?: string;
+  ariaLabel?: string;
+}) {
+  const style: React.CSSProperties = {
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+    color: "var(--text-tertiary)",
+    padding: "14px 16px 6px",
+    /* Load-bearing where the label shares a row with controls: without it a long
+       status string (pi's current plan step, say) pushes them off the edge
+       instead of truncating itself. */
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    maxWidth: "100%",
+  };
+  if (!onClick) {
+    return (
+      <div style={style} title={title}>
+        {children}
+      </div>
+    );
+  }
   return (
-    <div
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={ariaLabel}
       style={{
+        ...style,
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        border: "none",
+        background: "transparent",
+        font: "inherit",
         fontSize: 11,
         fontWeight: 600,
         letterSpacing: "0.04em",
         textTransform: "uppercase",
-        color: "var(--text-tertiary)",
-        padding: "14px 16px 6px",
+        cursor: "pointer",
       }}
     >
       {children}
-    </div>
+    </button>
   );
 }
 

@@ -10,7 +10,7 @@ const EXPECTED_COMMAND_NAMES = [
   "app_quit",
   "chat_session_delete", "chat_session_load", "chat_session_rename",
   "chat_session_save", "chat_sessions_list", "fs_create_dir", "fs_create_file",
-  "fs_delete", "fs_list_dir", "fs_read_file", "fs_read_file_base64", "fs_rename",
+  "fs_delete", "fs_index_files", "fs_list_dir", "fs_read_file", "fs_read_file_base64", "fs_rename",
   "fs_write_file", "list_custom_pets", "open_external", "open_html_preview",
   "pet_window_hide",
   "pet_window_prewarm",

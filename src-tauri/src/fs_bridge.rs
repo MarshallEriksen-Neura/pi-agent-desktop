@@ -2,24 +2,15 @@
 //! Deliberately minimal: list a directory, read/write/create/delete files and
 //! directories, report the root.
 
+use pi_backend_core::file_index::{
+    index_files, DEFAULT_LIMIT, DEFAULT_MAX_DEPTH, SKIP_DIRS,
+};
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024; // 2 MB guard for the editor
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB guard for image preview
-
-/// Directories that never belong in a coding-agent file tree.
-/// Dotfiles are no longer wholesale hidden — only these specific noise dirs.
-const SKIP_DIRS: &[&str] = &[
-    "node_modules",
-    "target",
-    ".git",
-    ".next",
-    "out",
-    "dist",
-    ".pnpm-store",
-];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +80,29 @@ pub fn fs_list_dir(path: String) -> Result<Vec<FsEntry>, String> {
             .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+/// A flat, capped list of every path under `path`, for `@`-mention completion.
+///
+/// Separate from `fs_list_dir` rather than a recursive flag on it: the tree wants
+/// entries for one directory (name, absolute path, kind) while completion wants
+/// relative strings it can score, and the two differ in shape as well as depth.
+/// Directories come back with a trailing `/` — see `FileIndex::paths`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsIndex {
+    pub paths: Vec<String>,
+    pub truncated: bool,
+}
+
+#[tauri::command]
+pub fn fs_index_files(path: String) -> Result<FsIndex, String> {
+    let index = index_files(Path::new(&path), DEFAULT_LIMIT, DEFAULT_MAX_DEPTH)
+        .map_err(|e| format!("cannot index {path}: {e}"))?;
+    Ok(FsIndex {
+        paths: index.paths,
+        truncated: index.truncated,
+    })
 }
 
 #[tauri::command]

@@ -23,14 +23,6 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green" />
 </p>
 
-## 演示
-
-<div align="center">
-  <video src="./media/pi-video.mp4" controls width="760">
-    你的浏览器不支持 video 标签，可<a href="./media/pi-video.mp4">点此下载</a>。
-  </video>
-  <p><i>Pi Desktop 实际效果 —— AI 对话、实时终端与代码编辑器共享同一工作区。</i></p>
-</div>
 
 ## 为什么是 Pi Desktop
 

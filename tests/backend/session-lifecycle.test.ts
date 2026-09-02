@@ -60,8 +60,8 @@ test("session resume selection prefers file, then id, then legacy path", async (
 test("latest-session lookup canonicalizes the project scope", async () => {
   let listedProject = "";
   const repository = {
-    list: async (projectRoot: string) => {
-      listedProject = projectRoot;
+    list: async (scope: { projectRoot: string }) => {
+      listedProject = scope.projectRoot;
       return [{ sessionPath: "latest.jsonl" }];
     },
   } as unknown as SessionRepositoryPort;

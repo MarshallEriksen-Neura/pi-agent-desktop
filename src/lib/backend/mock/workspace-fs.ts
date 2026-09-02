@@ -1,4 +1,4 @@
-import type { FsEntryDto, WorkspaceFsPort } from "../ports";
+import type { FileIndexDto, FsEntryDto, WorkspaceFsPort } from "../ports";
 import { WORKSPACE_FILES } from "../../files";
 
 function mockList(dir: string, docs: ReadonlyMap<string, string>): FsEntryDto[] {
@@ -33,6 +33,22 @@ export function createMockWorkspaceFsPort(
   return {
     root: async () => "",
     listDir: async (path: string) => mockList(path, docs),
+    // The mock tree is a flat map of paths already, so the index is its keys plus
+    // the directories they imply — the same shape the Rust walk returns, including
+    // the trailing slash that marks a directory.
+    indexFiles: async (): Promise<FileIndexDto> => {
+      const dirs = new Set<string>();
+      for (const key of docs.keys()) {
+        const segments = key.split("/");
+        for (let i = 1; i < segments.length; i++) {
+          dirs.add(`${segments.slice(0, i).join("/")}/`);
+        }
+      }
+      return {
+        paths: [...[...dirs].sort(), ...[...docs.keys()].sort()],
+        truncated: false,
+      };
+    },
     readFile: async (path: string) => docs.get(path) ?? "",
     readFileBase64: async (path: string) => btoa(docs.get(path) ?? ""),
     writeFile: async (path: string, content: string) => {

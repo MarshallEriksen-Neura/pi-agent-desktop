@@ -25,6 +25,7 @@ import { createUnsupportedRemoteWorkspaceFsPort } from "../../src/lib/backend/po
 const workspaceFs = (label: string): WorkspaceFsPort => ({
   root: async () => label,
   listDir: async () => [],
+  indexFiles: async () => ({ paths: [], truncated: false }),
   readFile: async () => "",
   readFileBase64: async () => "",
   writeFile: async () => undefined,
@@ -113,6 +114,7 @@ function fakePorts(label = "fake"): BackendPorts {
       }),
       readSkillFile: async () => "",
       listSkillDirectory: async () => [],
+      readPackageLock: async () => null,
     },
     window: {
       close: async () => undefined,

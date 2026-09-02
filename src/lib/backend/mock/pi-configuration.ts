@@ -111,6 +111,26 @@ const MOCK_CATALOG: SkillCatalogHitDto[] = [
   },
 ];
 
+/**
+ * Installed versions for the mock's npm packages, in npm lock shape. `pi-skills`
+ * sits deliberately behind the version MOCK_REGISTRY publishes while the
+ * powerbar matches it, so browser preview shows both an outdated row and an
+ * up-to-date one.
+ */
+const MOCK_PACKAGE_LOCK = JSON.stringify(
+  {
+    name: "pi-extensions",
+    lockfileVersion: 3,
+    packages: {
+      "": { name: "pi-extensions" },
+      "node_modules/pi-skills": { version: "1.3.0" },
+      "node_modules/@juanibiapina/pi-powerbar": { version: "0.9.2" },
+    },
+  },
+  null,
+  2
+);
+
 /** `skills add <source> --list` output, box-drawing prefixes and all. */
 const MOCK_SKILLS_LIST = [
   "│",
@@ -243,5 +263,8 @@ export function createMockPiConfigurationPort(
     },
 
     listSkillDirectory: async (path: string) => skillDirectories.get(path) ?? [],
+
+    readPackageLock: async (path: string) =>
+      path.startsWith("~/.pi/agent/npm/") ? MOCK_PACKAGE_LOCK : null,
   };
 }

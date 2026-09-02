@@ -8,7 +8,6 @@ import {
   Boxes,
   Puzzle,
   Wand2,
-  Download,
   Settings,
   Plug,
 } from "lucide-react";
@@ -18,12 +17,13 @@ import { useSessions } from "@/lib/pi/sessions";
 import { useT, type MsgKey } from "@/lib/i18n";
 import { PiMark } from "@/components/PiMark";
 
+// "Plugins" covers browsing for packages as well as managing installed ones —
+// /store/ redirects here rather than holding a rail slot of its own.
 const ITEMS: { href: string; icon: React.ReactNode; labelKey: MsgKey }[] = [
   { href: "/", icon: <Sparkles size={17} />, labelKey: "nav.workspace" },
   { href: "/models/", icon: <Boxes size={17} />, labelKey: "nav.models" },
   { href: "/plugins/", icon: <Puzzle size={17} />, labelKey: "nav.plugins" },
   { href: "/skills/", icon: <Wand2 size={17} />, labelKey: "nav.skills" },
-  { href: "/store/", icon: <Download size={17} />, labelKey: "nav.store" },
   { href: "/mcp/", icon: <Plug size={17} />, labelKey: "nav.mcp" },
   { href: "/settings/", icon: <Settings size={17} />, labelKey: "nav.settings" },
 ];

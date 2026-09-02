@@ -1,4 +1,4 @@
-import type { FsEntryDto, WorkspaceFsPort } from "./workspace-fs";
+import type { FileIndexDto, FsEntryDto, WorkspaceFsPort } from "./workspace-fs";
 
 /**
  * Stable code for every remote filesystem call until V2.3 implements them.
@@ -41,6 +41,7 @@ export function createUnsupportedRemoteWorkspaceFsPort(targetId: string): Worksp
   return {
     root: async (): Promise<string> => refuse("root"),
     listDir: async (): Promise<FsEntryDto[]> => refuse("listDir"),
+    indexFiles: async (): Promise<FileIndexDto> => refuse("indexFiles"),
     readFile: async (): Promise<string> => refuse("readFile"),
     readFileBase64: async (): Promise<string> => refuse("readFileBase64"),
     writeFile: async (): Promise<void> => refuse("writeFile"),

@@ -54,6 +54,13 @@ export interface DiffBody extends DiffStat {
 export interface FileDiff extends DiffBody {
   path: string;
   at: number;
+  /**
+   * The conversation whose turn produced this edit. Absent on entries recorded
+   * before task attribution existed (and in unit tests that only exercise the
+   * store) — the turn roll-up treats those as unattributed and leaves them out
+   * rather than crediting them to whichever task is focused.
+   */
+  taskId?: string;
 }
 
 /** Unchanged lines kept on each side of a change — the unified-diff default. */
@@ -252,15 +259,28 @@ interface FileDiffStore {
   diffs: Record<string, FileDiff>;
   /** insertion order, oldest first — the eviction queue */
   order: string[];
-  record: (toolCallId: string, path: string, body: DiffBody) => void;
+  record: (
+    toolCallId: string,
+    path: string,
+    body: DiffBody,
+    taskId?: string,
+  ) => void;
 }
 
 export const useFileDiffs = create<FileDiffStore>((set) => ({
   diffs: {},
   order: [],
-  record: (toolCallId, path, body) =>
+  record: (toolCallId, path, body, taskId) =>
     set((s) => {
-      const diffs = { ...s.diffs, [toolCallId]: { ...body, path, at: Date.now() } };
+      const diffs = {
+        ...s.diffs,
+        [toolCallId]: {
+          ...body,
+          path,
+          at: Date.now(),
+          ...(taskId !== undefined ? { taskId } : {}),
+        },
+      };
       // copied even when the id is already present: `shift()` below would
       // otherwise mutate the array still held in state
       const order = s.order.includes(toolCallId)

@@ -1,4 +1,4 @@
-import type { FsEntryDto, WorkspaceFsPort } from "../ports/workspace-fs";
+import type { FileIndexDto, FsEntryDto, WorkspaceFsPort } from "../ports/workspace-fs";
 import type {
   HashedReadResult,
   HashedWorkspaceFsPort,
@@ -184,6 +184,11 @@ export function createDesktopRemoteWorkspaceFsPort(
           typeof entry.isDir === "boolean",
       );
     },
+    // Refused rather than walked: the launcher has no recursive listing, and
+    // rebuilding one from `list` calls would be one SSH round trip per directory.
+    // Composer completion degrades to "no index on this target" until the launcher
+    // grows a search operation of its own.
+    indexFiles: async (): Promise<FileIndexDto> => refuse("indexFiles"),
     readFile: async (path: string): Promise<string> => {
       const reply = await request("read", path, { encoding: "utf8" });
       if (reply.ok !== true || reply.operation !== "read" || typeof reply.content !== "string") {

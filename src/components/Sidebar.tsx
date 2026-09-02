@@ -13,6 +13,7 @@ import {
   Pencil,
   Smartphone,
   RefreshCw,
+  AtSign,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { ScrollArea } from "@appica/ui-react/scroll-area";
@@ -22,6 +23,8 @@ import {
 } from "@appica/ui-react/collapsible";
 import { useUI } from "@/lib/store";
 import { useWorkspace, type FsEntry } from "@/lib/workspace";
+import { composerBus } from "@/lib/composer-bus";
+import { buildMentionValue, relativeToRoot } from "@/lib/file-match";
 import { useSessions, type ChatSessionMeta } from "@/lib/pi/sessions";
 import { getChatStore } from "@/lib/pi/chat";
 import { getPiStore } from "@/lib/pi/store";
@@ -66,7 +69,7 @@ interface CtxMenuState { x: number; y: number; entry: FsEntry }
 
 function ContextMenu({ state, onClose }: { state: CtxMenuState; onClose: () => void }) {
   const { startRename, startCreate } = useContext(TreeEditCtx);
-  const { deleteEntry } = useWorkspace();
+  const { deleteEntry, root } = useWorkspace();
   const ref = useRef<HTMLDivElement>(null);
   const t = useT();
 
@@ -86,7 +89,10 @@ function ContextMenu({ state, onClose }: { state: CtxMenuState; onClose: () => v
   }, [onClose]);
 
   const menuW = 172;
-  const menuH = state.entry.isDir ? 160 : 88;
+  // Measured, not guessed: this decides whether the menu flips above the click, so
+  // a value that has drifted from the item list puts the menu off-screen near the
+  // bottom edge. 30px per row, 7px per separator, 8px of padding.
+  const menuH = state.entry.isDir ? 196 : 124;
   const left = state.x + menuW > window.innerWidth ? state.x - menuW : state.x;
   const top  = state.y + menuH > window.innerHeight ? state.y - menuH : state.y;
 
@@ -94,7 +100,24 @@ function ContextMenu({ state, onClose }: { state: CtxMenuState; onClose: () => v
     | { separator: true }
     | { label: string; icon: React.ReactNode; danger?: boolean; action: () => void };
 
+  /**
+   * Put the path in the composer as an `@`-mention.
+   *
+   * Relative to the project root, which is what pi resolves against its own cwd —
+   * and what keeps this correct under WSL, where the same file is `D:/repo/x` here
+   * and `/mnt/d/repo/x` to pi. A directory keeps its trailing slash so the mention
+   * reads as one.
+   */
+  const mentionEntry = () => {
+    const relative = relativeToRoot(state.entry.path, root);
+    const path = state.entry.isDir ? `${relative}/` : relative;
+    composerBus.insert(buildMentionValue(path, { quoted: false, open: false }));
+    onClose();
+  };
+
   const dirItems: MenuItem[] = [
+    { label: t("ctx.mention"),   icon: <AtSign size={12} />, action: mentionEntry },
+    { separator: true },
     { label: t("ctx.newFile"),   icon: <FilePlus2 size={12} />, action: () => { startCreate(state.entry.path, "file"); onClose(); } },
     { label: t("ctx.newFolder"), icon: <FolderPlus size={12} />, action: () => { startCreate(state.entry.path, "dir"); onClose(); } },
     { separator: true },
@@ -104,6 +127,8 @@ function ContextMenu({ state, onClose }: { state: CtxMenuState; onClose: () => v
   ];
 
   const fileItems: MenuItem[] = [
+    { label: t("ctx.mention"),   icon: <AtSign size={12} />, action: mentionEntry },
+    { separator: true },
     { label: t("ctx.rename"),    icon: <Pencil size={12} />, action: () => { startRename(state.entry.path); onClose(); } },
     { separator: true },
     { label: t("ctx.delete"),    icon: <Trash2 size={12} />, danger: true, action: () => { onClose(); void deleteEntry(state.entry.path, false); } },

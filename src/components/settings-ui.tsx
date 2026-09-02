@@ -82,26 +82,40 @@ export function SettingsPage({
 export function InsetGroup({
   header,
   footer,
+  action,
   children,
 }: {
-  header?: string;
-  footer?: string;
+  header?: React.ReactNode;
+  footer?: React.ReactNode;
+  /** trailing control on the header line — for a bulk action that owns the group */
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section style={{ marginTop: 22 }}>
-      {header && (
+      {(header || action) && (
         <div
           style={{
-            fontSize: 12,
-            fontWeight: 600,
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-            color: "var(--text-tertiary)",
+            display: "flex",
+            alignItems: "flex-end",
+            gap: 10,
             padding: "0 16px 7px",
           }}
         >
-          {header}
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: 12,
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+              color: "var(--text-tertiary)",
+            }}
+          >
+            {header}
+          </div>
+          {action}
         </div>
       )}
       <div

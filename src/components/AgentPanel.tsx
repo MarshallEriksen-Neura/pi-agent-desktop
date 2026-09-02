@@ -19,7 +19,10 @@ import {
 import { useChat, getChatStore, type ChatMessage, type DeliveryMode } from "@/lib/pi/chat";
 import { usePi, getPiStore } from "@/lib/pi/store";
 import { useSessions, type ChatSessionMeta } from "@/lib/pi/sessions";
-import { focusSession } from "@/lib/pi/task-context";
+import { focusSession, useTaskContext } from "@/lib/pi/task-context";
+import { usePlanProgress } from "@/lib/pi/plan";
+import { useTurnChanges } from "@/lib/pi/turn";
+import { useFileInspector } from "@/lib/file-inspector";
 import { useRemoteConversations } from "@/lib/remote-conversations/store";
 import { useSubagents } from "@/lib/pi/subagents";
 import { useExtUi } from "@/lib/pi/ext-ui";
@@ -32,8 +35,7 @@ import {
 import { SlashCommandMenu } from "./SlashCommandMenu";
 import { MessageBubble, hasRenderableContent } from "./MessageBubble";
 import { RemoteConversationPanel } from "./RemoteConversationPanel";
-import { PiSpark, ShimmerText } from "./ActivityLine";
-import { PiMark } from "./PiMark";
+import { ActivityLine, PiSpark, ShimmerText } from "./ActivityLine";import { PiMark } from "./PiMark";
 import { ComposerInput } from "./ComposerInput";
 import { RetryBanner } from "./RetryBanner";
 import { ExtStatusLine, ExtWidgets } from "./ExtensionSurfaces";
@@ -46,6 +48,7 @@ import {
   ArrowUp,
   ArrowDown,
   ChevronRight,
+  FileDiff,
   SquarePen,
   X,
 } from "lucide-react";
@@ -313,6 +316,27 @@ function LocalAgentPanel({ width }: { width?: number }) {
   };
 
   const busy = streaming || agentRunning || retrying;
+
+  /* The plan's progress rides the status line rather than claiming a row of its
+     own — see the header. `activeForm` is pi's present-tense phrasing for the step
+     it is on, which is the most specific true answer to "what is it doing"; the
+     label truncates from the right, so a long step gives way rather than pushing
+     the controls off the edge. */
+  const taskId = useTaskContext((s) => s.activeTaskId);
+  const plan = usePlanProgress(taskId);
+  const statusText = useMemo(() => {
+    const base = busy
+      ? t("agent.working")
+      : t("agent.statusLine", { status: t(`status.${piStatus}`) });
+    if (plan.total === 0) return base;
+    const progress = t("plan.progress", {
+      done: String(plan.done),
+      total: String(plan.total),
+    });
+    const step = plan.active?.activeForm ?? plan.active?.subject;
+    return step ? `${base} · ${progress} · ${step}` : `${base} · ${progress}`;
+  }, [busy, piStatus, plan, t]);
+
   const canScroll = !(isAtTop && isAtBottom);
   const scrollToEdge = () => {
     virtuosoRef.current?.scrollTo({
@@ -342,16 +366,35 @@ function LocalAgentPanel({ width }: { width?: number }) {
       {/* header — status + session history / new-session entry points */}
       <div style={{ display: "flex", alignItems: "center", paddingRight: 8 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <SectionLabel>
-            {busy
-              ? t("agent.working")
-              : t("agent.statusLine", { status: t(`status.${piStatus}`) })}
+          {/* The status line already answers "what is pi doing"; the plan's
+              progress and current step are the same question answered in more
+              detail, so they ride here instead of claiming their own row. Clicking
+              it opens the full checklist — nothing about it costs the transcript
+              any height. */}
+          <SectionLabel
+            onClick={
+              plan.total > 0
+                ? () => useFileInspector.getState().openTask("plan")
+                : undefined
+            }
+            title={plan.total > 0 ? t("plan.open") : undefined}
+          >
+            {statusText}
           </SectionLabel>
         </div>
-        <div style={{ display: "flex", alignItems: "center", paddingTop: 8 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            paddingTop: 8,
+            // the label truncates; the controls do not
+            flexShrink: 0,
+          }}
+        >
           {/* Session list in a menu, not a sidebar toggle: work and zen mode
               can't render the sidebar at all, so a toggle there flips a flag
               nothing reads and the button reads as dead. */}
+          <TurnChangesChip width={width} />
           <ExecutionTargetPicker />
           <RemoteTaskBadge />
           <SessionHistoryMenu />
@@ -457,6 +500,8 @@ function LocalAgentPanel({ width }: { width?: number }) {
                     </motion.div>
                   )}
                 </AnimatePresence>
+                {/* the turn's closing line — what it changed, and a way in */}
+                <TurnChangesRow busy={busy} />
               </div>
             ),
             } satisfies Components<ChatMessage>
@@ -735,5 +780,112 @@ function BackgroundTaskPill({ session }: { session: ChatSessionMeta }) {
         <Square size={11} fill="currentColor" />
       </motion.button>
     </div>
+  );
+}
+
+/* ── this turn's changes ── */
+
+/**
+ * The turn's closing line: how much it changed, and the way into the panel that
+ * lists it.
+ *
+ * In the scroll area's footer rather than inside the last message — "the turn is
+ * over" is not a property of any one message, since pi splits a turn across
+ * several, and the footer is the one place that sits below all of them.
+ *
+ * Only ever describes the turn that just ran. The diffs behind it are held in
+ * memory only, so a transcript restored from history has nothing to summarize and
+ * this stays out of the way rather than reporting zero.
+ */
+function TurnChangesRow({ busy }: { busy: boolean }) {
+  const t = useT();
+  const taskId = useTaskContext((s) => s.activeTaskId);
+  const changes = useTurnChanges(taskId);
+  const active = useFileInspector((s) => s.open && s.segment === "task");
+  if (busy || changes.files.length === 0) return null;
+
+  const files =
+    changes.files.length === 1
+      ? t("turn.oneFile")
+      : t("turn.files", { count: String(changes.files.length) });
+
+  return (
+    <ActivityLine
+      status="done"
+      toolName="write"
+      title={t("turn.row", {
+        files,
+        added: `${changes.approx ? "~" : ""}+${changes.added}`,
+        removed: `−${changes.removed}`,
+      })}
+      onClick={() => useFileInspector.getState().openTask("changes")}
+      active={active}
+      ariaLabel={t("turn.open")}
+      trailing={<ChevronRight size={12} />}
+    />
+  );
+}
+
+/**
+ * The roll-up of what this turn has written, and the way into the panel that
+ * details it. It lives in the header, so it costs the transcript no height, and it
+ * renders nothing at all until there is something to report.
+ *
+ * Degrades with the rail's width instead of pushing its neighbours off the edge:
+ * the rail's floor is 280px and this row already carries four controls. Work mode
+ * passes no width — the chat is the flexible column there and has room to spare.
+ */
+function TurnChangesChip({ width }: { width?: number }) {
+  const t = useT();
+  const taskId = useTaskContext((s) => s.activeTaskId);
+  const changes = useTurnChanges(taskId);
+  const active = useFileInspector((s) => s.open && s.segment === "task");
+  if (changes.files.length === 0) return null;
+
+  const files =
+    changes.files.length === 1
+      ? t("turn.oneFile")
+      : t("turn.files", { count: String(changes.files.length) });
+  const added = `${changes.approx ? "~" : ""}+${changes.added}`;
+  const removed = `−${changes.removed}`;
+  const compact = width !== undefined && width < 380;
+  const iconOnly = width !== undefined && width < 320;
+
+  return (
+    <motion.button
+      type="button"
+      whileTap={{ scale: 0.96 }}
+      onClick={() => useFileInspector.getState().openTask("changes")}
+      title={t("turn.open")}
+      aria-label={t("turn.row", { files, added, removed })}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        marginRight: 4,
+        padding: iconOnly ? "4px 5px" : "4px 7px",
+        border: "1px solid var(--separator)",
+        borderRadius: 99,
+        background: active
+          ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+          : "transparent",
+        color: "var(--text-tertiary)",
+        fontFamily: "var(--font-mono)",
+        fontSize: 10.5,
+        lineHeight: 1,
+        cursor: "pointer",
+        transition: "background var(--duration-fast) ease",
+      }}
+    >
+      <FileDiff size={12} strokeWidth={1.75} />
+      {iconOnly ? null : compact ? (
+        <span>{changes.files.length}</span>
+      ) : (
+        <>
+          <span style={{ color: "var(--diff-add-text)" }}>{added}</span>
+          <span style={{ color: "var(--diff-remove-text)" }}>{removed}</span>
+        </>
+      )}
+    </motion.button>
   );
 }

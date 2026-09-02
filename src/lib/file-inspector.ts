@@ -16,6 +16,18 @@ import { create } from "zustand";
 
 export type InspectorView = "source" | "diff";
 
+/**
+ * Which tenant of the docked column is showing.
+ *
+ * One column, one component, two segments — rather than a third panel competing
+ * for the same slot. `task` is the plan plus this turn's changes; `file` is the
+ * viewer this store was originally written for.
+ */
+export type InspectorSegment = "task" | "file";
+
+/** A section of the task segment, for the entry point that opened it. */
+export type TaskSection = "plan" | "changes";
+
 export interface InspectorTab {
   /** workspace path — also the tab's identity, so one file is never two tabs */
   path: string;
@@ -42,6 +54,14 @@ const MAX_TABS = 6;
 
 interface FileInspectorStore {
   open: boolean;
+  /** which segment of the column is showing */
+  segment: InspectorSegment;
+  /**
+   * The section the task segment should bring into view, set by whichever chip
+   * opened it and consumed once the panel has scrolled there. Both sections stay
+   * rendered — this only decides where the panel lands.
+   */
+  focusSection: TaskSection | null;
   tabs: InspectorTab[];
   activePath: string | null;
   view: InspectorView;
@@ -62,6 +82,10 @@ interface FileInspectorStore {
   select: (path: string) => void;
   closeTab: (path: string) => void;
   close: () => void;
+  /** Open the column on the task segment, landing on `section`. */
+  openTask: (section: TaskSection) => void;
+  setSegment: (segment: InspectorSegment) => void;
+  clearFocusSection: () => void;
   setView: (view: InspectorView) => void;
   toggleFollow: () => void;
   /** An agent edit landed — chase it, or count it. */
@@ -78,6 +102,8 @@ function admit(tabs: InspectorTab[], tab: InspectorTab): InspectorTab[] {
 
 export const useFileInspector = create<FileInspectorStore>((set, get) => ({
   open: false,
+  segment: "task",
+  focusSection: null,
   tabs: [],
   activePath: null,
   view: "source",
@@ -100,6 +126,7 @@ export const useFileInspector = create<FileInspectorStore>((set, get) => ({
       };
       return {
         open: true,
+        segment: "file",
         tabs: admit(s.tabs, tab),
         activePath: path,
         // an edit row is a request to see what changed; a read row is a request
@@ -122,7 +149,14 @@ export const useFileInspector = create<FileInspectorStore>((set, get) => ({
   closeTab: (path) =>
     set((s) => {
       const tabs = s.tabs.filter((t) => t.path !== path);
-      if (tabs.length === 0) return { tabs, activePath: null, open: false, missed: 0 };
+      if (tabs.length === 0) {
+        // Closing the last file only closes the column when the column *is* the
+        // file viewer. On the task segment the tabs are not what is on screen, so
+        // taking the panel away would be answering a question nobody asked.
+        return s.segment === "file"
+          ? { tabs, activePath: null, open: false, missed: 0 }
+          : { tabs, activePath: null, missed: 0 };
+      }
       // fall back to the most recently surfaced neighbour, not the first — the
       // strip is ordered oldest-first, so index 0 is the stalest tab there is
       const activePath =
@@ -130,7 +164,13 @@ export const useFileInspector = create<FileInspectorStore>((set, get) => ({
       return { tabs, activePath };
     }),
 
-  close: () => set({ open: false, missed: 0 }),
+  close: () => set({ open: false, missed: 0, focusSection: null }),
+
+  openTask: (section) => set({ open: true, segment: "task", focusSection: section }),
+
+  setSegment: (segment) => set({ segment, focusSection: null }),
+
+  clearFocusSection: () => set({ focusSection: null }),
 
   setView: (view) => set({ view }),
 
@@ -177,6 +217,9 @@ export const useFileInspector = create<FileInspectorStore>((set, get) => ({
         follow: true,
         missed: 0,
         open: true,
+        // an explicit "back to latest" is a request to see the file, so it also
+        // brings the file segment forward
+        segment: "file",
         tabs: admit(s.tabs, { path, toolCallId, kind: "edit", at: Date.now() }),
         activePath: path,
         view: "diff",

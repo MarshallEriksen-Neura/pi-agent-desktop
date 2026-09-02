@@ -20,6 +20,7 @@ import { createUnsupportedRemoteWorkspaceFsPort } from "../../src/lib/backend/po
 const inertWorkspaceFs: WorkspaceFsPort = {
   root: async () => "",
   listDir: async () => [],
+  indexFiles: async () => ({ paths: [], truncated: false }),
   readFile: async () => "",
   readFileBase64: async () => "",
   writeFile: async () => undefined,
@@ -100,6 +101,7 @@ function ports(runtimeConfig: RuntimeConfigPort): BackendPorts {
       }),
       readSkillFile: async () => "",
       listSkillDirectory: async () => [],
+      readPackageLock: async () => null,
     },
     window: {
       close: async () => undefined,

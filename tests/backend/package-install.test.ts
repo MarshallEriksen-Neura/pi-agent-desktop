@@ -5,6 +5,11 @@ import {
   packageInstallArgs,
   packageInstallRequest,
 } from "@/lib/pi/package-install";
+import {
+  packageSourceInfo,
+  packageUpdateAllRequest,
+  packageUpdateRequest,
+} from "@/lib/pi/package-update";
 import { cliError } from "@/lib/pi/cli-error";
 
 test("normalizePackageSource adds npm: to bare package specs", () => {
@@ -79,6 +84,65 @@ test("packageInstallRequest locks project argv and cwd", () => {
     args: ["install", "C:\\package dir"],
     cwd: null,
   });
+});
+
+test("package update requests use official argv and cwd semantics", () => {
+  assert.deepEqual(packageUpdateRequest("npm:pkg", "C:\\workspace"), {
+    args: ["update", "npm:pkg"],
+    cwd: "C:\\workspace",
+  });
+  assert.deepEqual(packageUpdateRequest("npm:pkg", null), {
+    args: ["update", "npm:pkg"],
+    cwd: null,
+  });
+  assert.deepEqual(packageUpdateAllRequest("/workspace"), {
+    args: ["update", "--extensions"],
+    cwd: "/workspace",
+  });
+  assert.equal(packageUpdateRequest("--all", null), null);
+  assert.equal(packageUpdateRequest("npm:pkg\n--all", null), null);
+});
+
+test("packageSourceInfo distinguishes updateable, pinned, and local sources", () => {
+  assert.deepEqual(packageSourceInfo("npm:@scope/pkg@1.2.3"), {
+    kind: "npm",
+    name: "@scope/pkg",
+    identity: "npm:@scope/pkg",
+    version: "1.2.3",
+    updateMode: "npm-pinned",
+  });
+  assert.equal(packageSourceInfo("npm:pkg@next").updateMode, "update");
+  assert.equal(packageSourceInfo("npm:pkg@^2.0.0").updateMode, "update");
+  assert.deepEqual(packageSourceInfo("git:github.com/user/repo@v1"), {
+    kind: "git",
+    name: "github.com/user/repo",
+    identity: "git:github.com/user/repo",
+    ref: "v1",
+    updateMode: "git-pinned",
+  });
+  assert.equal(packageSourceInfo("./package").updateMode, "local");
+});
+
+test("packageSourceInfo normalizes git identity without treating SSH users as refs", () => {
+  const https = packageSourceInfo("https://github.com/user/repo.git");
+  const ssh = packageSourceInfo("ssh://git@github.com/user/repo.git");
+  const scp = packageSourceInfo("git:git@github.com:user/repo.git@feature/test");
+  assert.equal(https.identity, "git:github.com/user/repo");
+  assert.equal(ssh.identity, https.identity);
+  assert.equal(ssh.ref, undefined);
+  assert.equal(scp.identity, https.identity);
+  assert.equal(scp.ref, "feature/test");
+});
+
+test("package identity exposes duplicate npm and git installations across scopes", () => {
+  assert.equal(
+    packageSourceInfo("npm:pkg").identity,
+    packageSourceInfo("npm:pkg@1.2.3").identity
+  );
+  assert.equal(
+    packageSourceInfo("git:github.com/user/repo@main").identity,
+    packageSourceInfo("https://github.com/user/repo@v2").identity
+  );
 });
 
 test("cliError prefers useful diagnostics and has a silent fallback", () => {

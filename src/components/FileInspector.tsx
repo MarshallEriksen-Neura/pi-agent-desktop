@@ -18,7 +18,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ExternalLink, Pin, PinOff, X } from "lucide-react";
-import { useUI, INSPECTOR_PANEL_WIDTH_DEFAULT } from "@/lib/store";
+import { useUI } from "@/lib/store";
 import { useWorkspace } from "@/lib/workspace";
 import { useFileDiffs } from "@/lib/pi/file-diffs";
 import { useActiveTab, useFileInspector } from "@/lib/file-inspector";
@@ -35,7 +35,11 @@ function label(path: string, paths: string[]): string {
   return parent ? `${parent}/${name}` : name;
 }
 
-export function FileInspector({ width }: { width?: number }) {
+/**
+ * The file segment of the docked column — body only. The frame, the width and the
+ * close button belong to `InspectorColumn`, which is what the two segments share.
+ */
+export function FileInspector() {
   const t = useT();
   const tabs = useFileInspector((s) => s.tabs);
   const view = useFileInspector((s) => s.view);
@@ -83,25 +87,8 @@ export function FileInspector({ width }: { width?: number }) {
     void useWorkspace.getState().ensureDoc(tab.path);
   }, [tab, showDiff, doc]);
 
-  /**
-   * Esc closes the panel — but it is docked, not modal, so it does not own the
-   * key. While the caret is in a field, Esc belongs to whatever is being typed
-   * into. Same contract as the subagent inspector's in AppShell.
-   */
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      const el = e.target as HTMLElement | null;
-      const typing =
-        el instanceof HTMLInputElement ||
-        el instanceof HTMLTextAreaElement ||
-        el?.isContentEditable === true;
-      if (typing) return;
-      useFileInspector.getState().close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  /* Esc closes the column — handled by `InspectorColumn`, which owns the frame, so
+     it works on both segments rather than only while a file is showing. */
 
   const viewSource = (line: number) => {
     useFileInspector.getState().setView("source");
@@ -122,21 +109,7 @@ export function FileInspector({ width }: { width?: number }) {
   const names = tabs.map((item) => item.path);
 
   return (
-    <aside
-      aria-label={t("inspector.title")}
-      className="material"
-      style={{
-        width: width ?? INSPECTOR_PANEL_WIDTH_DEFAULT,
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        borderLeft: "1px solid var(--separator)",
-        flexShrink: 0,
-        overflow: "hidden",
-        // the back-to-latest pill is positioned against this
-        position: "relative",
-      }}
-    >
+    <>
       {/* tab strip */}
       <div
         role="tablist"
@@ -170,12 +143,6 @@ export function FileInspector({ width }: { width?: number }) {
             onClick={() => useFileInspector.getState().toggleFollow()}
           >
             {follow ? <Pin size={12} /> : <PinOff size={12} />}
-          </IconButton>
-          <IconButton
-            label={t("inspector.close")}
-            onClick={() => useFileInspector.getState().close()}
-          >
-            <X size={13} />
           </IconButton>
         </div>
       </div>
@@ -330,7 +297,7 @@ export function FileInspector({ width }: { width?: number }) {
           </button>
         )}
       </div>
-    </aside>
+    </>
   );
 }
 

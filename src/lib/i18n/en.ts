@@ -14,7 +14,6 @@ export const en = {
   "nav.models": "Models",
   "nav.plugins": "Plugins",
   "nav.skills": "Skills",
-  "nav.store": "Store",
   "nav.mcp": "MCP",
   "nav.settings": "Settings",
   "nav.piStatus": "pi: {status}",
@@ -128,6 +127,10 @@ export const en = {
   "composer.deliverySteer": "Interrupt",
   "composer.deliveryQueue": "Queue",
   "composer.deliveryHint": "⌘⏎ delivers this way · ⌘⇧⏎ uses the other",
+  "mention.loading": "Reading project files…",
+  "mention.empty": "No matching files",
+  "mention.unsupported": "File search isn't available on this target yet",
+  "mention.truncated": "Large project — deeper paths aren't listed",
   "message.steered": "interrupted",
   "message.queued": "queued",
   "message.undelivered": "not delivered",
@@ -211,6 +214,8 @@ export const en = {
   // session restore (context not reloaded into the agent)
   "session.restoreFailed": "Couldn't restore this conversation's context — Pi started fresh. Chat history is still shown, but the agent won't remember prior turns.",
   "session.restoreFailedDetailed": "Couldn't restore this conversation's context: {error}. Pi is disconnected so new prompts cannot accidentally run in the wrong session.",
+  "session.nativeRefreshFailed": "Couldn't refresh this conversation from Pi: {error}. The last cached history is still shown.",
+  "session.cacheAndNativeRestoreFailed": "The saved offline history is damaged and Pi couldn't restore it: {error}.",
   "session.restoreRefused": "Pi couldn't load the saved session context ({error}). The agent started fresh; history below is display-only.",
   "session.noPath": "No session path was saved for this conversation — Pi started fresh. The agent won't remember prior turns, even though chat history is shown below.",
   "session.contextLost": "This conversation's context couldn't be restored — Pi started a new session. Your chat history is preserved below, but the agent won't remember prior turns. A new session has been created so future switches will work.",
@@ -386,6 +391,37 @@ export const en = {
   "inspector.backToLatest": "Back to latest",
   "inspector.resize": "Drag to resize the inspector",
 
+  // plan + this turn's changes — the two sections of the task panel
+  "task.panel": "Task",
+  "task.tabTask": "Task",
+  "task.tabFile": "File",
+  "task.close": "Close the task panel",
+  "plan.section": "Plan",
+  "plan.progress": "{done}/{total}",
+  "plan.open": "Show the plan",
+  "plan.empty": "pi has not written a plan for this conversation",
+  "plan.statusPending": "Not started",
+  "plan.statusInProgress": "In progress",
+  "plan.statusCompleted": "Done",
+  "plan.blockedBy": "Waiting on step {ids}",
+  "plan.row": "Plan · {done}/{total}",
+  "plan.rowCreated": "Plan · added “{label}”",
+  "plan.rowCreatedMany": "Plan · added {count} steps",
+  "plan.rowStarted": "Plan · started “{label}”",
+  "plan.rowCompleted": "Plan · finished “{label}”",
+  "plan.rowChanged": "Plan · updated",
+  "plan.rowRemoved": "Plan · removed a step",
+  "plan.rowStep": "step {step}",
+  "turn.section": "Changes this turn",
+  "turn.open": "Show what changed this turn",
+  "turn.empty": "No file changes in this turn",
+  "turn.files": "{count} files",
+  "turn.oneFile": "1 file",
+  "turn.edits": "{count} edits",
+  "turn.row": "Changes this turn · {files} {added} {removed}",
+  "turn.approx": "Includes a block rewrite — counts are approximate",
+  "turn.sumNote": "Sum of this turn's edits, not a net diff",
+
   // extension sheet
   "ext.request": "Extension request",
 
@@ -459,6 +495,7 @@ export const en = {
   "shortcuts.cmd.copyLastReply": "Copy last reply",
   "shortcuts.cmd.altSend": "Send the other way (steer ↔ queue)",
   "shortcuts.cmd.slashMenu": "Slash-command menu",
+  "shortcuts.cmd.mentionMenu": "File-mention menu (@)",
   "shortcuts.cmd.remoteFollowUp": "Send remote follow-up",
   "shortcuts.cmd.terminalCopy": "Copy selection",
   "shortcuts.cmd.terminalPaste": "Paste",
@@ -867,12 +904,14 @@ export const en = {
   "models.applyChanges": "Add {add} · remove {remove}",
   "models.alreadyInSync": "Your model list already matches the endpoint.",
 
-  // plugins page
+  // plugins page — Installed maintains, Discover adds (the old store page)
   "plugins.title": "Plugins",
   "plugins.subtitleMock": "Browser preview — showing mock data.",
-  "plugins.subtitleLive":
-    "Packages from settings.json · commands from the running pi process.",
-  "plugins.installHeader": "Install package",
+  "plugins.subtitleCount": "{pkgs} installed · {cmds} commands from plugins",
+  "plugins.mode.installed": "Installed",
+  "plugins.mode.discover": "Discover",
+  "plugins.installTarget": "Install to",
+  "plugins.installHeader": "Install from source",
   "plugins.scope.global": "Global",
   "plugins.scope.project": "Project",
   "plugins.installFooterGlobal":
@@ -883,12 +922,14 @@ export const en = {
     "Open a project to enable project installation. Until then, packages install globally.",
   "plugins.installSourceLabel": "Package source",
   "plugins.installPlaceholder": "npm package, git URL, or local path",
+  "plugins.installSourceFooter":
+    "For anything the registry search can't reach — a git URL, an ssh remote, an exact npm version, or a path on this machine.",
   "plugins.installSecurity":
     "Packages run with full system access. Review third-party source code before installing.",
   "plugins.install": "Install",
   "plugins.installing": "Installing…",
-  "plugins.installed": "Installed {source} — restart pi to load it.",
-  "plugins.removed": "Removed {source} — restart pi to unload it.",
+  "plugins.installed": "Installed {source}",
+  "plugins.removed": "Removed {source}",
   "plugins.installSourceInvalid":
     "Enter an npm package, an explicit git/HTTP/SSH source, or a local path.",
   "plugins.installFailed": "pi install failed (exit {code}): {err}",
@@ -896,14 +937,11 @@ export const en = {
   "plugins.noErrorDetail": "No diagnostic output",
   "plugins.removeUnexpected": "Could not run pi remove: {err}",
   "plugins.removeNoProject": "Open the project before removing a project package.",
-  "plugins.globalHeader": "Installed packages — global",
-  "plugins.globalFooter":
-    "From ~/.pi/agent/settings.json → packages. npm packages install under ~/.pi/agent/npm/, git clones under ~/.pi/agent/git/. Remove runs `pi remove` and restarts are needed to unload.",
+  "plugins.packagesHeader": "Packages",
+  "plugins.packagesFooter":
+    "Global packages live in ~/.pi/agent (npm under npm/, git clones under git/); project packages come from .pi/settings.json and are shared with your team. Updating third-party code keeps its full system access — review the source.",
   "plugins.noPackages": "No packages installed",
-  "plugins.browseStore": "Browse the Store to add some",
-  "plugins.projectHeader": "Installed packages — project",
-  "plugins.projectFooter":
-    "From .pi/settings.json — shared with your team; pi auto-installs missing ones on startup once the project is trusted.",
+  "plugins.noPackagesDetail": "Open Discover to add your first one",
   "plugins.liveCommands": "Live extension commands",
   "plugins.liveCommandsFooter":
     "Slash commands the running pi process registered from extensions (local files and packages).",
@@ -911,12 +949,39 @@ export const en = {
   "plugins.extLoadPath":
     "Extensions load from ~/.pi/agent/extensions and installed packages",
   "plugins.builtins": "Built-in commands",
+  // borrowed by the skills page for its own actions group
   "plugins.actions": "Actions",
-  "plugins.refresh": "Refresh",
+  "plugins.builtinsFooter":
+    "pi's own slash commands — always available, not contributed by a package.",
   "plugins.refreshDetail": "Re-read settings.json and re-query pi's commands",
+  "plugins.updateAll": "Update all",
+  "plugins.update": "Update",
+  "plugins.updateBoth": "Update both",
+  "plugins.sync": "Sync ref",
+  "plugins.pinnedStatus": "Pinned",
+  "plugins.localStatus": "Local",
+  "plugins.upToDate": "Up to date",
+  "plugins.upToDateHint": "Already at the newest version published to npm.",
+  "plugins.versionUpgrade": "{current} → {latest}",
+  "plugins.updating": "Updating…",
+  "plugins.updated": "Updated {source}",
+  "plugins.updatedAll": "All packages updated",
+  "plugins.updateFailed": "pi update failed (exit {code}): {err}",
+  "plugins.updateUnexpected": "Could not run pi update: {err}",
+  "plugins.updateSourceInvalid": "This package source cannot be updated.",
+  "plugins.updateUnavailable": "This source is loaded directly or pinned to an exact version.",
+  "plugins.localPackage": "local files (edit the source directly)",
+  "plugins.duplicateIdentity": "same package identity appears in another settings entry",
+  "plugins.updateDuplicateTitle": "Update both package entries?",
+  "plugins.updateDuplicateConfirm":
+    "PI matches packages by identity, so this action may update both the global and project entries.",
   "plugins.remove": "Remove",
   "plugins.removing": "Removing…",
   "plugins.removeFailed": "pi remove failed (exit {code}): {err}",
+  "plugins.copySource": "Copy source",
+  "plugins.copiedSource": "Copied {source}",
+  "plugins.copyFailed": "Could not copy to the clipboard",
+  "plugins.rowMenu": "More actions for {name}",
   "plugins.pinned": "pinned @{version}",
   "plugins.filteredResources": "filtered resources",
   "plugins.localResources": "Local resources",
@@ -1024,28 +1089,12 @@ export const en = {
   "skillsInstall.moveHalfDone":
     "{name} was installed in the new scope, but the old copy is still there: {err}",
 
-  // store page
-  "store.title": "Store",
-  "store.subtitleMock":
-    "Browser preview — mock results. The real store queries the npm registry.",
-  "store.subtitleLive":
-    "npm packages tagged pi-package — the same set as pi.dev/packages.",
-  "store.search": "Search",
-  "store.searchFooterGlobal":
-    "Installs run `pi install npm:<name>` → written to ~/.pi/agent/settings.json, downloaded to ~/.pi/agent/npm/.",
-  "store.searchFooterProject":
-    "Installs run `pi install -l` → written to .pi/settings.json so your team gets it too (auto-installed on trusted startup).",
-  "store.searchFooterNoProject":
-    "Open a project to enable project installation. Until then, packages install globally.",
+  // registry browsing — rendered by the plugins page's Discover half
   "store.filterPlaceholder": "Filter packages…",
-  "store.installedLog": "Installed {name} — restart pi to load it.",
-  "store.installFailed": "pi install failed (exit {code}): {err}",
-  "store.installUnexpected": "Could not run pi install: {err}",
-  "store.noErrorDetail": "No diagnostic output",
   "store.packagesCount": "{n} packages",
   "store.packages": "Packages",
   "store.packagesFooter":
-    "Packages run with full system access — extensions execute arbitrary code. Review the source before installing anything third-party.",
+    "npm packages tagged pi-package — the same set as pi.dev/packages. They run with full system access, so review the source before installing anything third-party.",
   "store.registryError": "Could not reach the npm registry",
   "store.loadingDetail": "Querying registry.npmjs.org",
   "store.noMatches": "No matches",
@@ -1053,6 +1102,7 @@ export const en = {
   "store.installedBadge": "Installed",
   "store.install": "Install",
   "store.installing": "Installing…",
+  "store.openOnNpm": "Open {name} on npm",
 
   // state pages (404 / error)
   "state.notFound.title": "Page not found",
@@ -1311,8 +1361,8 @@ export const en = {
   "remoteAgent.target.notReady": "{host} is not ready. Check it in Settings › Remote agent.",
 
   // file tree context menu
-  "ctx.newFile": "New File",
-  "ctx.newFolder": "New Folder",
+  "ctx.mention": "Mention in chat",
+  "ctx.newFile": "New File",  "ctx.newFolder": "New Folder",
   "ctx.rename": "Rename",
   "ctx.delete": "Delete",
   "ctx.newFilePlaceholder": "file name…",

@@ -258,6 +258,22 @@ export const SHORTCUT_REGISTRY: readonly ShortcutCommand[] = [
     reason: "menuConvention",
   },
   {
+    // Same keys as the slash menu, and deliberately a separate entry: the two
+    // menus are different surfaces with different triggers, and a settings page
+    // listing only one of them would imply `@` has no keyboard control.
+    id: "mentionMenu",
+    scope: "chat",
+    defaults: [
+      { key: "ArrowUp" },
+      { key: "ArrowDown" },
+      { key: "Tab" },
+      { key: "Enter" },
+      { key: "Escape" },
+    ],
+    rebindable: false,
+    reason: "menuConvention",
+  },
+  {
     id: "remoteFollowUp",
     scope: "chat",
     defaults: [{ key: "Enter", mod: true }],

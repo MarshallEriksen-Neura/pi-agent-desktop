@@ -5,25 +5,24 @@ import type {
 } from "../ports";
 import type { ChatMessage } from "../../pi/chat";
 import type { ChatSessionMeta } from "../../pi/sessions";
+import { decodeSessionMessages } from "../session-cache";
 import { desktopInvoke } from "./invoke";
 
 export const desktopSessionRepositoryPort: SessionRepositoryPort = {
-  list: (projectRoot: string) =>
-    desktopInvoke<ChatSessionMeta[]>("chat_sessions_list", { projectRoot }),
+  list: (scope) =>
+    // spread, not `scope` itself: `desktopInvoke` takes a `Record<string, unknown>`
+    // and an interface without an index signature is not assignable to one
+    desktopInvoke<ChatSessionMeta[]>("chat_sessions_list", { ...scope }),
 
-  load: async (id: string): Promise<ChatMessage[]> => {
-    const json = await desktopInvoke<string | null>("chat_session_load", { id });
+  load: async (scope, id): Promise<ChatMessage[]> => {
+    const json = await desktopInvoke<string | null>("chat_session_load", { ...scope, id });
     if (!json) return [];
-    try {
-      const arr = JSON.parse(json);
-      return Array.isArray(arr) ? (arr as ChatMessage[]) : [];
-    } catch {
-      return [];
-    }
+    return decodeSessionMessages(json);
   },
 
-  save: (session: SessionSaveInput) =>
+  save: (scope, session: SessionSaveInput) =>
     desktopInvoke<void>("chat_session_save", {
+      targetKey: scope.targetKey,
       session: {
         id: session.id,
         name: session.name,
@@ -31,18 +30,20 @@ export const desktopSessionRepositoryPort: SessionRepositoryPort = {
         preview: session.preview,
         projectRoot: session.projectRoot,
         executionBinding: session.executionBinding,
+        authoritySessionId: session.authoritySessionId ?? null,
+        source: session.source ?? "cache",
         messages: JSON.stringify(session.messages),
         createdAt: session.createdAt,
       },
     }),
 
-  rename: (id: string, name: string) =>
-    desktopInvoke<void>("chat_session_rename", { id, name }),
+  rename: (scope, id, name) =>
+    desktopInvoke<void>("chat_session_rename", { ...scope, id, name }),
 
-  delete: (id: string) => desktopInvoke<void>("chat_session_delete", { id }),
+  delete: (scope, id) => desktopInvoke<void>("chat_session_delete", { ...scope, id }),
 
-  trashSessionFile: (path: string) =>
-    desktopInvoke<void>("pi_session_trash", { path }),
+  trashSessionFile: (scope, path) =>
+    desktopInvoke<void>("pi_session_trash", { path, projectRoot: scope.projectRoot }),
 
   generateTitle: (input: GenerateTitleInput) =>
     desktopInvoke<string>("pi_generate_title", {

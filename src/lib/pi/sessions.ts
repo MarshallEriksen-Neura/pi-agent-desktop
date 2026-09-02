@@ -5,9 +5,11 @@ import { getChatStore, clearChatStores, type ChatMessage } from "./chat";
 import { getPiStore, clearPiStores } from "./store";
 import { getPiClient, disposeAllPiClients, disposePiClient } from "./client";
 import { prepareRemoteBinding } from "./remote-task-binding";
+import { sessionEntriesToChatMessages, type PiEntriesSnapshot } from "./session-transcript";
+import { foldPlan, usePlan } from "./plan";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
-import type { GenerateTitleInput, SessionRepositoryPort } from "../backend/ports";
+import type { GenerateTitleInput, SessionRepositoryPort, SessionScope } from "../backend/ports";
 import type { ExecutionBinding } from "../backend/ports/execution-target";
 import { getBackendKind, getPort } from "../backend/composition/container";
 import {
@@ -48,6 +50,9 @@ export interface ChatSessionMeta {
   projectRoot: string;
   /** Target identity is persisted with the transcript; old rows default to local. */
   executionBinding?: ExecutionBinding;
+  /** Stable Pi authority identity; null until Pi materializes a new session. */
+  authoritySessionId?: string | null;
+  source?: "cache" | "native";
   createdAt: number;
   updatedAt: number;
 }
@@ -70,6 +75,17 @@ interface SessionsStore {
   switchSession: (id: string) => Promise<void>;
   renameSession: (id: string, name: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
+}
+
+export function executionTargetKey(binding: ExecutionBinding): string {
+  return binding.kind === "ssh" ? `ssh:${binding.profileId}` : "local";
+}
+
+function sessionScope(meta: Pick<ChatSessionMeta, "projectRoot" | "executionBinding">): SessionScope {
+  return {
+    targetKey: executionTargetKey(meta.executionBinding ?? LOCAL_EXECUTION_BINDING),
+    projectRoot: projectKey(meta.projectRoot),
+  };
 }
 
 export function executionScopeKey(binding: ExecutionBinding, localProjectRoot: string): string {
@@ -179,9 +195,12 @@ function announceExecutionTarget(binding: ExecutionBinding): void {
   targetSwitchListener?.(workspaceTargetIdFor(binding));
 }
 
-async function backendList(projectRoot: string): Promise<ChatSessionMeta[]> {
-  const key = projectKey(projectRoot);
-  return sessionDependencies().repository.list(key);
+async function backendList(
+  projectRoot: string,
+  binding: ExecutionBinding = LOCAL_EXECUTION_BINDING
+): Promise<ChatSessionMeta[]> {
+  const scope = { targetKey: executionTargetKey(binding), projectRoot: projectKey(projectRoot) };
+  return sessionDependencies().repository.list(scope);
 }
 
 /**
@@ -198,28 +217,28 @@ export async function peekLatestSessionPath(projectRoot: string): Promise<string
   return list[0]?.sessionPath?.trim() ?? "";
 }
 
-async function backendLoad(id: string): Promise<ChatMessage[]> {
-  return sessionDependencies().repository.load(id);
+async function backendLoad(meta: ChatSessionMeta): Promise<ChatMessage[]> {
+  return sessionDependencies().repository.load(sessionScope(meta), meta.id);
 }
 
 async function backendSave(meta: ChatSessionMeta, messages: ChatMessage[]) {
-  await sessionDependencies().repository.save({
+  await sessionDependencies().repository.save(sessionScope(meta), {
     ...meta,
     projectRoot: projectKey(meta.projectRoot),
     messages,
   });
 }
 
-async function backendRename(id: string, name: string) {
-  await sessionDependencies().repository.rename(id, name);
+async function backendRename(meta: ChatSessionMeta, name: string) {
+  await sessionDependencies().repository.rename(sessionScope(meta), meta.id, name);
 }
 
-async function backendDelete(id: string) {
-  await sessionDependencies().repository.delete(id);
+async function backendDelete(meta: ChatSessionMeta) {
+  await sessionDependencies().repository.delete(sessionScope(meta), meta.id);
 }
 
-async function backendTrashSessionFile(path: string) {
-  await sessionDependencies().repository.trashSessionFile(path);
+async function backendTrashSessionFile(meta: ChatSessionMeta, path: string) {
+  await sessionDependencies().repository.trashSessionFile(sessionScope(meta), path);
 }
 
 /**
@@ -291,7 +310,8 @@ const sessionPathSyncing = new Set<string>();
 const sessionPathWarningFor = new Set<string>();
 /** Debounced save timers, one per task. */
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
+/** Invalidates late native transcript responses after navigation/reset. */
+let hydrationEpoch = 0;
 /** One in-flight title request per conversation. */
 const titleRequests = new Map<string, string>();
 /** Failed requests keep the normal fallback; streaming updates must not retry them. */
@@ -432,7 +452,9 @@ async function generateInitialTitle(taskId: string, messages: ChatMessage[]) {
  * Persist a session right now. Exported for callers that are about to tear down
  * the pi process / swap projects and must not lose the transcript.
  */
-export const flushActiveSession = () => flushSave();
+export function flushActiveSession(): Promise<void> {
+  return flushSave();
+}
 
 /**
  * Ask pi for its current session file path for a task and pin it on the record.
@@ -460,6 +482,7 @@ async function syncSessionPath(taskId: string): Promise<void> {
     for (let attempt = 0; attempt <= SYNC_DELAYS_MS.length; attempt++) {
       const result = await readCurrentPiSessionPath(taskId);
       const path = result.path;
+      const authoritySessionId = result.authoritySessionId;
       lastFailure = result.failure;
 
       if (path && useSessions.getState().activeId) {
@@ -470,10 +493,15 @@ async function syncSessionPath(taskId: string): Promise<void> {
           .sessions.find((x) => x.id === taskId);
         // Unchanged is the common case (a plain resume reuses the same file) —
         // skip the write rather than churning SQLite on every announcement.
-        if (!current || current.sessionPath === path) return;
+        if (
+          !current ||
+          (current.sessionPath === path && current.authoritySessionId === authoritySessionId)
+        ) return;
         useSessions.setState((s) => ({
           sessions: s.sessions.map((x) =>
-            x.id === taskId ? { ...x, sessionPath: path } : x
+            x.id === taskId
+              ? { ...x, sessionPath: path, authoritySessionId, source: "native" }
+              : x
           ),
         }));
         const meta = useSessions
@@ -501,13 +529,99 @@ async function syncSessionPath(taskId: string): Promise<void> {
   }
 }
 
+/**
+ * Rebuild a task's folded plan from a restored transcript.
+ *
+ * The live plan is folded from `todo` calls as they stream in (agent-bridge), so a
+ * session restored from history would otherwise show no plan at all — the calls
+ * that built it are in the transcript, but they already happened. Replaying them
+ * is the same fold, run over the whole branch at once; `args` survive the round
+ * trip (see session-transcript's assistantParts).
+ */
+function restorePlan(taskId: string, messages: ChatMessage[]): void {
+  usePlan.getState().replace(
+    taskId,
+    foldPlan(messages.flatMap((message) => message.tools ?? [])),
+  );
+}
+
 /** Repaint a task's chat from a stored transcript without tripping the autosave. */
-async function repaint(taskId: string) {
+async function repaint(taskId: string): Promise<Error | null> {
   restoringTasks.add(taskId);
   try {
-    getChatStore(taskId).getState().load(await backendLoad(taskId));
+    const meta = useSessions.getState().sessions.find((session) => session.id === taskId);
+    if (!meta) throw new Error(`Session ${taskId} is not in the active scope`);
+    const messages = await backendLoad(meta);
+    getChatStore(taskId).getState().load(messages);
+    restorePlan(taskId, messages);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
   } finally {
     restoringTasks.delete(taskId);
+  }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Replace the display/cache projection from Pi's authoritative active branch.
+ * A late response is discarded after any navigation. Cache corruption is only
+ * surfaced when native recovery also fails, because a successful refresh repairs it.
+ */
+async function hydrateNativeTranscript(
+  meta: ChatSessionMeta,
+  epoch: number,
+  cacheError: Error | null
+): Promise<void> {
+  try {
+    const response = await getPiClient(meta.id).request<PiEntriesSnapshot>({ type: "get_entries" });
+    if (!response.success || !response.data) {
+      throw new Error(response.error || "Pi returned no session entries");
+    }
+    const messages = sessionEntriesToChatMessages(response.data);
+    const state = useSessions.getState();
+    if (epoch !== hydrationEpoch || state.activeId !== meta.id) return;
+
+    restoringTasks.add(meta.id);
+    try {
+      getChatStore(meta.id).getState().load(messages);
+      restorePlan(meta.id, messages);
+    } finally {
+      restoringTasks.delete(meta.id);
+    }
+
+    const current = useSessions.getState().sessions.find((session) => session.id === meta.id);
+    if (!current) return;
+    const refreshed: ChatSessionMeta = {
+      ...current,
+      name: current.name || deriveName(messages),
+      preview: derivePreview(messages),
+      updatedAt: Date.now(),
+    };
+    useSessions.setState((sessionsState) => ({
+      sessions: sessionsState.sessions
+        .map((session) => (session.id === meta.id ? refreshed : session))
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+    }));
+    await backendSave(refreshed, messages);
+  } catch (error) {
+    if (epoch !== hydrationEpoch || useSessions.getState().activeId !== meta.id) return;
+    if (cacheError) {
+      useExtUi.getState().pushToast(
+        t("session.cacheAndNativeRestoreFailed", { error: errorText(error).slice(0, 240) }),
+        "error",
+        10_000
+      );
+    } else if ((meta.executionBinding?.kind ?? "local") === "local") {
+      useExtUi.getState().pushToast(
+        t("session.nativeRefreshFailed", { error: errorText(error).slice(0, 240) }),
+        "warning",
+        8_000
+      );
+    }
   }
 }
 
@@ -564,6 +678,8 @@ async function ensureTaskStarted(
     });
   }
 
+  if (pi.getState().status === "disconnected") return;
+
   liveTasks.add(taskId);
 
   // Re-sync sessionPath on every `session` announcement. This covers both a
@@ -581,6 +697,7 @@ async function ensureTaskStarted(
 
 /** Tear down every task process and store (switching projects). */
 function resetTaskRegistry(): void {
+  hydrationEpoch += 1;
   disposeAllPiClients();
   liveTasks.clear();
   autosaved.clear();
@@ -647,19 +764,21 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     // nothing marking it as stale.
     announceExecutionTarget(executionBinding);
 
-    const sessions = await backendList(scope);
+    const sessions = await backendList(scope, executionBinding);
     set({ sessions });
     sessions.forEach((session) => setSessionTitle(session.id, session.name));
     const compatible = sessions.find((session) => sameExecutionBinding(session.executionBinding, executionBinding));
     if (compatible) {
       set({ activeId: compatible.id });
       setActiveTaskId(compatible.id);
-      await repaint(compatible.id);
+      const epoch = ++hydrationEpoch;
+      const cacheError = await repaint(compatible.id);
       await ensureTaskStarted(compatible.id, {
         cwd: executionBinding.kind === "ssh" ? executionBinding.remoteCwd : localProjectRoot || undefined,
         resumePath: compatible.sessionPath || undefined,
         executionBinding: compatible.executionBinding,
       });
+      await hydrateNativeTranscript(compatible, epoch, cacheError);
       return;
     }
 
@@ -688,12 +807,14 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       setActiveTaskId(latest.id);
       // Refresh-restore: repaint the newest conversation and spawn its process
       // with --session so the agent loop has the full prior context.
-      await repaint(latest.id);
+      const epoch = ++hydrationEpoch;
+      const cacheError = await repaint(latest.id);
       await ensureTaskStarted(latest.id, {
         cwd: cwdForBinding(latest.executionBinding, key),
         resumePath: latest.sessionPath || undefined,
         executionBinding: latest.executionBinding,
       });
+      await hydrateNativeTranscript(latest, epoch, cacheError);
     } else {
       await startFresh(key);
     }
@@ -713,7 +834,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     set({ initialized: true, projectRoot: key, sessions: [], activeId: null });
     setActiveTaskId(getActiveTaskId() || DEFAULT_TASK_ID);
 
-    const sessions = await backendList(key);
+    const sessions = await backendList(key, get().executionBinding);
     set({ sessions });
     sessions.forEach((s) => setSessionTitle(s.id, s.name));
 
@@ -721,12 +842,14 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     if (latest) {
       set({ activeId: latest.id, executionBinding: latest.executionBinding ?? LOCAL_EXECUTION_BINDING });
       setActiveTaskId(latest.id);
-      await repaint(latest.id);
+      const epoch = ++hydrationEpoch;
+      const cacheError = await repaint(latest.id);
       await ensureTaskStarted(latest.id, {
         cwd: cwdForBinding(latest.executionBinding, key),
         resumePath: latest.sessionPath || undefined,
         executionBinding: latest.executionBinding,
       });
+      await hydrateNativeTranscript(latest, epoch, cacheError);
     } else {
       await startFresh(key);
     }
@@ -756,8 +879,11 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       // resume prior context. Start the task fresh and tell the user explicitly.
       useExtUi.getState().pushToast(t("session.contextLost"), "warning", 8000);
     }
-    if (!liveTasks.has(id)) {
-      await repaint(id);
+    const shouldHydrate = !liveTasks.has(id);
+    const epoch = ++hydrationEpoch;
+    let cacheError: Error | null = null;
+    if (shouldHydrate) {
+      cacheError = await repaint(id);
     }
 
     const localRoot = sessionDependencies().projectRoot() ?? get().projectRoot;
@@ -766,17 +892,22 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       resumePath: sessionPath || undefined,
       executionBinding,
     });
+    if (meta && shouldHydrate) {
+      await hydrateNativeTranscript(meta, epoch, cacheError);
+    }
   },
 
   renameSession: async (id, name) => {
     const trimmed = name.trim();
     if (!trimmed) return;
+    const target = get().sessions.find((session) => session.id === id);
+    if (!target) return;
     setSessionTitle(id, trimmed);
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === id ? { ...x, name: trimmed } : x)),
     }));
     try {
-      await backendRename(id, trimmed);
+      await backendRename(target, trimmed);
     } catch {
       // keep the optimistic rename — it will persist with the next save
     }
@@ -789,9 +920,11 @@ export const useSessions = create<SessionsStore>((set, get) => ({
   deleteSession: async (id) => {
     // Read before the row goes: the pinned transcript path is the only handle on
     // pi's own session file, and it lives on the record about to be removed.
-    const transcript = trashableTranscript(get().sessions.find((x) => x.id === id));
+    const target = get().sessions.find((x) => x.id === id);
+    const transcript = trashableTranscript(target);
+    if (!target) return;
     try {
-      await backendDelete(id);
+      await backendDelete(target);
     } catch {
       return; // deletion failed — keep the row rather than lying about it
     }
@@ -802,7 +935,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     // orphan transcript — exactly where every delete before this already left it.
     if (transcript) {
       try {
-        await backendTrashSessionFile(transcript);
+        await backendTrashSessionFile(target, transcript);
       } catch {
         // Cleanup is best effort: an orphan transcript must not fail the delete.
       }

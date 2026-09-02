@@ -19,7 +19,7 @@ import {
   matchesBinding,
 } from "@/lib/shortcuts";
 import { SubagentPanel, useSubagentPanelOpen } from "@/components/Subagents";
-import { FileInspector } from "@/components/FileInspector";
+import { InspectorColumn } from "@/components/InspectorColumn";
 import { useFileInspector } from "@/lib/file-inspector";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
@@ -156,11 +156,19 @@ export default function Home() {
      wherever that conversation is and is meaningless without it. Zen mode shows
      nothing but the composer, so it stays out of the way there. */
   const subagentOpen = useSubagentPanelOpen();
-  /* One docked column, two possible tenants. Both are opened by clicking a
-     transcript row, so the last row clicked wins — the row handlers close the
-     other one rather than this deciding a fixed precedence. */
-  const inspectorOpen = useFileInspector((s) => s.open && s.tabs.length > 0);
-  const showInspector = !remoteMode && inspectorOpen && showAgent;
+  /* One docked column, and `InspectorColumn` owns what is inside it — the task
+     panel (plan + this turn's changes) or the file viewer. Only `open` is checked
+     here: the two segments have different prerequisites, and the shell falls back
+     to the task segment when no file tab exists, so gating the whole column on
+     tabs would hide the plan behind having clicked a file first.
+
+     No longer gated on `!remoteMode`. That was true when the workspace store was
+     local-only; it is target-aware now (workspace.ts's `fs()`), and agent-bridge
+     snapshots remote edits through the same path, so a remote turn has diffs to
+     show. Every expand and open is an SSH round trip, which makes it slower than
+     local — a latency difference, not a correctness one. */
+  const inspectorOpen = useFileInspector((s) => s.open);
+  const showInspector = inspectorOpen && showAgent;
   const showSubagent = !remoteMode && subagentOpen && showAgent && !showInspector;
 
   // Track the row's width so the rail can be capped against what's actually
@@ -378,8 +386,9 @@ export default function Home() {
           )}
         </AnimatePresence>
 
-        {/* File inspector — same column, same motion: what changed in the file a
-            transcript row named, without giving up sight of the conversation. */}
+        {/* Task panel / file viewer — same column, same motion: the plan and what
+            the turn changed, or the file behind a transcript row, without giving
+            up sight of the conversation. */}
         <AnimatePresence initial={false}>
           {showInspector && (
             <motion.div
@@ -402,7 +411,7 @@ export default function Home() {
                   label={t("inspector.resize")}
                 />
               )}
-              <FileInspector width={inspectorEffectiveWidth} />
+              <InspectorColumn width={inspectorEffectiveWidth} />
             </motion.div>
           )}
         </AnimatePresence>

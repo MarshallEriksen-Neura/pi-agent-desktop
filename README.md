@@ -23,14 +23,6 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green" />
 </p>
 
-## Demo
-
-<div align="center">
-  <video src="./media/pi-video.mp4" controls width="760">
-    Your browser does not support the video tag. You can <a href="./media/pi-video.mp4">download it here</a>.
-  </video>
-  <p><i>Pi Desktop in action — AI chat, the live terminal, and the code editor sharing one workspace.</i></p>
-</div>
 
 ## Why Pi Desktop
 

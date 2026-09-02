@@ -79,6 +79,15 @@ export const desktopPiConfigurationPort: PiConfigurationPort = {
 
   listSkillDirectory: (path: string) =>
     desktopInvoke<PiSkillDirectoryEntryDto[]>("fs_list_dir", { path }),
+
+  readPackageLock: async (path: string) => {
+    try {
+      return await desktopInvoke<string>("fs_read_file", { path });
+    } catch {
+      // a scope with nothing installed through npm has no tree to read
+      return null;
+    }
+  },
 };
 
 export function createDesktopPiConfigurationPort(): PiConfigurationPort {
