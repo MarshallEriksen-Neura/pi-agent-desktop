@@ -47,6 +47,51 @@ test("accepts camel-case metrics but rejects partial or invalid pairs", () => {
   );
 });
 
+test("reads insert and undo_last_change metrics, the shape replace already reports", () => {
+  // captured from a real `insert` call (pi-hashline-edit-pro 2.8.3): one line
+  // added after an anchor, which the editor accounts for as a rewrite of the
+  // anchor line — hence a removal git does not report
+  assert.deepEqual(
+    diffStatFromResult({
+      content: [{ type: "text", text: "Inserted 1 line" }],
+      details: {
+        diff: " ...\n Nd4│- **Code editor** — CodeMirror 6\n+37C│- **Visible task progress**\n ...",
+        firstChangedLine: 41,
+        metrics: {
+          classification: "applied",
+          added_lines: 1,
+          removed_lines: 1,
+        },
+        diffLineNumbers: [null, 40, 41, 42, null],
+      },
+    }),
+    { added: 1, removed: 1 },
+  );
+  // undo reports the restore, so the edit it reverses has its counts swapped
+  assert.deepEqual(
+    diffStatFromResult({
+      details: { metrics: { classification: "applied", added_lines: 3, removed_lines: 12 } },
+    }),
+    { added: 3, removed: 12 },
+  );
+});
+
+test("an insert's anchor arguments imply nothing countable on their own", () => {
+  // `lines` is the payload, but the insertion point is a content hash, so where
+  // those lines land is unknowable from the arguments. Returning undefined keeps
+  // the badge on the two sources that do know — the tool's own metrics above,
+  // and the disk read-back — rather than inventing an offset.
+  assert.equal(
+    diffStatFromArgs(
+      { path: "README.md", anchor: "Nd4", direction: "after", lines: ["- inserted"] },
+      "a\nb\n",
+    ),
+    undefined,
+  );
+  // …and `undo_last_change` carries only a path, which says nothing at all
+  assert.equal(diffStatFromArgs({ path: "README.md" }, "a\nb\n"), undefined);
+});
+
 test("keeps native edit arguments and disk text as fallback sources", () => {
   assert.deepEqual(
     diffStatFromArgs({
@@ -58,7 +103,7 @@ test("keeps native edit arguments and disk text as fallback sources", () => {
   assert.deepEqual(diffStat("a\nb\n", "a\nc\nd\n"), { added: 2, removed: 1 });
 });
 
-test("publishes result metrics before workspace snapshot and reload work", () => {
+test("publishes result metrics and patches before workspace snapshot work", () => {
   const source = readFileSync(
     resolve(process.cwd(), "src/lib/pi/agent-bridge.ts"),
     "utf8",
@@ -72,10 +117,20 @@ test("publishes result metrics before workspace snapshot and reload work", () =>
     branchEnd === -1 ? source.length : branchEnd,
   );
 
-  const parseAt = branch.indexOf("diffStatFromResult(e.result)");
-  const recordAt = branch.indexOf("useDiffStats.getState().record");
+  const statParseAt = branch.indexOf("diffStatFromResult(e.result)");
+  const statRecordAt = branch.indexOf("useDiffStats.getState().record");
+  const bodyParseAt = branch.indexOf("diffBodyFromResult(e.result)");
+  const bodyRecordAt = branch.indexOf("useFileDiffs.getState().record");
   const snapshotAt = branch.indexOf("await rec.snapshot");
   assert.ok(branchStart >= 0, "edit success branch must remain error-gated");
-  assert.ok(parseAt >= 0 && recordAt > parseAt, "result metrics must be recorded");
-  assert.ok(recordAt < snapshotAt, "badge metrics must not wait for workspace IPC");
+  assert.ok(
+    statParseAt >= 0 && statRecordAt > statParseAt,
+    "result metrics must be recorded",
+  );
+  assert.ok(
+    bodyParseAt >= 0 && bodyRecordAt > bodyParseAt,
+    "result patches must be recorded",
+  );
+  assert.ok(statRecordAt < snapshotAt, "badge metrics must not wait for workspace IPC");
+  assert.ok(bodyRecordAt < snapshotAt, "turn diffs must not wait for workspace IPC");
 });

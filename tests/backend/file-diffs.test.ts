@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { diffStat } from "../../src/lib/pi/diff-stat";
-import { buildDiff, useFileDiffs } from "../../src/lib/pi/file-diffs";
+import { buildDiff, diffBodyFromResult, useFileDiffs } from "../../src/lib/pi/file-diffs";
 
 /** compact rendering of a hunk, for readable assertions */
 function render(lines: { kind: string; text: string }[]): string[] {
@@ -33,6 +33,54 @@ test("builds one hunk with both line numbers for a single replacement", () => {
   assert.deepEqual([added?.oldLine, added?.newLine], [undefined, 4]);
 });
 
+test("recovers an insert diff from its result patch when the before snapshot races", () => {
+  const body = diffBodyFromResult({
+    details: {
+      patch: [
+        "--- README.md",
+        "+++ README.md",
+        "@@ -40,3 +40,4 @@",
+        " - **Code editor**",
+        " - **Visible task progress**",
+        "+  - Turn summaries report changed line counts.",
+        " - **Local-first persistence**",
+        "",
+      ].join("\n"),
+      // Hash-line metrics count the anchor as rewritten; the patch records the
+      // actual file delta, which is what the turn summary promises to report.
+      metrics: { added_lines: 1, removed_lines: 1 },
+    },
+  });
+
+  assert.ok(body);
+  assert.deepEqual([body.added, body.removed], [1, 0]);
+  assert.equal(body.hunks.length, 1);
+  assert.deepEqual([body.hunks[0].oldStart, body.hunks[0].newStart, body.hunks[0].gap], [40, 40, 39]);
+  assert.deepEqual(render(body.hunks[0].lines), [
+    " - **Code editor**",
+    " - **Visible task progress**",
+    "+  - Turn summaries report changed line counts.",
+    " - **Local-first persistence**",
+  ]);
+  assert.deepEqual(
+    body.hunks[0].lines.map((line) => [line.oldLine, line.newLine]),
+    [
+      [40, 40],
+      [41, 41],
+      [undefined, 42],
+      [42, 43],
+    ],
+  );
+});
+
+test("rejects incomplete result patches instead of publishing false totals", () => {
+  assert.equal(
+    diffBodyFromResult({
+      details: { patch: "--- a\n+++ a\n@@ -1,2 +1,2 @@\n-old\n+new\n" },
+    }),
+    undefined,
+  );
+});
 test("agrees with the badge's own +/- accounting", () => {
   const before = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n") + "\n";
   const after = before.replace("line 5", "line five").replace("line 30\n", "");

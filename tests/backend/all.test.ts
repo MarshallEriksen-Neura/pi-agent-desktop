@@ -39,6 +39,7 @@ import "./file-match.test";
 import "./shortcuts.test";
 import "./pet-animator.test";
 import "./provider-auth.test";
+import "./tool-label.test";
 import "./diff-stat.test";
 import "./file-diffs.test";
 import "./plan.test";

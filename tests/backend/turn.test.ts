@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { FileDiff } from "../../src/lib/pi/file-diffs";
+import { buildDiff, type FileDiff } from "../../src/lib/pi/file-diffs";
 import { NO_CHANGES, turnChanges } from "../../src/lib/pi/turn";
 
 function diff(
@@ -102,4 +102,30 @@ test("an edit exactly on the boundary belongs to the turn it opened", () => {
     TURN,
   );
   assert.equal(changes.files.length, 1);
+});
+
+test("an inserted line reaches the roll-up counted the way git counts it", () => {
+  /* The regression this guards is upstream of the sum: an `insert` call that
+     tool-label does not classify as a write never gets a FileDiff recorded, so
+     this roll-up reports nothing while `git diff` reports the line. Driving it
+     through buildDiff is what proves the pair composes — turn.ts sums recorded
+     diffs and reads nothing else, git included.
+
+     The numbers matter too. A pure insertion is +1 −0 here because the diff is
+     computed from the file's own before/after text, which is why the panel
+     agrees with git even where the editor's self-reported metrics (+1 −1, the
+     anchor counted as rewritten) do not. */
+  const before = "one\ntwo\nthree\n";
+  const after = "one\ntwo\ninserted\nthree\n";
+  const body = buildDiff(before, after);
+  const changes = turnChanges(
+    { ins: { ...body, path: "README.md", at: 1200, taskId: "t1" } },
+    TURN,
+  );
+
+  assert.deepEqual([changes.added, changes.removed], [1, 0]);
+  assert.deepEqual(
+    changes.files.map((file) => [file.path, file.added, file.removed, file.edits]),
+    [["README.md", 1, 0, 1]],
+  );
 });

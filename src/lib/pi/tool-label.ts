@@ -15,12 +15,26 @@ import { useWorkspace } from "@/lib/workspace";
  * pi's line-hash editor is named plain `replace` — `str_replace` is a different
  * vendor's spelling, and matching only the latter left `replace` rows classified
  * as generic: no write icon, no pre-edit snapshot, no changed-line highlight, no
- * +/- count. Like BASH_TOOL, this list is a hardcoded view of pi's tool surface,
- * so re-check it against `defaultTools` when upgrading pi — a name missing here
- * fails silently rather than loudly.
+ * +/- count. `insert` and `undo_last_change` are that editor's other two mutating
+ * tools and cost the same when missing; `undo_last_change` costs more, because a
+ * call that never reaches the edit branch never reloads the file either, leaving
+ * the editor showing text that is no longer on disk.
+ *
+ * All three are registered by the `pi-hashline-edit-pro` extension rather than by
+ * pi core, so `defaultTools` never lists them — which is how two of the three were
+ * missed while `replace` got in, and how `undo_last_replace`, a name no tool has
+ * ever had, was guessed into this list. The authoritative names are that
+ * extension's `registerTool` calls (`src/{replace,insert,replace-undo}.ts`),
+ * cross-checked against the `toolName` values in `~/.pi/agent/sessions/*.jsonl`.
+ * Re-read both when upgrading pi *or its extensions*: like BASH_TOOL, a name
+ * missing here fails silently rather than loudly.
+ *
+ * Breadth is safe here because classification alone does not open the diff
+ * pipeline — agent-bridge also requires a path argument, so a same-named tool that
+ * edits nothing on disk still degrades to a generic row.
  */
 export const EDIT_TOOL =
-  /^(edit|write|multi[_-]?edit|replace|undo[_-]?last[_-]?replace|str[_-]?replace(?:[_-]?editor)?|create[_-]?file|apply[_-]?patch)$/i;
+  /^(edit|write|multi[_-]?edit|replace|insert|undo[_-]?last[_-]?(?:change|replace|edit)|str[_-]?replace(?:[_-]?editor)?|create[_-]?file|apply[_-]?patch)$/i;
 /**
  * Shell-family tools. pi's `powershell` tool (opt-in on Windows via
  * `defaultTools`) is built from the same definition as `bash` and takes the same
@@ -201,8 +215,9 @@ export function toolDetail(rawArgs: unknown): string {
     "new_str",
     // `replace` carries its whole patch here — line arrays and content hashes.
     // Dumped raw it fills the row with unreadable JSON; the +/- badge is the
-    // legible version of the same fact.
+    // legible version of the same fact. `lines` is `insert`'s equivalent.
     "changes",
+    "lines",
     // pi passes a timeout on every shell call, so surfacing it just hangs
     // `timeout: 120000` off the end of every command row and says nothing
     "timeout",

@@ -25,7 +25,7 @@ import { editorBus } from "@/lib/editor-bus";
 import { destroyPetBridge, initPetBridge } from "@/lib/pet/bridge";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
 import { diffStatFromArgs, diffStatFromResult, useDiffStats } from "./diff-stat";
-import { buildDiff, useFileDiffs } from "./file-diffs";
+import { buildDiff, diffBodyFromResult, useFileDiffs } from "./file-diffs";
 import { isPlanTool, usePlan } from "./plan";
 import { useTurn } from "./turn";
 import { isFollowingAgent, useFileInspector } from "@/lib/file-inspector";
@@ -352,12 +352,19 @@ function bindAgentBridge(taskId: string) {
     if (rec.kind === "edit" && rec.path && !e.isError) {
       const path = rec.path;
       const toolCallId = e.toolCallId;
-      // Extension editors such as pi-hashline-edit-pro already return exact
-      // line metrics. Publish those before any workspace IPC so the transcript
-      // badge cannot be held hostage by the pre/post-read race.
+      // Extension editors such as pi-hashline-edit-pro already return both their
+      // operation metrics and a standard patch. Publish both before any workspace
+      // IPC: the badge uses the editor's accounting, while the file/turn surfaces
+      // use the patch's actual text delta if the pre-edit disk snapshot loses its
+      // race with a fast tool.
       const reportedStat = diffStatFromResult(e.result);
       if (reportedStat && (reportedStat.added > 0 || reportedStat.removed > 0)) {
         useDiffStats.getState().record(toolCallId, reportedStat);
+      }
+      const reportedBody = diffBodyFromResult(e.result);
+      if (reportedBody) {
+        useFileDiffs.getState().record(toolCallId, path, reportedBody, taskId);
+        useFileInspector.getState().noteAgentEdit(path, toolCallId);
       }
       void (async () => {
         await rec.snapshot; // only disk fallback/highlighting waits for the pre-edit read
@@ -372,17 +379,20 @@ function bindAgentBridge(taskId: string) {
         void ws.refreshDir(parentDir(path)); // new files show up in the tree
         const newText = useWorkspace.getState().docs[path];
 
-        /* One diff serves both surfaces: the inspector renders its hunks and the
-           badge takes its totals, so the panel and the row it was opened from
-           cannot disagree about how much moved. */
-        const body =
+        /* Prefer the disk pair when the pre-edit snapshot won its race. Otherwise
+           keep the result patch already published above; it carries the same real
+           file delta without depending on workspace timing. */
+        const diskBody =
           oldText !== undefined && newText !== undefined && newText !== oldText
             ? buildDiff(oldText, newText)
             : undefined;
-        if (body) {
-          useFileDiffs.getState().record(toolCallId, path, body, taskId);
-          useFileInspector.getState().noteAgentEdit(path, toolCallId);
+        if (diskBody) {
+          useFileDiffs.getState().record(toolCallId, path, diskBody, taskId);
+          if (!reportedBody) {
+            useFileInspector.getState().noteAgentEdit(path, toolCallId);
+          }
         }
+        const body = diskBody ?? reportedBody;
 
         /* Badge source priority: tool-reported metrics are authoritative and
            already published above. Without them, the disk diff observes what

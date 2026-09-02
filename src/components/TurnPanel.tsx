@@ -120,7 +120,10 @@ function PlanRow({ item }: { item: PlanItem }) {
         style={{
           minWidth: 0,
           color: item.status === "completed" ? "var(--text-tertiary)" : "var(--text-primary)",
-          textDecoration: item.status === "completed" ? "line-through" : undefined,
+          /* Longhand, not the `textDecoration` shorthand: React warns when a
+             shorthand changes across renders while a conflicting longhand
+             (textDecorationColor) is also set. */
+          textDecorationLine: item.status === "completed" ? "line-through" : undefined,
           textDecorationColor: "var(--separator)",
         }}
       >

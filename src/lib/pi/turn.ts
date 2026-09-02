@@ -12,8 +12,9 @@
  * Aggregation is a sum of the turn's edits, not a net file-level diff. Two edits
  * to one file that add and then remove the same line count as `+1 −1` here
  * rather than cancelling out — the texts needed to compute a net diff are not
- * kept, and summing has the virtue of agreeing with the badges already on the
- * transcript rows. The panel says "本轮改动" for exactly that reason.
+ * kept. Each edit itself still uses the real text delta (a disk before/after pair
+ * or the tool's unified result patch), so an insert is counted the same way Git
+ * counts it even if the editor's operation metrics also count its anchor rewrite.
  */
 
 import { useMemo } from "react";

@@ -7,8 +7,9 @@
  * diff-stat), but the *content* behind them was not: the bridge snapshots a file
  * before an edit tool runs and drops that snapshot the moment the tool ends, so
  * a row could report `+12 −3` and then have no way to say which twelve. This
- * module turns the same pre/post pair into unified-diff hunks and parks them
- * where a panel opened seconds — or minutes — later can still read them.
+ * module turns either a real pre/post pair or an editor-provided unified patch
+ * into hunks and parks them where a panel opened seconds — or minutes — later
+ * can still read them.
  *
  * Budgeted on purpose. A hunk list is text, not two integers, so unlike the stat
  * store this one caps what it keeps: a whole-file rewrite is cut to a readable
@@ -252,6 +253,124 @@ function budget(a: string[], b: string[], regions: Region[]): {
   }
 
   return truncated ? { hunks, truncated } : { hunks };
+}
+
+/**
+ * Recover a renderable diff from an edit tool's standard unified patch.
+ *
+ * This is the fallback for the unavoidable start-event race: when a file was not
+ * already cached, the asynchronous pre-edit read can finish after a very fast tool
+ * has written it, making the disk "before" and "after" texts identical. Hash-line
+ * tools include an exact `details.patch`, so the turn roll-up does not need to go
+ * empty merely because that snapshot lost the race.
+ */
+export function diffBodyFromResult(result: unknown): DiffBody | undefined {
+  const root =
+    typeof result === "object" && result !== null
+      ? (result as Record<string, unknown>)
+      : undefined;
+  const details =
+    typeof root?.details === "object" && root.details !== null
+      ? (root.details as Record<string, unknown>)
+      : undefined;
+  const patch = typeof details?.patch === "string" ? details.patch : undefined;
+  if (!patch) return undefined;
+
+  const hunks: Hunk[] = [];
+  let added = 0;
+  let removed = 0;
+  let shown = 0;
+  let truncated = false;
+  let previousOldEnd = 0;
+  let current: {
+    oldLine: number;
+    newLine: number;
+    oldCount: number;
+    newCount: number;
+    usedOld: number;
+    usedNew: number;
+    hunk?: Hunk;
+  } | undefined;
+
+  const finish = (): boolean => {
+    if (!current) return true;
+    const valid =
+      current.usedOld === current.oldCount && current.usedNew === current.newCount;
+    previousOldEnd = Math.max(previousOldEnd, current.oldLine - 1);
+    current = undefined;
+    return valid;
+  };
+
+  for (const rawLine of patch.replace(/\r\n/g, "\n").split("\n")) {
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(rawLine);
+    if (header) {
+      if (!finish()) return undefined;
+      const oldStart = Number(header[1]);
+      const newStart = Number(header[3]);
+      const oldCount = header[2] === undefined ? 1 : Number(header[2]);
+      const newCount = header[4] === undefined ? 1 : Number(header[4]);
+      const hunk: Hunk | undefined =
+        shown < MAX_LINES
+          ? {
+              oldStart: Math.max(1, oldStart),
+              newStart: Math.max(1, newStart),
+              gap: Math.max(0, oldStart - 1 - previousOldEnd),
+              lines: [],
+            }
+          : undefined;
+      if (hunk) hunks.push(hunk);
+      current = {
+        oldLine: oldStart,
+        newLine: newStart,
+        oldCount,
+        newCount,
+        usedOld: 0,
+        usedNew: 0,
+        hunk,
+      };
+      continue;
+    }
+
+    if (!current) continue;
+    if (rawLine === "\\ No newline at end of file") continue;
+    const kind = rawLine[0];
+    if (kind !== " " && kind !== "+" && kind !== "-") {
+      // A complete hunk accounts for exactly the ranges declared in its header.
+      // Anything else before that point means the payload is partial or malformed.
+      if (!finish()) return undefined;
+      continue;
+    }
+
+    const line: DiffLine = { kind, text: rawLine.slice(1) };
+    if (kind === " ") {
+      line.oldLine = current.oldLine++;
+      line.newLine = current.newLine++;
+      current.usedOld++;
+      current.usedNew++;
+    } else if (kind === "-") {
+      line.oldLine = current.oldLine++;
+      current.usedOld++;
+      removed++;
+    } else {
+      line.newLine = current.newLine++;
+      current.usedNew++;
+      added++;
+    }
+
+    if (shown < MAX_LINES && current.hunk) {
+      current.hunk.lines.push(line);
+      shown++;
+    } else {
+      truncated = true;
+    }
+
+    if (current.usedOld > current.oldCount || current.usedNew > current.newCount) {
+      return undefined;
+    }
+  }
+
+  if (!finish() || added + removed === 0) return undefined;
+  return { hunks, added, removed, ...(truncated ? { truncated: true } : {}) };
 }
 
 interface FileDiffStore {
