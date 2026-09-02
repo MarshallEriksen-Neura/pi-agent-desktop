@@ -1,18 +1,19 @@
-//! WSL command-environment support.
+//! Compatibility support for retiring the legacy WSL shell bridge.
 //!
-//! Pi expects a custom shell to accept `-c <command>`, while `wsl.exe` uses a
-//! different argument contract. The desktop executable therefore doubles as a
-//! small shell bridge: when Pi starts it with `-c`, it forwards the command to
-//! Bash inside the selected WSL distro and exits without starting Tauri.
+//! Older desktop releases replaced Pi's `shellPath` with this executable and
+//! persisted WSL metadata in `desktop.json`. New releases execute only on the
+//! Windows host or over SSH. We therefore restore the saved native shell settings
+//! before Pi starts, while keeping the old `<desktop.exe> -c <command>` entry point
+//! for one upgrade window so an already-running legacy Pi process does not break.
 
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-static WSL_SETTINGS_SYNC: Mutex<()> = Mutex::new(());
+static LEGACY_WSL_MIGRATION: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -22,14 +23,13 @@ pub enum RuntimeMode {
     Wsl,
 }
 
-/// App-owned command runtime config, persisted in `desktop.json`.
+/// Legacy app-owned runtime config. Keep this shape readable for the migration
+/// window; no current frontend command can create or modify it.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RuntimeConfig {
     pub mode: RuntimeMode,
-    /// WSL distro name (for example `Ubuntu-24.04`); empty means the default.
     pub distro: String,
-    /// Native Pi shell settings saved before WSL mode replaced them.
     pub native_shell_path: Option<String>,
     pub native_shell_command_prefix: Option<String>,
     pub native_shell_saved: bool,
@@ -54,8 +54,8 @@ fn wsl_executable() -> PathBuf {
     PathBuf::from("wsl.exe")
 }
 
-/// Convert a Windows WSL UNC project root to its Linux path. For local Windows
-/// paths, `wsl.exe --cd` performs the drive mapping itself.
+/// Interpret a cwd written by the removed bridge. This is intentionally private
+/// compatibility code, not a current execution-target implementation.
 fn resolve_context(config: &RuntimeConfig, cwd: Option<&str>) -> Result<WslContext, String> {
     let mut distro = config.distro.trim().to_string();
     let Some(raw_cwd) = cwd.filter(|value| !value.trim().is_empty()) else {
@@ -73,7 +73,7 @@ fn resolve_context(config: &RuntimeConfig, cwd: Option<&str>) -> Result<WslConte
             .ok_or_else(|| format!("WSL project path has no directory component: {raw_cwd}"))?;
         if !distro.is_empty() && !distro.eq_ignore_ascii_case(path_distro) {
             return Err(format!(
-                "project belongs to WSL distro `{path_distro}`, but runtime uses `{distro}`"
+                "project belongs to WSL distro `{path_distro}`, but legacy runtime uses `{distro}`"
             ));
         }
         if distro.is_empty() {
@@ -92,9 +92,6 @@ fn resolve_context(config: &RuntimeConfig, cwd: Option<&str>) -> Result<WslConte
 }
 
 fn append_context_args(cmd: &mut Command, context: &WslContext) {
-    // wsl.exe diagnostics use the Windows console encoding by default, while
-    // Linux command output is UTF-8. Force one encoding so Pi never receives
-    // UTF-16 NUL bytes mixed into terminal output.
     cmd.env("WSL_UTF8", "1");
     if !context.distro.is_empty() {
         cmd.args(["-d", &context.distro]);
@@ -114,43 +111,6 @@ fn hide_window(cmd: &mut Command) {
 #[cfg(not(windows))]
 fn hide_window(_cmd: &mut Command) {}
 
-#[cfg(windows)]
-fn output_with_timeout(
-    mut cmd: Command,
-    timeout: Duration,
-) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> {
-    let mut child = cmd
-        .spawn()
-        .map_err(|error| format!("failed to start wsl.exe: {error}"))?;
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            break status;
-        }
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "wsl.exe did not respond within {} seconds",
-                timeout.as_secs()
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    };
-
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut stdout)
-            .map_err(|error| error.to_string())?;
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_end(&mut stderr)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok((status, stdout, stderr))
-}
-
 fn actionable_wsl_diagnostic(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .lines()
@@ -166,48 +126,7 @@ fn actionable_wsl_diagnostic(bytes: &[u8]) -> String {
         .to_string()
 }
 
-/// Decode `wsl.exe -l -q`, which writes UTF-16LE on Windows.
-#[cfg(windows)]
-fn decode_wsl_list(bytes: &[u8]) -> String {
-    let u16s: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-        .collect();
-    String::from_utf16_lossy(&u16s)
-}
-
-/// List installed WSL distros. An empty list means WSL is unavailable.
-#[tauri::command]
-pub fn wsl_list_distros() -> Result<Vec<String>, String> {
-    #[cfg(not(windows))]
-    {
-        Ok(Vec::new())
-    }
-    #[cfg(windows)]
-    {
-        let mut cmd = Command::new(wsl_executable());
-        cmd.args(["-l", "-q"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        hide_window(&mut cmd);
-
-        let (_, stdout, _) = match output_with_timeout(cmd, Duration::from_secs(3)) {
-            Ok(output) if output.0.success() => output,
-            Ok(_) => return Ok(Vec::new()),
-            Err(error) => return Err(error),
-        };
-        Ok(decode_wsl_list(&stdout)
-            .lines()
-            .map(|line| line.trim().trim_end_matches('\r').replace('\0', ""))
-            .filter(|line| !line.is_empty())
-            .collect())
-    }
-}
-
-/// Absolute path Pi should use for `shellPath` in WSL mode.
-#[tauri::command]
-pub fn wsl_shell_bridge_path() -> Result<String, String> {
+fn shell_bridge_path() -> Result<String, String> {
     std::env::current_exe()
         .map(|path| path.to_string_lossy().replace('\\', "/"))
         .map_err(|error| format!("failed to resolve desktop executable: {error}"))
@@ -224,6 +143,14 @@ fn is_legacy_wsl_override(path: Option<&str>, prefix: Option<&serde_json::Value>
             matches!(values.as_slice(), ["--", "bash"] | ["-d", _, "--", "bash"])
         });
     path_is_wsl && prefix_is_legacy
+}
+
+fn is_managed_shell_override(
+    path: Option<&str>,
+    prefix: Option<&serde_json::Value>,
+    bridge_path: &str,
+) -> bool {
+    path == Some(bridge_path) || is_legacy_wsl_override(path, prefix)
 }
 
 fn update_settings<R>(
@@ -261,79 +188,60 @@ fn restore_setting(
     }
 }
 
-fn install_project_bridge(
+fn restore_global_shell_settings(
     object: &mut serde_json::Map<String, serde_json::Value>,
-    bridge_path: &str,
-) -> crate::projects::ShellSettingsBackup {
-    let bridge_was_already_managed =
-        object.get("shellPath").and_then(serde_json::Value::as_str) == Some(bridge_path);
-    let backup = crate::projects::ShellSettingsBackup {
-        shell_path: (!bridge_was_already_managed)
-            .then(|| object.get("shellPath").cloned())
-            .flatten(),
-        shell_command_prefix: (!bridge_was_already_managed)
-            .then(|| object.get("shellCommandPrefix").cloned())
-            .flatten(),
-    };
-    object.insert(
-        "shellPath".into(),
-        serde_json::Value::String(bridge_path.into()),
-    );
-    object.remove("shellCommandPrefix");
-    backup
-}
-
-fn sync_project_shell_settings(
     config: &RuntimeConfig,
-    root: &str,
     bridge_path: &str,
-) -> Result<(), String> {
-    let path = PathBuf::from(root).join(".pi").join("settings.json");
-    let backup = crate::projects::project_shell_backup(root)?;
-
-    if config.mode == RuntimeMode::Native {
-        let Some(backup) = backup else {
-            return Ok(());
-        };
-        update_settings(&path, |object| {
-            restore_setting(object, "shellPath", &backup.shell_path);
-            restore_setting(object, "shellCommandPrefix", &backup.shell_command_prefix);
-            Ok(())
-        })?;
-        return crate::projects::project_shell_backup_remove(root);
+) {
+    let current_path = object.get("shellPath").and_then(serde_json::Value::as_str);
+    let current_prefix = object.get("shellCommandPrefix");
+    if !is_managed_shell_override(current_path, current_prefix, bridge_path) {
+        return;
     }
 
-    if !path.is_file() {
-        return Ok(());
+    if config.native_shell_saved {
+        restore_setting(
+            object,
+            "shellPath",
+            &config
+                .native_shell_path
+                .as_ref()
+                .map(|value| serde_json::Value::String(value.clone())),
+        );
+        restore_setting(
+            object,
+            "shellCommandPrefix",
+            &config
+                .native_shell_command_prefix
+                .as_ref()
+                .map(|value| serde_json::Value::String(value.clone())),
+        );
+    } else {
+        object.remove("shellPath");
+        object.remove("shellCommandPrefix");
     }
-    update_settings(&path, |object| {
-        let has_override =
-            object.contains_key("shellPath") || object.contains_key("shellCommandPrefix");
-        if !has_override && backup.is_none() {
-            return Ok(());
-        }
-
-        if backup.is_none() {
-            let backup = install_project_bridge(object, bridge_path);
-            crate::projects::project_shell_backup_write(root, backup)?;
-        } else {
-            object.insert(
-                "shellPath".into(),
-                serde_json::Value::String(bridge_path.into()),
-            );
-            object.remove("shellCommandPrefix");
-        }
-        Ok(())
-    })
 }
 
-/// Synchronize global and current-project shell overrides before Pi reads its
-/// settings. This migrates the old direct-wsl.exe shape and restores both
-/// scopes when the runtime returns to native mode.
-pub fn sync_shell_bridge_settings(cwd: Option<&str>) -> Result<(), String> {
-    let _guard = WSL_SETTINGS_SYNC
+fn restore_project_shell_settings(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    backup: &crate::projects::ShellSettingsBackup,
+    bridge_path: &str,
+) {
+    let current_path = object.get("shellPath").and_then(serde_json::Value::as_str);
+    if current_path != Some(bridge_path) {
+        return;
+    }
+    restore_setting(object, "shellPath", &backup.shell_path);
+    restore_setting(object, "shellCommandPrefix", &backup.shell_command_prefix);
+}
+
+/// Restore every shell override written by the removed WSL mode and persist the
+/// runtime as native. The desktop calls this before starting Tauri and local Pi
+/// startup calls it again, making transient lock failures safely retryable.
+pub fn migrate_legacy_runtime_to_native() -> Result<bool, String> {
+    let _guard = LEGACY_WSL_MIGRATION
         .lock()
-        .map_err(|_| "WSL settings sync lock is poisoned".to_owned())?;
+        .map_err(|_| "legacy WSL migration lock is poisoned".to_owned())?;
     let process_lock_path = crate::pi_settings::home_dir()?
         .join(".pi")
         .join("agent")
@@ -342,123 +250,51 @@ pub fn sync_shell_bridge_settings(cwd: Option<&str>) -> Result<(), String> {
         &process_lock_path,
         Duration::from_secs(5),
     )
-    .map_err(|error| format!("WSL settings sync unavailable: {error}"))?;
-    sync_shell_bridge_settings_unlocked(cwd)
-}
+    .map_err(|error| format!("legacy WSL migration unavailable: {error}"))?;
 
-fn sync_shell_bridge_settings_unlocked(cwd: Option<&str>) -> Result<(), String> {
     let mut config = crate::projects::runtime_config()?;
-    let path = crate::pi_settings::home_dir()?
+    let backups = crate::projects::legacy_project_shell_backups()?;
+    let needs_migration =
+        config.mode == RuntimeMode::Wsl || config.native_shell_saved || !backups.is_empty();
+    if !needs_migration {
+        return Ok(false);
+    }
+
+    let bridge_path = shell_bridge_path()?;
+    let global_settings = crate::pi_settings::home_dir()?
         .join(".pi")
         .join("agent")
         .join("settings.json");
-    let bridge_path = wsl_shell_bridge_path()?;
-
-    if config.mode == RuntimeMode::Wsl {
-        update_settings(&path, |object| {
-            let current_path = object.get("shellPath").and_then(serde_json::Value::as_str);
-            let current_prefix = object.get("shellCommandPrefix");
-            if !config.native_shell_saved {
-                if !is_legacy_wsl_override(current_path, current_prefix)
-                    && current_path != Some(bridge_path.as_str())
-                {
-                    config.native_shell_path = current_path.map(str::to_string);
-                    config.native_shell_command_prefix = current_prefix
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string);
-                }
-                config.native_shell_saved = true;
-                crate::projects::runtime_config_write(config.clone())?;
-            }
-            object.insert(
-                "shellPath".into(),
-                serde_json::Value::String(bridge_path.clone()),
-            );
-            object.remove("shellCommandPrefix");
+    if global_settings.is_file() {
+        update_settings(&global_settings, |object| {
+            restore_global_shell_settings(object, &config, &bridge_path);
             Ok(())
         })?;
-    } else if config.native_shell_saved {
-        update_settings(&path, |object| {
-            restore_setting(
-                object,
-                "shellPath",
-                &config
-                    .native_shell_path
-                    .as_ref()
-                    .map(|value| serde_json::Value::String(value.clone())),
-            );
-            restore_setting(
-                object,
-                "shellCommandPrefix",
-                &config
-                    .native_shell_command_prefix
-                    .as_ref()
-                    .map(|value| serde_json::Value::String(value.clone())),
-            );
-            Ok(())
-        })?;
-        config.native_shell_path = None;
-        config.native_shell_command_prefix = None;
-        config.native_shell_saved = false;
-        crate::projects::runtime_config_write(config.clone())?;
     }
 
-    if let Some(root) = cwd {
-        sync_project_shell_settings(&config, root, &bridge_path)?;
-    }
-    Ok(())
-}
-
-pub fn validate_project_path(config: &RuntimeConfig, root: &str) -> Result<(), String> {
-    if config.mode == RuntimeMode::Wsl {
-        resolve_context(config, Some(root)).map(|_| ())
-    } else {
-        Ok(())
-    }
-}
-
-/// Validate WSL, the selected distro, Bash, and project cwd before persisting a
-/// runtime change. Native mode has no additional prerequisites.
-#[tauri::command]
-pub fn wsl_runtime_validate(config: RuntimeConfig, cwd: Option<String>) -> Result<(), String> {
-    if config.mode != RuntimeMode::Wsl {
-        return Ok(());
-    }
-    #[cfg(not(windows))]
-    return Err("WSL runtime is only available on Windows".into());
-
-    #[cfg(windows)]
-    {
-        let context = resolve_context(&config, cwd.as_deref())?;
-        let mut cmd = Command::new(wsl_executable());
-        append_context_args(&mut cmd, &context);
-        cmd.args(["--exec", "bash", "-lc", "exit 0"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        hide_window(&mut cmd);
-        let (status, _, stderr) = output_with_timeout(cmd, Duration::from_secs(5))?;
-        if status.success() {
-            Ok(())
-        } else {
-            let distro = if context.distro.is_empty() {
-                "the default distro"
-            } else {
-                context.distro.as_str()
-            };
-            let diagnostic = actionable_wsl_diagnostic(&stderr);
-            let detail = if diagnostic.is_empty() {
-                "verify that WSL and Bash are installed".to_string()
-            } else {
-                diagnostic
-            };
-            Err(format!("could not start Bash in {distro}: {detail}"))
+    for (root, backup) in &backups {
+        let settings_path = PathBuf::from(root).join(".pi").join("settings.json");
+        if !settings_path.is_file() {
+            continue;
         }
+        update_settings(&settings_path, |object| {
+            restore_project_shell_settings(object, backup, &bridge_path);
+            Ok(())
+        })?;
     }
+
+    config.mode = RuntimeMode::Native;
+    config.distro.clear();
+    config.native_shell_path = None;
+    config.native_shell_command_prefix = None;
+    config.native_shell_saved = false;
+    crate::projects::complete_legacy_wsl_migration(config)?;
+    Ok(true)
 }
 
-/// Handle the special `<desktop.exe> -c <command>` shell invocation used by
-/// Pi. Returns `None` for a normal desktop launch.
+/// Handle the retired `<desktop.exe> -c <command>` shell invocation. This remains
+/// only as an upgrade fallback for a legacy Pi process that was already running.
+/// Returns `None` for a normal desktop launch.
 pub fn run_shell_bridge_if_requested() -> Option<i32> {
     let mut args = std::env::args_os().skip(1);
     if args.next().as_deref() != Some(std::ffi::OsStr::new("-c")) {
@@ -467,7 +303,7 @@ pub fn run_shell_bridge_if_requested() -> Option<i32> {
     let command = match args.next() {
         Some(value) => value,
         None => {
-            eprintln!("Pi WSL shell bridge expected a command after -c");
+            eprintln!("Pi legacy WSL shell bridge expected a command after -c");
             return Some(2);
         }
     };
@@ -475,12 +311,12 @@ pub fn run_shell_bridge_if_requested() -> Option<i32> {
     let config = match crate::projects::runtime_config() {
         Ok(config) => config,
         Err(error) => {
-            eprintln!("Pi WSL shell bridge could not read runtime state: {error}");
+            eprintln!("Pi legacy WSL shell bridge could not read runtime state: {error}");
             return Some(2);
         }
     };
     if config.mode != RuntimeMode::Wsl {
-        eprintln!("Pi WSL shell bridge was invoked while the runtime is native");
+        eprintln!("Pi legacy WSL shell bridge is no longer active");
         return Some(2);
     }
     let inherited_cwd = std::env::current_dir()
@@ -497,7 +333,7 @@ pub fn run_shell_bridge_if_requested() -> Option<i32> {
     let mut child = Command::new(wsl_executable());
     append_context_args(&mut child, &context);
     // Pi already combines stdout and stderr into one BashResult. Merge Linux
-    // stderr inside Bash, then discard wsl.exe's own repetitive host warnings.
+    // stderr inside Bash, then discard wsl.exe's repetitive host warnings.
     let command = format!("{{\n{}\n}} 2>&1", command.to_string_lossy());
     child
         .args(["--exec", "bash", "-lc"])
@@ -507,7 +343,7 @@ pub fn run_shell_bridge_if_requested() -> Option<i32> {
     let mut child = match child.spawn() {
         Ok(child) => child,
         Err(error) => {
-            eprintln!("failed to execute command in WSL: {error}");
+            eprintln!("failed to execute legacy command in WSL: {error}");
             return Some(1);
         }
     };
@@ -542,7 +378,7 @@ pub fn run_shell_bridge_if_requested() -> Option<i32> {
             Some(status.code().unwrap_or(1))
         }
         Err(error) => {
-            eprintln!("failed to wait for WSL command: {error}");
+            eprintln!("failed to wait for legacy WSL command: {error}");
             Some(1)
         }
     }
@@ -561,14 +397,14 @@ mod tests {
     }
 
     #[test]
-    fn keeps_windows_project_for_wsl_cd_mapping() {
+    fn compatibility_bridge_keeps_windows_cwd_for_wsl_mapping() {
         let context = resolve_context(&config("Ubuntu"), Some("D:/work/project")).unwrap();
         assert_eq!(context.distro, "Ubuntu");
         assert_eq!(context.cwd.as_deref(), Some("D:/work/project"));
     }
 
     #[test]
-    fn converts_wsl_unc_project_and_derives_distro() {
+    fn compatibility_bridge_converts_wsl_unc_and_derives_distro() {
         let context = resolve_context(
             &config(""),
             Some("//wsl.localhost/Ubuntu-24.04/home/user/project"),
@@ -579,17 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_project_from_another_distro() {
-        let error = resolve_context(
-            &config("Ubuntu"),
-            Some(r"\\wsl.localhost\Debian\home\user\project"),
-        )
-        .unwrap_err();
-        assert!(error.contains("project belongs to WSL distro `Debian`"));
-    }
-
-    #[test]
-    fn recognizes_only_the_old_generated_wsl_override() {
+    fn recognizes_only_the_old_generated_direct_wsl_override() {
         let legacy = serde_json::json!(["-d", "Ubuntu", "--", "bash"]);
         assert!(is_legacy_wsl_override(
             Some("C:/Windows/System32/wsl.exe"),
@@ -606,26 +432,71 @@ mod tests {
     }
 
     #[test]
-    fn project_override_is_replaced_and_preserved_for_restore() {
+    fn migration_restores_saved_global_shell_settings() {
         let mut settings = serde_json::json!({
-            "shellPath": "C:/custom/bash.exe",
-            "shellCommandPrefix": "source ~/.profile"
+            "shellPath": "C:/Pi/pi-desktop.exe"
         });
-        let object = settings.as_object_mut().unwrap();
-        let backup = install_project_bridge(object, "C:/Pi/pi-desktop.exe");
+        let config = RuntimeConfig {
+            mode: RuntimeMode::Wsl,
+            native_shell_path: Some("C:/custom/bash.exe".into()),
+            native_shell_command_prefix: Some("source ~/.profile".into()),
+            native_shell_saved: true,
+            ..RuntimeConfig::default()
+        };
 
-        assert_eq!(
-            object.get("shellPath").and_then(serde_json::Value::as_str),
-            Some("C:/Pi/pi-desktop.exe")
+        restore_global_shell_settings(
+            settings.as_object_mut().unwrap(),
+            &config,
+            "C:/Pi/pi-desktop.exe",
         );
-        assert!(!object.contains_key("shellCommandPrefix"));
-        assert_eq!(
-            backup.shell_path,
-            Some(serde_json::json!("C:/custom/bash.exe"))
+
+        assert_eq!(settings["shellPath"], "C:/custom/bash.exe");
+        assert_eq!(settings["shellCommandPrefix"], "source ~/.profile");
+    }
+
+    #[test]
+    fn migration_does_not_overwrite_a_manual_shell_change() {
+        let mut settings = serde_json::json!({
+            "shellPath": "C:/new/bash.exe",
+            "shellCommandPrefix": "new-prefix"
+        });
+        let before = settings.clone();
+        let config = RuntimeConfig {
+            mode: RuntimeMode::Wsl,
+            native_shell_path: Some("C:/old/bash.exe".into()),
+            native_shell_saved: true,
+            ..RuntimeConfig::default()
+        };
+
+        restore_global_shell_settings(
+            settings.as_object_mut().unwrap(),
+            &config,
+            "C:/Pi/pi-desktop.exe",
         );
+
+        assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn migration_restores_project_backup_only_for_managed_bridge() {
+        let backup = crate::projects::ShellSettingsBackup {
+            shell_path: Some(serde_json::json!("C:/project/bash.exe")),
+            shell_command_prefix: Some(serde_json::json!(["--login"])),
+        };
+        let mut settings = serde_json::json!({
+            "shellPath": "C:/Pi/pi-desktop.exe"
+        });
+
+        restore_project_shell_settings(
+            settings.as_object_mut().unwrap(),
+            &backup,
+            "C:/Pi/pi-desktop.exe",
+        );
+
+        assert_eq!(settings["shellPath"], "C:/project/bash.exe");
         assert_eq!(
-            backup.shell_command_prefix,
-            Some(serde_json::json!("source ~/.profile"))
+            settings["shellCommandPrefix"],
+            serde_json::json!(["--login"])
         );
     }
 }

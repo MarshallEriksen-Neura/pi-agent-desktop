@@ -174,8 +174,8 @@ fn backend_health_snapshot(pi: &PiProc) -> BackendHealthSnapshot {
     BackendHealthSnapshot::new(status, process, ComponentStatus::Unknown)
 }
 
-/// Intercept the executable's `-c <command>` form before Tauri starts. Pi uses
-/// this entry point as its WSL-compatible custom shell.
+/// Intercept the retired executable `-c <command>` form before Tauri starts.
+/// Kept temporarily so an already-running legacy Pi process can finish commands.
 pub fn run_shell_bridge_if_requested() -> Option<i32> {
     wsl::run_shell_bridge_if_requested()
 }
@@ -325,6 +325,12 @@ fn create_tray(app: &App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // This must run before Tauri setup can launch the first Pi process. If it
+    // fails, retain the persisted legacy mode so the compatibility bridge still works.
+    if let Err(error) = wsl::migrate_legacy_runtime_to_native() {
+        eprintln!("legacy WSL shell migration deferred: {error}");
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -395,11 +401,6 @@ pub fn run() {
             projects::project_open_remote,
             projects::project_remove_recent,
             projects::project_pick,
-            projects::runtime_config_read,
-            projects::runtime_config_write,
-            wsl::wsl_list_distros,
-            wsl::wsl_shell_bridge_path,
-            wsl::wsl_runtime_validate,
             updater::update_check,
             updater::update_apply,
             updater::pi_cli_update_check,

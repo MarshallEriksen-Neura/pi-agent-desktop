@@ -12,7 +12,6 @@ import { desktopRemoteProviderSyncPort } from "../desktop/remote-provider-sync";
 import { desktopRemotePiProfilePort } from "../desktop/remote-profiles";
 import { desktopRemoteTerminalPort } from "../desktop/remote-terminal";
 import { desktopRemoteConversationsPort } from "../desktop/remote-conversations";
-import { createDesktopRuntimeConfigPort } from "../desktop/runtime-config";
 import { desktopSessionRepositoryPort } from "../desktop/session-repository";
 import { desktopUpdaterPort } from "../desktop/updater";
 import { desktopWindowPort } from "../desktop/window";
@@ -44,7 +43,6 @@ export function createDesktopBackendPorts(): BackendPorts {
     remoteTerminal: desktopRemoteTerminalPort,
     remoteProviderSync: desktopRemoteProviderSyncPort,
     remoteConversations: desktopRemoteConversationsPort,
-    runtimeConfig: createDesktopRuntimeConfigPort(),
     piConfiguration: createDesktopPiConfigurationPort(),
     window: desktopWindowPort,
     notification: desktopNotificationPort,

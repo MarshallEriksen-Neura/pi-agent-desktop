@@ -93,9 +93,9 @@ export function executionScopeKey(binding: ExecutionBinding, localProjectRoot: s
   return `ssh:${encodeURIComponent(binding.profileId)}:${encodeURIComponent(binding.remoteCwd)}`;
 }
 
-function sameExecutionBinding(
+function sameExecutionScope(
   left: ExecutionBinding | undefined,
-  right: ExecutionBinding,
+  right: ExecutionBinding
 ): boolean {
   const current = left ?? LOCAL_EXECUTION_BINDING;
   if (current.kind !== right.kind) return false;
@@ -107,6 +107,20 @@ function sameExecutionBinding(
     current.hostAlias === right.hostAlias &&
     current.remoteCwd === right.remoteCwd &&
     current.launcherProtocolVersion === right.launcherProtocolVersion
+  );
+}
+
+function sameExecutionBinding(
+  left: ExecutionBinding | undefined,
+  right: ExecutionBinding
+): boolean {
+  if (!sameExecutionScope(left, right)) return false;
+  const current = left ?? LOCAL_EXECUTION_BINDING;
+  if (current.kind === "local") return true;
+  return (
+    right.kind === "ssh" &&
+    (current.remoteTaskId ?? null) === (right.remoteTaskId ?? null) &&
+    (current.remoteTaskPending ?? false) === (right.remoteTaskPending ?? false)
   );
 }
 
@@ -319,8 +333,8 @@ const titleAttempts = new Set<string>();
 
 /**
  * Retry delays for syncSessionPath when pi isn't ready to answer get_state yet
- * (session resume, extension load, WSL hop can all delay readiness). The
- * initial call in init()/switchProject()/startFresh() may hit this window.
+ * (session resume and extension load can both delay readiness). The initial call in
+ * init()/switchProject()/startFresh() may hit this window.
  */
 const SYNC_DELAYS_MS = [2_000, 5_000, 10_000];
 
@@ -332,16 +346,26 @@ const SYNC_DELAYS_MS = [2_000, 5_000, 10_000];
  * rule exists to prevent. No schema change is needed because the binding is already part
  * of the session record.
  */
-function persistExecutionBinding(taskId: string, binding: ExecutionBinding): void {
-  const current = useSessions.getState().sessions.find((session) => session.id === taskId);
-  if (!current) return;
+async function persistExecutionBinding(taskId: string, binding: ExecutionBinding): Promise<void> {
+  let updated: ChatSessionMeta | undefined;
   useSessions.setState((state) => ({
-    sessions: state.sessions.map((session) =>
-      session.id === taskId ? { ...session, executionBinding: binding } : session,
-    ),
+    sessions: state.sessions.map((session) => {
+      if (session.id !== taskId || sameExecutionBinding(session.executionBinding, binding)) {
+        return session;
+      }
+      updated = { ...session, executionBinding: binding, updatedAt: Date.now() };
+      return updated;
+    }),
   }));
-  const meta = useSessions.getState().sessions.find((session) => session.id === taskId);
-  if (meta) void backendSave(meta, getChatStore(taskId).getState().messages);
+  if (!updated) {
+    const current = useSessions.getState().sessions.find((session) => session.id === taskId);
+    if (!current) {
+      throw new Error(`cannot persist execution binding for unknown session ${taskId}`);
+    }
+    return;
+  }
+  // This write is a detached-task protocol boundary, not a debounced UI save.
+  await backendSave(updated, getChatStore(taskId).getState().messages);
 }
 
 /**
@@ -649,18 +673,15 @@ async function ensureTaskStarted(
   if (!chat.getState().initialized) chat.getState().init();
   hookAutosave(taskId);
 
-  // A detached binding has to be completed before anything attaches to it: it needs a
-  // live `remoteTaskId`, and getting one is two SSH round trips. Doing it here rather
-  // than inside the process port keeps `pi_start` synchronous, and puts the result where
-  // it can be persisted — the binding is part of the session record.
+  // Detached start is write-ahead: both the pending id and the host acknowledgement
+  // are durably saved before the process port is allowed to attach.
   let binding = opts.executionBinding;
   let attachAfter: number | undefined;
   if (binding !== undefined && binding.kind === "ssh") {
-    const prepared = await prepareRemoteBinding(binding);
+    const prepared = await prepareRemoteBinding(binding, (next) =>
+      persistExecutionBinding(taskId, next),
+    );
     const completed = prepared.binding;
-    if (!sameExecutionBinding(binding, completed)) {
-      persistExecutionBinding(taskId, completed);
-    }
     binding = completed;
     // A replaced task is a different journal, so a cursor from the old one would resume
     // at a sequence that means something else entirely. Start from the beginning of the
@@ -721,7 +742,8 @@ async function startFresh(projectRoot: string): Promise<void> {
     sessions: [meta, ...s.sessions],
     activeId: meta.id,
   }));
-  void backendSave(meta, []);
+  // Establish the session row before detached write-ahead binding updates begin.
+  await backendSave(meta, []);
   await ensureTaskStarted(meta.id, {
     cwd: cwdForBinding(meta.executionBinding, projectRoot),
     executionBinding: meta.executionBinding,
@@ -740,7 +762,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
   switchExecutionTarget: async (executionBinding, localProjectRoot) => {
     const scope = executionScopeKey(executionBinding, localProjectRoot);
     const active = get().sessions.find((session) => session.id === get().activeId);
-    if (get().initialized && get().projectRoot === scope && sameExecutionBinding(active?.executionBinding, executionBinding)) {
+    if (get().initialized && get().projectRoot === scope && sameExecutionScope(active?.executionBinding, executionBinding)) {
       set({ executionBinding });
       // Still announce: this early return also covers the first switch onto a
       // target whose scope already matches, and the workspace may not have been
@@ -767,7 +789,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
     const sessions = await backendList(scope, executionBinding);
     set({ sessions });
     sessions.forEach((session) => setSessionTitle(session.id, session.name));
-    const compatible = sessions.find((session) => sameExecutionBinding(session.executionBinding, executionBinding));
+    const compatible = sessions.find((session) => sameExecutionScope(session.executionBinding, executionBinding));
     if (compatible) {
       set({ activeId: compatible.id });
       setActiveTaskId(compatible.id);

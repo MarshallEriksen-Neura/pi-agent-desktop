@@ -132,7 +132,9 @@ fn with_npm_bin_prepended(path: &std::ffi::OsStr, npm_bin: &Path) -> Option<OsSt
 /// `Command::new` lookup would otherwise miss.
 pub fn prepend_npm_bin_to_path(cmd: &mut Command) {
     let Some(npm_bin) = npm_bin_dir() else { return };
-    let Some(path) = std::env::var_os("PATH") else { return };
+    let Some(path) = std::env::var_os("PATH") else {
+        return;
+    };
     if let Some(joined) = with_npm_bin_prepended(&path, &npm_bin) {
         cmd.env("PATH", joined);
     }

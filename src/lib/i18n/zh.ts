@@ -442,7 +442,7 @@ export const zh: Record<keyof typeof en, string> = {
   "settings.category.agent": "Agent",
   "settings.category.agentDetail": "模型、思考、重试、消息投递与上下文行为。",
   "settings.category.runtime": "运行环境",
-  "settings.category.runtimeDetail": "WSL、Shell、会话、代理与传输环境。",
+  "settings.category.runtimeDetail": "Shell、会话、代理与传输环境。",
   "settings.category.remote": "远程控制",
   "settings.category.remoteDetail": "局域网网关、已配对设备与桌面当前项目。",
   "settings.category.accounts": "账号",
@@ -792,11 +792,6 @@ export const zh: Record<keyof typeof en, string> = {
   // per-provider caveats — only providers listed in PROVIDER_NOTE_KEYS render one
   "providerAuth.note.anthropic":
     "第三方 harness 的用量按 token 计入 extra usage 单独计费，不占用 Claude 套餐额度。",
-  // WSL — pi runs inside the distro against its own auth file
-  "providerAuth.wslTitle": "WSL 模式下无法在应用内登录",
-  "providerAuth.wslDetail":
-    "pi 运行在 WSL 发行版内，读取的是发行版家目录里的凭据文件，从这里发起的登录会写错位置。请在发行版内运行下面的命令，然后使用 /login：",
-
   // models page
   "models.title": "模型",
   "models.subtitleMock":
@@ -1126,20 +1121,6 @@ export const zh: Record<keyof typeof en, string> = {
   "cliUpdate.upToDate": "pi 已是最新版本",
   "settings.softwareUpdate": "软件更新",
   "settings.softwareUpdateDetail": "版本 {version}",
-
-  // 命令环境（仅 Windows）：在 Windows 或 WSL 中运行 Bash
-  "settings.runtime": "命令环境",
-  "settings.runtimeFooter":
-    "让 Agent 与终端命令在 Windows 或 WSL 发行版中执行。Pi 设置、凭据与插件仍保留在 Windows。更改后将重启 Pi。",
-  "settings.runtimeMode": "命令运行于",
-  "settings.runtimeNative": "Windows",
-  "settings.runtimeWsl": "WSL",
-  "settings.runtimeDistro": "WSL 发行版",
-  "settings.runtimeDistroDetail": "执行命令所用的已安装发行版",
-  "settings.runtimeDistroDefault": "默认发行版",
-  "settings.runtimeNoDistros":
-    "未找到 WSL 发行版。请用 `wsl --install` 安装后重新打开设置。",
-  "settings.runtimeApply": "应用并重启 Pi",
 
   // 远程 Agent — SSH 执行配置
   "settings.remoteAgent.profiles": "远程 Agent 配置",

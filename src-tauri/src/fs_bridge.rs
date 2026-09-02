@@ -2,9 +2,7 @@
 //! Deliberately minimal: list a directory, read/write/create/delete files and
 //! directories, report the root.
 
-use pi_backend_core::file_index::{
-    index_files, DEFAULT_LIMIT, DEFAULT_MAX_DEPTH, SKIP_DIRS,
-};
+use pi_backend_core::file_index::{index_files, DEFAULT_LIMIT, DEFAULT_MAX_DEPTH, SKIP_DIRS};
 use serde::Serialize;
 use std::fs;
 use std::path::Path;

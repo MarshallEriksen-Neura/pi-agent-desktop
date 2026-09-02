@@ -82,8 +82,7 @@ export interface ProviderAuthPort {
   listProviders(): Promise<AuthProviderDto[]>;
   /**
    * Start a login. Resolves once the flow has started; progress arrives through
-   * {@link onEvent}. Rejects with `wsl-unsupported` when pi runs inside WSL,
-   * where a host-side login would write a credential file the agent never reads.
+   * {@link onEvent}.
    */
   beginLogin(providerId: string, method: ProviderAuthMethod): Promise<void>;
   /** Answer a `prompt` event. `requestId` must match the one received. */

@@ -8,7 +8,6 @@ import { InsetGroup } from "@/components/settings-ui";
 import { useT } from "@/lib/i18n";
 import { ProviderListGroup } from "./ProviderListGroup";
 import { LoginFlowModal } from "./LoginFlowModal";
-import { WslNoticeGroup } from "./WslNoticeGroup";
 
 /**
  * Composition root for the Accounts settings surface.
@@ -22,7 +21,6 @@ export const ProviderAuthSection = memo(function ProviderAuthSection() {
   const providers = useProviderAuth((s) => s.providers);
   const loading = useProviderAuth((s) => s.loading);
   const lastError = useProviderAuth((s) => s.lastError);
-  const wslUnsupported = useProviderAuth((s) => s.wslUnsupported);
   const loggingOut = useProviderAuth((s) => s.loggingOut);
   const active = useProviderAuth((s) => s.active);
   const refresh = useProviderAuth((s) => s.refresh);
@@ -62,8 +60,6 @@ export const ProviderAuthSection = memo(function ProviderAuthSection() {
 
   return (
     <>
-      {wslUnsupported && <WslNoticeGroup />}
-
       {lastError && (
         <InsetGroup>
           <div style={{ padding: "12px 14px", fontSize: 12, color: "var(--danger, #e5484d)" }}>
@@ -90,7 +86,7 @@ export const ProviderAuthSection = memo(function ProviderAuthSection() {
         <ProviderListGroup
           providers={providers}
           loggingOut={loggingOut}
-          disabled={wslUnsupported || active !== null}
+          disabled={active !== null}
           onLogin={onLogin}
           onLogout={(providerId) => void logout(providerId)}
         />

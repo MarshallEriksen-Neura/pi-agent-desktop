@@ -10,7 +10,6 @@ import { createMockRemoteControlPort } from "../mock/remote-control";
 import { mockRemoteProviderSyncPort } from "../mock/remote-provider-sync";
 import { createMockRemotePiProfilePort } from "../mock/remote-profiles";
 import { mockRemoteConversationsPort } from "../mock/remote-conversations";
-import { createMockRuntimeConfigPort } from "../mock/runtime-config";
 import { createMockSessionRepositoryPort } from "../mock/session-repository";
 import { mockUpdaterPort } from "../mock/updater";
 import { mockWindowPort } from "../mock/window";
@@ -46,7 +45,6 @@ export function createBrowserBackendPorts(): BackendPorts {
     providerAuth: mockProviderAuthPort,
     remoteControl: createMockRemoteControlPort(),
     remoteConversations: mockRemoteConversationsPort,
-    runtimeConfig: createMockRuntimeConfigPort(),
     piConfiguration: createMockPiConfigurationPort(),
     window: mockWindowPort,
     notification: mockNotificationPort,

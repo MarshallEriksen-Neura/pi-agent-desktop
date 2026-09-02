@@ -10,8 +10,6 @@ import type {
 } from "@/lib/backend/ports";
 import { getPort } from "@/lib/backend/composition/container";
 
-/** Error string the Rust side returns when pi runs inside WSL. */
-export const WSL_UNSUPPORTED = "wsl-unsupported";
 /** Error string emitted when the login watchdog fires. */
 export const LOGIN_TIMEOUT = "login-timeout";
 
@@ -57,8 +55,6 @@ interface ProviderAuthState {
   loading: boolean;
   /** Error from listing/logout, distinct from a login-flow error. */
   lastError: string | null;
-  /** True when pi runs in WSL, where logging in from the app cannot work. */
-  wslUnsupported: boolean;
   /** Provider id whose logout is in flight. */
   loggingOut: string | null;
   active: ActiveLogin | null;
@@ -78,7 +74,6 @@ export const useProviderAuth = create<ProviderAuthState>()((set, get) => ({
   providers: [],
   loading: true,
   lastError: null,
-  wslUnsupported: false,
   loggingOut: null,
   active: null,
 
@@ -111,10 +106,6 @@ export const useProviderAuth = create<ProviderAuthState>()((set, get) => ({
       await providerAuth().beginLogin(providerId, method);
     } catch (e) {
       const message = errorMessage(e);
-      if (message.includes(WSL_UNSUPPORTED)) {
-        set({ wslUnsupported: true, active: null });
-        return;
-      }
       set((prev) =>
         prev.active ? { active: { ...prev.active, phase: "error", error: message } } : {}
       );
@@ -166,12 +157,7 @@ export const useProviderAuth = create<ProviderAuthState>()((set, get) => ({
       set({ loggingOut: null });
       await get().refresh();
     } catch (e) {
-      const message = errorMessage(e);
-      set({
-        loggingOut: null,
-        wslUnsupported: message.includes(WSL_UNSUPPORTED) ? true : get().wslUnsupported,
-        lastError: message.includes(WSL_UNSUPPORTED) ? null : message,
-      });
+      set({ loggingOut: null, lastError: errorMessage(e) });
     }
   },
 

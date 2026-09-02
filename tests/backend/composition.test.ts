@@ -88,13 +88,6 @@ function fakePorts(label = "fake"): BackendPorts {
       logout: async () => undefined,
       onEvent: () => () => undefined,
     },
-    runtimeConfig: {
-      read: async () => ({ mode: "native", distro: "" }),
-      write: async () => undefined,
-      listWslDistros: async () => [],
-      validateWsl: async () => ({ ok: true }),
-      getWslBridgePath: async () => "",
-    },
     piConfiguration: {
       readSettings: async () => ({ path: "", exists: false, content: "" }),
       writeSettings: async () => undefined,
@@ -243,6 +236,6 @@ test("desktop invoke errors preserve command and classify common failures", () =
   assert.equal(denied.command, "dialog");
   assert.equal(denied.kind, "permission-denied");
 
-  const args = normalizeDesktopInvokeError("runtime_config_write", "invalid args: missing config");
+  const args = normalizeDesktopInvokeError("pi_start", "invalid args: missing executionBinding");
   assert.equal(args.kind, "invalid-args");
 });

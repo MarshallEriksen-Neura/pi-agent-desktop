@@ -9,8 +9,10 @@ import type {
 
 export interface RemoteTaskEnsureRequest {
   profileId: string;
-  /** Omit for a fresh task; supply to reattach to, or replace, an existing one. */
-  remoteTaskId?: string;
+  /** Write-ahead id to start or reattach. Detached starts must always supply it. */
+  remoteTaskId: string;
+  /** Old spent id, recorded only for remote journal diagnostics. */
+  previousTaskId?: string;
   /** Where pi runs — a per-conversation choice, not a profile setting. */
   remoteCwd: string;
   resumePath?: string;
@@ -93,10 +95,9 @@ export interface RemotePiProfilePort {
    */
   autoUpgradeLauncher(id: string): Promise<LauncherUpgradeResult>;
   /**
-   * Mint or reattach a detached task, so the process port only has to attach.
-   *
-   * Separate from starting the process because this is the part that talks to the host —
-   * two bounded SSH round trips — and `pi_start` is synchronous.
+   * Idempotently start or reattach the caller's durable write-ahead task id.
+   * The caller must persist the id before invoking this host operation; `pi_start`
+   * then only has to attach.
    */
   ensureTask(request: RemoteTaskEnsureRequest): Promise<RemoteTaskHandle>;
   /**

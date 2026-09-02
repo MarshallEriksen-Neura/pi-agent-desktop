@@ -203,10 +203,8 @@ export function pathParent(path: string): string {
 /**
  * `path` relative to `root`, or `path` unchanged when it is not underneath it.
  *
- * Mentions are relative because that is what pi resolves against its own cwd, and
- * because it sidesteps path translation entirely: under WSL the same file is
- * `D:/repo/src` to this window and `/mnt/d/repo/src` to pi, and a relative path is
- * correct on both sides without consulting the runtime mode.
+ * Mentions are relative because Pi resolves them against its execution target's cwd.
+ * This also avoids leaking target-specific absolute paths into the conversation.
  */
 export function relativeToRoot(path: string, root: string | null): string {
   if (!root) return path;

@@ -19,7 +19,7 @@ use serde::Serialize;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Mutex, mpsc};
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -109,17 +109,6 @@ fn pi_dist_path() -> Result<PathBuf, String> {
         }
     }
     Err("Could not find the pi package. Install it with `npm install -g @earendil-works/pi-coding-agent` and restart Pi.".into())
-}
-
-/// Login writes to the auth file that pi resolves for itself. In WSL mode pi
-/// runs inside the distro against the distro's home directory, so a Windows-side
-/// sidecar would write a file the agent never reads.
-fn reject_wsl_mode() -> Result<(), String> {
-    let config = crate::projects::runtime_config()?;
-    if matches!(config.mode, crate::wsl::RuntimeMode::Wsl) {
-        return Err("wsl-unsupported".into());
-    }
-    Ok(())
 }
 
 #[cfg(windows)]
@@ -238,7 +227,6 @@ pub async fn provider_auth_list() -> Result<Vec<String>, String> {
 /// Clear a stored credential.
 #[tauri::command]
 pub async fn provider_auth_logout(provider_id: String) -> Result<Vec<String>, String> {
-    reject_wsl_mode()?;
     let provider = provider_id.trim().to_owned();
     if provider.is_empty() {
         return Err("providerId is required".into());
@@ -257,7 +245,6 @@ pub fn provider_auth_begin(
     provider_id: String,
     method: String,
 ) -> Result<(), String> {
-    reject_wsl_mode()?;
     let provider = provider_id.trim().to_owned();
     if provider.is_empty() {
         return Err("providerId is required".into());
@@ -307,7 +294,9 @@ pub fn provider_auth_begin(
     std::thread::spawn(move || {
         std::thread::sleep(LOGIN_TIMEOUT);
         let state = watchdog.state::<ProviderAuthState>();
-        let Ok(mut guard) = state.0.lock() else { return };
+        let Ok(mut guard) = state.0.lock() else {
+            return;
+        };
         if guard
             .as_ref()
             .is_some_and(|session| session.generation == generation)

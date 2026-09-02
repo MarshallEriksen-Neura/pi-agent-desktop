@@ -29,7 +29,6 @@ import { useTerminalBlocks } from "@/lib/terminal-blocks";
 import { TerminalBlocks } from "./TerminalBlocks";
 import { TerminalInput } from "./TerminalInput";
 import { runPastedLines } from "@/lib/terminal-block-shell";
-import { useRuntime } from "@/lib/pi/runtime";
 import { useSessions } from "@/lib/pi/sessions";
 import { getPort } from "@/lib/backend/composition/container";
 import {
@@ -99,7 +98,6 @@ export function TerminalDrawer() {
     resetTerminalHeight,
   } = useUI();
   const { viewMode, setViewMode } = useTerminalBlocks();
-  const runtime = useRuntime((state) => state.persistedConfig);
   const executionBinding = useSessions((state) => state.executionBinding);
   const remoteBinding = executionBinding.kind === "ssh" ? executionBinding : null;
   const remoteBindingRef = useRef(remoteBinding);
@@ -174,10 +172,6 @@ export function TerminalDrawer() {
     (paths: string[]) => {
       const remote = remoteBindingRef.current !== null;
       const text = formatDroppedPaths(paths, {
-        // A remote shell shares no filesystem with this machine, so its paths go
-        // in verbatim — still useful as an scp argument, and wrong to rewrite for
-        // a namespace the file did not come from.
-        wslDistro: !remote && runtime.mode === "wsl" ? (runtime.distro ?? "") : null,
         precedingLine: remote
           ? null
           : isClassicView()
@@ -189,7 +183,7 @@ export function TerminalDrawer() {
       // not the focused element by the time the path lands in it.
       if (isClassicView()) termRef.current?.focus();
     },
-    [insertText, isClassicView, runtime.distro, runtime.mode]
+    [insertText, isClassicView]
   );
 
   const dropZoneRef = useRef<HTMLElement>(null);
@@ -670,20 +664,6 @@ export function TerminalDrawer() {
             >
               {t("terminal.title")}
             </span>
-            {runtime.mode === "wsl" && !remoteBinding && (
-              <span
-                style={{
-                  fontSize: 10.5,
-                  color: "var(--success)",
-                  border: "1px solid color-mix(in srgb, var(--success) 35%, transparent)",
-                  borderRadius: 4,
-                  padding: "1px 5px",
-                  lineHeight: 1.4,
-                }}
-              >
-                WSL{runtime.distro ? ` · ${runtime.distro}` : ""}
-              </span>
-            )}
             {remoteBinding && (
               <span
                 style={{

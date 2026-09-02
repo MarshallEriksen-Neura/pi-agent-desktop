@@ -504,17 +504,21 @@ test("a detached task journals both streams with a tag and survives its starter"
   });
 });
 
-test("a task id is never reused, so a sequence gap can only mean a disconnect", { skip: !posix }, () => {
+test("a task id is idempotent but never starts a second process", { skip: !posix }, () => {
   withHome((home) => {
     const pi = writeFakePi(home, "exec sleep 30");
-    assert.equal(startDetached(home, "task-once01", pi).ok, true);
+    const first = startDetached(home, "task-once01", pi);
+    assert.equal(first.ok, true);
     const again = startDetached(home, "task-once01", pi);
-    assert.deepEqual({ ok: again.ok, errorCode: again.errorCode }, { ok: false, errorCode: "taskAlreadyRunning" });
+    assert.equal(again.ok, true);
+    assert.equal(again.remoteTaskId, "task-once01");
+    assert.equal(again.pid, first.pid, "a retry reattaches instead of spawning");
     run(home, ["--stop", "task-once01"]);
-    // Still refused after it has exited: continuing means a new id with
-    // previousTaskId set, never a second pi over the same journal.
+    // The spent id remains terminal: idempotency must not reuse its journal.
     const afterExit = startDetached(home, "task-once01", pi);
-    assert.equal(afterExit.errorCode, "taskAlreadyRunning");
+    assert.equal(afterExit.ok, true);
+    assert.equal(afterExit.state, "exited");
+    assert.equal(afterExit.pid, first.pid);
   });
 });
 

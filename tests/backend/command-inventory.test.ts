@@ -58,8 +58,9 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // because the two fail differently. fs_index_files — the flat path list behind
   // `@`-mention completion — makes 91; it is separate from fs_list_dir because the
   // tree wants one directory's entries and completion wants the whole project's
-  // paths, ignore rules applied.
-  assert.equal(result.inventory.commandUniqueCount, 91);
+  // paths, ignore rules applied. Removing the WSL runtime mode takes out five —
+  // runtime_config_read/write and the three wsl_* commands — down to 86.
+  assert.equal(result.inventory.commandUniqueCount, 86);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -151,8 +152,8 @@ test("locks the desktop command names and Pi process event names", () => {
     "remote_provider_sync_apply",
     "remote_provider_sync_candidates",
     "remote_provider_sync_prepare",
-    // mints or reattaches a detached remote task; two SSH round trips, so it is
-    // deliberately not part of the synchronous pi_start
+    // idempotently starts or reattaches a caller-persisted detached task id; two
+    // SSH round trips, so it is deliberately not part of synchronous pi_start
     "remote_task_ensure",
     // asking the host what a task is doing — the only way out of `lost`, since a
     // partitioned pi outlives the desktop's knowledge by up to ~2h
@@ -168,8 +169,6 @@ test("locks the desktop command names and Pi process event names", () => {
     // read-only remote browsing: list a directory, read a file. Writes stay
     // refused until V2.4 adds the hash check
     "remote_workspace_request",
-    "runtime_config_read",
-    "runtime_config_write",
     // `npx skills …` — skill install/remove/update, allowlisted subcommands only
     "skills_cli",
     // native catalogue search: skills.sh sends no CORS headers, so the webview
@@ -177,8 +176,5 @@ test("locks the desktop command names and Pi process event names", () => {
     "skills_search",
     "ssh_config_hosts",
     "workspace_root",
-    "wsl_list_distros",
-    "wsl_runtime_validate",
-    "wsl_shell_bridge_path",
   ]);
 });

@@ -153,9 +153,11 @@ pub fn pi_start(
     };
     let is_remote = matches!(binding, ExecutionBinding::Ssh { .. });
     if !is_remote {
-        // Repair/migrate the WSL custom-shell override before local Pi reads
-        // settings.json. Remote Pi owns its own shell and settings.
-        crate::wsl::sync_shell_bridge_settings(cwd.as_deref())?;
+        // Retry immediately before local Pi reads settings. A failure leaves the
+        // persisted legacy mode intact so the temporary `-c` bridge still works.
+        if let Err(error) = crate::wsl::migrate_legacy_runtime_to_native() {
+            eprintln!("legacy WSL shell migration deferred before Pi start: {error}");
+        }
     }
     let mut runtime = state
         .0

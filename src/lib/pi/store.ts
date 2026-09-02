@@ -147,8 +147,8 @@ export function createPiStore(taskId: string, executionBinding?: ExecutionBindin
 
     /**
      * Keep asking for the model list while it is still empty. A single refresh at
-     * connect time is not enough: a slow pi boot (session resume, extension load,
-     * WSL hop) can outlast it, and nothing else ever retried — so the composer
+     * connect time is not enough: a slow pi boot (session resume or extension load)
+     * can outlast it, and nothing else ever retried — so the composer
      * stayed modelless until the user restarted pi by hand.
      */
     const scheduleRetry = (attempt: number) => {

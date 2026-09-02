@@ -41,12 +41,10 @@ test("locks AppShell synchronous setup and async desktop startup order", () => {
     "useExtUi.getState().init()",
     "useSubagents.getState().initPiBridge()",
     "initAgentBridge()",
-    ".load()",
-    ".then(() => useWorkspace.getState().init())",
-    /* No single `connect({ cwd, resumePath })` here any more. One shell-level
-       connect assumed one pi process; each conversation now spawns its own with
-       its saved --session path, so resuming is sessions.init()'s job and the
-       root is read inline rather than hoisted into locals. */
+    /* No runtime pre-load here any more: the WSL runtime mode is gone, so there
+       is no shell bridge that had to be loaded before the first agent command.
+       The workspace init is now the first await in the chain. */
+    "void useWorkspace",
     ".then(() => useSessions.getState().init(useWorkspace.getState().root ?? \"\"))",
     ".then(() => useCliUpdate.getState().checkOnLaunch())",
   ]);

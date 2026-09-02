@@ -193,7 +193,7 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
     // completed binding stay exercisable — but `state: "exited"` keeps it honest about
     // there being nothing to attach to.
     ensureTask: async (request) => ({
-      remoteTaskId: request.remoteTaskId ?? "t-preview0000",
+      remoteTaskId: request.remoteTaskId,
       state: "exited" as const,
       pid: null,
       supervisorPid: null,

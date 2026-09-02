@@ -103,7 +103,10 @@ pub fn mcp_config_write(
 pub fn mcp_config_open_dir(scope: String, root: Option<String>) -> Result<(), String> {
     let directory = mcp_directory(&scope, root.as_deref())?;
     fs::create_dir_all(&directory).map_err(|error| {
-        format!("cannot create MCP config directory {}: {error}", directory.display())
+        format!(
+            "cannot create MCP config directory {}: {error}",
+            directory.display()
+        )
     })?;
 
     #[cfg(target_os = "windows")]
@@ -181,7 +184,11 @@ fn add_discovery_source(
     let content = if supported {
         let raw = fs::read_to_string(&path)
             .map_err(|error| format!("cannot read MCP source {display_path}: {error}"))?;
-        if format == "toml" { filter_codex_mcp_toml(&raw) } else { raw }
+        if format == "toml" {
+            filter_codex_mcp_toml(&raw)
+        } else {
+            raw
+        }
     } else {
         String::new()
     };
@@ -234,12 +241,18 @@ pub fn mcp_config_discover(root: Option<String>) -> Result<Vec<McpDiscoverySourc
             "Agents (nested)",
             home.join(".agents").join("mcp").join("mcp.json"),
         ),
-        ("cursor-global", "Cursor", home.join(".cursor").join("mcp.json")),
+        (
+            "cursor-global",
+            "Cursor",
+            home.join(".cursor").join("mcp.json"),
+        ),
         ("claude-global", "Claude Code", home.join(".claude.json")),
         (
             "windsurf-global",
             "Windsurf",
-            home.join(".codeium").join("windsurf").join("mcp_config.json"),
+            home.join(".codeium")
+                .join("windsurf")
+                .join("mcp_config.json"),
         ),
         (
             "opencode-global",
@@ -248,16 +261,7 @@ pub fn mcp_config_discover(root: Option<String>) -> Result<Vec<McpDiscoverySourc
         ),
     ];
     for (id, label, path) in global_json_sources {
-        add_discovery_source(
-            &mut sources,
-            id,
-            label,
-            "global",
-            "json",
-            path,
-            true,
-            None,
-        )?;
+        add_discovery_source(&mut sources, id, label, "global", "json", path, true, None)?;
     }
     add_discovery_source(
         &mut sources,
@@ -274,21 +278,24 @@ pub fn mcp_config_discover(root: Option<String>) -> Result<Vec<McpDiscoverySourc
         let project = PathBuf::from(root);
         let project_sources = [
             ("standard-project", "Project MCP", project.join(".mcp.json")),
-            ("cursor-project", "Cursor (project)", project.join(".cursor").join("mcp.json")),
-            ("vscode-project", "VS Code", project.join(".vscode").join("mcp.json")),
-            ("opencode-project", "OpenCode (project)", project.join("opencode.json")),
+            (
+                "cursor-project",
+                "Cursor (project)",
+                project.join(".cursor").join("mcp.json"),
+            ),
+            (
+                "vscode-project",
+                "VS Code",
+                project.join(".vscode").join("mcp.json"),
+            ),
+            (
+                "opencode-project",
+                "OpenCode (project)",
+                project.join("opencode.json"),
+            ),
         ];
         for (id, label, path) in project_sources {
-            add_discovery_source(
-                &mut sources,
-                id,
-                label,
-                "project",
-                "json",
-                path,
-                true,
-                None,
-            )?;
+            add_discovery_source(&mut sources, id, label, "project", "json", path, true, None)?;
         }
     }
     Ok(sources)
@@ -355,11 +362,15 @@ pub fn mcp_adapter_check(root: Option<String>) -> Result<McpAdapterStatus, Strin
 /// `http://127.0.0.1:<port>/mcp` URL keeps a user-authored server that merely
 /// happens to be named `browser` from being deleted.
 fn is_retired_browser_entry(entry: &Value) -> bool {
-    let Some(object) = entry.as_object() else { return false };
+    let Some(object) = entry.as_object() else {
+        return false;
+    };
     if object.get("type").and_then(Value::as_str) != Some("http") {
         return false;
     }
-    let Some(url) = object.get("url").and_then(Value::as_str) else { return false };
+    let Some(url) = object.get("url").and_then(Value::as_str) else {
+        return false;
+    };
     let Some(port) = url
         .strip_prefix("http://127.0.0.1:")
         .and_then(|rest| rest.strip_suffix("/mcp"))
@@ -387,10 +398,7 @@ pub fn deregister_retired_browser_server() -> Result<bool, String> {
     }
     let mut config: Value =
         serde_json::from_str(&read.content).map_err(|e| format!("invalid mcp.json: {e}"))?;
-    let Some(servers) = config
-        .get_mut("mcpServers")
-        .and_then(Value::as_object_mut)
-    else {
+    let Some(servers) = config.get_mut("mcpServers").and_then(Value::as_object_mut) else {
         return Ok(false);
     };
     match servers.get("browser") {
@@ -399,8 +407,8 @@ pub fn deregister_retired_browser_server() -> Result<bool, String> {
         _ => return Ok(false),
     }
     servers.remove("browser");
-    let serialized =
-        serde_json::to_string_pretty(&config).map_err(|e| format!("cannot serialize mcp.json: {e}"))?;
+    let serialized = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("cannot serialize mcp.json: {e}"))?;
     mcp_config_write(scope.to_owned(), serialized, None)?;
     Ok(true)
 }

@@ -100,6 +100,10 @@ pub struct RemotePiProfileInput {
 /// read back as `undefined`. Both directions were wrong, and no test caught it because
 /// every Rust test constructs the variant in Rust rather than parsing what the app sends.
 /// The wire shape is pinned by `the_wire_shape_is_what_the_frontend_actually_sends`.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     tag = "kind",
@@ -125,6 +129,10 @@ pub enum ExecutionBinding {
         /// Conflating the two makes replayed events get filtered out.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         remote_task_id: Option<String>,
+        /// The id was persisted before remote start and may be started or reattached
+        /// idempotently during crash recovery.
+        #[serde(default, skip_serializing_if = "is_false")]
+        remote_task_pending: bool,
     },
 }
 
@@ -680,6 +688,7 @@ pub fn validate_binding(
         remote_cwd,
         launcher_protocol_version,
         remote_task_id,
+        remote_task_pending: _,
     } = binding
     else {
         return Ok(());
@@ -1496,68 +1505,41 @@ fn one_line_reply(
     serde_json::from_str(line.trim()).map_err(|error| format!("invalid task reply: {error}"))
 }
 
-/// `t-` plus 12 hex chars, which satisfies the launcher's `^[a-z0-9][a-z0-9-]{7,63}$`.
-///
-/// Random rather than sequential: ids are minted on two sides of a network and a
-/// collision would mean two conversations sharing one journal.
-fn mint_remote_task_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as u64;
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    format!("t-{:08x}{:04x}", millis & 0xffff_ffff, nanos & 0xffff)
-}
-
 /// What a detached task looks like to the desktop after `remote_task_ensure`.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteTaskHandle {
-    /// The id to put on the binding and persist with the conversation.
     pub remote_task_id: String,
     /// `starting` | `running` | `stopping` | `exited`, from the launcher.
     pub state: String,
     pub pid: Option<i64>,
     pub supervisor_pid: Option<i64>,
     pub started_at: Option<i64>,
-    /// Set when this call had to mint a new id because the previous task was dead.
-    ///
-    /// One `remoteTaskId` is one remote pi process for its whole life, so continuing
-    /// after pi exits means a new id — and a caller holding a cursor into the old
-    /// journal has to know its transcript does not continue here.
     pub previous_task_id: Option<String>,
-    /// `true` when this call started the task rather than finding it alive.
+    /// `true` when this call started the task rather than finding it.
     pub started: bool,
     /// Oldest sequence still in the journal, so a stale cursor is detectable up front.
     pub base_sequence: Option<u64>,
     pub next_sequence: Option<u64>,
 }
 
-/// Mint or reattach a detached task, so `pi_start` only ever has to spawn the attach.
+/// Idempotently start or reattach the caller's write-ahead detached task id.
 ///
-/// Kept out of `pi_start` because this is the part that talks to the host: two bounded
-/// SSH round trips, ~2.5s measured. `pi_start` is a synchronous command holding the
-/// runtime mutex, and blocking it for that long would stall every other task.
-///
-/// Three cases, one entry point:
-/// - no id ⇒ mint one and `--start-detached`
-/// - id, alive ⇒ return it untouched, for a reattach
-/// - id, dead ⇒ mint a new one with `previous_task_id` set, and start that
+/// The frontend must persist `remote_task_id` before calling this command. The Rust
+/// layer never mints a replacement, which closes the start-before-SQLite crash window.
 #[tauri::command]
 pub async fn remote_task_ensure(
     profile_id: String,
-    remote_task_id: Option<String>,
+    remote_task_id: String,
+    previous_task_id: Option<String>,
     remote_cwd: String,
     resume_path: Option<String>,
 ) -> Result<RemoteTaskHandle, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_remote_task(
             &profile_id,
-            remote_task_id.as_deref(),
+            &remote_task_id,
+            previous_task_id.as_deref(),
             &remote_cwd,
             resume_path.as_deref(),
         )
@@ -1568,7 +1550,8 @@ pub async fn remote_task_ensure(
 
 fn ensure_remote_task(
     profile_id: &str,
-    remote_task_id: Option<&str>,
+    remote_task_id: &str,
+    previous_task_id: Option<&str>,
     remote_cwd: &str,
     resume_path: Option<&str>,
 ) -> Result<RemoteTaskHandle, String> {
@@ -1577,39 +1560,28 @@ fn ensure_remote_task(
         return Err("remote task setup requires a detached remote profile".into());
     }
     validate_remote_path(remote_cwd, "remote workspace")?;
-
-    let mut previous_task_id = None;
-    let mut task_id = match remote_task_id {
-        Some(existing) => {
-            validate_remote_task_id(existing)?;
-            let status = read_remote_task(&profile, existing)?;
-            match status {
-                // Alive: reattach to exactly this task. Starting a second pi over one
-                // journal is the V1 defect this whole id rule exists to prevent.
-                Some(task) if task.state != "exited" => {
-                    return Ok(RemoteTaskHandle {
-                        remote_task_id: existing.to_owned(),
-                        state: task.state,
-                        pid: task.pid,
-                        supervisor_pid: task.supervisor_pid,
-                        started_at: task.started_at,
-                        previous_task_id: None,
-                        started: false,
-                        base_sequence: task.base_sequence,
-                        next_sequence: task.next_sequence,
-                    });
-                }
-                // Dead, or gone entirely: the id is spent either way.
-                _ => {
-                    previous_task_id = Some(existing.to_owned());
-                    mint_remote_task_id()
-                }
-            }
+    let task_id = remote_task_id.trim();
+    validate_remote_task_id(task_id)?;
+    if let Some(previous) = previous_task_id {
+        validate_remote_task_id(previous)?;
+        if previous == task_id {
+            return Err("previous remote task id must differ from the write-ahead id".into());
         }
-        None => mint_remote_task_id(),
-    };
-    task_id = task_id.trim().to_owned();
-    validate_remote_task_id(&task_id)?;
+    }
+
+    if let Some(task) = read_remote_task(&profile, task_id)? {
+        return Ok(RemoteTaskHandle {
+            remote_task_id: task_id.to_owned(),
+            state: task.state,
+            pid: task.pid,
+            supervisor_pid: task.supervisor_pid,
+            started_at: task.started_at,
+            previous_task_id: previous_task_id.map(str::to_owned),
+            started: false,
+            base_sequence: task.base_sequence,
+            next_sequence: task.next_sequence,
+        });
+    }
 
     let binding = ExecutionBinding::Ssh {
         profile_id: profile.id.clone(),
@@ -1617,7 +1589,8 @@ fn ensure_remote_task(
         host_alias: profile.ssh_host.clone(),
         remote_cwd: remote_cwd.to_owned(),
         launcher_protocol_version: profile.launcher_protocol_version,
-        remote_task_id: Some(task_id.clone()),
+        remote_task_id: Some(task_id.to_owned()),
+        remote_task_pending: true,
     };
     let spec = ssh_start_detached_spec(&profile, &binding, resume_path)?;
     let reply = one_line_reply(&spec, WORKSPACE_TIMEOUT, &profile.launcher_path)?;
@@ -1626,6 +1599,23 @@ fn ensure_remote_task(
             .get("errorCode")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("taskStartFailed");
+        // A concurrent retry may win after the status probe. Recover by reading the
+        // exact same id; never mint or redirect to another process here.
+        if code == "taskAlreadyRunning" {
+            if let Some(task) = read_remote_task(&profile, task_id)? {
+                return Ok(RemoteTaskHandle {
+                    remote_task_id: task_id.to_owned(),
+                    state: task.state,
+                    pid: task.pid,
+                    supervisor_pid: task.supervisor_pid,
+                    started_at: task.started_at,
+                    previous_task_id: previous_task_id.map(str::to_owned),
+                    started: false,
+                    base_sequence: task.base_sequence,
+                    next_sequence: task.next_sequence,
+                });
+            }
+        }
         let detail = reply
             .get("detail")
             .and_then(serde_json::Value::as_str)
@@ -1637,7 +1627,7 @@ fn ensure_remote_task(
     }
     let number = |key: &str| reply.get(key).and_then(serde_json::Value::as_i64);
     Ok(RemoteTaskHandle {
-        remote_task_id: task_id,
+        remote_task_id: task_id.to_owned(),
         state: reply
             .get("state")
             .and_then(serde_json::Value::as_str)
@@ -1646,10 +1636,8 @@ fn ensure_remote_task(
         pid: number("pid"),
         supervisor_pid: number("supervisorPid"),
         started_at: number("startedAt"),
-        previous_task_id,
+        previous_task_id: previous_task_id.map(str::to_owned),
         started: true,
-        // A task that has just started has an empty journal, so the first attach starts
-        // from the beginning and no cursor can be stale.
         base_sequence: Some(1),
         next_sequence: Some(1),
     })
@@ -2599,6 +2587,7 @@ mod tests {
             remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: profile.launcher_protocol_version,
             remote_task_id: None,
+            remote_task_pending: false,
         }
     }
 
@@ -2664,6 +2653,7 @@ mod tests {
             remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: profile.launcher_protocol_version,
             remote_task_id: None,
+            remote_task_pending: false,
         };
         assert!(validate_binding(&profile, &stale).is_err());
 
@@ -2674,6 +2664,7 @@ mod tests {
             remote_cwd: "/srv/other".into(),
             launcher_protocol_version: profile.launcher_protocol_version,
             remote_task_id: None,
+            remote_task_pending: false,
         };
         assert!(validate_binding(&profile, &moved).is_err());
     }
@@ -2806,6 +2797,7 @@ mod tests {
             remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: 1,
             remote_task_id: None,
+            remote_task_pending: false,
         };
         let spec = ssh_launch_spec(&profile, &binding, Some("/remote/session path")).unwrap();
         let args = spec
@@ -2830,6 +2822,7 @@ mod tests {
             remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: 1,
             remote_task_id: None,
+            remote_task_pending: false,
         };
 
         let args = argv(&ssh_terminal_spec(&profile, &binding).unwrap());
@@ -2911,6 +2904,7 @@ mod tests {
             remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: profile.launcher_protocol_version,
             remote_task_id: task_id.map(str::to_owned),
+            remote_task_pending: false,
         }
     }
 
@@ -3057,6 +3051,7 @@ mod tests {
                 remote_cwd: "/root/turb-gpt-free-register".into(),
                 launcher_protocol_version: 1,
                 remote_task_id: None,
+                remote_task_pending: false,
             }
         );
 
@@ -3092,6 +3087,7 @@ mod tests {
             remote_cwd: "/srv".into(),
             launcher_protocol_version: 1,
             remote_task_id: None,
+            remote_task_pending: false,
         })
         .unwrap();
         assert!(serialized.contains("\"profileId\":\"p1\""), "{serialized}");
@@ -3107,6 +3103,7 @@ mod tests {
                 remote_cwd: "/srv".into(),
                 launcher_protocol_version: 1,
                 remote_task_id: None,
+                remote_task_pending: false,
             }
         );
     }
@@ -3481,6 +3478,7 @@ mod tests {
             remote_cwd: profile.remote_cwd.clone().unwrap(),
             launcher_protocol_version: 1,
             remote_task_id: None,
+            remote_task_pending: false,
         };
         let specs = [
             ssh_launch_spec(&profile, &binding, None).unwrap(),

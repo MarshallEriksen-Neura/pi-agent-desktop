@@ -89,7 +89,6 @@ export type {
   RemoteControlStatusDto,
 } from "./remote-control";
 export type { RemoteConversationsPort } from "./remote-conversations";
-export type { RuntimeConfigPort, WslValidationInput, WslValidationResult } from "./runtime-config";
 export type {
   GenerateTitleInput,
   SessionRepositoryPort,

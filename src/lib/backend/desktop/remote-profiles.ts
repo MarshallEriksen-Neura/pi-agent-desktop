@@ -31,7 +31,8 @@ export const desktopRemotePiProfilePort: RemotePiProfilePort = {
   ensureTask: (request) =>
     desktopInvoke<RemoteTaskHandle>("remote_task_ensure", {
       profileId: request.profileId,
-      remoteTaskId: request.remoteTaskId ?? null,
+      remoteTaskId: request.remoteTaskId,
+      previousTaskId: request.previousTaskId ?? null,
       remoteCwd: request.remoteCwd,
       resumePath: request.resumePath ?? null,
     }),

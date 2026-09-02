@@ -4,15 +4,13 @@ import {
   formatDroppedPaths,
   isDropInside,
   quotePathForShell,
-  toWslPath,
 } from "../../src/lib/terminal-drop";
 
 /*
  * Drag-and-drop into the terminal has no DOM event to lean on: the OS hands the
  * drop to the window, with a physical pixel position and raw OS paths. Every
- * case below is one of the three ways that goes wrong — a hit test done in the
- * wrong unit, a path pasted into a shell that cannot see that filesystem, and a
- * path with a space arriving as two arguments.
+ * cases below cover the two ways that goes wrong — a hit test done in the wrong
+ * unit and a path with a space arriving as two arguments.
  */
 
 const RECT = { left: 100, top: 200, right: 300, bottom: 400 };
@@ -57,30 +55,6 @@ test("quotePathForShell: expansion characters force POSIX single quotes", () => 
   assert.equal(quotePathForShell(`/tmp/it's $HOME`), `'/tmp/it'\\''s $HOME'`);
 });
 
-test("toWslPath: drive letters become automount paths", () => {
-  assert.equal(toWslPath("D:\\src\\pi"), "/mnt/d/src/pi");
-  assert.equal(toWslPath("C:\\"), "/mnt/c");
-  assert.equal(toWslPath("C:"), "/mnt/c");
-});
-
-test("toWslPath: a UNC path inside the running distro loses the prefix", () => {
-  assert.equal(toWslPath("\\\\wsl$\\Ubuntu\\home\\me\\a.txt", "Ubuntu"), "/home/me/a.txt");
-  assert.equal(
-    toWslPath("\\\\wsl.localhost\\Ubuntu\\home\\me", "ubuntu"),
-    "/home/me"
-  );
-});
-
-test("toWslPath: a UNC path from another distro is left untouched", () => {
-  // `/home/me` inside Debian is a different file from `/home/me` inside Ubuntu,
-  // so there is no honest translation — better an unusable path than a wrong one.
-  const path = "\\\\wsl$\\Debian\\home\\me\\a.txt";
-  assert.equal(toWslPath(path, "Ubuntu"), path);
-});
-
-test("toWslPath: POSIX paths pass through", () => {
-  assert.equal(toWslPath("/var/log/pi.log", "Ubuntu"), "/var/log/pi.log");
-});
 
 test("formatDroppedPaths: nothing droppable yields nothing to type", () => {
   assert.equal(formatDroppedPaths([]), "");
@@ -103,22 +77,10 @@ test("formatDroppedPaths: a separator is added only when the line needs one", ()
   assert.equal(formatDroppedPaths(["/a"], { precedingLine: null }), "/a ");
 });
 
-test("formatDroppedPaths: WSL mode translates, and no mode leaves paths as the OS gave them", () => {
-  assert.equal(
-    formatDroppedPaths(["D:\\my files\\b.txt"], { wslDistro: "Ubuntu" }),
-    '"/mnt/d/my files/b.txt" '
-  );
-  assert.equal(
-    formatDroppedPaths(["D:\\my files\\b.txt"], { wslDistro: null }),
-    '"D:\\my files\\b.txt" '
-  );
-});
-
 test("formatDroppedPaths: never emits a newline, so a drop cannot run a command", () => {
-  const text = formatDroppedPaths(["D:\\a.txt", "\\\\wsl$\\Ubuntu\\home\\me"], {
-    wslDistro: "Ubuntu",
+  const text = formatDroppedPaths(["D:\\a.txt", "\\\\server\\share"], {
     precedingLine: "ls",
   });
   assert.equal(/[\r\n]/.test(text), false);
-  assert.equal(text, " /mnt/d/a.txt /home/me ");
+  assert.equal(text, " D:\\a.txt \\\\server\\share ");
 });

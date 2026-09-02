@@ -60,9 +60,9 @@ pub struct ShellSettingsBackup {
 struct DesktopState {
     last_project: Option<String>,
     recent_projects: Vec<RecentProject>,
-    /// Where Pi's bash commands run (Windows vs WSL). App-owned metadata.
+    /// Legacy WSL shell-bridge state retained for one upgrade migration window.
     runtime: crate::wsl::RuntimeConfig,
-    /// Original project-level shell overrides, keyed by normalized project root.
+    /// Original project shell overrides awaiting restoration by that migration.
     project_shell_backups: BTreeMap<String, ShellSettingsBackup>,
 }
 
@@ -72,40 +72,22 @@ pub fn runtime_config() -> Result<crate::wsl::RuntimeConfig, String> {
     Ok(read_state()?.runtime)
 }
 
-#[tauri::command]
-pub fn runtime_config_read() -> Result<crate::wsl::RuntimeConfig, String> {
-    runtime_config()
-}
-
-#[tauri::command]
-pub fn runtime_config_write(config: crate::wsl::RuntimeConfig) -> Result<(), String> {
-    update_state(|state| state.runtime = config)
-}
-
 /// Canonical key for a project root — forward slashes, no trailing slash. Used
 /// wherever app-owned state is filed per project (shell backups, chat sessions).
 pub fn project_key(root: &str) -> String {
     root.replace('\\', "/").trim_end_matches('/').to_string()
 }
 
-pub fn project_shell_backup(root: &str) -> Result<Option<ShellSettingsBackup>, String> {
-    Ok(read_state()?
-        .project_shell_backups
-        .get(&project_key(root))
-        .cloned())
+pub fn legacy_project_shell_backups() -> Result<BTreeMap<String, ShellSettingsBackup>, String> {
+    Ok(read_state()?.project_shell_backups)
 }
 
-pub fn project_shell_backup_write(root: &str, backup: ShellSettingsBackup) -> Result<(), String> {
+/// Commit the legacy runtime cleanup only after every settings file was restored.
+/// Keeping this state update last makes an interrupted migration retryable.
+pub fn complete_legacy_wsl_migration(config: crate::wsl::RuntimeConfig) -> Result<(), String> {
     update_state(|state| {
-        state
-            .project_shell_backups
-            .insert(project_key(root), backup);
-    })
-}
-
-pub fn project_shell_backup_remove(root: &str) -> Result<(), String> {
-    update_state(|state| {
-        state.project_shell_backups.remove(&project_key(root));
+        state.runtime = config;
+        state.project_shell_backups.clear();
     })
 }
 
@@ -140,8 +122,8 @@ fn read_state_unlocked() -> Result<DesktopState, String> {
 /// `fs::canonicalize` produces.
 fn normalize(p: &Path) -> String {
     let s = p.to_string_lossy().replace('\\', "/");
-    // Verbatim UNC (`\\?\UNC\server\share`) → `//server/share` so WSL project
-    // roots come back as `//wsl.localhost/<distro>/…` the frontend can read.
+    // Verbatim UNC (`\\?\UNC\server\share`) → `//server/share` so the
+    // frontend receives the normal UNC shape.
     if let Some(rest) = s.strip_prefix("//?/UNC/") {
         return format!("//{rest}");
     }
@@ -185,7 +167,6 @@ pub fn project_resolve(path: String) -> Result<String, String> {
     }
     let canon = canonical_project_root(dir).map_err(|error| error.to_string())?;
     let root = normalize(&canon);
-    crate::wsl::validate_project_path(&runtime_config()?, &root)?;
     Ok(root)
 }
 
@@ -260,17 +241,15 @@ fn validate_target_id(target_id: &str) -> Result<(), String> {
 ///
 /// Separate from `project_open` because almost none of that applies: there is nothing
 /// to canonicalize (the path is already absolute POSIX and belongs to another machine),
-/// no WSL rule to check, and no phone gateway to sync — the LAN gateway shares *this*
-/// desktop's project, and a directory on an SSH host is not it. `last_project` is left
-/// alone for the same reason: it becomes the local workspace root on next launch.
+/// no local filesystem rule to check, and no phone gateway to sync — the LAN gateway
+/// shares *this* desktop's project, and a directory on an SSH host is not it.
+/// `last_project` is left alone for the same reason: it becomes the local workspace
+/// root on next launch.
 ///
 /// Existence is the caller's business, checked with the workspace port's `stat` before
 /// this is called, so a failure lands on the open action rather than on a menu.
 #[tauri::command]
-pub fn project_open_remote(
-    path: String,
-    target_id: String,
-) -> Result<Vec<RecentProject>, String> {
+pub fn project_open_remote(path: String, target_id: String) -> Result<Vec<RecentProject>, String> {
     validate_target_id(&target_id)?;
     if target_id == LOCAL_TARGET_ID {
         return Err("project_open_remote requires a remote execution target".into());

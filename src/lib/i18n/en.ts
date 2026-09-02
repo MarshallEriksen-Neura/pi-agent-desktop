@@ -443,7 +443,7 @@ export const en = {
   "settings.category.agent": "Agent",
   "settings.category.agentDetail": "Models, thinking, retries, delivery, and context behavior.",
   "settings.category.runtime": "Runtime",
-  "settings.category.runtimeDetail": "WSL, shell, sessions, proxy, and transport environment.",
+  "settings.category.runtimeDetail": "Shell, sessions, proxy, and transport environment.",
   "settings.category.remote": "Remote Control",
   "settings.category.remoteDetail": "LAN gateway, paired devices, and the current desktop project.",
   "settings.category.accounts": "Accounts",
@@ -809,11 +809,6 @@ export const en = {
   // per-provider caveats — only providers listed in PROVIDER_NOTE_KEYS render one
   "providerAuth.note.anthropic":
     "Third-party harness usage is billed per token as extra usage, not against your Claude plan limits.",
-  // WSL — pi runs inside the distro against its own auth file
-  "providerAuth.wslTitle": "Signing in from the app is unavailable in WSL mode",
-  "providerAuth.wslDetail":
-    "pi runs inside your WSL distro and reads a credential file in its home directory, so a login started here would be written to the wrong place. Run this inside the distro, then use /login:",
-
   // models page
   "models.title": "Models",
   "models.subtitleMock":
@@ -1166,20 +1161,6 @@ export const en = {
   "cliUpdate.upToDate": "pi is up to date",
   "settings.softwareUpdate": "Software Update",
   "settings.softwareUpdateDetail": "Version {version}",
-
-  // command environment (Windows only): run Bash natively or inside WSL
-  "settings.runtime": "Command environment",
-  "settings.runtimeFooter":
-    "Run agent and terminal commands in Windows or a WSL distro. Pi settings, credentials, and packages stay on Windows. Changing this restarts pi.",
-  "settings.runtimeMode": "Run commands in",
-  "settings.runtimeNative": "Windows",
-  "settings.runtimeWsl": "WSL",
-  "settings.runtimeDistro": "WSL distro",
-  "settings.runtimeDistroDetail": "Which installed distribution runs commands",
-  "settings.runtimeDistroDefault": "Default distro",
-  "settings.runtimeNoDistros":
-    "No WSL distros found. Install one with `wsl --install` and reopen settings.",
-  "settings.runtimeApply": "Apply & restart Pi",
 
   // remote agent — SSH execution profiles
   "settings.remoteAgent.profiles": "Remote agent profiles",

@@ -103,9 +103,8 @@ function ContextMenu({ state, onClose }: { state: CtxMenuState; onClose: () => v
   /**
    * Put the path in the composer as an `@`-mention.
    *
-   * Relative to the project root, which is what pi resolves against its own cwd —
-   * and what keeps this correct under WSL, where the same file is `D:/repo/x` here
-   * and `/mnt/d/repo/x` to pi. A directory keeps its trailing slash so the mention
+   * Relative to the project root, which is what Pi resolves against the execution
+   * target's own cwd. A directory keeps its trailing slash so the mention
    * reads as one.
    */
   const mentionEntry = () => {

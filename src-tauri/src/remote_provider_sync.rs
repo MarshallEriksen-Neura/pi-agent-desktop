@@ -663,7 +663,10 @@ fn valid_credential_action(value: &str) -> bool {
 /// `provider_sync_invalid_arguments`, which is a backend defect rather than an
 /// out-of-date remote host.
 fn is_unsupported_launcher_mode(exit_code: Option<i32>, stderr: &str) -> bool {
-    exit_code == Some(64) && stderr.to_ascii_lowercase().contains("invalid launcher mode")
+    exit_code == Some(64)
+        && stderr
+            .to_ascii_lowercase()
+            .contains("invalid launcher mode")
 }
 
 fn execute_launcher(profile: &RemotePiProfile, request: &[u8]) -> Result<LauncherResponse, String> {

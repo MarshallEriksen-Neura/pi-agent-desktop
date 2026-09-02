@@ -28,12 +28,19 @@ fn expand_path(value: &str, relative_to: &Path) -> Result<PathBuf, String> {
     }
     let expanded = if trimmed == "~" {
         crate::pi_settings::home_dir()?
-    } else if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+    } else if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+    {
         crate::pi_settings::home_dir()?.join(rest)
     } else {
         PathBuf::from(trimmed)
     };
-    Ok(if expanded.is_absolute() { expanded } else { relative_to.join(expanded) })
+    Ok(if expanded.is_absolute() {
+        expanded
+    } else {
+        relative_to.join(expanded)
+    })
 }
 
 fn setting_session_dir(path: &Path) -> Option<String> {
@@ -64,7 +71,9 @@ pub fn resolve_local_session_root(project_root: &Path) -> Result<(PathBuf, bool)
     let project_root = if project_root.is_absolute() {
         project_root.to_path_buf()
     } else {
-        env::current_dir().map_err(|error| error.to_string())?.join(project_root)
+        env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(project_root)
     };
     let agent = agent_dir()?;
     let configured = env::var("PI_CODING_AGENT_SESSION_DIR")

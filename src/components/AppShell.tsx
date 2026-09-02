@@ -18,7 +18,6 @@ import { useExtUi } from "@/lib/pi/ext-ui";
 import { useSubagents } from "@/lib/pi/subagents";
 import { destroyAgentBridge, initAgentBridge } from "@/lib/pi/agent-bridge";
 import { useWorkspace } from "@/lib/workspace";
-import { useRuntime } from "@/lib/pi/runtime";
 import { useI18n } from "@/lib/i18n";
 import { useAppearance } from "@/lib/appearance";
 import { useUI } from "@/lib/store";
@@ -118,13 +117,11 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useExtUi.getState().init();
     useSubagents.getState().initPiBridge();
     initAgentBridge(); // tool events → task strip / editor highlights / terminal + pet bridge
-    // load the Windows/WSL command runtime before Pi starts; its shell bridge
-    // may be used by the first agent command
-    void useRuntime
+    // Resolve the project root before restoring sessions so Pi starts in the
+    // same workspace the UI displays.
+    void useWorkspace
       .getState()
-      .load()
-      // resolve the project root next so Pi and its commands share a cwd
-      .then(() => useWorkspace.getState().init())
+      .init()
       // session history restores after the workspace resolves; sessions.init()
       // spawns the active conversation's own pi process with its saved
       // --session path, so every task runs in its own process (parallel tasks)

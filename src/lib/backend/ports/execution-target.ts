@@ -20,6 +20,11 @@ export type ExecutionBinding =
        * replayed events get filtered out.
        */
       remoteTaskId?: string | null;
+      /**
+       * Write-ahead marker: the id is durable locally but remote start has not yet
+       * been acknowledged. Recovery may start or reattach this exact id.
+       */
+      remoteTaskPending?: boolean;
     };
 
 export interface RemotePiProfile {

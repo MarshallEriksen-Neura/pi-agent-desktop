@@ -5,7 +5,6 @@ import "./mock-pi-process.test";
 import "./desktop-pi-process.test";
 import "./desktop-remote-terminal.test";
 import "./mock-workspace-fs.test";
-import "./runtime-store.test";
 import "./composition.test";
 import "./chat-recovery.test";
 import "./remote-contracts.test";
