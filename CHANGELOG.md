@@ -2,6 +2,34 @@
 
 All notable changes to Pi Desktop will be documented in this file.
 
+## [0.12.0] — 2026-09-02
+
+### Added
+- **输入框的 `@` 提及有了全项目的文件索引**。此前补全只能列你已经点开过的目录,而 `@` 想找的恰恰是没去过的路径。新的 `fs_index_files` 一次遍历返回整棵工作区的扁平路径表,匹配在本地完成、零往返。它和文件树是**两个问题**:树问"这个目录里有什么"、由点击驱动;补全要给没导航到过的路径排序,把树的懒加载重复一千遍 IPC 既慢又贵
+  - **git 优先、遍历兜底**。在本仓库实测:裸遍历返回 192,669 条路径,其中 185,564 条是同一个 gitignore 目录下的构建产物 —— 2 万条的容量上限会在摸到 `src/` 之前耗尽。`git ls-files` 用项目自己写下的忽略规则回答同一个问题,727 条;不是 git 仓库的目录才回落到遍历。两条路共用一份 `SKIP_DIRS`,树里藏起来的目录补全不会冒出来 —— 否则用户会提到一个他看不见的路径
+  - 按深度排序后套容量上限,截掉的是最深的路径而不是字母表后半段
+- **CLI 里创建的会话现在会出现在侧边栏**。0.11.0 的删除修复只处理了"删了一半",同一份报告更大的另一半 —— Desktop 之外的会话对侧边栏不可见 —— 这次补上了。会话列表读取时按 project root 扫描 pi 的会话文件(`session_discovery`,只读文件头、上限 1 MB,不加载全文),以 `authority_session_id` 为权威身份合并进 `chat_sessions`,`source` 标记 `native` 与 Desktop 自己的 `cache` 行
+  - **删除靠墓碑存续**。扫描会重新发现一切,所以删掉的会话必须被记住才不会复活:`chat_session_tombstones` 按 target 对 authority id 和 session path 各建唯一索引。schema 2 → 3 新增 `target_key`(会话按执行目标归档,与侧边栏按主机分域一致)、`authority_session_id`、`source` 三列,带自动迁移
+- **hash-line 编辑器的三个工具现在都有完整 diff**(`pi-hashline-edit-pro` 的 `replace`、`insert`、`undo_last_change`)。此前 `insert` 和 `undo_last_change` 被归进通用工具、错过了 diff 处理流程,编辑发生了但 `+n −m` 徽章和文件检查器什么都没有。工具结果自带的统一补丁格式现在作为文件快照竞争失败时的备选数据源;diff 徽章的下划线改走 `textDecorationLine` 以消除 React 警告
+
+### Removed
+- **WSL 运行时模式**。WSL 不再是应用内的一等运行时:没有模式切换、发行版检测、路径翻译,也没有自动配置。跑在 WSL 里的 pi 和跑在别的 Unix 主机上没有区别 —— 在发行版里装 sshd、在 `~/.ssh/config` 加一条 host,WSL 就是一个普通的 SSH 执行配置,走 0.11.0 落地的远程 Agent 全套能力(detached 任务、远程终端、provider 同步)。应用不代装 sshd、不生成密钥、不保留端口、不动防火墙,每一步都要什么、为什么由你配,见 [docs/wsl-over-ssh.md](docs/wsl-over-ssh.md)
+  - 移除的东西:设置页"命令运行于 Windows/WSL"整节、五个命令(`runtime_config_read`/`write`、`wsl_list_distros`、`wsl_runtime_validate`、`wsl_shell_bridge_path`)、终端抽屉的 WSL 徽章、拖放路径的 `/mnt/` 翻译(`toWslPath` 整个删除 —— 它的注释自己就承认了 `automount.root` 改过的发行版翻译是错的,一个猜测错了不会比不猜更安全)、provider 登录的 WSL 提示
+  - `src-tauri/wsl.rs` 收缩为一次性迁移 shim:把 `desktop.json` 里的旧 WSL 运行时状态还原成 native shell、恢复各项目的 shell 覆盖备份。它保留一个升级窗口,老用户的旧状态被清掉之后整个文件拆除
+  - **`BREAKING CHANGE`**:原先用 WSL 模式的用户需要在发行版内自行配置 sshd 并改用 SSH 执行配置
+
+### Fixed
+- **detached 任务启动里的崩溃窗口**。旧协议是 Rust 层调用 launcher 时现铸任务 id、成功后由调用方持久化 —— 在"已启动"和"已落库"之间崩溃,任务活着但没有任何记录指向它,重启后既接不回也停不掉。现在是 write-ahead:前端先本地铸 id(加密随机,消除两侧铸造碰撞的可能)、随 `remoteTaskPending` 持久化,再让 launcher **幂等地**启动或接回这个确切的 id,确认后才允许进程端口 attach。Rust 层永远不铸替代 id,重试的是同一个 id,不可能在另一个 id 下长出第二个进程
+  - launcher 配合:`start-detached` 的 starting 记录先写 staging 目录再原子 rename 发布 —— 崩在 rename 前不留已认领的 id,崩在后面留下足够重试的状态;竞速失败方按已发布的状态应答(`alreadyExisted`)而不是报错。`supervisor.lock` 仲裁并发的幂等启动,死主人的锁可回收
+  - 会话绑定的持久化因此升级为**协议边界**(await 后端落库)而不是防抖 UI 保存 —— 它不是界面的回显,是崩溃恢复要读的那份事实
+
+### Internal
+- 桌面适配器命令清单:**86** 个唯一命令(0.11.0 是 91:`fs_index_files` 进 1,WSL 的 5 个出)
+- `chat_sessions` schema 2 → 3(`target_key` / `authority_session_id` / `source` + 墓碑表),带迁移
+- launcher 单文件随仓库提交,本次幂等化与前端协议同步演进;`test-detached-tasks.mjs` 断言改为"重试接回而不是报 `taskAlreadyRunning`"
+- 后端套件 312 pass。3 个先前就存在的失败依旧 —— browser-mock 扩展 UI、chat-recovery resumePath(60 秒超时)、mcp-import OAuth fixture
+- `cargo check --locked` 通过;真机验收通过后发布
+
 ## [0.11.0] — 2026-09-01
 
 ### Added
