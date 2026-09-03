@@ -2788,7 +2788,8 @@ fn run_bounded_command(
     stdin_body: Option<&str>,
     max_output_bytes: usize,
 ) -> Result<BoundedCommandOutput, String> {
-    let mut child = Command::new(&spec.program)
+    let mut command = Command::new(&spec.program);
+    command
         .args(&spec.args)
         .stdin(if stdin_body.is_some() {
             Stdio::piped()
@@ -2796,7 +2797,18 @@ fn run_bounded_command(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Without this, each short-lived SSH call flashes a console window over the GUI.
+    #[cfg(windows)]
+    if spec.create_no_window {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = spec.create_no_window;
+
+    let mut child = command
         .spawn()
         .map_err(|error| format!("ssh failed to start: {error}"))?;
     if let Some(body) = stdin_body {
@@ -2900,6 +2912,32 @@ mod tests {
     #[test]
     fn shell_quotes_single_quotes() {
         assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bounded_commands_do_not_allocate_a_windows_console() {
+        let probe = r#"
+Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();'
+if ([Win32.NativeMethods]::GetConsoleWindow() -eq [IntPtr]::Zero) { exit 0 }
+exit 1
+"#;
+        let spec = LaunchSpec::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg(probe);
+        let output =
+            super::run_bounded_command(&spec, std::time::Duration::from_secs(15), None, 64 * 1024)
+                .unwrap();
+
+        assert!(!output.timed_out);
+        assert!(
+            output.status.success(),
+            "child console probe failed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[test]
