@@ -15,6 +15,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::Manager;
 use zeroize::Zeroizing;
 
 const PROVIDER_SYNC_PROTOCOL_VERSION: u32 = 1;
@@ -838,23 +839,46 @@ fn profile_same(left: &RemotePiProfile, right: &RemotePiProfile) -> bool {
 }
 
 #[tauri::command]
-pub fn remote_provider_sync_candidates() -> Result<Vec<ProviderSyncCandidate>, String> {
-    Ok(classify_local_providers()?
-        .into_iter()
-        .map(|provider| ProviderSyncCandidate {
-            provider_id: provider.id,
-            model_count: provider.model_count,
-            syncable: provider.syncable,
-            blocked_reason: provider.blocked_reason,
-            credential_source: provider.credential_source,
-            warnings: provider.warnings,
-        })
-        .collect())
+pub async fn remote_provider_sync_candidates() -> Result<Vec<ProviderSyncCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        Ok(classify_local_providers()?
+            .into_iter()
+            .map(|provider| ProviderSyncCandidate {
+                provider_id: provider.id,
+                model_count: provider.model_count,
+                syncable: provider.syncable,
+                blocked_reason: provider.blocked_reason,
+                credential_source: provider.credential_source,
+                warnings: provider.warnings,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|error| format!("provider scan task failed: {error}"))?
 }
 
+/// Off the UI thread: `execute_launcher` blocks for a whole SSH round trip, and a sync
+/// `#[tauri::command]` spends that on the main thread with the window stopped.
+///
+/// The plan store arrives through the `AppHandle` rather than as a `State` parameter,
+/// because a `State<'_, _>` borrow cannot cross into a blocking task. Tauri injects
+/// both the same way, so nothing changes for the caller.
 #[tauri::command]
-pub fn remote_provider_sync_prepare(
-    state: tauri::State<'_, RemoteProviderSyncState>,
+pub async fn remote_provider_sync_prepare(
+    app: tauri::AppHandle,
+    profile_id: String,
+    provider_ids: Vec<String>,
+) -> Result<PreparedProviderSync, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<RemoteProviderSyncState>();
+        prepare_plan(&state, profile_id, provider_ids)
+    })
+    .await
+    .map_err(|error| format!("provider sync prepare task failed: {error}"))?
+}
+
+fn prepare_plan(
+    state: &RemoteProviderSyncState,
     profile_id: String,
     provider_ids: Vec<String>,
 ) -> Result<PreparedProviderSync, String> {
@@ -960,7 +984,7 @@ pub fn remote_provider_sync_prepare(
         expires_at: now_millis().saturating_add(PLAN_TTL.as_millis() as u64),
     };
     let key = plan_key(&profile.id, &provider_ids);
-    let mut plans = lock_plans(&state)?;
+    let mut plans = lock_plans(state)?;
     plans.retain(|_, plan| plan.expires > Instant::now());
     if plans.contains_key(&key) {
         return Err(code("syncBusy"));
@@ -984,16 +1008,30 @@ pub fn remote_provider_sync_prepare(
     Ok(preview)
 }
 
+/// See `remote_provider_sync_prepare` for why this is async and takes an `AppHandle`.
 #[tauri::command]
-pub fn remote_provider_sync_apply(
-    state: tauri::State<'_, RemoteProviderSyncState>,
+pub async fn remote_provider_sync_apply(
+    app: tauri::AppHandle,
+    profile_id: String,
+    provider_ids: Vec<String>,
+) -> Result<ProviderSyncResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<RemoteProviderSyncState>();
+        apply_plan(&state, profile_id, provider_ids)
+    })
+    .await
+    .map_err(|error| format!("provider sync apply task failed: {error}"))?
+}
+
+fn apply_plan(
+    state: &RemoteProviderSyncState,
     profile_id: String,
     provider_ids: Vec<String>,
 ) -> Result<ProviderSyncResult, String> {
     let provider_ids = canonical_provider_ids(provider_ids)?;
     let key = plan_key(&profile_id, &provider_ids);
     // Removal happens before any remote access: every apply attempt is single-use.
-    let plan = lock_plans(&state)?
+    let plan = lock_plans(state)?
         .remove(&key)
         .ok_or_else(|| code("syncPlanMissing"))?;
     if plan.expires <= Instant::now() {

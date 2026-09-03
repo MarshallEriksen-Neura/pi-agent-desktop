@@ -17,6 +17,7 @@ import {
   normalizeSource,
   type CatalogHit,
 } from "@/lib/pi/skills-install";
+import { useSessions } from "@/lib/pi/sessions";
 import { useWorkspace } from "@/lib/workspace";
 import { useT, type TFunc } from "@/lib/i18n";
 import { GroupRow, InsetGroup, Segmented } from "./settings-ui";
@@ -90,6 +91,7 @@ function HitRow({
   installed,
   conflict,
   busy,
+  canInstall,
   onInstall,
   t,
 }: {
@@ -98,6 +100,7 @@ function HitRow({
   installed: boolean;
   conflict: boolean;
   busy: string | null;
+  canInstall: boolean;
   onInstall: () => void;
   t: TFunc;
 }) {
@@ -144,7 +147,7 @@ function HitRow({
                 variant="primary"
                 size="sm"
                 onClick={onInstall}
-                disabled={busy !== null}
+                disabled={busy !== null || !canInstall}
                 style={{
                   borderRadius: 8,
                   opacity: busy && busy !== hit.id ? 0.4 : 1,
@@ -160,11 +163,12 @@ function HitRow({
   );
 }
 
-export function SkillsInstall() {
+export function SkillsInstall({ canMutate = true }: { canMutate?: boolean }) {
   const t = useT();
   const s = useSkillsInstall();
   const installed = useSkills((st) => st.skills);
   const root = useWorkspace((w) => w.root);
+  const hasProject = useSessions((state) => state.executionBinding.kind === "ssh") || root !== null;
 
   const typed = s.input.trim();
   /** `owner/repo`, a URL or a path — fetched on demand instead of as you type */
@@ -176,10 +180,10 @@ export function SkillsInstall() {
 
   // Without an open project there is no `<root>/.pi/skills` to install into.
   useEffect(() => {
-    if (!root && useSkillsInstall.getState().scope === "project") {
+    if (!hasProject && useSkillsInstall.getState().scope === "project") {
       useSkillsInstall.getState().setScope("global");
     }
-  }, [root]);
+  }, [hasProject]);
 
   /**
    * skill name → the source it came from, for the scope being installed into.
@@ -202,7 +206,7 @@ export function SkillsInstall() {
       <InsetGroup
         header={t("skillsInstall.header")}
         footer={
-          !root
+          !hasProject
             ? t("skillsInstall.scopeFooterNoProject")
             : s.scope === "global"
               ? t("skillsInstall.scopeFooterGlobal")
@@ -221,7 +225,7 @@ export function SkillsInstall() {
             options={SCOPES}
             value={s.scope}
             onChange={s.setScope}
-            disabled={!root}
+            disabled={!hasProject || !canMutate}
             labelOf={(o) => t(`skills.origin.${o}`)}
           />
           <div style={{ display: "flex", gap: 8 }}>
@@ -311,6 +315,7 @@ export function SkillsInstall() {
                   installed={isThisOne}
                   conflict={taken && !isThisOne}
                   busy={s.busy}
+                  canInstall={canMutate}
                   onInstall={() => s.install(hit.source, [hit.skillId], hit.id)}
                   t={t}
                 />
@@ -344,7 +349,7 @@ export function SkillsInstall() {
                   variant="primary"
                   size="sm"
                   onClick={() => s.install(typed, ["*"])}
-                  disabled={s.busy !== null}
+                  disabled={s.busy !== null || !canMutate}
                   style={{ borderRadius: 8 }}
                 >
                   {s.busy === "source"
@@ -387,7 +392,7 @@ export function SkillsInstall() {
                   variant="primary"
                   size="sm"
                   onClick={() => s.install(typed, s.selected)}
-                  disabled={s.busy !== null || s.selected.length === 0}
+                  disabled={s.busy !== null || s.selected.length === 0 || !canMutate}
                   style={{ borderRadius: 8 }}
                 >
                   {s.busy === "source"
@@ -411,7 +416,7 @@ export function SkillsInstall() {
               : t("skillsInstall.updateAll", { scope: t(`skills.origin.${s.scope}`) })
           }
           detail={t("skillsInstall.updateAllDetail")}
-          onClick={s.busy === null ? () => s.updateAll() : undefined}
+          onClick={s.busy === null && canMutate ? () => s.updateAll() : undefined}
         />
       </InsetGroup>
 

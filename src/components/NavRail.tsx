@@ -43,7 +43,12 @@ export function NavRail() {
   const remoteMode = useSessions((s) => s.executionBinding.kind === "ssh");
   const t = useT();
   const visibleItems = remoteMode
-    ? ITEMS.filter((item) => item.href === "/" || item.href === "/settings/")
+    ? ITEMS.filter((item) =>
+        item.href === "/" ||
+        item.href === "/settings/" ||
+        item.href === "/plugins/" ||
+        item.href === "/skills/"
+      )
     : ITEMS;
 
   if (zenMode) return null;

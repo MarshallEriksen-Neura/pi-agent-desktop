@@ -270,3 +270,39 @@ editor can save remotely. Two states the UI now has to show:
 run by `sh` on a POSIX host, so under `core.autocrlf=true` a Windows build would compile
 CRLF into the binary and the shebang would fail on Linux. Latent until now only because
 builds happened elsewhere.
+
+## The same target boundary for PI management ✅
+
+Remote package and skill management follows the workspace factory pattern without widening
+`WorkspaceFsPort`. `BackendPorts.createPiManagement(binding, projectRoot)` returns a
+target-bound `PiManagementPort`: local wraps the existing configuration/CLI adapters; SSH
+uses a separate bounded `--manage` request. An SSH binding can never resolve to local PI
+settings or skill directories. The stricter management key is
+``ssh:${profileId}@${profileRevision}:${remoteCwd}``; local is
+``local:${projectRoot ?? ""}``. Including profile revision and cwd prevents stale snapshots
+from crossing either host-configuration changes or projects.
+
+`usePiManagement` owns availability, snapshot, generation, errors, and per-task dirty state.
+Every async inspect, browse, source read, and mutation captures its management context at
+request start. Late replies are discarded if the active target key changed, including catch
+and finally UI updates, so switching host/cwd cannot import stale state or clear the new
+target's busy/log state. Remote project scope comes from `ExecutionBinding.remoteCwd` even
+when the local workspace root is null.
+
+Package and skill mutations are semantic operations rather than remoteized configuration
+methods. The launcher constructs allowlisted PI/Skills CLI argv, checks `expectedState` under
+its remote lock, and returns a post-command snapshot. Stores apply that authoritative
+snapshot before interpreting a nonzero command exit, because failed CLIs can still have side
+effects. Read and mutate capabilities are gated independently at both store and UI layers.
+
+Restart dirtiness is task-scoped. A global mutation marks sessions on the same host
+(`profileId` plus `profileRevision` for SSH); a project mutation marks only the exact
+management target. Restarting an SSH task passes its original binding and `remoteCwd` back to
+`pi.restart`, then clears only that task. Switching tasks does not clear another task's dirty
+marker, and local settings/MCP dirty flags do not make a remote target display a restart
+prompt.
+
+The corresponding wire contract, limits, lock recovery, redaction, and launcher revision are
+documented in [remote-launcher/README.md](../remote-launcher/README.md) and the orthogonal
+management section of
+[remote-agent-v2-supervisor-protocol.md](remote-agent-v2-supervisor-protocol.md).

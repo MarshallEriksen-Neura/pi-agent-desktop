@@ -5,6 +5,7 @@ import type {
   NotificationPort,
   PetWindowPort,
   PiConfigurationPort,
+  PiManagementPortFactory,
   PiProcessPort,
   ProjectCatalogPort,
   ProviderAuthPort,
@@ -50,6 +51,8 @@ export interface BackendPorts {
   remoteTerminal: RemoteTerminalPort;
   remoteProviderSync: RemoteProviderSyncPort;
   piConfiguration: PiConfigurationPort;
+  /** Semantic plugin/skill management, bound to one local or SSH target. */
+  createPiManagement: PiManagementPortFactory;
   window: WindowPort;
   notification: NotificationPort;
   updater: UpdaterPort;

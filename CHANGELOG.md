@@ -4,8 +4,34 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-03
+
+### Added
+- **插件与 Skills 页面现在支持 SSH 远程目标**。可以直接查看远端主机的全局/项目配置，并执行包的安装、移除、更新，以及 Skill 的安装、卸载、更新和作用域迁移。所有路径与状态均绑定当前 `profileRevision + remoteCwd`，不会回退读取或修改本机文件
+  - 读取与写入能力独立协商。旧 launcher 会提示升级；只有读取能力时页面仍可浏览，但安装、更新、移动和删除操作会明确禁用
+  - 新增独立的 `--manage` 控制面：使用状态令牌拒绝过期写入，变更后返回权威快照；Skill 源文件通过不透明引用读取，配置、锁文件和诊断均有大小限制并过滤凭据
+- **Agent 顶栏新增当前 Git 分支标签**。支持普通分支、detached HEAD、worktree、submodule，以及从本地子目录向上查找仓库；切换项目时立即清除旧标签，并在任务结束、窗口重新聚焦和本地定时轮询时刷新
+- **SSH 浏览与管理请求复用共享连接**。远程目录浏览、文件读取、能力探测、provider 同步和 PI 管理可复用约 10 分钟的 ControlMaster，减少连续短请求的重复握手；Pi 运行、任务启动和 attach 仍使用独立连接，保持原有生命周期边界
+
+### Changed
+- **插件、包与 Skills 统一改由目标绑定的 management snapshot 驱动**。本地、SSH 和浏览器预览共用同一端口契约；设置文件、package lock、Skill 列表和 lock 来源在一次检查中形成一致快照，变更结果先落入该快照，再刷新 Pi 状态
+- **重启提示改为按任务与执行目标记录**。全局变更只标记同一主机上的会话，项目变更只标记当前项目；重启远程 Pi 时沿用原始 SSH binding 与 cwd，并且只清除对应任务的待重启状态
+- **文件系统与远程网关命令移出 UI 线程**。文件索引和读写、MCP 配置、Pi 设置、项目打开与最近项目、远程预检与 launcher 安装、workspace 请求及 provider 同步等阻塞操作现在通过 blocking 线程池执行，慢磁盘或 SSH 超时不再冻结窗口
+- **Skills 扫描移除第二套目录遍历实现**。页面直接映射统一 management snapshot，避免插件页、Skills 页和后端分别维护不同的配置与扫描结果
+
+### Fixed
+- **修复 management 加载与目标切换竞态**。同一目标的并发调用和 React Strict Mode 重入现在合并为一个 in-flight 请求；已完成请求不会被缓存，手动刷新仍执行真实 I/O
+  - A → B → A 切换不会复用已失效的旧 A 请求；旧目标迟到的 availability、inspect、错误或 finally 更新也不能覆盖当前页面
+  - mutation 返回的权威快照会使更早的 inspect 失效，避免安装或删除成功后又被旧读取结果回滚
+- **修复远程 mutation 快照无法应用的问题**。launcher 返回的通用 `"remote"` target key 会在桌面适配器中规范化为实际 SSH binding key，包与 Skill 变更结果不会再因目标身份不匹配而被丢弃
+- **修复 Skill 来源枚举在不同 CLI 输出格式下返回空列表**。共享解析器同时识别当前 clack 树形输出与旧版 Markdown bullet 输出，并过滤 ANSI 控制序列；本地与远程 launcher 使用一致规则
+- **修复包管理命令可能等待交互确认的问题**。本地和远程的 Pi package 安装、移除与更新都会显式传入 `--approve`，确保桌面发起的非交互操作可以确定完成
+- **修复异步项目 mutation 的回滚覆盖竞态**。本地打开、远程打开和移除最近项目按命令级串行执行；网关同步失败仍保留原有完整回滚和组合错误语义，同时不会覆盖另一个已完成的项目变更
+
 ### Internal
-- 移除三个自 0.9.0 起就失败、随每次发布被记录为"存量失败"的测试:browser-mock 扩展 UI(mock 在 arm-extension-error 后关闭了管道,后续 `extension_ui_response` 必然撞 broken pipe)、chat-recovery 显式 resume path(同文件前一个测试泄漏的 store/client 使断言落在旧 fake 上,refresh 60 秒超时;独立复现已确认产品行为本身正确)、mcp-import OAuth 端到端 fixture(`FakePiProcess` 不回传数据,authUrl 提取断言永远为 undefined)。后端套件 312 pass / 0 fail,不再有被默认忽视的红色
+- 远程 launcher 升级到 **revision 5**，`statusVersion` 保持 1；新增四项独立 PI management capability、严格请求结构、资源上限、诊断脱敏、进程组超时、远程 mutation 锁及 stale-lock 隔离回收
+- 新增 launcher management 协议测试，以及 management load、远程 target key、Git HEAD/分支、Skill 列表解析和 package approval 等回归测试；后端测试入口同步纳入新增用例
+- 移除三个自 0.9.0 起持续失败且不能验证现有产品行为的存量测试；后端套件不再默认忽略红色项
 
 ## [0.12.0] — 2026-09-02
 

@@ -3,9 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { usePi } from "@/lib/pi/store";
+import { useSessions } from "@/lib/pi/sessions";
 import { usePiSettings, type SettingsScope } from "@/lib/pi/settings";
 import { useSkills, type SkillInfo, type SkillOrigin } from "@/lib/pi/skills";
 import { useSkillsInstall, type InstallScope } from "@/lib/pi/skills-install";
+import { usePiManagement } from "@/lib/pi/management";
+import { piManagementTargetKey } from "@/lib/backend/ports/pi-management";
 import { useWorkspace } from "@/lib/workspace";
 import { useT } from "@/lib/i18n";
 import {
@@ -28,6 +31,7 @@ import {
   ChevronRight,
   ArrowLeftRight,
   Trash2,
+  AlertTriangle,
 } from "lucide-react";
 
 const ORIGINS: readonly SkillOrigin[] = ["global", "project", "path"];
@@ -167,12 +171,22 @@ function OriginLedger({
 }
 
 /** Expandable skill row: header → description, command, path, SKILL.md preview. */
-function SkillRow({ skill, first }: { skill: SkillInfo; first: boolean }) {
+function SkillRow({
+  skill,
+  first,
+  canMutate,
+}: {
+  skill: SkillInfo;
+  first: boolean;
+  canMutate: boolean;
+}) {
   const t = useT();
   const readSource = useSkills((s) => s.readSource);
   const busy = useSkillsInstall((s) => s.busy);
   const locked = useSkillsInstall((s) => Boolean(s.locks?.[skill.name]));
-  const hasRoot = useWorkspace((w) => Boolean(w.root));
+  const binding = useSessions((state) => state.executionBinding);
+  const localHasProject = useWorkspace((w) => Boolean(w.root));
+  const hasProject = binding.kind === "ssh" || localHasProject;
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [source, setSource] = useState<string | null>(null);
@@ -378,19 +392,22 @@ function SkillRow({ skill, first }: { skill: SkillInfo; first: boolean }) {
                     whileTap={{ scale: 0.94 }}
                     onClick={() => useSkillsInstall.getState().move(skill, moveTo)}
                     disabled={
-                      busy !== null || !locked || (moveTo === "project" && !hasRoot)
+                      busy !== null || !canMutate || !locked || (moveTo === "project" && !hasProject)
                     }
                     title={
                       !locked
                         ? t("skillsInstall.moveNeedsLock")
-                        : moveTo === "project" && !hasRoot
+                        : moveTo === "project" && !hasProject
                           ? t("skillsInstall.scopeFooterNoProject")
                           : undefined
                     }
                     style={{
                       ...chipButton,
                       opacity:
-                        busy !== null || !locked || (moveTo === "project" && !hasRoot)
+                        busy !== null ||
+                        !canMutate ||
+                        !locked ||
+                        (moveTo === "project" && !hasProject)
                           ? 0.45
                           : 1,
                     }}
@@ -408,11 +425,11 @@ function SkillRow({ skill, first }: { skill: SkillInfo; first: boolean }) {
                     type="button"
                     whileTap={{ scale: 0.94 }}
                     onClick={() => useSkillsInstall.getState().uninstall(skill)}
-                    disabled={busy !== null}
+                    disabled={busy !== null || !canMutate}
                     style={{
                       ...chipButton,
                       color: "var(--danger, #E5484D)",
-                      opacity: busy !== null ? 0.45 : 1,
+                      opacity: busy !== null || !canMutate ? 0.45 : 1,
                     }}
                   >
                     <Trash2 size={12} />
@@ -422,6 +439,7 @@ function SkillRow({ skill, first }: { skill: SkillInfo; first: boolean }) {
                   </motion.button>
                 )}
               </div>
+              {binding.kind === "local" && (
               <div
                 title={skill.file}
                 style={{
@@ -436,6 +454,7 @@ function SkillRow({ skill, first }: { skill: SkillInfo; first: boolean }) {
               >
                 {skill.file}
               </div>
+              )}
               <AnimatePresence initial={false}>
                 {showSource && (
                   <motion.div
@@ -484,18 +503,39 @@ function SkillRow({ skill, first }: { skill: SkillInfo; first: boolean }) {
 export default function SkillsPage() {
   const t = useT();
   const { refresh } = usePi();
+  const binding = useSessions((state) => state.executionBinding);
+  const remote = binding.kind === "ssh";
+  const root = useWorkspace((state) => state.root);
+  const management = usePiManagement();
   const settings = usePiSettings();
   const sk = useSkills();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<SkillOrigin | null>(null);
   const [resScope, setResScope] = useState<SettingsScope>("global");
 
+  const targetKey = piManagementTargetKey(binding, root);
   useEffect(() => {
-    // scan() self-loads settings when needed; no need to await load() first,
-    // which would serialize two IPC round-trips instead of overlapping them.
-    useSkills.getState().scan();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    setQuery("");
+    setFilter(null);
+    useSkillsInstall.setState({
+      busy: null,
+      log: null,
+      listing: false,
+      listError: null,
+      sourceSkills: null,
+      sourceOpaque: false,
+      selected: [],
+      locks: null,
+    });
+    void useSkills
+      .getState()
+      .scan()
+      .then(() => {
+        if (usePiManagement.getState().context().targetKey === targetKey) {
+          return useSkillsInstall.getState().loadLocks();
+        }
+      });
+  }, [targetKey]);
 
   const counts = useMemo(() => {
     const c: Record<SkillOrigin, number> = { global: 0, project: 0, path: 0 };
@@ -521,8 +561,33 @@ export default function SkillsPage() {
     skills: visible.filter((s) => s.origin === o),
   })).filter((g) => g.skills.length > 0);
 
+  const canReadRemote = management.availability?.capabilities.includes("pi-skills-read-v1") ?? false;
+  const canMutate = !remote ||
+    (management.availability?.capabilities.includes("pi-skills-mutate-v1") ?? false);
+  if (remote && (!management.loaded || !canReadRemote)) {
+    return (
+      <SettingsPage
+        title={t("skills.title")}
+        subtitle={t("remoteManagement.unavailableSubtitle")}
+      >
+        <InsetGroup>
+          <GroupRow
+            first
+            icon={<Wand2 size={15} />}
+            title={management.loaded ? t("remoteManagement.unavailableTitle") : t("common.loading")}
+            detail={
+              management.loaded
+                ? management.error ?? t("remoteManagement.unavailableDetail")
+                : undefined
+            }
+          />
+        </InsetGroup>
+      </SettingsPage>
+    );
+  }
+
   const rescan = async () => {
-    await settings.load();
+    if (!remote) await settings.load();
     await sk.scan();
     await refresh();
   };
@@ -534,7 +599,17 @@ export default function SkillsPage() {
     >
       <OriginLedger counts={counts} filter={filter} onFilter={setFilter} />
 
-      <SkillsInstall />
+      {remote && !canMutate && (
+        <InsetGroup>
+          <GroupRow
+            first
+            icon={<AlertTriangle size={15} />}
+            iconBg="var(--warning)"
+            title={t("remoteManagement.mutationUnavailable")}
+          />
+        </InsetGroup>
+      )}
+      <SkillsInstall canMutate={canMutate} />
 
       {/* search — filters name + description */}
       <div
@@ -606,12 +681,14 @@ export default function SkillsPage() {
             }
           >
             {g.skills.map((s, i) => (
-              <SkillRow key={s.file} skill={s} first={i === 0} />
+              <SkillRow key={s.file} skill={s} first={i === 0} canMutate={canMutate} />
             ))}
           </InsetGroup>
         ))
       )}
 
+      {!remote && (
+        <>
       {/* loading controls — settings.json skills paths + slash-command toggle */}
       <InsetGroup header={t("skills.loadHeader")} footer={t("skills.loadFooter")}>
         <div style={{ padding: "12px 14px" }}>
@@ -646,6 +723,8 @@ export default function SkillsPage() {
           />
         </div>
       </InsetGroup>
+        </>
+      )}
 
       <InsetGroup header={t("plugins.actions")}>
         <GroupRow
@@ -658,9 +737,9 @@ export default function SkillsPage() {
         />
       </InsetGroup>
 
-      {(sk.error || settings.lastError) && (
+      {(sk.error || (!remote && settings.lastError)) && (
         <p style={{ marginTop: 16, fontSize: 12.5, color: "var(--danger, #E5484D)" }}>
-          {sk.error ?? settings.lastError}
+          {sk.error ?? (!remote ? settings.lastError : null)}
         </p>
       )}
     </SettingsPage>

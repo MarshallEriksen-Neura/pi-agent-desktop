@@ -53,6 +53,20 @@ export type {
   PetWindowPort,
 } from "./pet-window";
 export type {
+  ManagedSkillDto,
+  PackageMutationRequest,
+  PiManagementAvailability,
+  PiManagementCapability,
+  PiManagementMutationResult,
+  PiManagementPort,
+  PiManagementPortFactory,
+  PiManagementScope,
+  PiManagementScopeFile,
+  PiManagementSnapshot,
+  SkillMutationRequest,
+} from "./pi-management";
+export { piManagementScopeKey, piManagementTargetKey } from "./pi-management";
+export type {
   PiConfigurationPort,
   PiCustomModelDto,
   PiModelsDto,

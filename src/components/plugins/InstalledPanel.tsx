@@ -41,10 +41,14 @@ const stateStyle: React.CSSProperties = {
 export function InstalledPanel({
   pm,
   onBrowse,
+  canMutate = true,
+  remote = false,
 }: {
   pm: PackageManager;
   /** hand the user to Discover — the empty state's only useful next step */
   onBrowse: () => void;
+  canMutate?: boolean;
+  remote?: boolean;
 }) {
   const { commands } = usePi();
   const settings = usePiSettings();
@@ -105,7 +109,7 @@ export function InstalledPanel({
               variant="outline"
               size="sm"
               onClick={() => void pm.updateAll()}
-              disabled={pm.busy}
+              disabled={pm.busy || !canMutate}
               style={{ color: "var(--accent)", borderRadius: 8 }}
             >
               <RefreshCw size={13} aria-hidden />
@@ -119,7 +123,7 @@ export function InstalledPanel({
             first
             title={t("plugins.noPackages")}
             detail={t("plugins.noPackagesDetail")}
-            onClick={onBrowse}
+            onClick={canMutate ? onBrowse : undefined}
           />
         ) : (
           pm.packages.map((pkg, i) => (
@@ -146,7 +150,7 @@ export function InstalledPanel({
                       variant="outline"
                       size="sm"
                       onClick={() => pm.requestUpdate(pkg)}
-                      disabled={pm.busy}
+                      disabled={pm.busy || !canMutate}
                       style={{ color: "var(--accent)", borderRadius: 8 }}
                     >
                       {pm.updating === pkg.source
@@ -174,7 +178,7 @@ export function InstalledPanel({
                         label: t("plugins.remove"),
                         icon: <Trash2 size={13} />,
                         onSelect: () => void pm.remove(pkg),
-                        disabled: pm.busy,
+                        disabled: pm.busy || !canMutate,
                         danger: true,
                       },
                     ]}
@@ -210,6 +214,7 @@ export function InstalledPanel({
       </DisclosureGroup>
 
       {/* settings.json resource path arrays — loaded from disk, not from a package */}
+      {!remote && (
       <DisclosureGroup
         header={t("plugins.localResources")}
         footer={t("plugins.localResourcesFooter")}
@@ -253,6 +258,7 @@ export function InstalledPanel({
           />
         </div>
       </DisclosureGroup>
+      )}
 
       {builtins.length > 0 && (
         <DisclosureGroup

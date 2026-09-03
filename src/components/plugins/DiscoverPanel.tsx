@@ -46,7 +46,7 @@ const fieldStyle: React.CSSProperties = {
   outline: "none",
 };
 
-export function DiscoverPanel({ pm }: { pm: PackageManager }) {
+export function DiscoverPanel({ pm, canMutate = true }: { pm: PackageManager; canMutate?: boolean }) {
   const t = useT();
   const [query, setQuery] = useState("");
   const [source, setSource] = useState("");
@@ -94,7 +94,7 @@ export function DiscoverPanel({ pm }: { pm: PackageManager }) {
             options={["global", "project"] as const}
             value={pm.activeScope}
             onChange={pm.setScope}
-            disabled={!pm.hasProject || pm.busy}
+            disabled={!pm.hasProject || pm.busy || !canMutate}
             labelOf={(scope) => t(`plugins.scope.${scope}`)}
           />
         </div>
@@ -205,7 +205,7 @@ export function DiscoverPanel({ pm }: { pm: PackageManager }) {
                             variant="primary"
                             size="sm"
                             onClick={() => void pm.install(`npm:${pkg.name}`)}
-                            disabled={pm.busy}
+                            disabled={pm.busy || !canMutate}
                             style={{
                               borderRadius: 8,
                               opacity:
@@ -248,14 +248,14 @@ export function DiscoverPanel({ pm }: { pm: PackageManager }) {
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
-              disabled={pm.busy}
+              disabled={pm.busy || !canMutate}
               style={{ ...fieldStyle, fontFamily: "var(--font-mono)" }}
             />
             <Button
               type="submit"
               variant="primary"
               size="sm"
-              disabled={pm.busy || !source.trim()}
+              disabled={pm.busy || !source.trim() || !canMutate}
               style={{ borderRadius: 8, flexShrink: 0, minWidth: 92 }}
             >
               <Download size={14} aria-hidden />

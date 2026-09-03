@@ -36,11 +36,19 @@ if [ "$mode" = "--capabilities" ]; then
     printf '%s\n' 'capabilities_invalid_arguments' >&2
     exit 64
   fi
-  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":1,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1"]}'
+  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":5,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1"]}'
   exit 0
 fi
 
-if [ "$mode" = "--provider-sync" ]; then
+if [ "$mode" = "--manage" ]; then
+  if [ "$#" -ne 1 ]; then
+    printf '%s\n' 'management_invalid_arguments' >&2
+    exit 64
+  fi
+  PI_DESKTOP_LAUNCHER_PATH=$0
+  export PI_DESKTOP_LAUNCHER_PATH
+  decoded=""
+elif [ "$mode" = "--provider-sync" ]; then
   if [ "$#" -ne 1 ]; then
     printf '%s\n' 'provider_sync_invalid_arguments' >&2
     exit 64
@@ -611,6 +619,465 @@ function runProviderSync() {
   }
 }
 
+// --- target-scoped PI package/skill management ------------------------------
+function runManagement() {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const os = require("node:os");
+  const crypto = require("node:crypto");
+  const { spawnSync } = require("node:child_process");
+  const REQUEST_MAX = 64 * 1024;
+  const RESPONSE_MAX = 2 * 1024 * 1024;
+  const SETTINGS_MAX = 512 * 1024;
+  const LOCK_MAX = 512 * 1024;
+  const SKILL_MAX = 256 * 1024;
+  const SKILL_LIMIT = 2048;
+  const SOURCE_OUTPUT_MAX = 64 * 1024;
+  const cleanDiagnostic = (value) => String(value ?? "")
+    .replace(/:\/\/([^/@\s:]+):([^/@\s]+)@/g, "://***@")
+    .replace(/\b(authorization|token|password|secret|api[_-]?key)\s*[:=]\s*[^\s]+/gi, "$1=***")
+    .slice(0, SOURCE_OUTPUT_MAX);
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const onlyKeys = (value, keys) => isObject(value) &&
+    Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+  const respond = (reply) => {
+    let line = `${JSON.stringify(reply)}\n`;
+    if (Buffer.byteLength(line) > RESPONSE_MAX) {
+      line = `${JSON.stringify({ ok: false, errorCode: "responseTooLarge", detail: null })}\n`;
+    }
+    writeReplySync(line);
+    process.exit(0);
+  };
+  const fail = (errorCode, detail) => respond({
+    ok: false,
+    errorCode,
+    detail: detail === undefined ? null : cleanDiagnostic(detail),
+  });
+  let input = Buffer.alloc(0);
+  try { input = fs.readFileSync(0); } catch (error) { fail("requestReadFailed", error?.message); }
+  if (input.length === 0 || input.length > REQUEST_MAX) fail("requestTooLarge");
+  let envelope;
+  try { envelope = JSON.parse(input.toString("utf8")); } catch { fail("invalidRequestJson"); }
+  if (!onlyKeys(envelope, ["protocolVersion", "remoteCwd", "request"]) ||
+      envelope.protocolVersion !== 1 || typeof envelope.remoteCwd !== "string" ||
+      !path.isAbsolute(envelope.remoteCwd) || !isObject(envelope.request)) fail("invalidRequest");
+  const request = envelope.request;
+  const operation = request.operation;
+  const allowedRequestKeys = {
+    inspect: ["operation"],
+    readSkillSource: ["operation", "sourceRef"],
+    browseSkillSource: ["operation", "source"],
+    mutatePackage: ["operation", "mutation"],
+    mutateSkill: ["operation", "mutation"],
+  };
+  if (!Object.hasOwn(allowedRequestKeys, operation) || !onlyKeys(request, allowedRequestKeys[operation])) {
+    fail("unsupportedOperation");
+  }
+  const home = os.homedir();
+  const agentRoot = path.join(home, ".pi", "agent");
+  let projectRoot;
+  try { projectRoot = fs.realpathSync(envelope.remoteCwd); } catch { fail("projectRootUnavailable"); }
+  const projectPiRoot = path.join(projectRoot, ".pi");
+  const control = /[\u0000-\u001f\u007f]/;
+  const safeValue = (value, max = 2048) => typeof value === "string" && value.length > 0 &&
+    value.length <= max && value.trim() === value && !value.startsWith("-") && !control.test(value);
+  const readBounded = (file, max, optional = true) => {
+    try {
+      if (fs.lstatSync(file).isSymbolicLink()) fail("symlinkRejected");
+      const stat = fs.statSync(file);
+      if (!stat.isFile() || stat.size > max) fail("fileTooLarge");
+      return fs.readFileSync(file, "utf8");
+    } catch (error) {
+      if (optional && (error?.code === "ENOENT" || error?.code === "ENOTDIR")) return null;
+      if (error?.code === "EACCES") fail("permissionDenied");
+      fail("readFailed", error?.message);
+    }
+  };
+  const settingsFile = (root, label) => {
+    const file = path.join(root, "settings.json");
+    const content = readBounded(file, SETTINGS_MAX, true);
+    return { path: label, exists: content !== null, content: content ?? "{}" };
+  };
+  const globalSettings = settingsFile(agentRoot, "$HOME/.pi/agent/settings.json");
+  const projectSettings = settingsFile(projectPiRoot, "$PROJECT/.pi/settings.json");
+  const parseSettings = (document) => {
+    try {
+      const value = JSON.parse(document.content);
+      const packages = Array.isArray(value.packages) ? value.packages : [];
+      if (packages.length > 512) fail("packageLimitExceeded");
+      return { value, packages };
+    } catch (error) { fail("invalidSettings", error?.message); }
+  };
+  const globalParsed = parseSettings(globalSettings);
+  const projectParsed = parseSettings(projectSettings);
+  const publicPackage = (item) => {
+    if (typeof item === "string") return cleanDiagnostic(item);
+    if (!isObject(item) || typeof item.source !== "string") return null;
+    const result = { source: cleanDiagnostic(item.source) };
+    for (const key of ["extensions", "skills", "prompts", "themes"]) {
+      if (Array.isArray(item[key])) {
+        result[key] = item[key].filter((value) => typeof value === "string")
+          .slice(0, 128).map((value) => value.slice(0, 1024));
+      }
+    }
+    if (typeof item.autoload === "boolean") result.autoload = item.autoload;
+    return result;
+  };
+  const publicSettings = (document, parsed) => ({
+    ...document,
+    content: JSON.stringify({ packages: parsed.packages.map(publicPackage).filter(Boolean) }),
+  });
+  const publicGlobalSettings = publicSettings(globalSettings, globalParsed);
+  const publicProjectSettings = publicSettings(projectSettings, projectParsed);
+  const realContained = (candidate, allowedRoot) => {
+    let real;
+    try { real = fs.realpathSync(candidate); } catch { return null; }
+    const root = path.resolve(allowedRoot);
+    return real === root || real.startsWith(`${root}${path.sep}`) ? real : null;
+  };
+  const parseSkillMd = (content, fallback) => {
+    let name = fallback;
+    let description = "";
+    const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    for (const line of match?.[1]?.split(/\r?\n/) ?? []) {
+      const field = line.match(/^(name|description):\s*(.*)$/);
+      if (!field) continue;
+      const value = (field[2] ?? "").trim().replace(/^["']|["']$/g, "");
+      if (field[1] === "name" && value) name = value;
+      if (field[1] === "description") description = value;
+    }
+    return { name, description };
+  };
+  const sourceRef = (file) => `skill-${crypto.createHash("sha256").update(file).digest("hex")}`;
+  const skillFiles = new Map();
+  const skills = [];
+  const addSkill = (file, fallback, origin, allowedRoot) => {
+    if (skills.length >= SKILL_LIMIT) fail("skillLimitExceeded");
+    let real;
+    try {
+      if (fs.lstatSync(file).isSymbolicLink()) return;
+      real = realContained(file, allowedRoot);
+    } catch { return; }
+    if (!real) return;
+    const content = readBounded(real, SKILL_MAX, false);
+    const ref = sourceRef(real);
+    skillFiles.set(ref, real);
+    skills.push({ ...parseSkillMd(content, fallback), origin, sourceRef: ref });
+  };
+  const scanDirectory = (directory, origin) => {
+    let realDirectory;
+    try {
+      if (fs.lstatSync(directory).isSymbolicLink()) return;
+      realDirectory = fs.realpathSync(directory);
+    } catch { return; }
+    const own = path.join(realDirectory, "SKILL.md");
+    if (fs.existsSync(own)) { addSkill(own, path.basename(realDirectory), origin, realDirectory); return; }
+    let entries = [];
+    try { entries = fs.readdirSync(realDirectory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      addSkill(path.join(realDirectory, entry.name, "SKILL.md"), entry.name, origin, realDirectory);
+    }
+  };
+  const unscannableSkills = [];
+  const configuredRoots = (parsed, scopeRoot) => {
+    const roots = [];
+    for (const value of Array.isArray(parsed.value.skills) ? parsed.value.skills : []) {
+      if (typeof value !== "string" || !value.trim()) continue;
+      if (value.startsWith("!") || /[*?\[\]{}]/.test(value)) { unscannableSkills.push(value); continue; }
+      const candidate = value.startsWith("~/") ? path.join(home, value.slice(2)) :
+        path.isAbsolute(value) ? value : path.resolve(scopeRoot, value);
+      roots.push(candidate);
+    }
+    return roots;
+  };
+  scanDirectory(path.join(agentRoot, "skills"), "global");
+  scanDirectory(path.join(projectPiRoot, "skills"), "project");
+  for (const directory of configuredRoots(globalParsed, agentRoot)) scanDirectory(directory, "path");
+  for (const directory of configuredRoots(projectParsed, projectPiRoot)) scanDirectory(directory, "path");
+  const globalPackageLock = readBounded(path.join(agentRoot, "npm", "package-lock.json"), LOCK_MAX, true);
+  const projectPackageLock = readBounded(path.join(projectPiRoot, "npm", "package-lock.json"), LOCK_MAX, true);
+  const publicPackageLock = (content) => {
+    if (content === null) return null;
+    try {
+      const lock = JSON.parse(content);
+      if (isObject(lock.packages)) {
+        const packages = {};
+        for (const [key, entry] of Object.entries(lock.packages)) {
+          if (!/^node_modules\/(?:@[^/]+\/)?[^/]+$/.test(key) || typeof entry?.version !== "string") continue;
+          packages[key] = { version: entry.version.slice(0, 256) };
+          if (Object.keys(packages).length >= 512) break;
+        }
+        return JSON.stringify({ lockfileVersion: lock.lockfileVersion, packages });
+      }
+      const dependencies = {};
+      for (const [name, entry] of Object.entries(isObject(lock.dependencies) ? lock.dependencies : {})) {
+        if (typeof entry?.version !== "string") continue;
+        dependencies[name] = { version: entry.version.slice(0, 256) };
+        if (Object.keys(dependencies).length >= 512) break;
+      }
+      return JSON.stringify({ dependencies });
+    } catch {
+      return null;
+    }
+  };
+  const publicGlobalPackageLock = publicPackageLock(globalPackageLock);
+  const publicProjectPackageLock = publicPackageLock(projectPackageLock);
+  const skillLocks = Object.create(null);
+  for (const file of [path.join(home, ".agents", ".skill-lock.json"), path.join(projectRoot, "skills-lock.json")]) {
+    const content = readBounded(file, LOCK_MAX, true);
+    if (content === null) continue;
+    try {
+      const lock = JSON.parse(content);
+      for (const [name, item] of Object.entries(lock.skills ?? {})) {
+        const source = item?.source || item?.sourceUrl;
+        if (typeof source === "string" && safeValue(name, 256)) skillLocks[name] = cleanDiagnostic(source);
+      }
+    } catch { /* optional lock metadata */ }
+  }
+  const stableState = {
+    globalSettings: globalSettings.content, projectSettings: projectSettings.content,
+    globalPackageLock, projectPackageLock, skills, skillLocks,
+  };
+  const stateToken = `sha256-${crypto.createHash("sha256").update(JSON.stringify(stableState)).digest("hex")}`;
+  const snapshot = {
+    targetKey: "remote", stateToken, globalSettings: publicGlobalSettings,
+    projectSettings: publicProjectSettings,
+    packageLocks: { global: publicGlobalPackageLock, project: publicProjectPackageLock },
+    skills, unscannableSkills, skillLocks,
+  };
+  if (operation === "inspect") respond({ ok: true, operation, result: snapshot });
+  if (operation === "readSkillSource") {
+    if (!safeValue(request.sourceRef, 80)) fail("invalidSourceRef");
+    const file = skillFiles.get(request.sourceRef);
+    if (!file) fail("sourceRefNotFound");
+    respond({ ok: true, operation, result: readBounded(file, SKILL_MAX, false) });
+  }
+  const spawnBounded = (command, args, timeout, maxBuffer) => spawnSync("sh", ["-c", [
+    "if command -v setsid >/dev/null 2>&1; then setsid \"$@\" & grouped=1; else \"$@\" & grouped=0; fi",
+    "child=$!",
+    "terminate() {",
+    "  if [ \"$grouped\" = 1 ]; then kill -TERM -\"$child\" 2>/dev/null || true; else kill -TERM \"$child\" 2>/dev/null || true; fi",
+    "  sleep 1",
+    "  if [ \"$grouped\" = 1 ]; then kill -KILL -\"$child\" 2>/dev/null || true; else kill -KILL \"$child\" 2>/dev/null || true; fi",
+    "  exit 124",
+    "}",
+    "trap terminate TERM INT HUP",
+    "wait \"$child\"",
+    "exit $?",
+  ].join("\n"), "pi-desktop-management", command, ...args], {
+    cwd: projectRoot, encoding: "utf8", timeout, maxBuffer, killSignal: "SIGTERM",
+  });
+  if (operation === "browseSkillSource") {
+    if (!safeValue(request.source)) fail("invalidSkillSource");
+    const executable = (() => {
+      try {
+        const direct = spawnSync("sh", ["-c", "command -v skills"], { encoding: "utf8", timeout: 2000 });
+        if (direct.status === 0 && direct.stdout.trim()) return { command: direct.stdout.trim(), prefix: [] };
+        const npx = spawnSync("sh", ["-c", "command -v npx"], { encoding: "utf8", timeout: 2000 });
+        if (npx.status === 0 && npx.stdout.trim()) return { command: npx.stdout.trim(), prefix: ["-y", "skills@latest"] };
+      } catch { /* reported below */ }
+      return null;
+    })();
+    if (!executable) fail("skillsCliUnavailable");
+    const result = spawnBounded(executable.command,
+      [...executable.prefix, "add", request.source, "--list"], 120000, SOURCE_OUTPUT_MAX);
+    if (result.error) fail(result.error.code === "ETIMEDOUT" ? "skillsCliTimeout" : "skillsCliFailed", result.error.message);
+    if (result.status !== 0) fail("skillsCliFailed", String(result.stderr || result.stdout).slice(0, SOURCE_OUTPUT_MAX));
+    const lines = String(result.stdout).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").split(/\r?\n/);
+    const start = lines.findIndex((line) => line.includes("Available Skills"));
+    const found = [];
+    for (const line of start < 0 ? [] : lines.slice(start + 1)) {
+      const bullet = /^\s*[-*]\s+([^\s:]+)(?::\s*(.*))?$/.exec(line);
+      if (bullet) { found.push({ name: bullet[1], description: bullet[2] ?? "" }); continue; }
+      const clack = /^[│|](\s+)(\S.*?)\s*$/.exec(line);
+      if (!clack) continue;
+      if (clack[1].length <= 5) found.push({ name: clack[2], description: "" });
+      else if (found.length > 0) found[found.length - 1].description = clack[2];
+    }
+    respond({ ok: true, operation, result: found.slice(0, SKILL_LIMIT) });
+  }
+  const mutation = request.mutation;
+  if (!isObject(mutation)) fail("invalidMutation");
+  const mutationOperation = mutation.operation;
+  const mutationKeys = operation === "mutatePackage" ? {
+    install: ["operation", "scope", "source", "expectedState"],
+    remove: ["operation", "scope", "source", "expectedState"],
+    update: ["operation", "source", "expectedState"],
+    updateAll: ["operation", "expectedState"],
+  } : {
+    install: ["operation", "scope", "source", "skills", "expectedState"],
+    remove: ["operation", "scope", "name", "expectedState"],
+    updateAll: ["operation", "scope", "expectedState"],
+    move: ["operation", "from", "to", "name", "source", "expectedState"],
+  };
+  if (!Object.hasOwn(mutationKeys, mutationOperation) ||
+      !onlyKeys(mutation, mutationKeys[mutationOperation]) ||
+      !/^sha256-[0-9a-f]{64}$/.test(mutation.expectedState ?? "")) fail("invalidMutation");
+  const validScope = (scope) => scope === "global" || scope === "project";
+  const launcherPath = process.env.PI_DESKTOP_LAUNCHER_PATH;
+  if (!launcherPath || !path.isAbsolute(launcherPath)) fail("launcherPathUnavailable");
+  const inspectFresh = () => {
+    const child = spawnSync(launcherPath, ["--manage"], {
+      input: JSON.stringify({ protocolVersion: 1, remoteCwd: envelope.remoteCwd, request: { operation: "inspect" } }),
+      encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024,
+    });
+    if (child.error || child.status !== 0) fail("postInspectFailed", child.error?.message ?? String(child.stderr));
+    let reply;
+    try { reply = JSON.parse(String(child.stdout).trim().split(/\r?\n/).filter(Boolean).at(-1)); }
+    catch (error) { fail("postInspectFailed", error?.message); }
+    if (reply?.ok !== true || !isObject(reply.result)) fail("postInspectFailed", reply?.errorCode);
+    return reply.result;
+  };
+  const findExecutable = (name) => {
+    const found = spawnSync("sh", ["-lc", `command -v ${name}`], { encoding: "utf8", timeout: 2000, maxBuffer: 8192 });
+    const candidate = String(found.stdout ?? "").trim();
+    return found.status === 0 && !candidate.includes("\n") && path.isAbsolute(candidate) ? candidate : null;
+  };
+  const runCli = (command, args) => {
+    const result = spawnBounded(command, args, 290000, SOURCE_OUTPUT_MAX);
+    if (result.error) {
+      return {
+        code: result.error.code === "ETIMEDOUT" ? 124 : 1,
+        stdout: cleanDiagnostic(result.stdout),
+        stderr: cleanDiagnostic(result.error.message),
+      };
+    }
+    return {
+      code: Number.isInteger(result.status) ? result.status : 1,
+      stdout: cleanDiagnostic(result.stdout),
+      stderr: cleanDiagnostic(result.stderr),
+    };
+  };
+  const lockPath = path.join(agentRoot, ".pi-desktop-management.lock");
+  const lockOwnerPath = path.join(lockPath, "owner.json");
+  const LOCK_STALE_MS = 10 * 60 * 1000;
+  try { fs.mkdirSync(agentRoot, { recursive: true, mode: 0o700 }); }
+  catch (error) { fail("managementRootUnavailable", error?.message); }
+  const lockIsStale = () => {
+    try {
+      const stat = fs.lstatSync(lockPath);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+      let owner = null;
+      try { owner = JSON.parse(fs.readFileSync(lockOwnerPath, "utf8")); } catch { /* incomplete owner */ }
+      const createdAt = Number(owner?.createdAt ?? stat.mtimeMs);
+      if (Number.isFinite(createdAt) && Date.now() - createdAt > LOCK_STALE_MS) return true;
+      const pid = Number(owner?.pid);
+      if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+      try { process.kill(pid, 0); return false; } catch (error) { return error?.code === "ESRCH"; }
+    } catch {
+      return false;
+    }
+  };
+  const createManagementLock = () => {
+    fs.mkdirSync(lockPath, { mode: 0o700 });
+    try {
+      fs.writeFileSync(lockOwnerPath, JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+        { encoding: "utf8", mode: 0o600, flag: "wx" });
+    } catch (error) {
+      try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* original error wins */ }
+      throw error;
+    }
+  };
+  try {
+    createManagementLock();
+  } catch (error) {
+    if (error?.code !== "EEXIST" || !lockIsStale()) {
+      fail(error?.code === "EEXIST" ? "managementBusy" : "managementLockFailed", error?.message);
+    }
+    const reclaimPath = `${lockPath}.reclaim`;
+    const quarantinePath = `${lockPath}.stale-${process.pid}-${Date.now()}`;
+    try {
+      fs.mkdirSync(reclaimPath, { mode: 0o700 });
+    } catch (reclaimError) {
+      fail(reclaimError?.code === "EEXIST" ? "managementBusy" : "managementLockFailed", reclaimError?.message);
+    }
+    let reclaimFailure = null;
+    try {
+      if (!lockIsStale()) {
+        reclaimFailure = { code: "EEXIST", message: "lock owner changed" };
+      } else {
+        fs.renameSync(lockPath, quarantinePath);
+        fs.rmSync(quarantinePath, { recursive: true, force: true });
+        createManagementLock();
+      }
+    } catch (retryError) {
+      reclaimFailure = retryError;
+    } finally {
+      try { fs.rmSync(reclaimPath, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+    if (reclaimFailure) {
+      fail(reclaimFailure.code === "EEXIST" || reclaimFailure.code === "ENOENT"
+        ? "managementBusy" : "managementLockFailed", reclaimFailure.message);
+    }
+  }
+  let lockHeld = true;
+  const releaseManagementLock = () => {
+    if (!lockHeld) return;
+    lockHeld = false;
+    try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best effort on process exit */ }
+  };
+  process.on("exit", releaseManagementLock);
+  const lockedSnapshot = inspectFresh();
+  if (lockedSnapshot.stateToken !== mutation.expectedState) fail("stateConflict");
+  let result;
+  let halfDone = false;
+  if (operation === "mutatePackage") {
+    const pi = findExecutable("pi");
+    if (!pi) fail("piCliUnavailable");
+    if ((mutationOperation === "install" || mutationOperation === "remove") &&
+        (!validScope(mutation.scope) || !safeValue(mutation.source))) fail("invalidMutation");
+    if (mutationOperation === "update" && !safeValue(mutation.source)) fail("invalidMutation");
+    const args = mutationOperation === "install"
+      ? ["install", mutation.source, ...(mutation.scope === "project" ? ["-l"] : [])]
+      : mutationOperation === "remove"
+        ? ["remove", mutation.source, ...(mutation.scope === "project" ? ["-l"] : [])]
+        : mutationOperation === "update"
+          ? ["update", mutation.source]
+          : ["update", "--extensions"];
+    result = runCli(pi, [...args, "--approve"]);
+  } else {
+    const skills = (() => {
+      const direct = findExecutable("skills");
+      if (direct) return { command: direct, prefix: [] };
+      const npx = findExecutable("npx");
+      return npx ? { command: npx, prefix: ["-y", "skills@latest"] } : null;
+    })();
+    if (!skills) fail("skillsCliUnavailable");
+    if ((mutation.scope !== undefined && !validScope(mutation.scope)) ||
+        (mutation.from !== undefined && !validScope(mutation.from)) ||
+        (mutation.to !== undefined && !validScope(mutation.to))) fail("invalidMutation");
+    const scopeArgs = (scope) => scope === "global" ? ["-g"] : [];
+    if (mutationOperation === "install") {
+      if (!safeValue(mutation.source) || !Array.isArray(mutation.skills) || mutation.skills.length === 0 ||
+          mutation.skills.length > 128 || !mutation.skills.every((name) => safeValue(name, 256))) fail("invalidMutation");
+      result = runCli(skills.command, [...skills.prefix, "add", mutation.source,
+        ...mutation.skills.flatMap((name) => ["--skill", name]), "--agent", "pi",
+        ...scopeArgs(mutation.scope), "--copy", "-y"]);
+    } else if (mutationOperation === "remove") {
+      if (!safeValue(mutation.name, 256)) fail("invalidMutation");
+      result = runCli(skills.command, [...skills.prefix, "remove", "--skill", mutation.name,
+        "--agent", "pi", ...scopeArgs(mutation.scope), "-y"]);
+    } else if (mutationOperation === "updateAll") {
+      result = runCli(skills.command, [...skills.prefix, "update", mutation.scope === "global" ? "-g" : "-p", "-y"]);
+    } else {
+      if (!safeValue(mutation.name, 256) || !safeValue(mutation.source) || mutation.from === mutation.to) fail("invalidMutation");
+      const added = runCli(skills.command, [...skills.prefix, "add", mutation.source, "--skill", mutation.name,
+        "--agent", "pi", ...scopeArgs(mutation.to), "--copy", "-y"]);
+      if (added.code !== 0) result = added;
+      else {
+        result = runCli(skills.command, [...skills.prefix, "remove", "--skill", mutation.name,
+          "--agent", "pi", ...scopeArgs(mutation.from), "-y"]);
+        halfDone = result.code !== 0;
+      }
+    }
+  }
+  const nextSnapshot = inspectFresh();
+  releaseManagementLock();
+  respond({ ok: true, operation, result: { ...result, snapshot: nextSnapshot, ...(halfDone ? { halfDone: true } : {}) } });
+}
+
+if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--manage") runManagement();
 if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--provider-sync") runProviderSync();
 
 // --- detached tasks (V2.1) -------------------------------------------------

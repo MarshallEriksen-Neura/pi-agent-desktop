@@ -95,6 +95,10 @@ export const en = {
   "project.welcomeBody":
     "Choose a folder — its files show up in the explorer and Pi works inside it.",
 
+  // git branch label (hidden entirely outside a git working tree)
+  "git.branch": "Current branch: {branch}",
+  "git.detached": "Detached HEAD at {sha}",
+
   // sidebar
   "sidebar.sessions": "Sessions",
   "sidebar.remote": "From phone",
@@ -990,6 +994,14 @@ export const en = {
   "plugins.skillCommands": "Skill commands",
   "plugins.skillCommandsDetail": "Register skills as /skill:name commands",
 
+  // target-scoped plugin and skill management
+  "remoteManagement.unavailableTitle": "Remote management unavailable",
+  "remoteManagement.unavailableSubtitle": "This page is disabled for the current SSH target.",
+  "remoteManagement.unavailableDetail":
+    "Upgrade the remote launcher to manage this host. Local PI settings and files are never used as a fallback.",
+  "remoteManagement.mutationUnavailable":
+    "This remote launcher supports viewing only. Upgrade it to install, update, move, or remove items.",
+
   // skills page
   "skills.title": "Skills",
   "skills.subtitleMock": "Browser preview — showing mock data.",
@@ -1071,6 +1083,7 @@ export const en = {
   "skillsInstall.noProject": "No project is open, so there's nowhere to install.",
   "skillsInstall.installed": "Installed {name} — restart pi to load it.",
   "skillsInstall.installFailed": "Install failed: {err}",
+  "skillsInstall.managementUnavailable": "Management state is unavailable. Refresh and try again.",
   "skillsInstall.removed": "Uninstalled {name} — restart pi to drop it.",
   "skillsInstall.removeFailed": "Uninstall failed: {err}",
   "skillsInstall.removePathScope":

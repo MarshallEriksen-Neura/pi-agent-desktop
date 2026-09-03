@@ -41,6 +41,7 @@ import { RetryBanner } from "./RetryBanner";
 import { ExtStatusLine, ExtWidgets } from "./ExtensionSurfaces";
 import { SessionHistoryMenu } from "./SessionHistoryMenu";
 import { ExecutionTargetPicker } from "./ExecutionTargetPicker";
+import { GitBranchLabel } from "./GitBranchLabel";
 import { RemoteTaskBadge } from "./RemoteTaskBadge";
 import { IconButton, SectionLabel } from "./primitives";
 import {
@@ -395,6 +396,7 @@ function LocalAgentPanel({ width }: { width?: number }) {
               can't render the sidebar at all, so a toggle there flips a flag
               nothing reads and the button reads as dead. */}
           <TurnChangesChip width={width} />
+          <GitBranchLabel width={width} />
           <ExecutionTargetPicker />
           <RemoteTaskBadge />
           <SessionHistoryMenu />

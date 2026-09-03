@@ -41,8 +41,14 @@ fn mcp_directory(scope: &str, root: Option<&str>) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn mcp_config_read(scope: String, root: Option<String>) -> Result<SettingsFile, String> {
-    let path = mcp_path(&scope, root.as_deref())?;
+pub async fn mcp_config_read(scope: String, root: Option<String>) -> Result<SettingsFile, String> {
+    crate::fs_bridge::blocking(move || read_config(&scope, root.as_deref())).await
+}
+
+/// The read itself, so `deregister_retired_browser_server` can call it from the
+/// synchronous startup path without an async runtime.
+fn read_config(scope: &str, root: Option<&str>) -> Result<SettingsFile, String> {
+    let path = mcp_path(scope, root)?;
     let exists = path.is_file();
     let content = if exists {
         fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?
@@ -56,13 +62,20 @@ pub fn mcp_config_read(scope: String, root: Option<String>) -> Result<SettingsFi
     })
 }
 
+/// Off the UI thread, and that matters more here than for a plain read: this holds
+/// `WRITE_LOCK` across a `create_dir_all`, a `sync_all` and a staged rename. On the main
+/// thread, two writes racing would have blocked the window on a disk flush.
 #[tauri::command]
-pub fn mcp_config_write(
+pub async fn mcp_config_write(
     scope: String,
     content: String,
     root: Option<String>,
 ) -> Result<(), String> {
-    let parsed = serde_json::from_str::<Value>(&content)
+    crate::fs_bridge::blocking(move || write_config(&scope, &content, root.as_deref())).await
+}
+
+fn write_config(scope: &str, content: &str, root: Option<&str>) -> Result<(), String> {
+    let parsed = serde_json::from_str::<Value>(content)
         .map_err(|e| format!("refusing to write invalid MCP JSON: {e}"))?;
     if !parsed.is_object() {
         return Err("refusing to write MCP config that is not a JSON object".to_owned());
@@ -71,7 +84,7 @@ pub fn mcp_config_write(
     let _write_guard = WRITE_LOCK
         .lock()
         .map_err(|_| "MCP config write lock is poisoned".to_owned())?;
-    let path = mcp_path(&scope, root.as_deref())?;
+    let path = mcp_path(scope, root)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -100,25 +113,28 @@ pub fn mcp_config_write(
 /// The directory is derived from the scope and project root; callers cannot
 /// pass an arbitrary filesystem path.
 #[tauri::command]
-pub fn mcp_config_open_dir(scope: String, root: Option<String>) -> Result<(), String> {
-    let directory = mcp_directory(&scope, root.as_deref())?;
-    fs::create_dir_all(&directory).map_err(|error| {
-        format!(
-            "cannot create MCP config directory {}: {error}",
-            directory.display()
-        )
-    })?;
+pub async fn mcp_config_open_dir(scope: String, root: Option<String>) -> Result<(), String> {
+    crate::fs_bridge::blocking(move || {
+        let directory = mcp_directory(&scope, root.as_deref())?;
+        fs::create_dir_all(&directory).map_err(|error| {
+            format!(
+                "cannot create MCP config directory {}: {error}",
+                directory.display()
+            )
+        })?;
 
-    #[cfg(target_os = "windows")]
-    let result = Command::new("explorer.exe").arg(&directory).spawn();
-    #[cfg(target_os = "macos")]
-    let result = Command::new("open").arg(&directory).spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let result = Command::new("xdg-open").arg(&directory).spawn();
+        #[cfg(target_os = "windows")]
+        let result = Command::new("explorer.exe").arg(&directory).spawn();
+        #[cfg(target_os = "macos")]
+        let result = Command::new("open").arg(&directory).spawn();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let result = Command::new("xdg-open").arg(&directory).spawn();
 
-    result
-        .map(|_| ())
-        .map_err(|error| format!("cannot open MCP config directory: {error}"))
+        result
+            .map(|_| ())
+            .map_err(|error| format!("cannot open MCP config directory: {error}"))
+    })
+    .await
 }
 
 fn replace_file(temp: &Path, target: &Path, sequence: u64) -> Result<(), String> {
@@ -221,8 +237,15 @@ fn filter_codex_mcp_toml(content: &str) -> String {
     filtered
 }
 
+/// Off the UI thread: this stats and reads up to twelve config files across a dozen
+/// vendor directories in one call, so it is the single widest filesystem fan-out in the
+/// app after the file index.
 #[tauri::command]
-pub fn mcp_config_discover(root: Option<String>) -> Result<Vec<McpDiscoverySource>, String> {
+pub async fn mcp_config_discover(root: Option<String>) -> Result<Vec<McpDiscoverySource>, String> {
+    crate::fs_bridge::blocking(move || discover_sources(root)).await
+}
+
+fn discover_sources(root: Option<String>) -> Result<Vec<McpDiscoverySource>, String> {
     let home = home_dir()?;
     let mut sources = Vec::new();
     let global_json_sources = [
@@ -333,25 +356,28 @@ fn existing_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
 }
 
 #[tauri::command]
-pub fn mcp_adapter_check(root: Option<String>) -> Result<McpAdapterStatus, String> {
-    let home = home_dir()?;
-    let settings = home.join(".pi").join("agent").join("settings.json");
-    let settings_content = fs::read_to_string(&settings).unwrap_or_default();
+pub async fn mcp_adapter_check(root: Option<String>) -> Result<McpAdapterStatus, String> {
+    crate::fs_bridge::blocking(move || {
+        let home = home_dir()?;
+        let settings = home.join(".pi").join("agent").join("settings.json");
+        let settings_content = fs::read_to_string(&settings).unwrap_or_default();
 
-    let mut other_paths = vec![
-        home.join(".config").join("mcp").join("mcp.json"),
-        home.join(".agents").join("mcp.json"),
-        home.join(".agents").join("mcp").join("mcp.json"),
-    ];
-    if let Some(project) = root {
-        let project = Path::new(&project);
-        other_paths.push(project.join(".mcp.json"));
-    }
+        let mut other_paths = vec![
+            home.join(".config").join("mcp").join("mcp.json"),
+            home.join(".agents").join("mcp.json"),
+            home.join(".agents").join("mcp").join("mcp.json"),
+        ];
+        if let Some(project) = root {
+            let project = Path::new(&project);
+            other_paths.push(project.join(".mcp.json"));
+        }
 
-    Ok(McpAdapterStatus {
-        installed: adapter_installed(&settings_content),
-        other_config_paths: existing_paths(other_paths),
+        Ok(McpAdapterStatus {
+            installed: adapter_installed(&settings_content),
+            other_config_paths: existing_paths(other_paths),
+        })
     })
+    .await
 }
 
 /// True when `entry` is the loopback MCP endpoint the removed in-app browser
@@ -392,7 +418,7 @@ fn is_retired_browser_entry(entry: &Value) -> bool {
 /// installs have all run it at least once.
 pub fn deregister_retired_browser_server() -> Result<bool, String> {
     let scope = "global";
-    let read = mcp_config_read(scope.to_owned(), None)?;
+    let read = read_config(scope, None)?;
     if !read.exists || read.content.trim().is_empty() {
         return Ok(false);
     }
@@ -409,7 +435,7 @@ pub fn deregister_retired_browser_server() -> Result<bool, String> {
     servers.remove("browser");
     let serialized = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("cannot serialize mcp.json: {e}"))?;
-    mcp_config_write(scope.to_owned(), serialized, None)?;
+    write_config(scope, &serialized, None)?;
     Ok(true)
 }
 

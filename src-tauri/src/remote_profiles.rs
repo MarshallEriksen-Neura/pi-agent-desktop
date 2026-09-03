@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -38,6 +38,10 @@ const SSH_SERVER_ALIVE_INTERVAL_OPTION: &str = "ServerAliveInterval=15";
 const SSH_SERVER_ALIVE_COUNT_OPTION: &str = "ServerAliveCountMax=3";
 const PREFLIGHT_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long an idle SSH control master lingers before reaping itself. Long enough to
+/// cover a browse-and-open session, short enough that a crashed app leaves nothing
+/// resident for more than ten minutes.
+const CONTROL_PERSIST_SECONDS: u32 = 600;
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_PROFILE_NAME_BYTES: usize = 256;
 const MAX_HOST_ALIAS_BYTES: usize = 256;
@@ -277,7 +281,7 @@ struct CapabilitiesReply {
 
 /// This build's embedded launcher revision. Must equal `launcherRevision` in
 /// `remote-launcher/pi-desktop-launcher`; a test pins the two together.
-const LAUNCHER_REVISION: u32 = 1;
+const LAUNCHER_REVISION: u32 = 5;
 /// The task-state version this build's launcher reads and writes.
 const LAUNCHER_STATUS_VERSION: u32 = 1;
 
@@ -347,6 +351,11 @@ pub type RemoteWorkspaceReply = serde_json::Value;
 /// so they get their own ceiling rather than the 64 KiB one preflight uses. The
 /// launcher refuses to send more than 8 MiB; this leaves room for that plus framing.
 const WORKSPACE_OUTPUT_MAX_BYTES: usize = 9 * 1024 * 1024;
+const MANAGEMENT_REQUEST_MAX_BYTES: usize = 64 * 1024;
+const MANAGEMENT_OUTPUT_MAX_BYTES: usize = 2 * 1024 * 1024;
+const MANAGEMENT_INSPECT_TIMEOUT: Duration = Duration::from_secs(30);
+const MANAGEMENT_BROWSE_TIMEOUT: Duration = Duration::from_secs(120);
+const MANAGEMENT_MUTATION_TIMEOUT: Duration = Duration::from_secs(300);
 const WORKSPACE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longer than the rest: `--stop` waits up to 5s for the supervisor to confirm the
 /// process actually died before escalating to SIGKILL, and that wait is on the far side.
@@ -762,6 +771,7 @@ pub fn ssh_launch_spec(
         &profile.launcher_path,
         "--run",
         &encoded,
+        ConnectionReuse::Dedicated,
     ))
 }
 
@@ -845,6 +855,7 @@ pub fn ssh_start_detached_spec(
         &profile.launcher_path,
         "--start-detached",
         &encoded,
+        ConnectionReuse::Dedicated,
     ))
 }
 
@@ -863,6 +874,9 @@ pub fn ssh_task_spec(
     let mut spec = LaunchSpec::new("ssh");
     for &argument in ssh_options() {
         spec = spec.arg(argument);
+    }
+    for option in ssh_reuse_options().into_iter().flatten() {
+        spec = spec.arg(option);
     }
     spec = spec
         .arg(profile.ssh_host.clone())
@@ -946,6 +960,7 @@ pub fn ssh_attach_spec(
         &profile.launcher_path,
         "--attach",
         &encoded,
+        ConnectionReuse::Dedicated,
     ))
 }
 
@@ -987,10 +1002,16 @@ fn ssh_spec_for(
     launcher_path: &str,
     mode: &'static str,
     payload_base64: &str,
+    reuse: ConnectionReuse,
 ) -> LaunchSpec {
     let mut spec = LaunchSpec::new("ssh");
     for &argument in ssh_options() {
         spec = spec.arg(argument);
+    }
+    if reuse == ConnectionReuse::Shared {
+        for option in ssh_reuse_options().into_iter().flatten() {
+            spec = spec.arg(option);
+        }
     }
     spec.arg(host.to_owned())
         .arg(shell_quote(launcher_path))
@@ -1003,15 +1024,34 @@ pub(crate) fn ssh_provider_sync_spec(profile: &RemotePiProfile) -> LaunchSpec {
     for &argument in ssh_options() {
         spec = spec.arg(argument);
     }
+    for option in ssh_reuse_options().into_iter().flatten() {
+        spec = spec.arg(option);
+    }
     spec.arg(profile.ssh_host.clone())
         .arg(shell_quote(&profile.launcher_path))
         .arg("--provider-sync")
+}
+
+fn ssh_management_spec(profile: &RemotePiProfile) -> LaunchSpec {
+    let mut spec = LaunchSpec::new("ssh");
+    for &argument in ssh_options() {
+        spec = spec.arg(argument);
+    }
+    for option in ssh_reuse_options().into_iter().flatten() {
+        spec = spec.arg(option);
+    }
+    spec.arg(profile.ssh_host.clone())
+        .arg(shell_quote(&profile.launcher_path))
+        .arg("--manage")
 }
 
 fn ssh_capabilities_spec(host: &str, launcher_path: &str) -> LaunchSpec {
     let mut spec = LaunchSpec::new("ssh");
     for &argument in ssh_options() {
         spec = spec.arg(argument);
+    }
+    for option in ssh_reuse_options().into_iter().flatten() {
+        spec = spec.arg(option);
     }
     spec.arg(host.to_owned())
         .arg(shell_quote(launcher_path))
@@ -1031,6 +1071,10 @@ pub fn probe_launcher_capabilities(
 ) -> Result<LauncherCapabilities, String> {
     validate_host_alias(host)?;
     validate_remote_path(launcher_path, "remote launcher")?;
+    // The plugins and skills pages open with a capability probe immediately followed by
+    // an `--manage inspect`. Standing the master up here turns those two handshakes into
+    // one, and leaves it warm for whatever the user installs or removes next.
+    ensure_control_master(host);
     let spec = ssh_capabilities_spec(host, launcher_path);
     let unsupported = |error_code: Option<&str>, error: Option<String>| LauncherCapabilities {
         host: host.to_owned(),
@@ -1183,6 +1227,7 @@ fn ssh_workspace_spec(
         &profile.launcher_path,
         "--workspace",
         &encoded,
+        ConnectionReuse::Shared,
     ))
 }
 
@@ -1654,7 +1699,7 @@ fn ensure_remote_task(
 /// Serde maps a missing field to `None` and an explicit `null` to `Some(None)`, which
 /// is exactly the distinction a hash-checked write depends on.
 #[tauri::command]
-pub fn remote_workspace_request(
+pub async fn remote_workspace_request(
     id: String,
     operation: String,
     path: String,
@@ -1663,67 +1708,165 @@ pub fn remote_workspace_request(
     expected_hash: Option<Option<String>>,
     body: Option<String>,
 ) -> Result<RemoteWorkspaceReply, String> {
-    let profile = load_profile(&id)?;
-    // A body belongs to `write` and to nothing else. Accepting one elsewhere would
-    // leave a caller believing content was stored when the launcher ignored it.
-    match (operation.as_str(), body.as_deref()) {
-        ("write", None) => return Err("a remote write requires a body".into()),
-        ("write", Some(content)) if content.len() > WORKSPACE_BODY_MAX_BYTES => {
-            return Err("remote write body exceeded its size limit".into());
+    // Off the UI thread, like every other launcher call here. A *sync* `#[tauri::command]`
+    // runs on the main thread, and `run_bounded_command` blocks for a whole SSH round
+    // trip — so one directory listing froze the entire window, and a `WORKSPACE_TIMEOUT`
+    // stall froze it for thirty seconds. This is the hottest of the launcher calls: the
+    // folder picker, the file tree and the branch label all reach a host through it.
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = load_profile(&id)?;
+        // A body belongs to `write` and to nothing else. Accepting one elsewhere would
+        // leave a caller believing content was stored when the launcher ignored it.
+        match (operation.as_str(), body.as_deref()) {
+            ("write", None) => return Err("a remote write requires a body".into()),
+            ("write", Some(content)) if content.len() > WORKSPACE_BODY_MAX_BYTES => {
+                return Err("remote write body exceeded its size limit".into());
+            }
+            ("write", Some(_)) => {}
+            (other, Some(_)) => return Err(format!("`{other}` takes no body")),
+            (_, None) => {}
         }
-        ("write", Some(_)) => {}
-        (other, Some(_)) => return Err(format!("`{other}` takes no body")),
-        (_, None) => {}
-    }
-    if !WORKSPACE_WRITE_OPERATIONS.contains(&operation.as_str()) && expected_hash.is_some() {
-        return Err(format!("`{operation}` takes no expected hash"));
-    }
-    let spec = ssh_workspace_spec(
-        &profile,
-        &operation,
-        &path,
-        encoding.as_deref(),
-        to.as_deref(),
-        expected_hash.as_ref().map(|hash| hash.as_deref()),
-    )?;
-    let output = run_bounded_command(
-        &spec,
-        WORKSPACE_TIMEOUT,
-        body.as_deref(),
-        WORKSPACE_OUTPUT_MAX_BYTES,
-    )?;
-    if output.timed_out {
-        return Err(format!(
-            "remote workspace request timed out after {}s",
-            WORKSPACE_TIMEOUT.as_secs()
-        ));
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    // The launcher answers every workspace outcome with exit 0 and one JSON line, so
-    // a nonzero status is the transport or a launcher too old to know the mode.
-    if output.status.code() != Some(0) {
-        let (_, error_code, message) =
-            classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
-        return Err(format!("{error_code}: {message}"));
-    }
-    if output.stdout.len() > WORKSPACE_OUTPUT_MAX_BYTES {
-        return Err("remote workspace reply exceeded its size limit".into());
-    }
-    // Last nonempty line: a login shell may print a banner ahead of the answer.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let line = stdout
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .ok_or("remote workspace request returned no reply")?;
-    serde_json::from_str(line.trim()).map_err(|error| format!("invalid workspace reply: {error}"))
+        if !WORKSPACE_WRITE_OPERATIONS.contains(&operation.as_str()) && expected_hash.is_some() {
+            return Err(format!("`{operation}` takes no expected hash"));
+        }
+        let spec = ssh_workspace_spec(
+            &profile,
+            &operation,
+            &path,
+            encoding.as_deref(),
+            to.as_deref(),
+            expected_hash.as_ref().map(|hash| hash.as_deref()),
+        )?;
+        // After validation, so a rejected request never dials anywhere. Cheap once the
+        // master is up — a local `-O check` — and this is the path that benefits most:
+        // a folder picker, a file tree and a branch label all arrive here in a burst.
+        ensure_control_master(&profile.ssh_host);
+        let output = run_bounded_command(
+            &spec,
+            WORKSPACE_TIMEOUT,
+            body.as_deref(),
+            WORKSPACE_OUTPUT_MAX_BYTES,
+        )?;
+        if output.timed_out {
+            return Err(format!(
+                "remote workspace request timed out after {}s",
+                WORKSPACE_TIMEOUT.as_secs()
+            ));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        // The launcher answers every workspace outcome with exit 0 and one JSON line, so
+        // a nonzero status is the transport or a launcher too old to know the mode.
+        if output.status.code() != Some(0) {
+            let (_, error_code, message) =
+                classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
+            return Err(format!("{error_code}: {message}"));
+        }
+        if output.stdout.len() > WORKSPACE_OUTPUT_MAX_BYTES {
+            return Err("remote workspace reply exceeded its size limit".into());
+        }
+        // Last nonempty line: a login shell may print a banner ahead of the answer.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let line = stdout
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .ok_or("remote workspace request returned no reply")?;
+        serde_json::from_str(line.trim())
+            .map_err(|error| format!("invalid workspace reply: {error}"))
+    })
+    .await
+    .map_err(|error| format!("remote workspace task failed: {error}"))?
+}
+
+/// Executes one bounded, semantic package/skill management request on the target host.
+/// SSH details and launcher arguments remain backend-owned; the JSON request is validated
+/// again by the launcher and cannot contain a command, argv, environment, HOME, or path.
+#[tauri::command]
+pub async fn remote_pi_management_request(
+    id: String,
+    profile_revision: u64,
+    remote_cwd: String,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = load_profile(&id)?;
+        if profile.revision != profile_revision {
+            return Err("remote profile changed; refresh the target and try again".into());
+        }
+        validate_remote_path(&remote_cwd, "remote project directory")?;
+        let object = request
+            .as_object()
+            .ok_or("remote management request must be an object")?;
+        let operation = object
+            .get("operation")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("remote management request has no operation")?;
+        let timeout = match operation {
+            "inspect" | "readSkillSource" => MANAGEMENT_INSPECT_TIMEOUT,
+            "browseSkillSource" => MANAGEMENT_BROWSE_TIMEOUT,
+            "mutatePackage" | "mutateSkill" => MANAGEMENT_MUTATION_TIMEOUT,
+            _ => {
+                return Err(format!(
+                    "unsupported remote management operation `{operation}`"
+                ))
+            }
+        };
+        let envelope = serde_json::json!({
+            "protocolVersion": LAUNCHER_PROTOCOL_VERSION,
+            "remoteCwd": remote_cwd,
+            "request": request,
+        });
+        let body = serde_json::to_string(&envelope)
+            .map_err(|error| format!("cannot encode remote management request: {error}"))?;
+        if body.len() > MANAGEMENT_REQUEST_MAX_BYTES {
+            return Err("remote management request exceeded its size limit".into());
+        }
+        let spec = ssh_management_spec(&profile);
+        // A skills or package mutation is followed by more of them, and each one carries a
+        // fresh snapshot back. Sharing one connection is what keeps a list of installs
+        // from being a list of handshakes.
+        ensure_control_master(&profile.ssh_host);
+        let output = run_bounded_command(&spec, timeout, Some(&body), MANAGEMENT_OUTPUT_MAX_BYTES)?;
+        if output.timed_out {
+            return Err(format!(
+                "remote management request timed out after {}s",
+                timeout.as_secs()
+            ));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if output.status.code() != Some(0) {
+            let (_, error_code, message) =
+                classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
+            return Err(format!("{error_code}: {message}"));
+        }
+        if output.stdout.len() > MANAGEMENT_OUTPUT_MAX_BYTES {
+            return Err("remote management reply exceeded its size limit".into());
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let line = stdout
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .ok_or("remote management request returned no reply")?;
+        serde_json::from_str(line.trim())
+            .map_err(|error| format!("invalid remote management reply: {error}"))
+    })
+    .await
+    .map_err(|error| format!("remote management task failed: {error}"))?
 }
 
 /// Capability probe for a stored profile.
+///
+/// Async for the reason every launcher call here is: the probe is one SSH round trip,
+/// and a sync command would spend it on the main thread with the window stopped.
 #[tauri::command]
-pub fn remote_profile_capabilities(id: String) -> Result<LauncherCapabilities, String> {
-    let profile = load_profile(&id)?;
-    probe_launcher_capabilities(&profile.ssh_host, &profile.launcher_path)
+pub async fn remote_profile_capabilities(id: String) -> Result<LauncherCapabilities, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = load_profile(&id)?;
+        probe_launcher_capabilities(&profile.ssh_host, &profile.launcher_path)
+    })
+    .await
+    .map_err(|error| format!("remote capability probe failed: {error}"))?
 }
 
 fn ssh_options() -> &'static [&'static str] {
@@ -1762,6 +1905,148 @@ fn ssh_options() -> &'static [&'static str] {
     ]
 }
 
+/// Whether a spec may ride the shared control master, or has to dial its own
+/// connection. Declared per spec builder rather than inferred from the launcher mode:
+/// the wrong answer for `--run` is a pi process whose stdio shares fate with a folder
+/// listing, and that is not a mistake a reader should have to reconstruct.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ConnectionReuse {
+    /// Short, bounded launcher calls: `--workspace`, `--preflight`, `--capabilities`,
+    /// `--manage`, `--provider-sync`, and the task modes.
+    Shared,
+    /// Long-lived channels (`--run`, `--attach`), the PTY terminal, the installer, and
+    /// `--start-detached`.
+    Dedicated,
+}
+
+/// Unix socket paths cap at 104 bytes on macOS and 108 on Linux. Conservative, because
+/// the failure mode is `unix_listener: path too long` on every call.
+const MAX_CONTROL_PATH_BYTES: usize = 100;
+
+/// The control socket every `Shared` call attaches to, or `None` when this platform or
+/// this machine cannot offer one — in which case every call simply dials directly, as
+/// it does today.
+///
+/// `None` on Windows: Win32-OpenSSH has no connection multiplexing, so the options
+/// would buy nothing and only add surface for its config parser to reject.
+///
+/// Lives under `~/.ssh` rather than the app data directory because macOS's
+/// `~/Library/Application Support/<bundle>/` plus a 40-character hash lands close to the
+/// socket limit above. `~/.ssh` already exists wherever ssh keys do, is already `0700`,
+/// and is where OpenSSH's own documentation puts control sockets.
+fn ssh_control_path() -> Option<&'static str> {
+    static CONTROL_PATH: OnceLock<Option<String>> = OnceLock::new();
+    CONTROL_PATH
+        .get_or_init(|| {
+            if cfg!(windows) {
+                return None;
+            }
+            let directory = crate::pi_settings::home_dir()
+                .ok()?
+                .join(".ssh")
+                .join("pi-desktop");
+            // ssh does not create the parent of a ControlPath; an absent directory is a
+            // failure on every call, so this is the one part that must not be lazy.
+            fs::create_dir_all(&directory).ok()?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&directory, fs::Permissions::from_mode(0o700));
+            }
+            // `%C` is OpenSSH's hash of local host, remote host, port and remote user:
+            // stable per connection tuple, which is exactly the sharing granularity,
+            // and it puts no hostname or username in a filename.
+            let path = directory.join("%C").to_str()?.to_owned();
+            (path.len() <= MAX_CONTROL_PATH_BYTES).then_some(path)
+        })
+        .as_deref()
+}
+
+/// The two options a `Shared` spec appends. `ControlMaster=no` is load-bearing: a client
+/// that promoted itself to master would reintroduce the very hang this design avoids.
+fn ssh_reuse_options() -> Option<[String; 4]> {
+    let control_path = ssh_control_path()?;
+    Some([
+        "-o".to_owned(),
+        "ControlMaster=no".to_owned(),
+        "-o".to_owned(),
+        format!("ControlPath={control_path}"),
+    ])
+}
+
+/// Make sure a shared master is listening for `host`. Best effort throughout: reuse is
+/// an optimization, and every failure here just means the next call dials directly.
+///
+/// The master is a process of our own with all three stdio handles null, and *that* is
+/// the whole reason it exists instead of `ControlMaster=auto` on whichever call happens
+/// to be first. Under `ControlPersist` the backgrounded master inherits its parent's
+/// stdout and stderr, while `run_bounded_command` finishes by joining reader threads that
+/// wait for those pipes to reach EOF — so an `auto` master would make every bounded call
+/// block for the full persist window instead of returning when its command did.
+fn ensure_control_master(host: &str) {
+    let Some(control_path) = ssh_control_path() else {
+        return;
+    };
+    // `-O check` speaks to the socket, not the network: it costs a local process and no
+    // handshake, which is what makes calling this before each shared request affordable.
+    if ssh_control_request(host, control_path, "check") {
+        return;
+    }
+    // Serialized, then re-checked. Two requests can arrive here together — the picker
+    // can have a typed listing in flight when a click issues another — and a second
+    // `-M` against a bound socket does not fail cleanly: ssh warns, *disables*
+    // multiplexing for itself, and `-N -f` then leaves that connection backgrounded and
+    // idle with no `ControlPersist` to reap it. The loser of this lock finds the socket
+    // on its re-check and rides it instead.
+    static SPAWNING: Mutex<()> = Mutex::new(());
+    let _guard = match SPAWNING.lock() {
+        Ok(guard) => guard,
+        // A poisoned lock only means some other thread panicked mid-spawn. The socket
+        // check below is still the authority, so there is nothing to recover.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if ssh_control_request(host, control_path, "check") {
+        return;
+    }
+    let mut command = Command::new("ssh");
+    for &argument in ssh_options() {
+        command.arg(argument);
+    }
+    command
+        .arg("-M")
+        .arg("-N")
+        .arg("-f")
+        .arg("-o")
+        .arg(format!("ControlPath={control_path}"))
+        // The master reaps itself after this long with no sessions, so a crashed app
+        // cannot leave a resident ssh behind and there is no teardown hook to forget.
+        .arg("-o")
+        .arg(format!("ControlPersist={CONTROL_PERSIST_SECONDS}"))
+        .arg(host)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // `-f` forks after authentication, so this waits for one handshake and no longer —
+    // the same handshake the request behind it would otherwise have paid itself.
+    // `ConnectTimeout` bounds an unreachable host.
+    let _ = command.status();
+}
+
+/// One `ssh -O <request>` control-socket command. True only when it succeeded.
+fn ssh_control_request(host: &str, control_path: &str, request: &str) -> bool {
+    Command::new("ssh")
+        .arg("-O")
+        .arg(request)
+        .arg("-o")
+        .arg(format!("ControlPath={control_path}"))
+        .arg(host)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Quote one remote-shell argument. The local process still uses argv; this is
 /// needed because OpenSSH joins command arguments before sending them remotely.
 pub(crate) fn shell_quote(value: &str) -> String {
@@ -1771,56 +2056,64 @@ pub(crate) fn shell_quote(value: &str) -> String {
 /// Checks a stored profile. Used by the execution-target picker before it
 /// switches a conversation over.
 #[tauri::command]
-pub fn remote_profile_preflight(id: String) -> Result<RemoteReadinessReport, String> {
-    validate_profile_id(&id)?;
-    let profile = load_profile(&id)?;
-    Ok(check_readiness(
-        Some(profile.id.clone()),
-        &profile.ssh_host,
-        // Checked only when the profile carries a browse starting point. A profile
-        // without one is still fully checkable — host readiness is what this answers,
-        // and the workspace is validated when one is actually picked.
-        profile.remote_cwd.as_deref(),
-        &profile.launcher_path,
-        profile.pi_executable.as_deref().unwrap_or("pi"),
-        profile.launcher_protocol_version,
-    ))
+pub async fn remote_profile_preflight(id: String) -> Result<RemoteReadinessReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_profile_id(&id)?;
+        let profile = load_profile(&id)?;
+        Ok(check_readiness(
+            Some(profile.id.clone()),
+            &profile.ssh_host,
+            // Checked only when the profile carries a browse starting point. A profile
+            // without one is still fully checkable — host readiness is what this answers,
+            // and the workspace is validated when one is actually picked.
+            profile.remote_cwd.as_deref(),
+            &profile.launcher_path,
+            profile.pi_executable.as_deref().unwrap_or("pi"),
+            profile.launcher_protocol_version,
+        ))
+    })
+    .await
+    .map_err(|error| format!("remote preflight task failed: {error}"))?
 }
 
 /// Checks an unsaved form draft, so the setup form can validate before it
 /// persists anything. Field-shape errors come back as `Err`; anything the remote
 /// host reports lands in the checklist instead.
 #[tauri::command]
-pub fn remote_profile_check_draft(
+pub async fn remote_profile_check_draft(
     profile: RemotePiProfileInput,
 ) -> Result<RemoteReadinessReport, String> {
-    let launcher = launcher_or_default(profile.launcher_path.as_deref());
-    let protocol_version = profile
-        .launcher_protocol_version
-        .unwrap_or(LAUNCHER_PROTOCOL_VERSION);
-    let pi_executable = trimmed_option(profile.pi_executable.as_deref());
-    let browse_directory = trimmed_option(profile.remote_cwd.as_deref());
-    validate_host_alias(&profile.ssh_host)?;
-    if let Some(directory) = browse_directory {
-        validate_remote_path(directory, "remote browse directory")?;
-    }
-    validate_remote_path(launcher, "remote launcher")?;
-    if protocol_version != LAUNCHER_PROTOCOL_VERSION {
-        return Err(format!(
-            "unsupported remote launcher protocol version {protocol_version}"
-        ));
-    }
-    if let Some(id) = profile.id.as_deref() {
-        validate_profile_id(id)?;
-    }
-    Ok(check_readiness(
-        profile.id.clone(),
-        &profile.ssh_host,
-        browse_directory,
-        launcher,
-        pi_executable.unwrap_or("pi"),
-        protocol_version,
-    ))
+    tauri::async_runtime::spawn_blocking(move || {
+        let launcher = launcher_or_default(profile.launcher_path.as_deref());
+        let protocol_version = profile
+            .launcher_protocol_version
+            .unwrap_or(LAUNCHER_PROTOCOL_VERSION);
+        let pi_executable = trimmed_option(profile.pi_executable.as_deref());
+        let browse_directory = trimmed_option(profile.remote_cwd.as_deref());
+        validate_host_alias(&profile.ssh_host)?;
+        if let Some(directory) = browse_directory {
+            validate_remote_path(directory, "remote browse directory")?;
+        }
+        validate_remote_path(launcher, "remote launcher")?;
+        if protocol_version != LAUNCHER_PROTOCOL_VERSION {
+            return Err(format!(
+                "unsupported remote launcher protocol version {protocol_version}"
+            ));
+        }
+        if let Some(id) = profile.id.as_deref() {
+            validate_profile_id(id)?;
+        }
+        Ok(check_readiness(
+            profile.id.clone(),
+            &profile.ssh_host,
+            browse_directory,
+            launcher,
+            pi_executable.unwrap_or("pi"),
+            protocol_version,
+        ))
+    })
+    .await
+    .map_err(|error| format!("remote draft check task failed: {error}"))?
 }
 
 /// Order the UI renders, and the order failures cascade in: a failed row leaves
@@ -1872,7 +2165,16 @@ fn check_readiness(
                 return finish_report(report);
             }
         };
-    let spec = ssh_spec_for(host, launcher_path, "--preflight", &encoded);
+    // The target switch's first hop, and the natural moment to stand the shared master
+    // up: everything the user does next on this host rides on it.
+    ensure_control_master(host);
+    let spec = ssh_spec_for(
+        host,
+        launcher_path,
+        "--preflight",
+        &encoded,
+        ConnectionReuse::Shared,
+    );
     // Preflight owns stdout and expects exactly one small JSON document. Pi runs
     // use PiProcess instead, where stdout remains the Pi JSONL stream.
     let output =
@@ -2327,11 +2629,15 @@ pub async fn remote_launcher_autoupgrade(id: String) -> Result<LauncherUpgradeRe
 /// `launcher_path: None` (or the `-` sentinel) resolves
 /// `$HOME/.local/bin/pi-desktop-launcher`, which needs no sudo.
 #[tauri::command]
-pub fn remote_profile_install_launcher(
+pub async fn remote_profile_install_launcher(
     host: String,
     launcher_path: Option<String>,
 ) -> Result<LauncherInstallResult, String> {
-    install_launcher_to(&host, launcher_path.as_deref())
+    tauri::async_runtime::spawn_blocking(move || {
+        install_launcher_to(&host, launcher_path.as_deref())
+    })
+    .await
+    .map_err(|error| format!("remote launcher install task failed: {error}"))?
 }
 
 /// The install itself, shared by the button and the auto-upgrade.
@@ -2555,14 +2861,14 @@ fn run_bounded_command(
 mod tests {
     use super::{
         classify_launcher_failure, classify_transport_failure, decide_upgrade, shell_quote,
-        ssh_capabilities_spec, ssh_launch_spec, ssh_provider_sync_spec, ssh_start_detached_spec,
-        ssh_task_spec, ssh_terminal_spec, validate_binding, validate_profile_fields,
-        validate_profile_id, validate_remote_task_id, CapabilitiesReply, ExecutionBinding,
-        RemotePiProfile, RemoteTaskMode, UpgradeDecision, CHECK_LAUNCHER, CHECK_NODE, CHECK_PI,
-        CHECK_SSH, CHECK_WORKSPACE, LAUNCHER_INSTALLER, LAUNCHER_REVISION, LAUNCHER_SOURCE,
-        LAUNCHER_STATUS_VERSION,
+        ssh_capabilities_spec, ssh_launch_spec, ssh_provider_sync_spec, ssh_reuse_options,
+        ssh_start_detached_spec, ssh_task_spec, ssh_terminal_spec, validate_binding,
+        validate_profile_fields, validate_profile_id, validate_remote_task_id, CapabilitiesReply,
+        ConnectionReuse, ExecutionBinding, RemotePiProfile, RemoteTaskMode, UpgradeDecision,
+        CHECK_LAUNCHER, CHECK_NODE, CHECK_PI, CHECK_SSH, CHECK_WORKSPACE, LAUNCHER_INSTALLER,
+        LAUNCHER_REVISION, LAUNCHER_SOURCE, LAUNCHER_STATUS_VERSION,
     };
-    use super::{ssh_attach_spec, ssh_workspace_spec, LaunchSpec, STANDARD};
+    use super::{ssh_attach_spec, ssh_management_spec, ssh_workspace_spec, LaunchSpec, STANDARD};
     use base64::Engine as _;
 
     fn profile() -> RemotePiProfile {
@@ -2809,6 +3115,8 @@ mod tests {
         assert!(args.contains(&"BatchMode=yes".into()));
         assert!(args.contains(&"StrictHostKeyChecking=yes".into()));
         assert!(args.iter().all(|arg| !arg.contains("/remote/session path")));
+        assert_reuse_shape(&args, ConnectionReuse::Dedicated);
+        assert_every_ssh_option_has_a_value(&args);
     }
 
     #[test]
@@ -2831,15 +3139,8 @@ mod tests {
         assert!(!args.contains(&"-T".into()));
         assert!(!args.contains(&"RequestTTY=no".into()));
         assert!(args.contains(&"BatchMode=yes".into()));
-        for (index, argument) in args.iter().enumerate() {
-            if argument == "-o" {
-                let option = args.get(index + 1).expect("every -o must have an option");
-                assert!(
-                    !option.starts_with('-'),
-                    "SSH -o was left without its option: {args:?}"
-                );
-            }
-        }
+        assert_every_ssh_option_has_a_value(&args);
+        assert_reuse_shape(&args, ConnectionReuse::Dedicated);
         assert_eq!(args[args.len() - 2], "prod");
         assert!(args
             .last()
@@ -2894,6 +3195,60 @@ mod tests {
             .iter()
             .map(|argument| argument.to_string_lossy().to_string())
             .collect()
+    }
+
+    fn assert_every_ssh_option_has_a_value(args: &[String]) {
+        for (index, argument) in args.iter().enumerate() {
+            if argument == "-o" {
+                let option = args.get(index + 1).expect("every -o must have an option");
+                assert!(
+                    !option.starts_with('-'),
+                    "SSH -o was left without its option: {args:?}"
+                );
+            }
+        }
+    }
+
+    fn assert_reuse_shape(args: &[String], expected: ConnectionReuse) {
+        let has_master = args.iter().any(|argument| argument == "ControlMaster=no");
+        let control_path = args
+            .iter()
+            .find(|argument| argument.starts_with("ControlPath="));
+        match expected {
+            ConnectionReuse::Dedicated => {
+                assert!(
+                    !has_master,
+                    "dedicated spec must not join a control master: {args:?}"
+                );
+                assert!(
+                    control_path.is_none(),
+                    "dedicated spec leaked a ControlPath: {args:?}"
+                );
+            }
+            ConnectionReuse::Shared => match ssh_reuse_options() {
+                Some(_) => {
+                    assert!(
+                        has_master,
+                        "shared spec must use the control master: {args:?}"
+                    );
+                    let path = control_path.expect("shared spec must include ControlPath");
+                    assert!(
+                        path.ends_with("%C"),
+                        "control path must use the tuple hash: {path}"
+                    );
+                }
+                None => {
+                    assert!(
+                        !has_master,
+                        "unsupported platform must keep legacy argv: {args:?}"
+                    );
+                    assert!(
+                        control_path.is_none(),
+                        "unsupported platform must keep legacy argv: {args:?}"
+                    );
+                }
+            },
+        }
     }
 
     fn detached_binding(profile: &RemotePiProfile, task_id: Option<&str>) -> ExecutionBinding {
@@ -2981,6 +3336,8 @@ mod tests {
         assert_eq!(payload["cwd"], profile.remote_cwd.clone().unwrap());
         assert_eq!(payload["resumePath"], "/remote/session path");
         assert!(args.contains(&"ServerAliveInterval=15".to_owned()));
+        assert_reuse_shape(&args, ConnectionReuse::Dedicated);
+        assert_every_ssh_option_has_a_value(&args);
     }
 
     /// `--status`/`--stop`/`--send` take the id as itself. Encoding an id already
@@ -2989,10 +3346,10 @@ mod tests {
     fn task_modes_pass_the_id_unencoded_and_refuse_the_wrong_arity() {
         let profile = detached_profile();
         let status = ssh_task_spec(&profile, RemoteTaskMode::Status, Some("task-0001")).unwrap();
-        assert_eq!(
-            argv(&status).last().map(String::as_str),
-            Some("'task-0001'")
-        );
+        let status_args = argv(&status);
+        assert_eq!(status_args.last().map(String::as_str), Some("'task-0001'"));
+        assert_reuse_shape(&status_args, ConnectionReuse::Shared);
+        assert_every_ssh_option_has_a_value(&status_args);
         // --status with no id lists every task; the other two require one.
         assert!(ssh_task_spec(&profile, RemoteTaskMode::Status, None).is_ok());
         assert!(ssh_task_spec(&profile, RemoteTaskMode::Stop, None).is_err());
@@ -3248,6 +3605,117 @@ mod tests {
         .unwrap();
         assert_eq!(fresh_payload["after"], serde_json::Value::Null);
         assert_eq!(fresh_payload["follow"], false);
+        assert_reuse_shape(&args, ConnectionReuse::Dedicated);
+        assert_every_ssh_option_has_a_value(&args);
+    }
+
+    /// Connection reuse exists on the platforms whose OpenSSH implements it, and nowhere
+    /// else. Win32-OpenSSH has no multiplexing, so a Windows build must keep dialing per
+    /// call — pinned here so the platform policy cannot drift silently.
+    #[test]
+    fn the_control_socket_exists_exactly_where_multiplexing_does() {
+        assert_eq!(ssh_reuse_options().is_some(), !cfg!(windows));
+        let Some(options) = ssh_reuse_options() else {
+            return;
+        };
+        // `ControlMaster=no` is load-bearing, not decoration: a client that promoted
+        // itself to master would inherit the pipes `run_bounded_command` waits on for
+        // EOF, and every bounded call would then block for the whole persist window.
+        assert_eq!(options[0], "-o");
+        assert_eq!(options[1], "ControlMaster=no");
+        assert_eq!(options[2], "-o");
+        let path = options[3]
+            .strip_prefix("ControlPath=")
+            .expect("the fourth option must be the control path");
+        // `%C` is OpenSSH's hash of the connection tuple: one socket per
+        // (local host, remote host, port, remote user), and no name in a filename.
+        assert!(path.ends_with("%C"), "{path}");
+        assert!(path.len() <= super::MAX_CONTROL_PATH_BYTES, "{path}");
+    }
+
+    /// The one rule that must never bend: short launcher calls share a connection, and
+    /// the channels that carry pi's stdio or a PTY never do. Getting this backwards would
+    /// tie a running agent's fate to a folder listing.
+    #[test]
+    fn shared_launcher_calls_reuse_a_connection_and_long_lived_channels_never_do() {
+        let profile = profile();
+        let detached = detached_profile();
+        let shared = [
+            argv(&ssh_workspace_spec(&profile, "list", "/srv", None, None, None).unwrap()),
+            argv(&ssh_management_spec(&profile)),
+            argv(&ssh_capabilities_spec(
+                &profile.ssh_host,
+                &profile.launcher_path,
+            )),
+            argv(&ssh_provider_sync_spec(&profile)),
+            argv(&ssh_task_spec(&detached, RemoteTaskMode::Reap, None).unwrap()),
+        ];
+        for args in &shared {
+            assert_reuse_shape(args, ConnectionReuse::Shared);
+            assert_every_ssh_option_has_a_value(args);
+            // Reuse is additive: it must not displace the base connection policy.
+            assert!(args.contains(&"BatchMode=yes".to_owned()), "{args:?}");
+            assert!(
+                args.contains(&"StrictHostKeyChecking=yes".to_owned()),
+                "{args:?}"
+            );
+            assert!(
+                args.contains(&"ServerAliveInterval=15".to_owned()),
+                "{args:?}"
+            );
+        }
+
+        let dedicated = [
+            argv(&ssh_launch_spec(&profile, &binding(&profile), None).unwrap()),
+            argv(&ssh_terminal_spec(&profile, &binding(&profile)).unwrap()),
+            argv(
+                &ssh_attach_spec(
+                    &detached,
+                    &detached_binding(&detached, Some("task-0001")),
+                    None,
+                    false,
+                )
+                .unwrap(),
+            ),
+            argv(
+                &ssh_start_detached_spec(
+                    &detached,
+                    &detached_binding(&detached, Some("task-0001")),
+                    None,
+                )
+                .unwrap(),
+            ),
+        ];
+        for args in &dedicated {
+            assert_reuse_shape(args, ConnectionReuse::Dedicated);
+            assert_every_ssh_option_has_a_value(args);
+        }
+    }
+
+    /// The management transport puts only the stored host, stored launcher path, and fixed
+    /// `--manage` mode in argv. Target and operation data travel through bounded stdin.
+    #[test]
+    fn management_ssh_spec_exposes_only_the_stored_launcher_manage_mode() {
+        let profile = profile();
+        let spec = ssh_management_spec(&profile);
+        assert_eq!(spec.program.to_string_lossy(), "ssh");
+        assert_eq!(
+            argv(&spec),
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=2",
+                "--",
+                "prod",
+                "'/opt/pi launcher'",
+                "--manage",
+            ]
+        );
     }
 
     /// Workspace browsing is profile-scoped and lifecycle-agnostic: an attached

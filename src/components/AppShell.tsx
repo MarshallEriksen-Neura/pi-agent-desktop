@@ -70,7 +70,9 @@ function MainShell({ children }: { children: React.ReactNode }) {
   const remoteRouteAllowed =
     pathname === "/" ||
     pathname?.startsWith("/settings") ||
-    pathname?.startsWith("/update");
+    pathname?.startsWith("/update") ||
+    pathname?.startsWith("/plugins") ||
+    pathname?.startsWith("/skills");
   useEffect(() => {
     // restore the saved UI language (or detect from the system) before first paint settles
     useI18n.getState().initLocale();

@@ -363,6 +363,7 @@ pub fn run() {
             remote_profiles::remote_profile_capabilities,
             remote_profiles::remote_launcher_autoupgrade,
             remote_profiles::remote_workspace_request,
+            remote_profiles::remote_pi_management_request,
             remote_profiles::remote_task_ensure,
             remote_profiles::remote_task_status,
             remote_profiles::remote_task_stop,

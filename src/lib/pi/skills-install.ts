@@ -17,11 +17,31 @@
  */
 
 import { create } from "zustand";
-import { getBackendKind, getPort } from "../backend/composition/container";
+import { getPort } from "../backend/composition/container";
 import { cliError } from "./cli-error";
 import { usePiSettings } from "./settings";
-import { piHome, useSkills, type SkillInfo } from "./skills";
+import { useSkills, type SkillInfo } from "./skills";
+import { usePiManagement, type ManagementContext } from "./management";
 import { useWorkspace } from "../workspace";
+
+export { parseSkillList } from "./skill-list-parser";
+function isCurrentManagementTarget(context: ManagementContext): boolean {
+  return usePiManagement.getState().context().targetKey === context.targetKey;
+}
+
+function currentSkillMutation() {
+  const management = usePiManagement.getState();
+  const context = management.context();
+  const snapshot = management.snapshot;
+  if (
+    !snapshot ||
+    management.targetKey !== context.targetKey ||
+    snapshot.targetKey !== context.targetKey ||
+    (context.binding.kind === "ssh" &&
+      !management.availability?.capabilities.includes("pi-skills-mutate-v1"))
+  ) return null;
+  return { context, snapshot };
+}
 
 export type InstallScope = "global" | "project";
 
@@ -88,28 +108,6 @@ export const updateArgs = (scope: InstallScope) => [
   "-y",
 ];
 
-/** CSI sequences, spelled without a literal escape byte in the source. */
-const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[a-zA-Z]`, "g");
-
-/**
- * Skill names and descriptions out of `skills add <source> --list`. The CLI has
- * no machine-readable mode; it logs through clack, which prefixes every line
- * with `│` — names at four spaces of indent, descriptions at six, and
- * unprefixed lines are plugin group headers.
- */
-export function parseSkillList(stdout: string): SourceSkill[] {
-  const lines = stdout.replace(ANSI, "").split(/\r?\n/);
-  const start = lines.findIndex((line) => line.includes("Available Skills"));
-  if (start < 0) return [];
-  const out: SourceSkill[] = [];
-  for (const line of lines.slice(start + 1)) {
-    const m = /^[│|](\s+)(\S.*?)\s*$/.exec(line);
-    if (!m) continue;
-    if (m[1].length <= 5) out.push({ name: m[2], description: "" });
-    else if (out.length > 0) out[out.length - 1].description = m[2];
-  }
-  return out;
-}
 
 /**
  * A source reduced to the identity the catalogue uses, so a lock entry can be
@@ -157,11 +155,8 @@ const msg = (error: unknown) =>
  * against the process cwd, so every invocation runs inside the open project
  * when there is one. Global scope is selected by `-g`, not by the cwd.
  */
-const cwdFor = () => useWorkspace.getState().root || null;
-
-const run = (args: string[]) =>
-  getPort("piConfiguration").runSkillsCli(args, cwdFor());
-
+const hasProject = () =>
+  usePiManagement.getState().context().binding.kind === "ssh" || Boolean(useWorkspace.getState().root);
 export { cliError } from "./cli-error";
 
 /**
@@ -190,10 +185,20 @@ export function rankHits(hits: CatalogHit[], query: string): CatalogHit[] {
  * Re-read what is on disk and surface the restart prompt: pi loads skills when
  * a session starts, so an install is not live until it restarts.
  */
-async function settle() {
+async function settle(
+  snapshot: import("../backend/ports/pi-management").PiManagementSnapshot,
+  dirtyScope: InstallScope,
+  mutationContext: ManagementContext,
+ ): Promise<boolean> {
+  const state = usePiManagement.getState();
+  const applied = state.applySnapshot(mutationContext.targetKey, snapshot);
+  state.markDirty(dirtyScope, mutationContext);
+  if (!applied) return false;
   await useSkills.getState().scan();
+  if (!isCurrentManagementTarget(mutationContext)) return false;
   await useSkillsInstall.getState().loadLocks();
-  usePiSettings.setState({ dirtyRestart: true });
+  if (mutationContext.binding.kind === "local") usePiSettings.setState({ dirtyRestart: true });
+  return true;
 }
 
 interface SkillsInstallStore {
@@ -298,6 +303,9 @@ export const useSkillsInstall = create<SkillsInstallStore>((set, get) => ({
     if (!source || get().listing) return;
     // Only a source can be enumerated; a bare name is the catalogue's job.
     if (!looksLikeSource(source)) return;
+    const management = usePiManagement.getState();
+    const context = management.context();
+    const targetKey = context.targetKey;
     set({
       listing: true,
       listError: null,
@@ -306,13 +314,8 @@ export const useSkillsInstall = create<SkillsInstallStore>((set, get) => ({
       selected: [],
     });
     try {
-      // Runs in the project when one is open, so a relative local source
-      // (`./my-skills`) resolves the way the user typed it. Nothing is written.
-      const r = await run(listArgs(source));
-      if (r.code !== 0) {
-        throw new Error(cliError(r, `skills add --list exited with ${r.code}`));
-      }
-      const found = parseSkillList(r.stdout);
+      const found = await context.port.browseSkillSource(source);
+      if (!isCurrentManagementTarget(context) || get().input.trim() !== source) return;
       set({
         listing: false,
         sourceSkills: found,
@@ -321,7 +324,9 @@ export const useSkillsInstall = create<SkillsInstallStore>((set, get) => ({
         selected: found.length === 1 ? [found[0].name] : [],
       });
     } catch (e) {
-      set({ listing: false, listError: msg(e) });
+      if (usePiManagement.getState().targetKey === targetKey && get().input.trim() === source) {
+        set({ listing: false, listError: msg(e) });
+      }
     }
   },
 
@@ -335,17 +340,30 @@ export const useSkillsInstall = create<SkillsInstallStore>((set, get) => ({
   install: async (source, skills, token = "source") => {
     if (get().busy || skills.length === 0) return;
     const scope = get().scope;
-    if (scope === "project" && !cwdFor()) {
+    if (scope === "project" && !hasProject()) {
       set({ log: { ok: false, key: "skillsInstall.noProject" } });
       return;
     }
+    const mutation = currentSkillMutation();
+    if (!mutation) {
+      set({ log: { ok: false, key: "skillsInstall.managementUnavailable" } });
+      return;
+    }
+    const { context, snapshot } = mutation;
     set({ busy: token, log: null });
     try {
-      const r = await run(addArgs(source, skills, scope));
-      if (r.code !== 0) {
-        throw new Error(cliError(r, `skills add exited with ${r.code}`));
+      const result = await context.port.mutateSkill({
+        operation: "install",
+        scope,
+        source,
+        skills,
+        expectedState: snapshot.stateToken,
+      });
+      if (!isCurrentManagementTarget(context)) return;
+      if (!(await settle(result.snapshot, scope, context))) return;
+      if (result.code !== 0) {
+        throw new Error(cliError(result, `skills add exited with ${result.code}`));
       }
-      await settle();
       set({
         log: {
           ok: true,
@@ -355,11 +373,11 @@ export const useSkillsInstall = create<SkillsInstallStore>((set, get) => ({
         },
       });
     } catch (e) {
-      set({
-        log: { ok: false, key: "skillsInstall.installFailed", params: { err: msg(e) } },
-      });
+      if (isCurrentManagementTarget(context)) {
+        set({ log: { ok: false, key: "skillsInstall.installFailed", params: { err: msg(e) } } });
+      }
     } finally {
-      set({ busy: null });
+      if (isCurrentManagementTarget(context)) set({ busy: null });
     }
   },
 
@@ -371,46 +389,69 @@ export const useSkillsInstall = create<SkillsInstallStore>((set, get) => ({
       return;
     }
     const scope: InstallScope = skill.origin;
+    const mutation = currentSkillMutation();
+    if (!mutation) {
+      set({ log: { ok: false, key: "skillsInstall.managementUnavailable" } });
+      return;
+    }
+    const { context, snapshot } = mutation;
     set({ busy: `remove:${skill.file}`, log: null });
     try {
-      const r = await run(removeArgs(skill.name, scope));
-      if (r.code !== 0) {
-        throw new Error(cliError(r, `skills remove exited with ${r.code}`));
+      const result = await context.port.mutateSkill({
+        operation: "remove",
+        scope,
+        name: skill.name,
+        expectedState: snapshot.stateToken,
+      });
+      if (!isCurrentManagementTarget(context)) return;
+      if (!(await settle(result.snapshot, scope, context))) return;
+      if (result.code !== 0) {
+        throw new Error(cliError(result, `skills remove exited with ${result.code}`));
       }
-      await settle();
       set({
         log: { ok: true, key: "skillsInstall.removed", params: { name: skill.name } },
       });
     } catch (e) {
-      set({
-        log: { ok: false, key: "skillsInstall.removeFailed", params: { err: msg(e) } },
-      });
+      if (isCurrentManagementTarget(context)) {
+        set({ log: { ok: false, key: "skillsInstall.removeFailed", params: { err: msg(e) } } });
+      }
     } finally {
-      set({ busy: null });
+      if (isCurrentManagementTarget(context)) set({ busy: null });
     }
   },
 
   updateAll: async () => {
     if (get().busy) return;
     const scope = get().scope;
-    if (scope === "project" && !cwdFor()) {
+    if (scope === "project" && !hasProject()) {
       set({ log: { ok: false, key: "skillsInstall.noProject" } });
       return;
     }
+    const mutation = currentSkillMutation();
+    if (!mutation) {
+      set({ log: { ok: false, key: "skillsInstall.managementUnavailable" } });
+      return;
+    }
+    const { context, snapshot } = mutation;
     set({ busy: "update", log: null });
     try {
-      const r = await run(updateArgs(scope));
-      if (r.code !== 0) {
-        throw new Error(cliError(r, `skills update exited with ${r.code}`));
+      const result = await context.port.mutateSkill({
+        operation: "updateAll",
+        scope,
+        expectedState: snapshot.stateToken,
+      });
+      if (!isCurrentManagementTarget(context)) return;
+      if (!(await settle(result.snapshot, scope, context))) return;
+      if (result.code !== 0) {
+        throw new Error(cliError(result, `skills update exited with ${result.code}`));
       }
-      await settle();
       set({ log: { ok: true, key: "skillsInstall.updated" } });
     } catch (e) {
-      set({
-        log: { ok: false, key: "skillsInstall.updateFailed", params: { err: msg(e) } },
-      });
+      if (isCurrentManagementTarget(context)) {
+        set({ log: { ok: false, key: "skillsInstall.updateFailed", params: { err: msg(e) } } });
+      }
     } finally {
-      set({ busy: null });
+      if (isCurrentManagementTarget(context)) set({ busy: null });
     }
   },
 
@@ -418,13 +459,10 @@ export const useSkillsInstall = create<SkillsInstallStore>((set, get) => ({
     if (get().busy) return;
     const from: InstallScope = to === "global" ? "project" : "global";
     if (skill.origin !== from) return; // already there, or a configured path
-    if (to === "project" && !cwdFor()) {
+    if (to === "project" && !hasProject()) {
       set({ log: { ok: false, key: "skillsInstall.noProject" } });
       return;
     }
-    // Re-installing from the recorded source is what `skills update` itself
-    // does; copying the directory would leave the target scope's lock empty and
-    // silently opt the skill out of future updates.
     const source = get().locks?.[skill.name];
     if (!source) {
       set({
@@ -432,59 +470,51 @@ export const useSkillsInstall = create<SkillsInstallStore>((set, get) => ({
       });
       return;
     }
+    const mutation = currentSkillMutation();
+    if (!mutation) {
+      set({ log: { ok: false, key: "skillsInstall.managementUnavailable" } });
+      return;
+    }
+    const { context, snapshot } = mutation;
     set({ busy: `move:${skill.file}`, log: null });
     try {
-      const added = await run(addArgs(source, [skill.name], to));
-      if (added.code !== 0) {
-        throw new Error(cliError(added, `skills add exited with ${added.code}`));
-      }
-      const removed = await run(removeArgs(skill.name, from));
-      await settle();
+      const result = await context.port.mutateSkill({
+        operation: "move",
+        from,
+        to,
+        name: skill.name,
+        source,
+        expectedState: snapshot.stateToken,
+      });
+      if (!isCurrentManagementTarget(context)) return;
+      if (!(await settle(result.snapshot, "global", context))) return;
       set({
         log:
-          removed.code === 0
+          result.code === 0
             ? { ok: true, key: "skillsInstall.moved", params: { name: skill.name } }
-            : {
-                ok: false,
-                key: "skillsInstall.moveHalfDone",
-                params: { name: skill.name, err: cliError(removed, `exit ${removed.code}`) },
-              },
+            : result.halfDone
+              ? {
+                  ok: false,
+                  key: "skillsInstall.moveHalfDone",
+                  params: { name: skill.name, err: cliError(result, `exit ${result.code}`) },
+                }
+              : {
+                  ok: false,
+                  key: "skillsInstall.moveFailed",
+                  params: { err: cliError(result, `exit ${result.code}`) },
+                },
       });
     } catch (e) {
-      set({
-        log: { ok: false, key: "skillsInstall.moveFailed", params: { err: msg(e) } },
-      });
+      if (isCurrentManagementTarget(context)) {
+        set({ log: { ok: false, key: "skillsInstall.moveFailed", params: { err: msg(e) } } });
+      }
     } finally {
-      set({ busy: null });
+      if (isCurrentManagementTarget(context)) set({ busy: null });
     }
   },
 
   loadLocks: async () => {
-    if (getBackendKind() === "browser-preview") {
-      set({
-        locks: { "frontend-design": "https://github.com/vercel-labs/agent-skills.git" },
-      });
-      return;
-    }
-    const settings = usePiSettings.getState();
-    if (!settings.loaded) await settings.load();
-    const home = piHome(usePiSettings.getState().global.path);
-    const root = useWorkspace.getState().root;
-    const paths = [`${home}/.agents/.skill-lock.json`];
-    // The project lock sits at the repo root and is meant to be committed.
-    if (root) paths.push(`${root.replace(/\\/g, "/")}/skills-lock.json`);
-
-    const port = getPort("piConfiguration");
-    const merged: Record<string, string> = {};
-    await Promise.all(
-      paths.map(async (path) => {
-        try {
-          Object.assign(merged, parseLock(await port.readSkillFile(path)));
-        } catch {
-          // no lock at this scope — nothing to merge
-        }
-      })
-    );
-    set({ locks: merged });
+    const snapshot = usePiManagement.getState().snapshot;
+    set({ locks: snapshot ? { ...snapshot.skillLocks } : {} });
   },
 }));

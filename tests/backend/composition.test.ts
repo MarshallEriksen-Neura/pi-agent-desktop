@@ -13,6 +13,7 @@ import {
   DesktopInvokeError,
   normalizeDesktopInvokeError,
 } from "../../src/lib/backend/desktop/invoke";
+import type { PiManagementPort } from "../../src/lib/backend/ports/pi-management";
 import type { RemoteControlPort } from "../../src/lib/backend/ports/remote-control";
 import type { RemoteConversationsPort } from "../../src/lib/backend/ports/remote-conversations";
 import type { RemotePiProfilePort } from "../../src/lib/backend/ports/remote-profiles";
@@ -109,6 +110,7 @@ function fakePorts(label = "fake"): BackendPorts {
       listSkillDirectory: async () => [],
       readPackageLock: async () => null,
     },
+    createPiManagement: () => unreachablePort<PiManagementPort>("createPiManagement"),
     window: {
       close: async () => undefined,
       quit: async () => undefined,

@@ -1,11 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { RotateCcw } from "lucide-react";
 import { usePiSettings } from "@/lib/pi/settings";
 import { useMcp } from "@/lib/pi/mcp";
+import { usePi } from "@/lib/pi/store";
+import { useSessions } from "@/lib/pi/sessions";
+import { usePiManagement } from "@/lib/pi/management";
+import { getActiveTaskId } from "@/lib/pi/task-context";
 import { useT } from "@/lib/i18n";
-
 /**
  * Global "restart pi to apply changes" banner — the single restart entry
  * point for any settings change that pi only reads at startup (settings.json,
@@ -16,22 +20,41 @@ import { useT } from "@/lib/i18n";
  */
 export function RestartPiToast() {
   const s = usePiSettings();
+  const pi = usePi();
+  const binding = useSessions((state) => state.executionBinding);
+  const activeId = useSessions((state) => state.activeId) ?? getActiveTaskId();
+  const managementDirty = usePiManagement((state) => Boolean(state.dirtyTasks[activeId]));
+  const clearTaskDirty = usePiManagement((state) => state.clearTaskDirty);
   const mcpDirty = useMcp((state) => state.dirtyRestart);
   const t = useT();
   const reduce = useReducedMotion();
+  const [remoteBusyTask, setRemoteBusyTask] = useState<string | null>(null);
+  const busy = binding.kind === "ssh" ? remoteBusyTask === activeId : s.busy;
+  const visible = binding.kind === "ssh" ? managementDirty : s.dirtyRestart || mcpDirty || managementDirty;
 
   const restart = async () => {
+    if (binding.kind === "ssh") {
+      setRemoteBusyTask(activeId);
+      try {
+        await pi.restart(binding.remoteCwd, undefined, binding);
+        clearTaskDirty(activeId);
+      } finally {
+        setRemoteBusyTask((taskId) => taskId === activeId ? null : taskId);
+      }
+      return;
+    }
     await usePiSettings.getState().restartPi();
     // the settings restart clears usePiSettings.dirtyRestart; mirror it for
     // the mcp store's own flag so one click dismisses both
     if (!usePiSettings.getState().lastError) {
       useMcp.setState({ dirtyRestart: false, lastError: null });
+      clearTaskDirty(activeId);
     }
   };
 
   return (
     <AnimatePresence>
-      {(s.dirtyRestart || mcpDirty) && (
+      {visible && (
         <div
           style={{
             position: "fixed",
@@ -69,7 +92,7 @@ export function RestartPiToast() {
             role="status"
           >
             <motion.span
-              animate={s.busy ? (reduce ? undefined : { rotate: -360 }) : undefined}
+              animate={busy ? (reduce ? undefined : { rotate: -360 }) : undefined}
               transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
               style={{ display: "flex", flexShrink: 0, color: "var(--warning)" }}
             >
@@ -86,7 +109,7 @@ export function RestartPiToast() {
             <button
               type="button"
               onClick={() => void restart()}
-              disabled={s.busy}
+              disabled={busy}
               style={{
                 flexShrink: 0,
                 border: "none",
@@ -94,12 +117,12 @@ export function RestartPiToast() {
                 padding: "5px 12px",
                 fontSize: 12.5,
                 fontWeight: 600,
-                cursor: s.busy ? "wait" : "pointer",
+                cursor: busy ? "wait" : "pointer",
                 background: "var(--accent)",
                 color: "#fff",
               }}
             >
-              {s.busy ? t("settings.restarting") : t("settings.restartPi")}
+              {busy ? t("settings.restarting") : t("settings.restartPi")}
             </button>
           </motion.div>
         </div>

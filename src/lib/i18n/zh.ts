@@ -95,6 +95,10 @@ export const zh: Record<keyof typeof en, string> = {
   "project.welcomeTitle": "打开一个项目",
   "project.welcomeBody": "选择一个文件夹 — 其中的文件会显示在浏览器里，Pi 将在该目录下工作。",
 
+  // git branch label (hidden entirely outside a git working tree)
+  "git.branch": "当前分支：{branch}",
+  "git.detached": "HEAD 处于分离状态：{sha}",
+
   // sidebar
   "sidebar.sessions": "会话",
   "sidebar.remote": "来自手机",
@@ -964,6 +968,14 @@ export const zh: Record<keyof typeof en, string> = {
   "plugins.skillCommands": "技能命令",
   "plugins.skillCommandsDetail": "将技能注册为 /skill:name 命令",
 
+  // 按执行目标隔离的插件与技能管理
+  "remoteManagement.unavailableTitle": "远程管理不可用",
+  "remoteManagement.unavailableSubtitle": "当前 SSH 目标暂时禁用此页面。",
+  "remoteManagement.unavailableDetail":
+    "请升级远程 launcher 后再管理此主机。系统绝不会回退读取或修改本机的 PI 配置与文件。",
+  "remoteManagement.mutationUnavailable":
+    "此远程 launcher 仅支持查看。请升级后再安装、更新、移动或移除项目。",
+
   // skills page
   "skills.title": "技能",
   "skills.subtitleMock": "浏览器预览 — 显示模拟数据。",
@@ -1037,6 +1049,7 @@ export const zh: Record<keyof typeof en, string> = {
   "skillsInstall.noProject": "没有打开项目，无处安装。",
   "skillsInstall.installed": "已安装 {name} — 重启 pi 后生效。",
   "skillsInstall.installFailed": "安装失败：{err}",
+  "skillsInstall.managementUnavailable": "管理状态不可用。请刷新后重试。",
   "skillsInstall.removed": "已卸载 {name} — 重启 pi 后生效。",
   "skillsInstall.removeFailed": "卸载失败：{err}",
   "skillsInstall.removePathScope":

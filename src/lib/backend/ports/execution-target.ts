@@ -164,7 +164,11 @@ export type LauncherCapability =
    * Separate from `workspace-v1` so a host whose launcher predates writes can still
    * offer browsing, with editing refused rather than attempted.
    */
-  | "workspace-writes-v1";
+  | "workspace-writes-v1"
+  | "pi-packages-read-v1"
+  | "pi-packages-mutate-v1"
+  | "pi-skills-read-v1"
+  | "pi-skills-mutate-v1";
 
 /**
  * What a host's launcher reports it can do.

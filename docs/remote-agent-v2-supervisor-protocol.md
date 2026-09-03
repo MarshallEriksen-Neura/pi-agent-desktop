@@ -172,6 +172,40 @@ failure, which carries `{"ok":false,"errorCode":…}`. **A status check must fai
 loud, never fail empty**: a probe that swallows its error reports "no remote
 processes", which is indistinguishable from a real clean state.
 
+## Orthogonal PI management control plane (launcher revision 5)
+
+Package and skill management is intentionally **not** a supervisor mode and never enters a
+task's JSONL stream. The desktop starts a separate, short-lived SSH invocation of
+`pi-desktop-launcher --manage`, sends one protocol-v1 JSON envelope on stdin, reads one
+bounded JSON reply, and closes it. The renderer can provide only the target identity, scope,
+package/skill identifier, and semantic operation; SSH argv, launcher path, remote `HOME`,
+cwd selection, environment, shell, and CLI argv remain backend/launcher-owned.
+
+The four capabilities are independent: `pi-packages-read-v1`,
+`pi-packages-mutate-v1`, `pi-skills-read-v1`, and `pi-skills-mutate-v1`. Missing mutation
+support produces a read-only UI rather than disabling inspection. A launcher without
+capability discovery is treated as old and upgradeable, not as evidence that the host is
+damaged. Global scope resolves to remote `$HOME/.pi/agent`; project scope resolves to the
+binding's `remoteCwd/.pi`. There is no local-filesystem fallback.
+
+The launcher accepts only `inspect`, `readSkillSource`, `browseSkillSource`,
+`mutatePackage`, and `mutateSkill`, with exact-key request validation. Source reads use
+opaque SHA-256 references minted by `inspect`. Mutation compares an opaque `stateToken`
+inside a host-wide mkdir lock, runs only launcher-constructed PI/Skills CLI arguments, and
+always returns a fresh authoritative snapshot after the command. Nonzero CLI exit can still
+change state; clients therefore apply that snapshot and mark affected tasks dirty before
+showing the command error. Skill move remains explicitly non-atomic and reports
+`halfDone: true` when destination install succeeded but source removal failed.
+
+Bounds: 64 KiB request; 30 seconds for inspect/read, 120 seconds for browsing, 300 seconds
+for mutation; 2 MiB response; 64 KiB diagnostics; 256 KiB per `SKILL.md`; 512 KiB each for
+settings/package lock; 512 packages and 2,048 skills. Settings snapshots expose only
+`packages`, package locks expose only versions, and diagnostics redact common credentials.
+CLI timeout terminates the process group with TERM then KILL. Live mutation locks are never
+stolen; stale locks are reclaimed under a separate reclaim lock by atomic quarantine rename.
+`launcherRevision` is 5; `statusVersion` stays 1 because management does not change the
+detached task schema.
+
 `--capabilities` stays the first thing the script answers, before any node
 discovery, so a desktop can still ask what a host supports when node is broken.
 
@@ -288,6 +322,12 @@ Core logic is JS in the launcher, so it runs locally: `pnpm test:detached-tasks`
 (`node --test remote-launcher/test-detached-tasks.mjs`). This was the third reason
 the launcher beat a Rust daemon — the other two being no cross-compile matrix and a
 single-file install.
+Management protocol coverage runs separately with `npm run test:remote-management`
+(`node --test remote-launcher/test-management.mjs`). Its portable cases cover capability
+revision, exact-key validation, sanitized inspect/source reads, reply bounds, and the
+process-group wrapper. POSIX cases additionally exercise state conflicts, active/stale locks,
+missing CLIs, nonzero command exits with authoritative post-state, and skill-move `halfDone`.
+
 
 The suite splits by what a platform can represent. Status repair, stop bookkeeping,
 reap policy, payload and id validation, and the task limit are pure file logic over

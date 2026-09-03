@@ -48,16 +48,26 @@ ssh build-host bash -lc 'command -v node; command -v pi'
 
 ## Protocol
 
-The launcher accepts four fixed internal modes:
+The launcher accepts fixed internal modes. The desktop owns every SSH argument and the stored launcher path; renderer-provided values are never interpreted as shell, executable, environment, `HOME`, or arbitrary CLI argv.
 
-- `--capabilities`: takes no payload and writes one JSON document to stdout, e.g. `{"launcherProtocolVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1"]}`. Answered by the `sh` prologue **before** any Node.js discovery, because a desktop most needs to know what a host supports exactly when node is missing or broken. Capabilities are additive and independently versioned: feature-detect by name and never infer one from the presence of another, or from `launcherProtocolVersion`.
+- `--capabilities`: takes no payload and writes one JSON document to stdout. Launcher revision 5 advertises `run-v1`, `preflight-v1`, provider sync, detached task/attach, workspace read/write, and four independently gated PI-management capabilities: `pi-packages-read-v1`, `pi-packages-mutate-v1`, `pi-skills-read-v1`, and `pi-skills-mutate-v1`. `launcherRevision` identifies functional launcher builds; `statusVersion` changes only when the detached `status.json` schema changes.
 
-  A launcher older than this mode answers `invalid launcher mode` with exit 64, which is byte-identical to what a corrupt launcher returns. The desktop therefore treats an unanswered query as "V1 baseline" — `run-v1` and `preflight-v1` only — rather than as a failure, since every already-installed host still has that surface. Reinstall the launcher (**Settings › Remote agent › Install**) to gain anything newer.
+  A launcher older than capability discovery answers `invalid launcher mode` with exit 64, which is byte-identical to what a corrupt launcher returns. The desktop therefore treats an unanswered query as a V1 baseline rather than a broken host. Reinstall the launcher (**Settings › Remote agent › Install**) to enable newer features. Read and mutation capabilities are checked separately, so a read-only launcher remains browsable while every mutation control fails closed.
 - `--preflight`: validates the workspace and runs `pi --version`; writes one JSON document to stdout. Alongside `ok` it reports `piVersion`, `nodeVersion`, `nodePath`, and `piAuthConfigured` — the last is a nonempty-`auth.json` check, which the app surfaces as a warning rather than a blocker because pi exposes no way to query login state noninteractively.
 - `--run`: starts `pi --mode rpc` in the remote workspace; stdout remains Pi JSONL and launcher diagnostics go to stderr.
-- `--provider-sync`: reads one provider-sync protocol v1 request (maximum 2 MiB) from stdin. The fixed `inspect` and `apply` actions merge selected provider configuration while preserving existing remote credentials and unrelated entries. Provider JSON and credentials never appear in argv, environment variables, or diagnostics. This capability is independent of the run/preflight payload protocol.
+- `--provider-sync`: reads one provider-sync protocol v1 request (maximum 2 MiB) from stdin. The fixed `inspect` and `apply` actions merge selected provider configuration while preserving existing remote credentials and unrelated entries. Provider JSON and credentials never appear in argv, environment variables, or diagnostics.
+- `--manage`: reads exactly one management protocol v1 JSON envelope from stdin and writes exactly one JSON reply to stdout. It supports `inspect`, `readSkillSource`, `browseSkillSource`, `mutatePackage`, and `mutateSkill`. The global scope is always remote `$HOME/.pi/agent`; the project scope is always `<remoteCwd>/.pi`. Skill source reads use opaque SHA-256 references issued by `inspect`, never renderer-provided paths.
+- Detached-task, attach, stop/send/status/reap, and workspace modes support the supervisor and target-scoped file bridge. Their arguments are fixed or opaque encoded protocol payloads; see the supervisor protocol document for lifecycle details.
 
-The payload protocol is versioned. Protocol version `1` carries the remote workspace, Pi executable, and optional remote session path. Values are passed to Node's process APIs as arguments and are never evaluated as shell source.
+Run/preflight payload protocol version `1` carries the remote workspace, Pi executable, and optional remote session path. Values are passed to Node's process APIs as arguments and are never evaluated as shell source.
+
+### Management safety model
+
+Management uses a separate short-lived SSH process; it never shares the `--run`, attached, detached, or attach data stream. Requests are limited to 64 KiB. Inspect/source reads time out after 30 seconds, source browsing after 120 seconds, and mutation after 300 seconds. Replies are limited to 2 MiB; CLI diagnostics to 64 KiB; one `SKILL.md` to 256 KiB; settings and package locks to 512 KiB each; package entries to 512 and skill entries to 2,048.
+
+Every mutation carries the `stateToken` returned by `inspect`. The launcher acquires `$HOME/.pi/agent/.pi-desktop-management.lock`, performs a fresh inspect under that lock, and returns `stateConflict` rather than applying an operation to stale state. Live locks are never stolen. Locks older than ten minutes or owned by a missing PID are reclaimed through a separate reclaim lock and atomic quarantine rename. After the fixed PI/Skills CLI command ends—even with a nonzero status—the launcher performs another inspect and returns the authoritative snapshot. A skill move that installs the destination but fails to remove the source reports `halfDone: true`.
+
+The launcher resolves only `pi`, `skills`, or the `npx -y skills@latest` fallback and constructs their allowlisted arguments itself. Long-running commands execute in a dedicated process group when `setsid` is available; timeout sends TERM and then KILL to the group. Snapshot settings expose only `packages`; package locks expose only package versions. Diagnostics are bounded and redact URL userinfo and common authorization, token, password, secret, and API-key forms.
 
 ## Lifecycle
 

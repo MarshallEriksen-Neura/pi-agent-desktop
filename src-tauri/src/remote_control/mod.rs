@@ -571,7 +571,7 @@ fn build_running_gateway<R: Runtime>(
         return Err("remote-control identity and authorization epochs differ".to_owned());
     }
     let selected_project_root = crate::projects::last_project()?.map(PathBuf::from);
-    let recent_projects = crate::projects::projects_recent()?;
+    let recent_projects = crate::projects::list_recent()?;
     if let Err(error) =
         sync_gateway_recent_projects(&project_store_path, &gateway, &recent_projects)
     {
@@ -1149,7 +1149,7 @@ fn sync_gateway_project(
     running: &RunningGateway,
     root: &Path,
 ) -> Result<RemoteProjectSummary, String> {
-    let recents = crate::projects::projects_recent()?;
+    let recents = crate::projects::list_recent()?;
     sync_gateway_recent_projects(&running.project_store_path, &running.gateway, &recents)?;
     let canonical = canonical_project_root(root).map_err(|error| error.to_string())?;
     let project = running

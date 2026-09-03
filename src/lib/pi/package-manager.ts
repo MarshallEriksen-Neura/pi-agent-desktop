@@ -18,23 +18,26 @@ import {
   type PackageEntry,
   type SettingsScope,
 } from "./settings";
-import { normalizePackageSource, packageInstallRequest } from "./package-install";
-import {
-  packageSourceInfo,
-  packageUpdateAllRequest,
-  packageUpdateRequest,
-  type PackageSourceInfo,
-} from "./package-update";
-import {
-  fetchLatestVersions,
-  isOutdated,
-  npmLockPath,
-  parseLockVersions,
-} from "./package-versions";
+import { normalizePackageSource } from "./package-install";
+import { packageSourceInfo, type PackageSourceInfo } from "./package-update";
+import { fetchLatestVersions, isOutdated, parseLockVersions } from "./package-versions";
 import { cliError } from "./cli-error";
-import { getPort } from "../backend/composition/container";
 import { useWorkspace } from "../workspace";
+import { usePiManagement, type ManagementContext } from "./management";
 import { useT, type TFunc } from "../i18n";
+
+function isCurrentManagementTarget(context: ManagementContext): boolean {
+  return usePiManagement.getState().context().targetKey === context.targetKey;
+}
+
+function parseSnapshotSettings(content: string | undefined): { packages?: PackageEntry[] } | null {
+  if (!content) return null;
+  try {
+    return JSON.parse(content) as { packages?: PackageEntry[] };
+  } catch {
+    return null;
+  }
+}
 
 /** npm's own gallery: every package tagged with the `pi-package` keyword. */
 const SEARCH_URL =
@@ -184,6 +187,7 @@ function thrown(
 export function usePackageManager(): PackageManager {
   const { refresh } = usePi();
   const settings = usePiSettings();
+  const management = usePiManagement();
   const t = useT();
   const root = useWorkspace((state) => state.root);
 
@@ -204,17 +208,31 @@ export function usePackageManager(): PackageManager {
     () => new Map(latestVersionCache)
   );
 
-  const activeScope: SettingsScope = root ? scope : "global";
+  useEffect(() => {
+    setStatus(null);
+    setInstalling(null);
+    setRemoving(null);
+    setUpdating(null);
+    setUpdatingAll(false);
+    setPendingUpdate(null);
+  }, [management.targetKey]);
+
+  const hasProject = management.context().binding.kind === "ssh" || root !== null;
+  const activeScope: SettingsScope = hasProject ? scope : "global";
   const busy =
     settings.busy ||
+    management.loading ||
     installing !== null ||
     removing !== null ||
     updating !== null ||
     updatingAll;
 
-  const globalData = settings.global.data;
-  const projectData = settings.project.data;
-
+  const globalData = management.snapshot
+    ? parseSnapshotSettings(management.snapshot.globalSettings.content)
+    : settings.global.data;
+  const projectData = management.snapshot
+    ? parseSnapshotSettings(management.snapshot.projectSettings.content)
+    : settings.project.data;
   const basePackages = useMemo<BasePackage[]>(() => {
     const bySc: [SettingsScope, PackageEntry[]][] = [
       ["global", (globalData?.packages ?? []) as PackageEntry[]],
@@ -290,38 +308,22 @@ export function usePackageManager(): PackageManager {
     [basePackages, installedVersions, latestVersions]
   );
 
-  const globalLock = npmLockPath(settings.global.path);
-  const projectLock = npmLockPath(settings.project.path);
-
-  /**
-   * Re-read both scopes' npm locks. Cheap enough to redo after every mutation:
-   * two file reads, and it is what makes a finished update visible — the
-   * version on the row moves.
-   */
   const refreshInstalledVersions = useCallback(async () => {
-    const scopes = ([
-      ["global", globalLock],
-      ["project", projectLock],
-    ] as const).filter(
-      (pair): pair is readonly [SettingsScope, string] => pair[1] !== null
-    );
-    // both paths are empty until the settings store has loaded once; asking the
-    // container for a port before then would throw by design
-    if (scopes.length === 0) return;
-
-    const port = getPort("piConfiguration");
+    const locks = management.snapshot?.packageLocks;
+    if (!locks) {
+      setInstalledVersions(new Map());
+      return;
+    }
     const next = new Map<string, string>();
-    await Promise.all(
-      scopes.map(async ([scope, path]) => {
-        const raw = await port.readPackageLock(path).catch(() => null);
-        if (!raw) return;
-        for (const [name, version] of parseLockVersions(raw)) {
-          next.set(`${scope}:${name}`, version);
-        }
-      })
-    );
+    for (const scope of ["global", "project"] as const) {
+      const raw = locks[scope];
+      if (!raw) continue;
+      for (const [name, version] of parseLockVersions(raw)) {
+        next.set(`${scope}:${name}`, version);
+      }
+    }
     setInstalledVersions(next);
-  }, [globalLock, projectLock]);
+  }, [management.snapshot]);
 
   /** Look up `dist-tags.latest` for names not asked about yet. */
   const refreshLatestVersions = useCallback(async (names: string[]) => {
@@ -370,113 +372,151 @@ export function usePackageManager(): PackageManager {
     void refreshLatestVersions(npmNameKey.split("\n"));
   }, [npmNameKey, refreshLatestVersions]);
 
-  /** settings.json changed on disk — re-read it and re-query pi's live state. */
-  const afterMutation = useCallback(async () => {
-    usePiSettings.setState({ dirtyRestart: true });
-    await usePiSettings.getState().load();
-    void refreshInstalledVersions();
+  const afterMutation = useCallback(async (
+    result: { snapshot: import("../backend/ports/pi-management").PiManagementSnapshot },
+    dirtyScope: SettingsScope,
+    mutationContext: ManagementContext,
+  ): Promise<boolean> => {
+    const state = usePiManagement.getState();
+    const applied = state.applySnapshot(mutationContext.targetKey, result.snapshot);
+    state.markDirty(dirtyScope, mutationContext);
+    if (!applied) return false;
+    if (mutationContext.binding.kind === "local") {
+      usePiSettings.setState({ dirtyRestart: true });
+      await usePiSettings.getState().load();
+    }
+    if (!isCurrentManagementTarget(mutationContext)) return false;
     void refresh();
-  }, [refresh, refreshInstalledVersions]);
-
+    return true;
+  }, [refresh]);
   const install = useCallback(
     async (rawSource: string) => {
-      // read the workspace at call time: the form can outlive the project that
-      // was open when it was first rendered
-      const currentRoot = useWorkspace.getState().root;
       const source = normalizePackageSource(rawSource);
-      const request = source
-        ? packageInstallRequest(source, currentRoot ? scope : "global", currentRoot)
-        : null;
-      if (!source || !request) {
+      const snapshot = management.snapshot;
+      const context = management.context();
+      if (!source) {
         setStatus({ ok: false, text: t("plugins.installSourceInvalid") });
         return false;
       }
-
+      if (
+        !snapshot ||
+        management.targetKey !== context.targetKey ||
+        snapshot.targetKey !== context.targetKey ||
+        (context.binding.kind === "ssh" &&
+          !management.availability?.capabilities.includes("pi-packages-mutate-v1"))
+      ) {
+        setStatus({ ok: false, text: t("remoteManagement.mutationUnavailable") });
+        return false;
+      }
       setInstalling(source);
       setStatus(null);
-      usePiSettings.setState({ lastError: null });
       try {
-        const result = await usePiSettings.getState().runPiCli(request.args, request.cwd);
+        const result = await context.port.mutatePackage({
+          operation: "install",
+          scope: activeScope,
+          source,
+          expectedState: snapshot.stateToken,
+        });
+        if (!isCurrentManagementTarget(context)) return false;
+        if (!(await afterMutation(result, activeScope, context))) return false;
         if (result.code !== 0) {
           setStatus({ ok: false, text: failure(t, "plugins.installFailed", result) });
           return false;
         }
-        await afterMutation();
         setStatus({ ok: true, text: t("plugins.installed", { source }) });
         return true;
       } catch (error) {
-        setStatus({ ok: false, text: thrown(t, "plugins.installUnexpected", error) });
+        if (isCurrentManagementTarget(context)) {
+          setStatus({ ok: false, text: thrown(t, "plugins.installUnexpected", error) });
+        }
         return false;
       } finally {
-        setInstalling(null);
+        if (isCurrentManagementTarget(context)) setInstalling(null);
       }
     },
-    [afterMutation, scope, t]
+    [activeScope, afterMutation, management, t]
   );
 
   const remove = useCallback(
     async (pkg: InstalledPackage) => {
-      const currentRoot = useWorkspace.getState().root;
-      if (pkg.scope === "project" && !currentRoot) {
-        usePiSettings.setState({ lastError: t("plugins.removeNoProject") });
+      const snapshot = management.snapshot;
+      const context = management.context();
+      if (
+        !snapshot ||
+        management.targetKey !== context.targetKey ||
+        snapshot.targetKey !== context.targetKey ||
+        (context.binding.kind === "ssh" &&
+          !management.availability?.capabilities.includes("pi-packages-mutate-v1"))
+      ) {
+        setStatus({ ok: false, text: t("remoteManagement.mutationUnavailable") });
         return;
       }
-
       setRemoving(pkg.source);
       setStatus(null);
-      usePiSettings.setState({ lastError: null });
       try {
-        // `pi remove` edits settings.json *and* cleans up ~/.pi/agent/npm|git
-        const result = await usePiSettings
-          .getState()
-          .runPiCli(
-            pkg.scope === "project" ? ["remove", pkg.source, "-l"] : ["remove", pkg.source],
-            currentRoot
-          );
+        const result = await context.port.mutatePackage({
+          operation: "remove",
+          scope: pkg.scope,
+          source: pkg.source,
+          expectedState: snapshot.stateToken,
+        });
+        if (!isCurrentManagementTarget(context)) return;
+        if (!(await afterMutation(result, pkg.scope, context))) return;
         if (result.code !== 0) {
-          usePiSettings.setState({ lastError: failure(t, "plugins.removeFailed", result) });
+          setStatus({ ok: false, text: failure(t, "plugins.removeFailed", result) });
           return;
         }
-        await afterMutation();
         setStatus({ ok: true, text: t("plugins.removed", { source: pkg.source }) });
       } catch (error) {
-        usePiSettings.setState({
-          lastError: thrown(t, "plugins.removeUnexpected", error),
-        });
+        if (isCurrentManagementTarget(context)) {
+          setStatus({ ok: false, text: thrown(t, "plugins.removeUnexpected", error) });
+        }
       } finally {
-        setRemoving(null);
+        if (isCurrentManagementTarget(context)) setRemoving(null);
       }
     },
-    [afterMutation, t]
+    [afterMutation, management, t]
   );
 
   const performUpdate = useCallback(
     async (pkg: InstalledPackage) => {
       if (!pkg.updatable) return;
-      const request = packageUpdateRequest(pkg.source, useWorkspace.getState().root);
-      if (!request) {
-        setStatus({ ok: false, text: t("plugins.updateSourceInvalid") });
+      const snapshot = management.snapshot;
+      const context = management.context();
+      if (
+        !snapshot ||
+        management.targetKey !== context.targetKey ||
+        snapshot.targetKey !== context.targetKey ||
+        (context.binding.kind === "ssh" &&
+          !management.availability?.capabilities.includes("pi-packages-mutate-v1"))
+      ) {
+        setStatus({ ok: false, text: t("remoteManagement.mutationUnavailable") });
         return;
       }
-
       setUpdating(pkg.source);
       setStatus(null);
-      usePiSettings.setState({ lastError: null });
       try {
-        const result = await usePiSettings.getState().runPiCli(request.args, request.cwd);
+        const result = await context.port.mutatePackage({
+          operation: "update",
+          source: pkg.source,
+          expectedState: snapshot.stateToken,
+        });
+        if (!isCurrentManagementTarget(context)) return;
+        if (!(await afterMutation(result, "global", context))) return;
         if (result.code !== 0) {
           setStatus({ ok: false, text: failure(t, "plugins.updateFailed", result) });
           return;
         }
-        await afterMutation();
         setStatus({ ok: true, text: t("plugins.updated", { source: pkg.source }) });
       } catch (error) {
-        setStatus({ ok: false, text: thrown(t, "plugins.updateUnexpected", error) });
+        if (isCurrentManagementTarget(context)) {
+          setStatus({ ok: false, text: thrown(t, "plugins.updateUnexpected", error) });
+        }
       } finally {
-        setUpdating(null);
+        if (isCurrentManagementTarget(context)) setUpdating(null);
       }
     },
-    [afterMutation, t]
+    [afterMutation, management, t]
   );
 
   const requestUpdate = useCallback(
@@ -501,25 +541,39 @@ export function usePackageManager(): PackageManager {
   }, [pendingUpdate, performUpdate]);
 
   const updateAll = useCallback(async () => {
-    if (busy || packages.length === 0) return;
+    const snapshot = management.snapshot;
+    const context = management.context();
+    if (
+      busy ||
+      packages.length === 0 ||
+      !snapshot ||
+      management.targetKey !== context.targetKey ||
+      snapshot.targetKey !== context.targetKey ||
+      (context.binding.kind === "ssh" &&
+        !management.availability?.capabilities.includes("pi-packages-mutate-v1"))
+    ) return;
     setUpdatingAll(true);
     setStatus(null);
-    usePiSettings.setState({ lastError: null });
     try {
-      const request = packageUpdateAllRequest(useWorkspace.getState().root);
-      const result = await usePiSettings.getState().runPiCli(request.args, request.cwd);
+      const result = await context.port.mutatePackage({
+        operation: "updateAll",
+        expectedState: snapshot.stateToken,
+      });
+      if (!isCurrentManagementTarget(context)) return;
+      if (!(await afterMutation(result, "global", context))) return;
       if (result.code !== 0) {
         setStatus({ ok: false, text: failure(t, "plugins.updateFailed", result) });
         return;
       }
-      await afterMutation();
       setStatus({ ok: true, text: t("plugins.updatedAll") });
     } catch (error) {
-      setStatus({ ok: false, text: thrown(t, "plugins.updateUnexpected", error) });
+      if (isCurrentManagementTarget(context)) {
+        setStatus({ ok: false, text: thrown(t, "plugins.updateUnexpected", error) });
+      }
     } finally {
-      setUpdatingAll(false);
+      if (isCurrentManagementTarget(context)) setUpdatingAll(false);
     }
-  }, [afterMutation, busy, packages.length, t]);
+  }, [activeScope, afterMutation, busy, management, packages.length, t]);
 
   /**
    * Fetched on Discover's first paint, not on page load: the registry is a
@@ -561,7 +615,7 @@ export function usePackageManager(): PackageManager {
     scope,
     setScope,
     activeScope,
-    hasProject: root !== null,
+    hasProject,
 
     packages,
     hasPackages: packages.length > 0,

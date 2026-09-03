@@ -4,6 +4,8 @@ import { desktopFileDropPort } from "../desktop/file-drop";
 import { desktopNotificationPort } from "../desktop/notification";
 import { desktopPetWindowPort } from "../desktop/pet-window";
 import { createDesktopPiConfigurationPort } from "../desktop/pi-configuration";
+import { createDesktopPiManagementFactory } from "../desktop/pi-management";
+import { createDesktopRemotePiManagement } from "../desktop/remote-pi-management";
 import { createDesktopPiProcessPort } from "../desktop/pi-process";
 import { desktopProjectCatalogPort } from "../desktop/project-catalog";
 import { createDesktopProviderAuthPort } from "../desktop/provider-auth";
@@ -23,6 +25,7 @@ import {
 } from "./container";
 
 export function createDesktopBackendPorts(): BackendPorts {
+  const piConfiguration = createDesktopPiConfigurationPort();
   return {
     piProcess: createDesktopPiProcessPort(),
     createPiProcess: (taskId, executionBinding) => createDesktopPiProcessPort(taskId, executionBinding),
@@ -43,7 +46,11 @@ export function createDesktopBackendPorts(): BackendPorts {
     remoteTerminal: desktopRemoteTerminalPort,
     remoteProviderSync: desktopRemoteProviderSyncPort,
     remoteConversations: desktopRemoteConversationsPort,
-    piConfiguration: createDesktopPiConfigurationPort(),
+    piConfiguration,
+    createPiManagement: createDesktopPiManagementFactory(
+      piConfiguration,
+      createDesktopRemotePiManagement,
+    ),
     window: desktopWindowPort,
     notification: desktopNotificationPort,
     updater: desktopUpdaterPort,

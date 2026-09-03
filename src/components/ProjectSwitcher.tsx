@@ -43,11 +43,13 @@ export function ProjectSwitcher() {
   useEffect(() => setMounted(true), []);
   if (!mounted) return null;
 
-  // browser preview has no real projects — keep the original static subtitle
+  // browser preview has no real projects — keep the original static subtitle.
+  // The branch half of it now comes from `GitBranchLabel`, which serves preview a
+  // canned `main`, so that the label people review is the one that ships.
   if (mock) {
     return (
       <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
-        pi-desktop · main
+        pi-desktop
       </span>
     );
   }

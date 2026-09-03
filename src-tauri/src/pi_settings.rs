@@ -41,39 +41,48 @@ pub struct SettingsFile {
     pub content: String,
 }
 
+/// Off the UI thread: a settings read is the first of the several dozen filesystem
+/// calls a skills or plugins scan makes, and the write does `create_dir_all` + a
+/// temp-file rename. See `fs_bridge::blocking` for the reasoning in full.
 #[tauri::command]
-pub fn pi_settings_read(scope: String, root: Option<String>) -> Result<SettingsFile, String> {
-    let path = settings_path(&scope, root.as_deref())?;
-    let exists = path.is_file();
-    let content = if exists {
-        fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?
-    } else {
-        String::new()
-    };
-    Ok(SettingsFile {
-        path: path.to_string_lossy().replace('\\', "/"),
-        exists,
-        content,
+pub async fn pi_settings_read(scope: String, root: Option<String>) -> Result<SettingsFile, String> {
+    crate::fs_bridge::blocking(move || {
+        let path = settings_path(&scope, root.as_deref())?;
+        let exists = path.is_file();
+        let content = if exists {
+            fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?
+        } else {
+            String::new()
+        };
+        Ok(SettingsFile {
+            path: path.to_string_lossy().replace('\\', "/"),
+            exists,
+            content,
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn pi_settings_write(
+pub async fn pi_settings_write(
     scope: String,
     content: String,
     root: Option<String>,
 ) -> Result<(), String> {
-    serde_json::from_str::<serde_json::Value>(&content)
-        .map_err(|e| format!("refusing to write invalid JSON: {e}"))?;
+    crate::fs_bridge::blocking(move || {
+        serde_json::from_str::<serde_json::Value>(&content)
+            .map_err(|e| format!("refusing to write invalid JSON: {e}"))?;
 
-    let path = settings_path(&scope, root.as_deref())?;
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    // write temp + rename so a crash can't leave a truncated settings.json
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &content).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+        let path = settings_path(&scope, root.as_deref())?;
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        // write temp + rename so a crash can't leave a truncated settings.json
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, &content).map_err(|e| e.to_string())?;
+        fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[derive(Serialize)]

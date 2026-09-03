@@ -771,6 +771,20 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       return;
     }
 
+    // For SSH targets, auto-upgrade the launcher before switching
+    if (executionBinding.kind === "ssh") {
+      try {
+        const { getPort } = await import("../backend/composition/container");
+        const upgradeResult = await getPort("remoteProfiles").autoUpgradeLauncher(executionBinding.profileId);
+        if (upgradeResult.outcome === "upgraded") {
+          console.log(`[sessions] auto-upgraded launcher on ${upgradeResult.host} from rev ${upgradeResult.previousRevision} to ${upgradeResult.currentRevision}`);
+        }
+      } catch (error) {
+        // Auto-upgrade failure should not block target switch
+        console.warn("[sessions] auto-upgrade attempt failed:", error);
+      }
+    }
+
     await flushSave();
     resetTaskRegistry();
     set({

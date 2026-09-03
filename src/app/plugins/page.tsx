@@ -16,7 +16,10 @@ import { motion } from "motion/react";
 import { RefreshCw, RotateCcw } from "lucide-react";
 import { usePi } from "@/lib/pi/store";
 import { usePiSettings } from "@/lib/pi/settings";
+import { useSessions } from "@/lib/pi/sessions";
 import { usePackageManager } from "@/lib/pi/package-manager";
+import { usePiManagement } from "@/lib/pi/management";
+import { useWorkspace } from "@/lib/workspace";
 import { useT } from "@/lib/i18n";
 import { SettingsPage, Segmented } from "@/components/settings-ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -31,13 +34,22 @@ export default function PluginsPage() {
   const settings = usePiSettings();
   const pm = usePackageManager();
   const t = useT();
+  const binding = useSessions((state) => state.executionBinding);
+  const remote = binding.kind === "ssh";
+  const root = useWorkspace((state) => state.root);
+  const management = usePiManagement();
   const [mode, setMode] = useState<Mode>("installed");
   const routed = useRef(false);
 
   useEffect(() => {
-    settings.load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!remote) void settings.load();
+    const management = usePiManagement.getState();
+    // Reuse a settled snapshot for the same host/project; a real target change
+    // still reloads. The management store coalesces concurrent callers, including
+    // Strict Mode's initial effect replay.
+    if (management.loaded && management.targetKey === management.context().targetKey) return;
+    void management.load();
+  }, [binding, remote, root]);
 
   /**
    * Nothing installed yet? Open on Discover instead. An empty maintenance list
@@ -46,10 +58,10 @@ export default function PluginsPage() {
    * so it can never yank the panel out from under someone mid-session.
    */
   useEffect(() => {
-    if (routed.current || settings.global.data == null) return;
+    if (routed.current || !management.loaded) return;
     routed.current = true;
     if (!pm.hasPackages) setMode("discover");
-  }, [settings.global.data, pm.hasPackages]);
+  }, [management.loaded, pm.hasPackages]);
 
   // the banner reports a pending restart; once pi has restarted (from any entry
   // point) the "installed/removed" line is no longer telling the user anything
@@ -57,6 +69,23 @@ export default function PluginsPage() {
     if (!settings.dirtyRestart) pm.clearStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.dirtyRestart]);
+
+  const canReadRemote = management.availability?.capabilities.includes("pi-packages-read-v1") ?? false;
+  const canMutate = !remote ||
+    (management.availability?.capabilities.includes("pi-packages-mutate-v1") ?? false);
+  if (remote && (!management.loaded || !canReadRemote)) {
+    const detail = !management.loaded
+      ? t("common.loading")
+      : management.error ?? t("remoteManagement.unavailableDetail");
+    return (
+      <SettingsPage
+        title={t("plugins.title")}
+        subtitle={t("remoteManagement.unavailableSubtitle")}
+      >
+        <StatusBanner status={{ ok: false, text: detail }} />
+      </SettingsPage>
+    );
+  }
 
   const extCommandCount = commands.filter((c) => c.source?.startsWith("extension:")).length;
 
@@ -85,7 +114,8 @@ export default function PluginsPage() {
           whileTap={{ scale: 0.9 }}
           transition={{ type: "spring", stiffness: 500, damping: 24 }}
           onClick={() => {
-            settings.load();
+            if (!remote) void settings.load();
+            void usePiManagement.getState().load();
             refresh();
           }}
           disabled={pm.busy}
@@ -110,11 +140,19 @@ export default function PluginsPage() {
       </div>
 
       <StatusBanner status={pm.status} />
+      {remote && !canMutate && (
+        <StatusBanner status={{ ok: false, text: t("remoteManagement.mutationUnavailable") }} />
+      )}
 
       {mode === "installed" ? (
-        <InstalledPanel pm={pm} onBrowse={() => setMode("discover")} />
+        <InstalledPanel
+          pm={pm}
+          onBrowse={() => setMode("discover")}
+          canMutate={canMutate}
+          remote={remote}
+        />
       ) : (
-        <DiscoverPanel pm={pm} />
+        <DiscoverPanel pm={pm} canMutate={canMutate} />
       )}
 
       <ConfirmDialog
@@ -129,7 +167,7 @@ export default function PluginsPage() {
         onCancel={pm.cancelPendingUpdate}
       />
 
-      {settings.lastError && (
+      {!remote && settings.lastError && (
         <p style={{ marginTop: 16, fontSize: 12.5, color: "var(--danger)" }}>
           {settings.lastError}
         </p>

@@ -3,6 +3,7 @@ import { mockExternalNavigationPort } from "../mock/external-navigation";
 import { mockNotificationPort } from "../mock/notification";
 import { mockPetWindowPort } from "../mock/pet-window";
 import { createMockPiConfigurationPort } from "../mock/pi-configuration";
+import { createBrowserPiManagementFactory } from "../browser/pi-management";
 import { createMockPiProcessPort } from "../mock/pi-process";
 import { createMockProjectCatalogPort } from "../mock/project-catalog";
 import { mockProviderAuthPort } from "../mock/provider-auth";
@@ -26,6 +27,7 @@ export function createBrowserBackendPorts(): BackendPorts {
   // One instance, shared by both entries: the mock keeps its documents in
   // memory, so handing out a fresh port per call would silently discard writes.
   const workspaceFs = createMockWorkspaceFsPort();
+  const createPiManagement = createBrowserPiManagementFactory();
   return {
     piProcess: createMockPiProcessPort(),
     createPiProcess: (taskId) => createMockPiProcessPort(taskId),
@@ -46,6 +48,7 @@ export function createBrowserBackendPorts(): BackendPorts {
     remoteControl: createMockRemoteControlPort(),
     remoteConversations: mockRemoteConversationsPort,
     piConfiguration: createMockPiConfigurationPort(),
+    createPiManagement,
     window: mockWindowPort,
     notification: mockNotificationPort,
     updater: mockUpdaterPort,

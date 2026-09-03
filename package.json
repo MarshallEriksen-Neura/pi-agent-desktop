@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "description": "Pi Coding Agent — iOS-inspired desktop client",
   "repository": {
@@ -19,6 +19,7 @@
     "test:provider-sync": "node --test remote-launcher/test-provider-sync.mjs",
     "test:detached-tasks": "node --test remote-launcher/test-detached-tasks.mjs",
     "test:remote-workspace": "node --test remote-launcher/test-workspace.mjs",
+    "test:remote-management": "node --test remote-launcher/test-management.mjs",
     "test:remote-preflight": "node --test remote-launcher/test-preflight.mjs",
     "test:remote-control-stage0": "node scripts/run-remote-control-stage0.mjs",
     "test:remote-control-stage1": "node scripts/run-remote-control-stage1.mjs",

@@ -126,6 +126,17 @@ test("parseSkillList reads names and descriptions past the ANSI noise", () => {
     },
   ]);
 });
+test("parseSkillList retains markdown-style bullet compatibility", () => {
+  assert.deepEqual(parseSkillList([
+    "Available Skills",
+    "- alpha: First skill.",
+    "* beta",
+  ].join("\n")), [
+    { name: "alpha", description: "First skill." },
+    { name: "beta", description: "" },
+  ]);
+});
+
 
 test("parseSkillList ignores everything before the section header", () => {
   // "Cloning repository" and "Found 3 skills" are logged the same way as skills

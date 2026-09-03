@@ -11,10 +11,22 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::Manager;
 
 const MAX_RECENTS: usize = 10;
 static DESKTOP_STATE_IO: Mutex<()> = Mutex::new(());
 
+/// Preserve the synchronous commands' serialization after their work moves to the
+/// blocking pool. In particular, a failed local open must not roll back a newer
+/// remote-open or remove mutation that completed while the gateway sync was running.
+static PROJECT_MUTATIONS: Mutex<()> = Mutex::new(());
+
+fn with_project_mutation<T>(mutation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _guard = PROJECT_MUTATIONS
+        .lock()
+        .map_err(|_| "project mutation lock is poisoned".to_owned())?;
+    mutation()
+}
 fn desktop_json_path() -> Result<PathBuf, String> {
     #[cfg(any(test, feature = "remote-control-smoke"))]
     if let Some(path) = std::env::var_os("RAGCODE_DESKTOP_STATE_PATH") {
@@ -142,15 +154,7 @@ pub fn last_project() -> Result<Option<String>, String> {
     Ok(read_state()?.last_project.filter(|p| Path::new(p).is_dir()))
 }
 
-/// Recent projects, most recent first.
-///
-/// Local entries are filtered by whether the directory still exists. Remote ones are
-/// **not**: checking a remote path costs an SSH round trip, and doing that per entry
-/// while rendering a list would make opening a menu wait on the network — or, worse,
-/// silently drop every remote entry when the host is simply asleep. A remote path that
-/// has gone away is reported when it is opened.
-#[tauri::command]
-pub fn projects_recent() -> Result<Vec<RecentProject>, String> {
+pub fn list_recent() -> Result<Vec<RecentProject>, String> {
     Ok(read_state()?
         .recent_projects
         .into_iter()
@@ -158,26 +162,55 @@ pub fn projects_recent() -> Result<Vec<RecentProject>, String> {
         .collect())
 }
 
-/// Validate and canonicalize a prospective project without persisting it.
-#[tauri::command]
-pub fn project_resolve(path: String) -> Result<String, String> {
+fn resolve_project(path: String) -> Result<String, String> {
     let dir = Path::new(&path);
     if !dir.is_dir() {
         return Err(format!("not a directory: {path}"));
     }
     let canon = canonical_project_root(dir).map_err(|error| error.to_string())?;
-    let root = normalize(&canon);
-    Ok(root)
+    Ok(normalize(&canon))
+}
+
+/// Recent projects, most recent first.
+///
+/// Local entries are filtered by whether the directory still exists. Remote ones are
+/// **not**: checking a remote path costs an SSH round trip, and doing that per entry
+/// while rendering a list would make opening a menu wait on the network — or, worse,
+/// silently drop every remote entry when the host is simply asleep. A remote path that
+/// has gone away is reported when it is opened.
+///
+/// Off the UI thread: each local entry is a `stat`, and this is what the project
+/// switcher reads on every open.
+#[tauri::command]
+pub async fn projects_recent() -> Result<Vec<RecentProject>, String> {
+    crate::fs_bridge::blocking(list_recent).await
+}
+
+/// Validate and canonicalize a prospective project without persisting it.
+#[tauri::command]
+pub async fn project_resolve(path: String) -> Result<String, String> {
+    crate::fs_bridge::blocking(move || resolve_project(path)).await
 }
 
 /// Persist a project only after the frontend has activated its Pi/session
 /// runtime. Revalidation closes the gap between resolve and commit.
 #[tauri::command]
-pub fn project_open(
+pub async fn project_open<R: tauri::Runtime>(
+    path: String,
+    app: tauri::AppHandle<R>,
+) -> Result<String, String> {
+    crate::fs_bridge::blocking(move || {
+        let remote_control = app.state::<crate::remote_control::RemoteControlState>();
+        with_project_mutation(|| open_project(path, remote_control))
+    })
+    .await
+}
+
+fn open_project(
     path: String,
     remote_control: tauri::State<'_, crate::remote_control::RemoteControlState>,
 ) -> Result<String, String> {
-    let root = project_resolve(path)?;
+    let root = resolve_project(path)?;
     let canon = PathBuf::from(&root);
     let name = canon
         .file_name()
@@ -249,7 +282,17 @@ fn validate_target_id(target_id: &str) -> Result<(), String> {
 /// Existence is the caller's business, checked with the workspace port's `stat` before
 /// this is called, so a failure lands on the open action rather than on a menu.
 #[tauri::command]
-pub fn project_open_remote(path: String, target_id: String) -> Result<Vec<RecentProject>, String> {
+pub async fn project_open_remote(
+    path: String,
+    target_id: String,
+) -> Result<Vec<RecentProject>, String> {
+    crate::fs_bridge::blocking(move || {
+        with_project_mutation(|| open_remote_project(path, target_id))
+    })
+    .await
+}
+
+fn open_remote_project(path: String, target_id: String) -> Result<Vec<RecentProject>, String> {
     validate_target_id(&target_id)?;
     if target_id == LOCAL_TARGET_ID {
         return Err("project_open_remote requires a remote execution target".into());
@@ -282,7 +325,7 @@ pub fn project_open_remote(path: String, target_id: String) -> Result<Vec<Recent
         );
         state.recent_projects.truncate(MAX_RECENTS);
     })?;
-    projects_recent()
+    list_recent()
 }
 
 /// Drop one entry from the recents list (the current project is untouched).
@@ -290,7 +333,17 @@ pub fn project_open_remote(path: String, target_id: String) -> Result<Vec<Recent
 /// `target_id` is part of the identity: the same path can exist on several machines,
 /// and forgetting one must not forget the others.
 #[tauri::command]
-pub fn project_remove_recent(
+pub async fn project_remove_recent(
+    path: String,
+    target_id: Option<String>,
+) -> Result<Vec<RecentProject>, String> {
+    crate::fs_bridge::blocking(move || {
+        with_project_mutation(|| remove_recent_project(path, target_id))
+    })
+    .await
+}
+
+fn remove_recent_project(
     path: String,
     target_id: Option<String>,
 ) -> Result<Vec<RecentProject>, String> {
@@ -301,7 +354,7 @@ pub fn project_remove_recent(
             .recent_projects
             .retain(|recent| recent.path != path || recent.target_id != target_id);
     })?;
-    projects_recent()
+    list_recent()
 }
 
 /// Native folder picker. `async` so the blocking dialog runs off the main
