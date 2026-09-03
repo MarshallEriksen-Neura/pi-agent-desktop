@@ -188,7 +188,6 @@ pub fn pi_start(
         ExecutionBinding::Local { target_id } => {
             let bin = binary.as_deref().unwrap_or("pi");
             let mut cmd = crate::pi_command::command(binary.as_deref())?;
-            crate::pi_command::prepend_npm_bin_to_path(&mut cmd);
             cmd.args(["--mode", "rpc"]);
             // A pin that no longer names a real transcript must not be handed to
             // `--session`: pi would create a session *at* that path rather than

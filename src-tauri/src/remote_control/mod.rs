@@ -541,13 +541,15 @@ fn build_running_gateway<R: Runtime>(
                 .map_err(|error| error.to_string())?
         }
     };
-    let pi_binary = crate::pi_command::command(None)
-        .map_err(|error| format!("Pi CLI is unavailable: {error}"))?
-        .get_program()
-        .to_os_string();
-    let mut runtime_config = RemoteTaskRuntimeConfig::default();
-    runtime_config.pi_binary = pi_binary;
+    let pi_runtime = crate::pi_command::PiRuntime::discover(None)
+        .map_err(|error| format!("Pi CLI is unavailable: {error}"))?;
+    let runtime_config = RemoteTaskRuntimeConfig {
+        pi_binary: pi_runtime.pi_executable.as_os_str().to_os_string(),
+        runtime_path: pi_runtime.runtime_path(),
+        ..RemoteTaskRuntimeConfig::default()
+    };
     let conversation_pi_binary = runtime_config.pi_binary.clone();
+    let conversation_runtime_path = runtime_config.runtime_path.clone();
     let storage_path = app_data_dir.join("remote-control.sqlite3");
     let project_store_path = app_data_dir.join("remote-control-projects.json");
     let devices = Arc::new(DeviceRegistry::new());
@@ -599,7 +601,8 @@ fn build_running_gateway<R: Runtime>(
                     let session_config = PiSessionConfig::new(
                         conversation_pi_binary,
                         app_data_dir.join("remote-control-sessions"),
-                    );
+                    )
+                    .with_runtime_path(conversation_runtime_path);
                     let probe_context = PiSessionContext {
                         owner_device_id: "remote-control-probe".to_owned(),
                         conversation_id: "probe".to_owned(),

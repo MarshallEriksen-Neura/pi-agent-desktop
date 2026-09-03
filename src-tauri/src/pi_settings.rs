@@ -97,7 +97,6 @@ pub async fn pi_cli(args: Vec<String>, cwd: Option<String>) -> Result<CliResult,
     // window does not freeze while it works (mirrors `skills_cli`).
     tauri::async_runtime::spawn_blocking(move || {
         let mut cmd = crate::pi_command::command(None)?;
-        crate::pi_command::prepend_npm_bin_to_path(&mut cmd);
         cmd.args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

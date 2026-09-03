@@ -40,6 +40,8 @@ pub struct RemoteTaskRuntimeConfig {
     /// mobile request.
     pub pi_binary: OsString,
     pub fixed_args: Vec<OsString>,
+    /// Host-owned PATH override used by the selected Pi runtime.
+    pub runtime_path: Option<OsString>,
     pub process_limits: ProcessLimits,
     pub execution_deadline: Duration,
     pub stop_timeout: Duration,
@@ -58,6 +60,7 @@ impl Default for RemoteTaskRuntimeConfig {
                 OsString::from("rpc"),
                 OsString::from("--no-session"),
             ],
+            runtime_path: None,
             process_limits: ProcessLimits::default(),
             execution_deadline: DEFAULT_EXECUTION_DEADLINE,
             stop_timeout: DEFAULT_STOP_TIMEOUT,
@@ -95,6 +98,7 @@ impl RemoteTaskRuntimeConfig {
             } else {
                 self.fixed_args
             },
+            runtime_path: self.runtime_path,
             process_limits: self.process_limits,
             execution_deadline: if self.execution_deadline.is_zero()
                 || self.execution_deadline > DEFAULT_EXECUTION_DEADLINE
@@ -497,6 +501,11 @@ fn build_launch(
     let mut launch = LaunchSpec::new(config.pi_binary.clone()).current_dir(root);
     for arg in &config.fixed_args {
         launch = launch.arg(arg.clone());
+    }
+    if let Some(path) = &config.runtime_path {
+        launch
+            .env
+            .push((OsString::from("PATH"), Some(path.clone())));
     }
     Ok(launch)
 }
@@ -982,6 +991,23 @@ mod tests {
             ["--mode", "rpc", "--no-session"]
                 .map(OsString::from)
                 .to_vec()
+        );
+    }
+
+    #[test]
+    fn fixed_launch_preserves_host_runtime_path() {
+        let input = RemoteTaskInput {
+            task_id: "task-path".into(),
+            project_root: std::env::temp_dir(),
+            prompt: "inspect".into(),
+            context_files: Vec::new(),
+        };
+        let mut config = RemoteTaskRuntimeConfig::default();
+        config.runtime_path = Some(OsString::from("runtime-path"));
+        let launch = build_launch(&input, &config).unwrap();
+        assert_eq!(
+            launch.env,
+            vec![(OsString::from("PATH"), Some(OsString::from("runtime-path")))]
         );
     }
 

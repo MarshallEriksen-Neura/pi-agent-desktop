@@ -31,6 +31,8 @@ const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub struct PiSessionConfig {
     pub program: OsString,
     pub prefix_args: Vec<OsString>,
+    /// Host-owned PATH override used by the selected Pi runtime.
+    pub runtime_path: Option<OsString>,
     pub session_root: PathBuf,
     pub process_limits: ProcessLimits,
     pub stop_timeout: Duration,
@@ -56,6 +58,7 @@ impl PiSessionConfig {
         Self {
             program: program.into(),
             prefix_args: Vec::new(),
+            runtime_path: None,
             session_root: session_root.into(),
             process_limits: ProcessLimits::default(),
             stop_timeout: DEFAULT_STOP_TIMEOUT,
@@ -66,6 +69,11 @@ impl PiSessionConfig {
 
     pub fn with_prefix_args(mut self, args: impl IntoIterator<Item = impl Into<OsString>>) -> Self {
         self.prefix_args = args.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_runtime_path(mut self, path: Option<OsString>) -> Self {
+        self.runtime_path = path;
         self
     }
 }
@@ -771,6 +779,7 @@ fn build_new_launch(
     for arg in &config.prefix_args {
         launch = launch.arg(arg.clone());
     }
+    apply_runtime_path(&mut launch, config);
     Ok(with_safe_rpc_startup_flags(launch)
         .arg("--mode")
         .arg("rpc")
@@ -791,6 +800,7 @@ fn build_resume_launch(
     for arg in &config.prefix_args {
         launch = launch.arg(arg.clone());
     }
+    apply_runtime_path(&mut launch, config);
     Ok(with_safe_rpc_startup_flags(launch)
         .arg("--mode")
         .arg("rpc")
@@ -798,6 +808,14 @@ fn build_resume_launch(
         .arg(session_dir.as_os_str().to_os_string())
         .arg("--session")
         .arg(session_file.as_os_str().to_os_string()))
+}
+
+fn apply_runtime_path(launch: &mut LaunchSpec, config: &PiSessionConfig) {
+    if let Some(path) = &config.runtime_path {
+        launch
+            .env
+            .push((OsString::from("PATH"), Some(path.clone())));
+    }
 }
 
 fn with_safe_rpc_startup_flags(launch: LaunchSpec) -> LaunchSpec {
@@ -820,6 +838,7 @@ fn build_probe_resume_launch(
     for arg in &config.prefix_args {
         launch = launch.arg(arg.clone());
     }
+    apply_runtime_path(&mut launch, config);
     Ok(launch
         .arg("--offline")
         .arg("--no-tools")
@@ -1133,4 +1152,29 @@ fn adapter_session_id(context: &PiSessionContext) -> String {
 
 fn err(code: PiSessionErrorCode) -> PiSessionError {
     PiSessionError { code }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_launch_preserves_host_runtime_path() {
+        let root = std::env::temp_dir().join(format!("pi-session-runtime-path-{}", now_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let config = PiSessionConfig::new("pi", &root)
+            .with_runtime_path(Some(OsString::from("runtime-path")));
+        let context = PiSessionContext {
+            owner_device_id: "device".into(),
+            conversation_id: "conversation".into(),
+            project_id: "project".into(),
+            project_root: root.clone(),
+        };
+        let launch = build_new_launch(&config, &context, &root).unwrap();
+        assert_eq!(
+            launch.env,
+            vec![(OsString::from("PATH"), Some(OsString::from("runtime-path")))]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 }
