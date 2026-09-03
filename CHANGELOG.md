@@ -4,6 +4,8 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-09-03
+
 ### Fixed
 - **修复 Windows 下进入 SSH 模式后反复闪现控制台窗口的问题**。能力探测、远程目录与文件树、management、预检和 launcher 安装等无头短命令此前虽然声明了 `create_no_window`，但统一的 bounded runner 在创建进程时丢弃了该标志，导致每次启动本地 `ssh.exe` 都可能短暂弹出白色控制台窗口；现在 Windows 会在 spawn 前应用 `CREATE_NO_WINDOW`。交互式远程终端仍由 ConPTY 承载，PTY/TTY 行为保持不变
 

@@ -2741,7 +2741,7 @@ dependencies = [
 
 [[package]]
 name = "pi-desktop"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
