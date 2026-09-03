@@ -17,7 +17,7 @@
 
 use serde::Serialize;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
@@ -76,39 +76,84 @@ impl Drop for SidecarChild {
 
 /// Locate pi's `dist/index.js`.
 ///
-/// The `pi` shim sits in the npm global bin directory with `node_modules`
-/// alongside it, which covers the documented `npm install -g` layout without
-/// spawning anything. `npm root -g` is the fallback for prefixes that do not
-/// follow that shape.
+/// Resolution order:
+/// 1. If the `pi` shim is a symlink into the package's `dist/` (the typical
+///    `npm install -g` layout on macOS/Linux), canonicalize points straight at
+///    `dist/cli.js`, so `dist/index.js` is a sibling.
+/// 2. Layout-derived candidates from the shim location, covering Windows npm
+///    (`%APPDATA%\npm\node_modules`), the bundled standalone layout
+///    (`{prefix}/node_modules`) and the macOS/Linux npm global layout
+///    (`{prefix}/lib/node_modules`).
+/// 3. `npm root -g` as a last resort (trusts PATH's first npm).
 fn pi_dist_path() -> Result<PathBuf, String> {
-    const REL: [&str; 4] = ["@earendil-works", "pi-coding-agent", "dist", "index.js"];
-
     let mut roots: Vec<PathBuf> = Vec::new();
     if let Some(shim) = crate::pi_command::resolve_executable("pi") {
-        if let Some(dir) = shim.parent() {
-            roots.push(dir.join("node_modules"));
+        if let Some(found) = dist_next_to_shim(&shim) {
+            return Ok(found);
         }
+        roots.extend(shim_roots(&shim));
     }
-    if let Ok(mut npm) = crate::pi_command::command(Some("npm")) {
-        npm.args(["root", "-g"]);
-        no_console_window(&mut npm);
-        if let Ok(output) = npm.output() {
-            if output.status.success() {
-                let root = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                if !root.is_empty() {
-                    roots.push(PathBuf::from(root));
-                }
-            }
-        }
+    if let Some(root) = npm_global_root() {
+        roots.push(root);
     }
+    find_dist_index(&roots).ok_or_else(|| {
+        "Could not find the pi package. Install it with `npm install -g @earendil-works/pi-coding-agent` and restart Pi.".into()
+    })
+}
 
-    for root in roots {
-        let candidate = REL.iter().fold(root, |path, part| path.join(part));
-        if candidate.is_file() {
-            return Ok(candidate);
+/// Canonicalize a symlink shim straight to the package's `dist/index.js`.
+///
+/// `npm install -g` shims resolve into the package's `dist/`: `dist/cli.js`
+/// before 0.84.4, `dist/bundle/cli.js` from 0.84.4 on. Both step up to the
+/// library entry `dist/index.js` (the `exports["."]` target), never the
+/// bundled copy. A regular-file shim (Windows `.cmd`, the bundled standalone
+/// script) has no `index.js` sibling and falls through to [`shim_roots`].
+fn dist_next_to_shim(shim: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(shim).ok()?;
+    let dir = real.parent()?;
+    let entry = match dir.file_name().and_then(|name| name.to_str()) {
+        Some("bundle") => dir.parent()?.join("index.js"),
+        _ => dir.join("index.js"),
+    };
+    entry.is_file().then_some(entry)
+}
+
+/// Candidate `node_modules` roots derived from a resolved `pi` shim path.
+fn shim_roots(shim: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(bin_dir) = shim.parent() {
+        // Windows npm layout: shim and node_modules sit side by side.
+        roots.push(bin_dir.join("node_modules"));
+        if let Some(prefix) = bin_dir.parent() {
+            // Bundled standalone layout: {prefix}/node_modules.
+            roots.push(prefix.join("node_modules"));
+            // npm global layout on macOS/Linux: {prefix}/lib/node_modules.
+            roots.push(prefix.join("lib").join("node_modules"));
         }
     }
-    Err("Could not find the pi package. Install it with `npm install -g @earendil-works/pi-coding-agent` and restart Pi.".into())
+    roots
+}
+
+/// `npm root -g`, run against PATH's first `npm`.
+fn npm_global_root() -> Option<PathBuf> {
+    let mut npm = crate::pi_command::command(Some("npm")).ok()?;
+    npm.args(["root", "-g"]);
+    no_console_window(&mut npm);
+    let output = npm.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!root.is_empty()).then(|| PathBuf::from(root))
+}
+
+/// First root that contains `@earendil-works/pi-coding-agent/dist/index.js`.
+fn find_dist_index(roots: &[PathBuf]) -> Option<PathBuf> {
+    const REL: [&str; 4] = ["@earendil-works", "pi-coding-agent", "dist", "index.js"];
+    roots
+        .iter()
+        .map(|root| REL.iter().fold(root.clone(), |path, part| path.join(part)))
+        .find(|candidate| candidate.is_file())
 }
 
 #[cfg(windows)]
@@ -356,4 +401,109 @@ pub fn provider_auth_cancel(state: State<'_, ProviderAuthState>) -> Result<(), S
     }
     guard.take();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("pi-desktop-{label}-{nonce}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, []).unwrap();
+    }
+
+    fn dist_index(root: &Path) -> PathBuf {
+        root.join("@earendil-works")
+            .join("pi-coding-agent")
+            .join("dist")
+            .join("index.js")
+    }
+
+    #[test]
+    fn finds_standalone_bundle_layout() {
+        let root = temp_dir("standalone");
+        touch(&root.join("bin/pi"));
+        touch(&dist_index(&root.join("node_modules")));
+        let shim = root.join("bin/pi");
+        assert_eq!(
+            find_dist_index(&shim_roots(&shim)),
+            Some(dist_index(&root.join("node_modules")))
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn finds_npm_global_lib_layout() {
+        let prefix = temp_dir("npm-global");
+        touch(&prefix.join("bin/pi"));
+        touch(&dist_index(&prefix.join("lib/node_modules")));
+        let shim = prefix.join("bin/pi");
+        assert!(find_dist_index(&shim_roots(&shim)).is_some());
+        fs::remove_dir_all(&prefix).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_symlink_shim_to_dist() {
+        let prefix = temp_dir("symlink");
+        let cli = prefix.join("lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
+        let index = prefix.join("lib/node_modules/@earendil-works/pi-coding-agent/dist/index.js");
+        touch(&cli);
+        touch(&index);
+        let bin = prefix.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&cli, bin.join("pi")).unwrap();
+        let found = dist_next_to_shim(&bin.join("pi")).unwrap();
+        // canonicalize normalizes /var -> /private/var on macOS.
+        assert_eq!(found, std::fs::canonicalize(&index).unwrap());
+        fs::remove_dir_all(&prefix).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_bundle_shim_to_library_entry() {
+        // pi >= 0.84.4 moves the CLI to dist/bundle/cli.js; the library entry
+        // stays dist/index.js, which is what the sidecar must import.
+        let prefix = temp_dir("bundle-shim");
+        let cli =
+            prefix.join("lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
+        let index = prefix.join("lib/node_modules/@earendil-works/pi-coding-agent/dist/index.js");
+        touch(&cli);
+        touch(&index);
+        let bin = prefix.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&cli, bin.join("pi")).unwrap();
+        let found = dist_next_to_shim(&bin.join("pi")).unwrap();
+        assert_eq!(found, std::fs::canonicalize(&index).unwrap());
+        fs::remove_dir_all(&prefix).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn keeps_windows_npm_layout_first() {
+        let shim = PathBuf::from(r"C:\Users\liu\AppData\Roaming\npm\pi.cmd");
+        let roots = shim_roots(&shim);
+        assert_eq!(
+            roots
+                .first()
+                .map(|p| p.to_string_lossy().to_string())
+                .as_deref(),
+            Some(r"C:\Users\liu\AppData\Roaming\npm\node_modules")
+        );
+    }
 }
