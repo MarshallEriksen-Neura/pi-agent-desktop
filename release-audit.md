@@ -3,9 +3,10 @@
 - Candidate: `0.14.0`
 - Audit date: `2026-09-05`
 - Baseline: `ca1e253824d5009d34d38205b0a6d563fdad41be` (`origin/main` at audit start)
-- Tag status at audit time: `v0.14.0` does not exist
-- Local release status: **GO FOR RELEASE COMMIT AND TAG**
-- Publication status: **WAIT FOR TAG CI**. Do not publish the GitHub Release until the desktop matrix and Android job both succeed.
+- Release commit: `4f0c3e553858fae4badc6ca57d76e2f5226e7c59`
+- Tag: `v0.14.0`
+- Local validation status: **PASSED**
+- Release status: **PUBLISHED** after workflow run `33974872670` completed successfully
 
 ## Scope
 
@@ -87,18 +88,16 @@ The candidate contains these user-facing changes:
 - `release-audit.md` is an intentional release artifact.
 - The release commit and tag were intentionally held until all local validation gates passed; final staging is restricted to the audited source, tests, version metadata, workflow, changelog, and this audit.
 
+## Release Result
+
+- GitHub Actions run `33974872670` completed successfully: draft creation, Android, Windows, macOS x64, macOS arm64, Ubuntu, and final publication all passed.
+- The published release contains 18 uploaded assets: Android APK, Windows NSIS/MSI installers and signatures, Linux AppImage/DEB/RPM packages and signatures, macOS x64/arm64 app archives and DMGs, plus `latest.json`.
+- The run exposed a publication-order defect: the Android `softprops/action-gh-release` upload changed the draft to public at `15:31:46Z`, before the last desktop job completed at `15:38:46Z`. Every remaining job subsequently passed and the final asset set is complete, so the released binaries are not missing artifacts.
+- A post-tag `main` fix explicitly sets `releaseDraft: true` for both Tauri upload paths, `draft: true` for the Android upload, and `draft: false` only for `publish-release`. Future releases therefore preserve the draft until both desktop and Android dependencies succeed.
+
 ## Residual Risks
 
-- The tag workflow remains the authority for non-Windows desktop packaging, Android packaging, updater signatures, and `latest.json`. A local Windows audit cannot replace that matrix.
 - `src/lib/orchestration/project-switch.ts` can surface a rollback error instead of the original operation error if rollback itself rejects. Existing state recovery remains intact; preserving both errors is a P2 follow-up, not a demonstrated release blocker.
 - Reloading the same WebView while a native terminal is active can overlap old cleanup with a new start using the same session identity. Smoke tests for shell-profile changes must use a fresh application process/profile. Normal tab close and full application exit paths were verified directly.
 - The Windows kill workaround is specific to `portable-pty 0.9.0` and should be revisited when that dependency is upgraded.
-
-## Release Gate
-
-The local candidate is cleared for a `0.14.0` release commit and `v0.14.0` tag. After pushing the tag:
-
-1. Require every desktop matrix job to succeed.
-2. Require the Android APK job to succeed.
-3. Verify updater signatures and `latest.json` assets.
-4. Publish the draft GitHub Release only after all required artifacts are present.
+- The successful CI run emitted maintenance warnings for Node 20-based action runtimes, `actions/setup-java@v4`, and the unsupported `api-level` input to `android-actions/setup-android@v3`. They did not affect this release but should be cleaned up before those deprecations become enforced.

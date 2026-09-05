@@ -108,6 +108,7 @@ jobs:
         with:
           projectPath: .
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseDraft: true
           includeRelease: true
           args: ${{ matrix.args }}
 
@@ -125,6 +126,7 @@ jobs:
         with:
           projectPath: .
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseDraft: true
           args: ${{ matrix.args }}
 
   android:
@@ -192,6 +194,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          draft: true
           files: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
           fail_on_unmatched_files: false
 
@@ -224,5 +227,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          draft: false
           files: latest.json
           make_latest: true

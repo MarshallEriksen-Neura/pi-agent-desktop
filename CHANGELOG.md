@@ -4,6 +4,9 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- 发布 workflow 的桌面与 Android 上传步骤现在显式保持 draft，仅最终 `publish-release` job 可以公开 Release，避免首个完成的上传任务提前发布不完整资产
+
 ## [0.14.0] — 2026-09-05
 
 ### Added
