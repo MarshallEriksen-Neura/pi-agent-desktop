@@ -44,7 +44,7 @@ export const useSessions = create<SessionState>((set) => ({
 
 :root[data-theme="dark"] {
   --accent: #0a84ff;
-  --bg-base: #000000;
+  --bg-base: #1c1c1e;
 }
 `,
 };

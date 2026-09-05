@@ -2,13 +2,15 @@
 
 import { useRef, useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { Square, ArrowUp, X, Zap, ListPlus } from "lucide-react";
+import { Square, ArrowUp, X, Zap, ListPlus, FileText, Maximize2 } from "lucide-react";
 import { ModelPicker } from "./ModelPicker";
 import { ThinkingPicker } from "./ThinkingPicker";
 import { ImageLightbox } from "./ImageLightbox";
+import { LongTextModal } from "./LongTextModal";
 import { FileMentionMenu, type MentionStatus } from "./FileMentionMenu";
 import type { DeliveryMode, QueueEntry } from "@/lib/pi/chat";
 import { useT } from "@/lib/i18n";
+import { isLongText, longTextStats } from "@/lib/long-text";
 import { useUI } from "@/lib/store";
 import { useWorkspace } from "@/lib/workspace";
 import { MENTION_RESULT_LIMIT, useFileIndex } from "@/lib/file-index";
@@ -24,6 +26,8 @@ import { formatSendShortcut, matchSendIntent } from "@/lib/composer-shortcut";
 interface ComposerInputProps {
   draft: string;
   setDraft: (value: string) => void;
+  longTextDraft: string | null;
+  setLongTextDraft: (value: string | null) => void;
   attachments: string[];
   setAttachments: (value: string[]) => void;
   streaming: boolean;
@@ -51,12 +55,14 @@ interface ComposerInputProps {
 
 /**
  * Elegant multi-line composer with embedded model picker.
- * Warm cream background, auto-expanding textarea (2-12 lines). The send key
+ * Warm cream background, compact auto-growing textarea, and a large modal editor
  * follows the user's `sendShortcut` preference (⌘↩ by default).
  */
 export function ComposerInput({
   draft,
   setDraft,
+  longTextDraft,
+  setLongTextDraft,
   attachments,
   setAttachments,
   streaming,
@@ -74,12 +80,18 @@ export function ComposerInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const t = useT();
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [editorTarget, setEditorTarget] = useState<"document" | "instruction" | null>(null);
+  const [textareaOverflowing, setTextareaOverflowing] = useState(false);
   const sendShortcut = useUI((s) => s.sendShortcut);
   // Resolved after mount on purpose: the static export prerenders without a
   // navigator, so reading it during render would mismatch on hydration.
   const [isMac, setIsMac] = useState(false);
   const steerCount = queue.filter((q) => q.kind === "steer").length;
   const queuedCount = queue.filter((q) => q.kind === "followUp").length;
+  const showLongEditor = Boolean(draft.trim()) && (isLongText(draft) || textareaOverflowing);
+  const hasLongTextDraft = Boolean(longTextDraft?.trim());
+  const canSend = Boolean(draft.trim() || hasLongTextDraft || attachments.length > 0);
+  const documentStats = longTextDraft !== null ? longTextStats(longTextDraft) : null;
 
   /* ── @-mention completion ──────────────────────────────────────────────────
      Caret-based, unlike the slash menu: `@` can open a token anywhere in the
@@ -189,9 +201,8 @@ export function ComposerInput({
     []
   );
 
-  // Auto-resize textarea based on content (2-12 lines).
-  // scrollHeight includes the vertical padding (14 top + 40 bottom), so it
-  // must be subtracted before converting to a line count.
+  // Keep the docked composer compact. Once content needs more room, the modal
+  // becomes the comfortable reading/editing surface without reflowing the chat.
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -199,11 +210,13 @@ export function ComposerInput({
     const lineHeight = 20;
     const verticalPadding = 54; // 14px top + 40px bottom (matches textarea style)
     textarea.style.height = "auto";
-    const lines = Math.min(
-      12,
-      Math.max(2, Math.round((textarea.scrollHeight - verticalPadding) / lineHeight))
+    const measuredLines = Math.max(
+      2,
+      Math.ceil((textarea.scrollHeight - verticalPadding) / lineHeight)
     );
-    textarea.style.height = `${lines * lineHeight + verticalPadding}px`;
+    const visibleLines = Math.min(6, measuredLines);
+    textarea.style.height = `${visibleLines * lineHeight + verticalPadding}px`;
+    setTextareaOverflowing(measuredLines > visibleLines);
   }, [draft]);
 
   // Focus on mount
@@ -379,6 +392,86 @@ export function ComposerInput({
         </div>
       )}
 
+      {longTextDraft !== null && documentStats && (
+        <div
+          style={{
+            height: 40,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 8,
+            padding: "0 8px 0 11px",
+            border: "1px solid var(--separator)",
+            borderRadius: 11,
+            background: "var(--bg-elevated)",
+            color: "var(--text-primary)",
+          }}
+        >
+          <FileText size={14} style={{ flex: "0 0 auto", color: "var(--accent)" }} />
+          <button
+            type="button"
+            onClick={() => setEditorTarget("document")}
+            aria-label={t("longText.openEditor")}
+            title={t("longText.openEditor")}
+            style={{
+              minWidth: 0,
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              overflow: "hidden",
+              border: "none",
+              padding: 0,
+              background: "transparent",
+              color: "inherit",
+              textAlign: "left",
+              cursor: "pointer",
+            }}
+          >
+            <span style={{ flex: "0 0 auto", fontSize: 12, fontWeight: 600 }}>
+              {t("longText.draftReference")}
+            </span>
+            <span
+              style={{
+                minWidth: 0,
+                overflow: "hidden",
+                color: "var(--text-tertiary)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 10,
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {t("longText.stats", {
+                characters: String(documentStats.characters),
+                lines: String(documentStats.lines),
+              })}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setLongTextDraft(null)}
+            aria-label={t("longText.remove")}
+            title={t("longText.remove")}
+            style={{
+              width: 26,
+              height: 26,
+              flex: "0 0 auto",
+              display: "grid",
+              placeItems: "center",
+              border: "none",
+              borderRadius: 7,
+              padding: 0,
+              background: "transparent",
+              color: "var(--text-tertiary)",
+              cursor: "pointer",
+            }}
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
       {/* Main composer container — elevated surface with subtle shadow */}
       <div
         style={{
@@ -430,7 +523,7 @@ export function ComposerInput({
           style={{
             width: "100%",
             // room for the send button, plus Stop next to it while streaming
-            padding: `14px ${streaming || retrying ? 90 : 52}px 40px 14px`,
+            padding: `14px ${(streaming || retrying ? 90 : 52) + (showLongEditor ? 38 : 0)}px 40px 14px`,
             border: "none",
             outline: "none",
             background: "transparent",
@@ -455,7 +548,29 @@ export function ComposerInput({
             gap: 6,
           }}
         >
-          {(streaming || retrying) && (draft.trim() || attachments.length > 0) && (
+          {showLongEditor && (
+            <motion.button
+              type="button"
+              onClick={() => setEditorTarget("instruction")}
+              whileTap={{ scale: 0.94 }}
+              aria-label={t("longText.openEditor")}
+              title={t("longText.openEditor")}
+              style={{
+                width: 32,
+                height: 32,
+                border: "1px solid var(--separator)",
+                borderRadius: 8,
+                background: "var(--bg-base)",
+                color: "var(--text-secondary)",
+                cursor: "pointer",
+                display: "grid",
+                placeItems: "center",
+              }}
+            >
+              <Maximize2 size={14} />
+            </motion.button>
+          )}
+          {(streaming || retrying) && canSend && (
             <motion.button
               onClick={() => onSubmit()}
               whileTap={{ scale: 0.9 }}
@@ -515,31 +630,27 @@ export function ComposerInput({
               onClick={() => onSubmit()}
               whileTap={{ scale: 0.9 }}
               aria-label={t("agent.send")}
-              disabled={!draft.trim() && attachments.length === 0}
+              disabled={!canSend}
               style={{
                 width: 32,
                 height: 32,
                 border: "none",
                 borderRadius: 8,
-                background:
-                  draft.trim() || attachments.length > 0
-                    ? "var(--accent)"
-                    : "var(--separator)",
+                background: canSend ? "var(--accent)" : "var(--separator)",
                 color: "#FFFFFF",
-                cursor:
-                  draft.trim() || attachments.length > 0 ? "pointer" : "not-allowed",
+                cursor: canSend ? "pointer" : "not-allowed",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 transition: "background 0.2s ease, transform 0.1s ease",
               }}
               onMouseEnter={(e) => {
-                if (draft.trim() || attachments.length > 0) {
+                if (canSend) {
                   e.currentTarget.style.background = "var(--accent-hover)";
                 }
               }}
               onMouseLeave={(e) => {
-                if (draft.trim() || attachments.length > 0) {
+                if (canSend) {
                   e.currentTarget.style.background = "var(--accent)";
                 }
               }}
@@ -645,6 +756,21 @@ export function ComposerInput({
           {formatSendShortcut(sendShortcut, isMac)}
         </div>
       </div>
+
+      <LongTextModal
+        open={editorTarget !== null}
+        value={editorTarget === "document" ? longTextDraft ?? "" : draft}
+        mode="edit"
+        onChange={(value) => {
+          if (editorTarget === "document") setLongTextDraft(value);
+          else setDraft(value);
+        }}
+        onClose={() => {
+          if (editorTarget === "document" && !longTextDraft?.trim()) setLongTextDraft(null);
+          setEditorTarget(null);
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }}
+      />
 
       {/* Click-to-zoom lightbox for attachment previews */}
       <ImageLightbox src={previewSrc} onClose={() => setPreviewSrc(null)} />

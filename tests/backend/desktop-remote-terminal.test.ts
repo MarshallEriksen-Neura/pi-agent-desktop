@@ -38,7 +38,7 @@ class FakeDesktopBackend {
       this.calls.push({ command, args });
       if (command === "remote_terminal_start") {
         if (this.startGate) await this.startGate.promise;
-        return { sessionId: args?.sessionId, targetId: "ssh:work" } as T;
+        return { sessionId: args?.sessionId, targetId: "ssh:work", shellFallback: false } as T;
       }
       if (command === "remote_terminal_stop" && this.stopError) throw this.stopError;
       if (command === "remote_terminal_write") {
@@ -64,6 +64,8 @@ const REMOTE_BINDING: ExecutionBinding = {
   launcherProtocolVersion: 1,
 };
 
+
+const LOCAL_BINDING: ExecutionBinding = { kind: "local", targetId: "local" };
 async function flushPromises(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
@@ -80,7 +82,11 @@ test("desktop remote terminal forwards lifecycle commands without using the Pi c
   });
   await port.resize("terminal-1", 90, 30);
 
-  assert.deepEqual(started, { sessionId: "terminal-1", targetId: "ssh:work" });
+  assert.deepEqual(started, {
+    sessionId: "terminal-1",
+    targetId: "ssh:work",
+    shellFallback: false,
+  });
   assert.deepEqual(backend.calls, [
     {
       command: "remote_terminal_start",
@@ -88,6 +94,8 @@ test("desktop remote terminal forwards lifecycle commands without using the Pi c
         sessionId: "terminal-1",
         generation: 1,
         executionBinding: REMOTE_BINDING,
+        cwd: null,
+        localShell: null,
         cols: 120,
         rows: 40,
       },
@@ -97,6 +105,48 @@ test("desktop remote terminal forwards lifecycle commands without using the Pi c
       args: { sessionId: "terminal-1", generation: 1, cols: 90, rows: 30 },
     },
   ]);
+});
+
+test("desktop terminal forwards an immutable local cwd snapshot to the PTY backend", async () => {
+  const backend = new FakeDesktopBackend();
+  const port = new DesktopRemoteTerminalPort(backend.dependencies);
+
+  await port.start({
+    sessionId: "terminal-local-2",
+    executionBinding: LOCAL_BINDING,
+    cwd: "C:/projects/ragcode",
+    localShell: { kind: "custom", executable: "C:/Program Files/PowerShell/7/pwsh.exe" },
+    cols: 100,
+    rows: 32,
+  });
+
+  assert.deepEqual(backend.calls[0], {
+    command: "remote_terminal_start",
+    args: {
+      sessionId: "terminal-local-2",
+      generation: 1,
+      executionBinding: LOCAL_BINDING,
+      cwd: "C:/projects/ragcode",
+      localShell: { kind: "custom", executable: "C:/Program Files/PowerShell/7/pwsh.exe" },
+      cols: 100,
+      rows: 32,
+    },
+  });
+});
+
+test("desktop local terminals default omitted shell snapshots to Auto", async () => {
+  const backend = new FakeDesktopBackend();
+  const port = new DesktopRemoteTerminalPort(backend.dependencies);
+
+  await port.start({
+    sessionId: "terminal-local-auto",
+    executionBinding: LOCAL_BINDING,
+    cols: 80,
+    rows: 24,
+  });
+
+  assert.deepEqual(backend.calls[0]?.args?.localShell, { kind: "auto" });
+  assert.equal(backend.calls[0]?.args?.cwd, null);
 });
 
 test("desktop remote terminal stops immediately and suppresses queued writes", async () => {
@@ -248,4 +298,63 @@ test("desktop remote terminal decodes bytes and rejects malformed events", async
     dataBase64: "Ag==",
   });
   assert.equal(data.length, 1);
+});
+
+test("desktop terminal isolates concurrent local and SSH sessions", async () => {
+  const backend = new FakeDesktopBackend();
+  const port = new DesktopRemoteTerminalPort(backend.dependencies);
+  const events: Array<{ sessionId: string; text: string }> = [];
+  const unlisten = await port.onData((event) => {
+    events.push({ sessionId: event.sessionId, text: new TextDecoder().decode(event.data) });
+  });
+
+  await Promise.all([
+    port.start({
+      sessionId: "terminal-a",
+      executionBinding: LOCAL_BINDING,
+      cwd: "C:/projects/ragcode",
+      cols: 80,
+      rows: 24,
+    }),
+    port.start({
+      sessionId: "terminal-b",
+      executionBinding: { ...REMOTE_BINDING, profileId: "staging", hostAlias: "staging" },
+      cols: 100,
+      rows: 30,
+    }),
+  ]);
+
+  backend.emit("remote-terminal://data", {
+    sessionId: "terminal-a",
+    generation: 1,
+    dataBase64: "QQ==",
+  });
+  backend.emit("remote-terminal://data", {
+    sessionId: "terminal-b",
+    generation: 1,
+    dataBase64: "Qg==",
+  });
+  assert.deepEqual(events, [
+    { sessionId: "terminal-a", text: "A" },
+    { sessionId: "terminal-b", text: "B" },
+  ]);
+
+  await port.stop("terminal-a");
+  await assert.rejects(port.write("terminal-a", "closed"), /stopping/);
+  await port.resize("terminal-b", 120, 40);
+
+  const resize = backend.calls.at(-1);
+  assert.deepEqual(resize, {
+    command: "remote_terminal_resize",
+    args: { sessionId: "terminal-b", generation: 1, cols: 120, rows: 40 },
+  });
+  assert.equal(
+    backend.calls.filter(
+      (call) => call.command === "remote_terminal_stop" && call.args?.sessionId === "terminal-b"
+    ).length,
+    0,
+    "closing one tab must not stop another PTY"
+  );
+
+  unlisten();
 });

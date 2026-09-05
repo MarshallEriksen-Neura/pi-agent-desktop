@@ -1,13 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
-import type { Terminal } from "@xterm/xterm";
-import type { FitAddon } from "@xterm/addon-fit";
-import type { WebglAddon } from "@xterm/addon-webgl";
-import type { Unicode11Addon } from "@xterm/addon-unicode11";
-import type { WebLinksAddon } from "@xterm/addon-web-links";
-import type { SearchAddon } from "@xterm/addon-search";
+import { motion } from "motion/react";
 import "@xterm/xterm/css/xterm.css";
 import {
   APP_MIN_HEIGHT_BESIDE_TERMINAL,
@@ -15,14 +9,23 @@ import {
   TERMINAL_HEIGHT_MIN,
   useUI,
 } from "@/lib/store";
-import { PanelResizer } from "./PanelResizer";
 import { isMacPlatform } from "@/lib/shortcuts";
 import { ansi, termBus } from "@/lib/terminal-bus";
 import { useT } from "@/lib/i18n";
 import { Kbd } from "./primitives";
-import { handleTermInput, currentTerminalLine, pasteIntoTerminal, promptLine } from "@/lib/terminal-shell";
-import { openExternal } from "@/lib/open-external";
-import { X, Command, FileDown, LayoutGrid, Terminal as TerminalIcon } from "lucide-react";
+import {
+  currentTerminalLine,
+  pasteIntoTerminal,
+} from "@/lib/terminal-shell";
+import {
+  FileDown,
+  LayoutGrid,
+  Plus,
+  Server,
+  Terminal as TerminalIcon,
+  X,
+  Command,
+} from "lucide-react";
 import { formatDroppedPaths } from "@/lib/terminal-drop";
 import { useFileDropZone } from "@/lib/use-file-drop";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
@@ -30,7 +33,6 @@ import { TerminalBlocks } from "./TerminalBlocks";
 import { TerminalInput } from "./TerminalInput";
 import { runPastedLines } from "@/lib/terminal-block-shell";
 import { useSessions } from "@/lib/pi/sessions";
-import { getPort } from "@/lib/backend/composition/container";
 import {
   canReadClipboard,
   copyText,
@@ -42,50 +44,39 @@ import {
   type TerminalMenuItem,
   type TerminalMenuState,
 } from "./TerminalContextMenu";
+import {
+  closeTerminalTab,
+  createLocalTerminalTab,
+  createSshTerminalTab,
+  LOCAL_TERMINAL_TAB_ID,
+  MAX_TERMINAL_TABS,
+  renameTerminalTab,
+  syncTerminalTabsToBinding,
+  type TerminalTab,
+  type TerminalTabsState,
+} from "@/lib/terminal-tabs";
+import {
+  TerminalXtermPane,
+  type TerminalPaneController,
+} from "./TerminalXtermPane";
+import { PanelResizer } from "./PanelResizer";
+import { getBackendKind } from "@/lib/backend/composition/container";
+import { LOCAL_WORKSPACE_TARGET } from "@/lib/workspace-target";
+import { useWorkspace } from "@/lib/workspace";
 
-/** Read current token values so xterm follows the active theme. */
-function buildXtermTheme() {
-  const css = getComputedStyle(document.documentElement);
-  const v = (name: string) => css.getPropertyValue(name).trim();
-  return {
-    background: v("--bg-sunken") || "#0a0a0a",
-    foreground: v("--text-primary") || "#eee",
-    cursor: v("--accent") || "#0a84ff",
-    cursorAccent: v("--bg-sunken") || "#0a0a0a",
-    selectionBackground: v("--accent-muted") || "rgba(10,132,255,0.18)",
-    green: v("--success") || "#34c759",
-    red: v("--danger") || "#ff3b30",
-    blue: v("--accent") || "#0a84ff",
-    magenta: v("--agent-thinking") || "#bf5af2",
-    yellow: v("--warning") || "#ff9500",
+function initialTerminalTabs(
+  binding: ReturnType<typeof useSessions.getState>["executionBinding"],
+  localCwd: string | null,
+  shellProfile: ReturnType<typeof useUI.getState>["terminalShellProfile"]
+): TerminalTabsState {
+  const state: TerminalTabsState = {
+    tabs: [createLocalTerminalTab(localCwd, [], shellProfile)],
+    activeId: LOCAL_TERMINAL_TAB_ID,
   };
+  return syncTerminalTabsToBinding(state, binding);
 }
 
-/**
- * The app's mono stack, read from the stylesheet.
- *
- * xterm draws to a canvas, so it needs a literal family string rather than a CSS
- * variable — and a second copy of the list is a copy that drifts. This one asks
- * the document for the same `--font-mono` the editor and every diff gutter use,
- * so the terminal cannot end up on a different face (or on a ligature cut, which
- * a fixed cell grid does not want) than the rest of the app.
- */
-function monoFontStack(): string {
-  const declared = getComputedStyle(document.documentElement)
-    .getPropertyValue("--font-mono")
-    // the declaration wraps across lines; canvas measurement wants one line
-    .replace(/\s+/g, " ")
-    .trim();
-  return declared || "ui-monospace, Consolas, monospace";
-}
-
-let remoteTerminalSequence = 0;
-function nextRemoteTerminalSessionId(): string {
-  remoteTerminalSequence += 1;
-  return `terminal_${Date.now().toString(36)}_${remoteTerminalSequence.toString(36)}`;
-}
-
-/** Bottom drawer terminal — slides up with a spring, themed by tokens. */
+/** Bottom drawer with independently retained native PTYs and a browser-preview fallback. */
 export function TerminalDrawer() {
   const {
     terminalOpen,
@@ -96,94 +87,187 @@ export function TerminalDrawer() {
     persistTerminalHeight,
     setTerminalResizing,
     resetTerminalHeight,
+    terminalShellProfile,
+    terminalShellProfileReady,
   } = useUI();
-  const { viewMode, setViewMode } = useTerminalBlocks();
   const executionBinding = useSessions((state) => state.executionBinding);
-  const remoteBinding = executionBinding.kind === "ssh" ? executionBinding : null;
-  const remoteBindingRef = useRef(remoteBinding);
-  remoteBindingRef.current = remoteBinding;
-  const effectiveViewMode = remoteBinding ? "classic" : viewMode;
-  const terminalTargetKey = remoteBinding
-    ? `${remoteBinding.profileId}:${remoteBinding.profileRevision}:${remoteBinding.remoteCwd}`
-    : "local";
+  const [runtimeBackendKind, setRuntimeBackendKind] = useState<ReturnType<typeof getBackendKind> | null>(
+    null
+  );
+  const nativeLocalTerminals = runtimeBackendKind === "desktop-tauri";
+  const localCwd = useWorkspace((state) =>
+    state.targetId === LOCAL_WORKSPACE_TARGET
+      ? state.root
+      : (state.recents.find((project) => project.targetId === LOCAL_WORKSPACE_TARGET)?.path ?? null)
+  );
+  const workspaceInitialized = useWorkspace((state) => state.initialized);
+  const { viewMode, setViewMode } = useTerminalBlocks();
   const t = useT();
-  const hostRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const webglRef = useRef<WebglAddon | null>(null);
-  const firstOpenRef = useRef(true);
-  const [menu, setMenu] = useState<TerminalMenuState | null>(null);
-  // The terminal is built once per open; `t` changes whenever the locale does.
-  // A ref keeps the key handler's messages current without tearing the terminal
-  // down and rebuilding it on a language switch.
   const tRef = useRef(t);
   tRef.current = t;
 
-  /**
-   * Set when Ctrl/Cmd+V was seen and it is not yet known whether the webview
-   * will deliver a native `paste` event for it.
-   */
-  const pasteArmedRef = useRef<number | null>(null);
+  const [tabsState, setTabsState] = useState<TerminalTabsState>(() =>
+    initialTerminalTabs(executionBinding, localCwd, terminalShellProfile),
+  );
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState("");
+  const [menu, setMenu] = useState<TerminalMenuState | null>(null);
+  const [hasOpened, setHasOpened] = useState(false);
+  const [mountedTabIds, setMountedTabIds] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const [initialShellSnapshotReady, setInitialShellSnapshotReady] = useState(false);
+  const controllersRef = useRef(new Map<string, TerminalPaneController>());
 
-  /** Whether the classic xterm view is the one on screen. */
-  const isClassicView = useCallback(
-    () =>
-      remoteBindingRef.current !== null ||
-      useTerminalBlocks.getState().viewMode === "classic",
+  const activeTab =
+    tabsState.tabs.find((tab) => tab.id === tabsState.activeId) ?? tabsState.tabs[0];
+  const activeTabRef = useRef<TerminalTab | undefined>(activeTab);
+  activeTabRef.current = activeTab;
+  const activeUsesNativePty = activeTab?.kind === "ssh" || nativeLocalTerminals;
+  const effectiveViewMode = activeUsesNativePty ? "classic" : viewMode;
+
+  useEffect(() => {
+    setRuntimeBackendKind(getBackendKind());
+  }, []);
+
+  // The fixed first local tab is constructed during SSR with Auto. Replace that
+  // provisional value exactly once after client storage hydration, before its pane
+  // is allowed to mount. Later preference changes must not mutate tab snapshots.
+  useEffect(() => {
+    if (!terminalShellProfileReady || initialShellSnapshotReady) return;
+    setTabsState((state) => ({
+      ...state,
+      tabs: state.tabs.map((tab) =>
+        tab.id === LOCAL_TERMINAL_TAB_ID &&
+        tab.kind === "local" &&
+        !mountedTabIds.has(tab.id)
+          ? { ...tab, shellProfile: terminalShellProfile }
+          : tab
+      ),
+    }));
+    setInitialShellSnapshotReady(true);
+  }, [
+    initialShellSnapshotReady,
+    mountedTabIds,
+    terminalShellProfile,
+    terminalShellProfileReady,
+  ]);
+
+  useEffect(() => {
+    if (terminalOpen) setHasOpened(true);
+  }, [terminalOpen]);
+
+  // Tabs created while the drawer is hidden stay lazy. Already-mounted PTYs remain
+  // mounted, so hiding the drawer never disconnects a running terminal session.
+  useEffect(() => {
+    if (!terminalOpen || runtimeBackendKind === null) return;
+    const tab = tabsState.tabs.find((candidate) => candidate.id === tabsState.activeId);
+    if (
+      tab?.kind === "local" &&
+      nativeLocalTerminals &&
+      (!workspaceInitialized || !initialShellSnapshotReady)
+    ) {
+      return;
+    }
+    setMountedTabIds((mounted) => {
+      if (mounted.has(tabsState.activeId)) return mounted;
+      const next = new Set(mounted);
+      next.add(tabsState.activeId);
+      return next;
+    });
+  }, [
+    initialShellSnapshotReady,
+    nativeLocalTerminals,
+    runtimeBackendKind,
+    tabsState.activeId,
+    tabsState.tabs,
+    terminalOpen,
+    workspaceInitialized,
+  ]);
+
+
+  // The initial tab can be constructed before workspace hydration. Capture the project
+  // root exactly once, before that tab has mounted and started its PTY.
+  useEffect(() => {
+    if (!localCwd || mountedTabIds.has(LOCAL_TERMINAL_TAB_ID)) return;
+    setTabsState((state) => ({
+      ...state,
+      tabs: state.tabs.map((tab) =>
+        tab.id === LOCAL_TERMINAL_TAB_ID && tab.kind === "local" && !tab.cwd
+          ? { ...tab, cwd: localCwd }
+          : tab,
+      ),
+    }));
+  }, [localCwd, mountedTabIds]);
+  // A target switch selects or adds a tab; it never tears down tabs on other hosts.
+  useEffect(() => {
+    setTabsState((state) => syncTerminalTabsToBinding(state, executionBinding));
+  }, [executionBinding]);
+
+  const registerController = useCallback(
+    (id: string, controller: TerminalPaneController | null) => {
+      if (controller) controllersRef.current.set(id, controller);
+      else controllersRef.current.delete(id);
+    },
     []
   );
 
-  /** Insert text into whichever view is showing: the xterm line, or the input box. */
-  const insertText = useCallback(
-    (text: string) => {
-      if (!text) return;
-      if (isClassicView()) {
-        if (remoteBindingRef.current) termRef.current?.paste(text);
-        else pasteIntoTerminal(text);
-        return;
-      }
-      const store = useTerminalBlocks.getState();
-      // Complete lines run; the tail joins whatever is already in the input.
-      const tail = runPastedLines(store.input + text);
-      useTerminalBlocks.getState().setInput(tail);
-    },
-    [isClassicView]
-  );
+  const activeController = useCallback(() => {
+    const tab = activeTabRef.current;
+    return tab ? controllersRef.current.get(tab.id) : undefined;
+  }, []);
 
-  /** Paste into whichever view is showing: the xterm line, or the input box. */
-  const pasteFromClipboard = useCallback(async () => {
-    const text = await readClipboardText();
-    if (!text) {
-      const message = ansi.dim(tRef.current("terminal.clipboardUnavailable"));
-      if (remoteBindingRef.current) termRef.current?.writeln(message);
-      else if (isClassicView()) termBus.writeln(message);
+  const insertText = useCallback((text: string) => {
+    if (!text) return;
+    const tab = activeTabRef.current;
+    if (!tab) return;
+    if (tab.kind === "ssh" || nativeLocalTerminals) {
+      controllersRef.current.get(tab.id)?.terminal.paste(text);
       return;
     }
-    insertText(text);
-  }, [insertText, isClassicView]);
+    const store = useTerminalBlocks.getState();
+    if (store.viewMode === "classic") {
+      pasteIntoTerminal(text);
+      return;
+    }
+    const tail = runPastedLines(store.input + text);
+    useTerminalBlocks.getState().setInput(tail);
+  }, [nativeLocalTerminals]);
 
-  /**
-   * Type the paths of files dropped onto the drawer.
-   *
-   * A drop types, it never runs: `formatDroppedPaths` emits no newline, so the
-   * paths land as an editable argument list in either view.
-   */
+  const pasteFromClipboard = useCallback(async () => {
+    const text = await readClipboardText();
+    if (text) {
+      insertText(text);
+      return;
+    }
+    const message = ansi.dim(tRef.current("terminal.clipboardUnavailable"));
+    const tab = activeTabRef.current;
+    if (tab && (tab.kind === "ssh" || nativeLocalTerminals)) {
+      controllersRef.current.get(tab.id)?.terminal.writeln(message);
+    } else if (useTerminalBlocks.getState().viewMode === "classic") {
+      termBus.writeln(message);
+    }
+  }, [insertText, nativeLocalTerminals]);
+
+
   const insertDroppedPaths = useCallback(
     (paths: string[]) => {
-      const remote = remoteBindingRef.current !== null;
+      const tab = activeTabRef.current;
+      if (!tab) return;
       const text = formatDroppedPaths(paths, {
-        precedingLine: remote
-          ? null
-          : isClassicView()
-            ? currentTerminalLine()
-            : useTerminalBlocks.getState().input,
+        precedingLine:
+          tab.kind === "ssh" || nativeLocalTerminals
+            ? null
+            : useTerminalBlocks.getState().viewMode === "classic"
+              ? currentTerminalLine()
+              : useTerminalBlocks.getState().input,
       });
       insertText(text);
-      // The drag started in another application, so the terminal is very likely
-      // not the focused element by the time the path lands in it.
-      if (isClassicView()) termRef.current?.focus();
+      if (tab.kind === "ssh" || nativeLocalTerminals || useTerminalBlocks.getState().viewMode === "classic") {
+        controllersRef.current.get(tab.id)?.terminal.focus();
+      }
     },
-    [insertText, isClassicView]
+    [insertText, nativeLocalTerminals]
   );
 
   const dropZoneRef = useRef<HTMLElement>(null);
@@ -193,339 +277,48 @@ export function TerminalDrawer() {
     onDrop: insertDroppedPaths,
   });
 
-  /**
-   * Watch for a native `paste` event after Ctrl/Cmd+V, and read the clipboard
-   * ourselves only if none arrives.
-   *
-   * Written as a race rather than a platform check because the two ways a paste
-   * can reach a webview terminal fail on opposite axes: the native event needs no
-   * permission but is not delivered everywhere, and the clipboard read is
-   * delivered everywhere but can be denied. Whichever one works, one paste
-   * happens — the timer is cancelled by the event, so they cannot both fire.
-   */
-  const armPasteFallback = useCallback(() => {
-    if (pasteArmedRef.current !== null) window.clearTimeout(pasteArmedRef.current);
-    pasteArmedRef.current = window.setTimeout(() => {
-      pasteArmedRef.current = null;
-      void pasteFromClipboard();
-    }, 150);
-  }, [pasteFromClipboard]);
+  const addTerminal = useCallback(() => {
+    setTabsState((state) => {
+      if (state.tabs.length >= MAX_TERMINAL_TABS) return state;
+      const selected = state.tabs.find((tab) => tab.id === state.activeId);
+      if (selected?.kind === "local") {
+        if (!nativeLocalTerminals) return state;
+        const tab = createLocalTerminalTab(localCwd, state.tabs, terminalShellProfile);
+        return { tabs: [...state.tabs, tab], activeId: tab.id };
+      }
+      const binding = selected?.kind === "ssh" ? selected.binding : executionBinding;
+      if (binding.kind !== "ssh") return state;
+      const tab = createSshTerminalTab(binding, state.tabs);
+      return { tabs: [...state.tabs, tab], activeId: tab.id };
+    });
+  }, [executionBinding, localCwd, nativeLocalTerminals, terminalShellProfile]);
 
-  const disarmPasteFallback = useCallback(() => {
-    if (pasteArmedRef.current === null) return;
-    window.clearTimeout(pasteArmedRef.current);
-    pasteArmedRef.current = null;
+  const closeTab = useCallback((id: string) => {
+    setTabsState((state) => closeTerminalTab(state, id));
   }, []);
 
-  /* create the terminal once the drawer first opens (or switches targets) */
-  useEffect(() => {
-    if (!terminalOpen || effectiveViewMode !== "classic" || !hostRef.current) return;
-    let disposed = false;
-    let unsub: (() => void) | undefined;
-    let remoteUnlisteners: Array<() => void> = [];
-    let remoteSessionId: string | null = null;
-    let observer: MutationObserver | undefined;
-    let resizeObserver: ResizeObserver | undefined;
-    const host = hostRef.current;
-    const binding = remoteBinding;
-    const remotePort = binding ? getPort("remoteTerminal") : null;
+  const startRenaming = useCallback((tab: TerminalTab) => {
+    setEditingTabId(tab.id);
+    setEditingName(tab.name ?? "");
+  }, []);
 
-    const focusTerm = () => {
-      // xterm's hidden textarea can lose focus between mount and first paint,
-      // or after a parent re-render — request focus again on a microtask and
-      // also on the next frame so it survives late layout work.
-      termRef.current?.focus();
-      queueMicrotask(() => termRef.current?.focus());
-      requestAnimationFrame(() => termRef.current?.focus());
-    };
+  const commitRename = useCallback(() => {
+    if (!editingTabId) return;
+    setTabsState((state) => renameTerminalTab(state, editingTabId, editingName));
+    setEditingTabId(null);
+  }, [editingName, editingTabId]);
 
-    const onHostMouseDown = () => focusTerm();
-
-    (async () => {
-      const [{ Terminal }, { FitAddon }, { WebglAddon }, { Unicode11Addon }, { WebLinksAddon }, { SearchAddon }] =
-        await Promise.all([
-          import("@xterm/xterm"),
-          import("@xterm/addon-fit"),
-          import("@xterm/addon-webgl"),
-          import("@xterm/addon-unicode11"),
-          import("@xterm/addon-web-links"),
-          import("@xterm/addon-search"),
-        ]);
-      if (disposed || !hostRef.current) return;
-
-      const term = new Terminal({
-        allowProposedApi: true,
-        fontFamily: monoFontStack(),
-        fontSize: 12.5,
-        lineHeight: 1.5,
-        cursorBlink: true,
-        theme: buildXtermTheme(),
-        scrollback: 2000,
-      });
-      const fit = new FitAddon();
-      const webgl = new WebglAddon();
-      const unicode11 = new Unicode11Addon();
-      const webLinks = new WebLinksAddon((_, uri) => openExternal(uri));
-      const search = new SearchAddon();
-
-      term.loadAddon(fit);
-      term.loadAddon(unicode11);
-      term.unicode.activeVersion = "11";
-      term.loadAddon(webLinks);
-      term.loadAddon(search);
-
-      /* Clipboard bindings are owned by the embedder; xterm intentionally has none. */
-      const isMac = isMacPlatform();
-      term.attachCustomKeyEventHandler((e) => {
-        if (e.type !== "keydown") return true;
-        const mod = isMac ? e.metaKey : e.ctrlKey;
-        if (!mod || e.altKey) return true;
-        const key = e.key.toLowerCase();
-
-        if (key === "c") {
-          if (!e.shiftKey && !term.hasSelection()) return true;
-          const selection = term.getSelection();
-          e.preventDefault();
-          if (!selection) return false;
-          void copyText(selection);
-          term.clearSelection();
-          return false;
-        }
-
-        if (key === "v") {
-          if (e.shiftKey) {
-            e.preventDefault();
-            void pasteFromClipboard();
-            return false;
-          }
-          armPasteFallback();
-          return true;
-        }
-
-        return true;
-      });
-
-      term.open(hostRef.current);
-      const tryWebgl = () => {
-        try {
-          term.loadAddon(webgl);
-          webglRef.current = webgl;
-        } catch (error) {
-          console.warn("WebGL renderer unavailable, using canvas:", error);
-        }
-      };
-
-      fit.fit();
-      tryWebgl();
-      termRef.current = term;
-      fitRef.current = fit;
-
-      if (binding && remotePort) {
-        remoteSessionId = nextRemoteTerminalSessionId();
-        const sessionId = remoteSessionId;
-        const stopRemoteSession = () =>
-          remotePort.stop(sessionId).catch(() => undefined);
-        const disposeRemoteListeners = () => {
-          remoteUnlisteners.forEach((unlisten) => unlisten());
-          remoteUnlisteners = [];
-        };
-        let startRequested = false;
-        let remoteStarted = false;
-        let remoteExited = false;
-        let acceptingInput = true;
-        let writeFailed = false;
-        let pendingInput: string[] = [];
-        let pendingInputBytes = 0;
-        let latestSize = {
-          cols: Math.max(1, term.cols),
-          rows: Math.max(1, term.rows),
-        };
-        const reportWriteFailure = (error: unknown) => {
-          if (disposed || writeFailed) return;
-          writeFailed = true;
-          acceptingInput = false;
-          pendingInput = [];
-          pendingInputBytes = 0;
-          term.write(
-            `\r\n${ansi.dim(tRef.current("terminal.remoteWriteFailed", { error: String(error) }))}\r\n`
-          );
-        };
-        const writeRemoteInput = (data: string) => {
-          void remotePort.write(sessionId, data).catch(reportWriteFailure);
-        };
-        term.onData((data) => {
-          if (disposed || !acceptingInput || remoteExited) return;
-          if (remoteStarted) {
-            writeRemoteInput(data);
-            return;
-          }
-          // Keep startup input bounded to the backend's single-write limit. Four
-          // bytes per UTF-16 code unit is a conservative UTF-8 upper bound.
-          const estimatedBytes = data.length * 4;
-          if (pendingInputBytes + estimatedBytes > 256 * 1024) {
-            reportWriteFailure(tRef.current("terminal.remoteInputOverflow"));
-            return;
-          }
-          pendingInput.push(data);
-          pendingInputBytes += estimatedBytes;
-        });
-        term.onResize(({ cols, rows }) => {
-          latestSize = { cols: Math.max(1, cols), rows: Math.max(1, rows) };
-          if (!remoteStarted || disposed || remoteExited) return;
-          void remotePort
-            .resize(sessionId, latestSize.cols, latestSize.rows)
-            .catch(() => undefined);
-        });
-        term.write(
-          `${ansi.dim(tRef.current("terminal.remoteConnecting", { host: binding.hostAlias }))}\r\n`
-        );
-        try {
-          remoteUnlisteners.push(
-            await remotePort.onData((event) => {
-              if (!disposed && event.sessionId === sessionId) term.write(event.data);
-            })
-          );
-          if (disposed) {
-            acceptingInput = false;
-            pendingInput = [];
-            disposeRemoteListeners();
-            return;
-          }
-          remoteUnlisteners.push(
-            await remotePort.onExit((event) => {
-              if (disposed || event.sessionId !== sessionId) return;
-              remoteExited = true;
-              remoteStarted = false;
-              acceptingInput = false;
-              pendingInput = [];
-              pendingInputBytes = 0;
-              const detail = event.error ?? event.signal ?? String(event.code ?? "?");
-              term.write(
-                `\r\n${ansi.dim(tRef.current("terminal.remoteExited", { detail }))}\r\n`
-              );
-            })
-          );
-          if (disposed) {
-            acceptingInput = false;
-            pendingInput = [];
-            disposeRemoteListeners();
-            return;
-          }
-          startRequested = true;
-          await remotePort.start({
-            sessionId,
-            executionBinding: binding,
-            cols: latestSize.cols,
-            rows: latestSize.rows,
-          });
-          if (disposed) {
-            acceptingInput = false;
-            pendingInput = [];
-            void stopRemoteSession();
-            return;
-          }
-          if (remoteExited) return;
-
-          // Startup can span a drawer animation. Fit once more so the PTY receives
-          // the final host dimensions even if ResizeObserver has not fired yet.
-          try {
-            fit.fit();
-          } catch {
-            /* host may briefly report 0 during animations */
-          }
-          remoteStarted = true;
-          void remotePort
-            .resize(sessionId, latestSize.cols, latestSize.rows)
-            .catch(() => undefined);
-          const queuedInput = pendingInput;
-          pendingInput = [];
-          pendingInputBytes = 0;
-          queuedInput.forEach(writeRemoteInput);
-        } catch (error) {
-          acceptingInput = false;
-          pendingInput = [];
-          pendingInputBytes = 0;
-          disposeRemoteListeners();
-          if (startRequested) void stopRemoteSession();
-          if (!disposed) {
-            term.write(
-              `${ansi.dim(tRef.current("terminal.remoteStartFailed", { error: String(error) }))}\r\n`
-            );
-          }
-        }
-      } else {
-        unsub = termBus.subscribe((data) => term.write(data));
-        term.onData(handleTermInput);
-        if (firstOpenRef.current) {
-          firstOpenRef.current = false;
-          promptLine();
-        }
-      }
-      focusTerm();
-
-      resizeObserver = new ResizeObserver(() => {
-        try {
-          fit.fit();
-        } catch {
-          /* host may briefly report 0 during animations */
-        }
-      });
-      resizeObserver.observe(hostRef.current);
-
-      observer = new MutationObserver(() => {
-        term.options.theme = buildXtermTheme();
-      });
-      observer.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["data-theme"],
-      });
-    })();
-
-    host.addEventListener("mousedown", onHostMouseDown);
-    host.addEventListener("paste", disarmPasteFallback);
-
-    return () => {
-      disposed = true;
-      unsub?.();
-      remoteUnlisteners.forEach((unlisten) => unlisten());
-      if (remotePort && remoteSessionId) {
-        void remotePort.stop(remoteSessionId).catch(() => undefined);
-      }
-      observer?.disconnect();
-      resizeObserver?.disconnect();
-      host.removeEventListener("mousedown", onHostMouseDown);
-      host.removeEventListener("paste", disarmPasteFallback);
-      disarmPasteFallback();
-      webglRef.current?.dispose();
-      termRef.current?.dispose();
-      termRef.current = null;
-      fitRef.current = null;
-      webglRef.current = null;
-    };
-    // terminalTargetKey deliberately restarts the SSH child when host, revision, or cwd changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [terminalOpen, effectiveViewMode, terminalTargetKey]);
-
-  /**
-   * On a window resize, refit xterm and re-measure the viewport.
-   *
-   * Both belong to the same event: the drawer shares the window's height with
-   * the chat and the editor, so unlike the side columns its ceiling is not a
-   * constant — a height that was reasonable on a maximised window would swallow
-   * the conversation on a small one, and shrinking the window has to pull the
-   * drawer back down with it.
-   */
   const [viewportHeight, setViewportHeight] = useState(0);
   useEffect(() => {
     if (!terminalOpen) return;
     const onResize = () => {
       setViewportHeight(window.innerHeight);
-      fitRef.current?.fit();
+      activeController()?.fit();
     };
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [terminalOpen]);
+  }, [activeController, terminalOpen]);
 
   const terminalBounds = useCallback(() => {
     const room = viewportHeight
@@ -533,34 +326,24 @@ export function TerminalDrawer() {
       : TERMINAL_HEIGHT_MAX;
     return {
       min: TERMINAL_HEIGHT_MIN,
-      // Clamp up rather than inverting the range: on a very short window the
-      // floor wins and the drawer stays usable.
       max: Math.max(TERMINAL_HEIGHT_MIN, Math.min(TERMINAL_HEIGHT_MAX, room)),
     };
   }, [viewportHeight]);
 
-  /** What the drawer is actually drawn at, capped against the window right now. */
   const effectiveHeight = Math.min(terminalHeight, terminalBounds().max);
 
-  /**
-   * Build the right-click menu against whatever is selected right now.
-   *
-   * The two views hold a selection in different places: classic mode keeps it in
-   * xterm (drawn on a canvas, invisible to the DOM), block mode is ordinary DOM
-   * text.
-   */
   const openMenu = useCallback(
-    (e: React.MouseEvent) => {
-      // AppShell already cancels the native menu app-wide; this only stops the
-      // event from also reaching a parent that might act on a right-click.
-      e.preventDefault();
-      const term = termRef.current;
-      const classic = effectiveViewMode === "classic";
+    (event: React.MouseEvent) => {
+      event.preventDefault();
+      const tab = activeTabRef.current;
+      if (!tab) return;
+      const controller = controllersRef.current.get(tab.id);
+      const classic =
+        tab.kind === "ssh" || nativeLocalTerminals || useTerminalBlocks.getState().viewMode === "classic";
       const selection = classic
-        ? (term?.getSelection() ?? "")
+        ? (controller?.terminal.getSelection() ?? "")
         : (window.getSelection()?.toString() ?? "");
       const mod = isMacPlatform() ? "⌘" : "Ctrl";
-
       const items: TerminalMenuItem[] = [
         {
           label: t("terminal.copy"),
@@ -568,7 +351,7 @@ export function TerminalDrawer() {
           disabled: !selection,
           onSelect: () => {
             void copyText(selection);
-            if (classic) term?.clearSelection();
+            if (classic) controller?.terminal.clearSelection();
           },
         },
         {
@@ -581,236 +364,425 @@ export function TerminalDrawer() {
       if (classic) {
         items.push({
           label: t("terminal.selectAll"),
-          onSelect: () => term?.selectAll(),
+          onSelect: () => controller?.terminal.selectAll(),
         });
       }
       items.push({
         label: t("terminal.clear"),
         hint: classic ? "Ctrl+L" : undefined,
         onSelect: () => {
-          if (remoteBindingRef.current) {
-            term?.clear();
-            term?.write("\x1b[3J\x1b[2J\x1b[H");
+          if (tab.kind === "ssh" || nativeLocalTerminals) {
+            controller?.terminal.clear();
+            controller?.terminal.write("\x1b[3J\x1b[2J\x1b[H");
           } else {
             clearTerminalView();
           }
         },
       });
-
-      setMenu({ x: e.clientX, y: e.clientY, items });
+      setMenu({ x: event.clientX, y: event.clientY, items });
     },
-    [effectiveViewMode, t, pasteFromClipboard]
+    [nativeLocalTerminals, pasteFromClipboard, t]
   );
 
+  if (!hasOpened) return null;
+
+  const localTabCount = tabsState.tabs.filter((tab) => tab.kind === "local").length;
+  const canAdd =
+    tabsState.tabs.length < MAX_TERMINAL_TABS &&
+    (activeTab?.kind === "ssh" || (activeTab?.kind === "local" && nativeLocalTerminals));
+  const addTitle =
+    tabsState.tabs.length >= MAX_TERMINAL_TABS
+      ? t("terminal.maxTabs", { count: MAX_TERMINAL_TABS })
+      : canAdd
+        ? t("terminal.newTab")
+        : t("terminal.localTabLimit");
+
   return (
-    <AnimatePresence>
-      {terminalOpen && (
-        <motion.section
-          key="terminal"
-          ref={dropZoneRef}
-          initial={{ height: 0, opacity: 0 }}
-          animate={{ height: effectiveHeight, opacity: 1 }}
-          exit={{ height: 0, opacity: 0 }}
-          /* The spring is right for open/close but wrong for a drag — it would
-             trail the pointer, and xterm would refit against a stale height. */
-          transition={
-            terminalResizing
-              ? { duration: 0 }
-              : { type: "spring", stiffness: 300, damping: 32 }
-          }
-          onAnimationComplete={() => fitRef.current?.fit()}
+    <motion.section
+      ref={dropZoneRef}
+      initial={{ height: 0, opacity: 0 }}
+      animate={
+        terminalOpen
+          ? { height: effectiveHeight, opacity: 1 }
+          : { height: 0, opacity: 0 }
+      }
+      transition={
+        terminalResizing
+          ? { duration: 0 }
+          : { type: "spring", stiffness: 300, damping: 32 }
+      }
+      onAnimationComplete={() => {
+        if (terminalOpen) activeController()?.fit();
+      }}
+      aria-hidden={!terminalOpen}
+      style={{
+        overflow: "hidden",
+        flexShrink: 0,
+        borderTop: "1px solid var(--separator)",
+        background: "var(--bg-sunken)",
+        display: "flex",
+        flexDirection: "column",
+        position: "relative",
+        pointerEvents: terminalOpen ? "auto" : "none",
+      }}
+    >
+      <PanelResizer
+        edge="top"
+        width={effectiveHeight}
+        bounds={terminalBounds}
+        onResize={setTerminalHeight}
+        onResizeStateChange={setTerminalResizing}
+        onCommit={persistTerminalHeight}
+        onReset={resetTerminalHeight}
+        label={t("terminal.resize")}
+      />
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          minHeight: 34,
+          padding: "6px 12px 4px 16px",
+          flexShrink: 0,
+        }}
+      >
+        <span
           style={{
-            overflow: "hidden",
-            flexShrink: 0,
-            borderTop: "1px solid var(--separator)",
-            background: "var(--bg-sunken)",
-            display: "flex",
-            flexDirection: "column",
-            // anchors the drop overlay below
-            position: "relative",
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            color: "var(--text-tertiary)",
           }}
         >
-          {/* Drag the top seam to resize. Mounted first so it sits above the
-              header's padding rather than under the row's controls. */}
-          <PanelResizer
-            edge="top"
-            width={effectiveHeight}
-            bounds={terminalBounds}
-            onResize={setTerminalHeight}
-            onResizeStateChange={setTerminalResizing}
-            onCommit={persistTerminalHeight}
-            onReset={resetTerminalHeight}
-            label={t("terminal.resize")}
-          />
+          {t("terminal.title")}
+        </span>
+        <Kbd style={{ fontSize: 10, background: "transparent", border: "none" }}>
+          <Command size={10} />J
+        </Kbd>
 
-          {/* drawer header */}
+        {!activeUsesNativePty && (
           <div
             style={{
+              marginLeft: "auto",
               display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "8px 16px 6px",
-              flexShrink: 0,
+              gap: 4,
+              padding: 2,
+              background: "var(--bg-base)",
+              borderRadius: 6,
+              border: "1px solid var(--separator)",
             }}
           >
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.04em",
-                textTransform: "uppercase",
-                color: "var(--text-tertiary)",
-              }}
-            >
-              {t("terminal.title")}
-            </span>
-            {remoteBinding && (
-              <span
-                style={{
-                  fontSize: 10.5,
-                  color: "var(--success)",
-                  border: "1px solid color-mix(in srgb, var(--success) 35%, transparent)",
-                  borderRadius: 4,
-                  padding: "1px 5px",
-                  lineHeight: 1.4,
-                }}
-              >
-                SSH · {remoteBinding.hostAlias}
-              </span>
-            )}
-            <Kbd style={{ fontSize: 10, background: "transparent", border: "none" }}>
-              <Command size={10} />J
-            </Kbd>
-
-            {/* View mode toggle: remote PTYs always use the classic xterm view. */}
-            {!remoteBinding && (
-            <div
-              style={{
-                marginLeft: "auto",
-                display: "flex",
-                gap: 4,
-                padding: 2,
-                background: "var(--bg-base)",
-                borderRadius: 6,
-                border: "1px solid var(--separator)",
-              }}
-            >
-              <button
-                onClick={() => setViewMode("blocks")}
-                aria-label={t("terminal.blockView")}
-                style={{
-                  border: "none",
-                  background: viewMode === "blocks" ? "var(--accent-muted)" : "transparent",
-                  color: viewMode === "blocks" ? "var(--accent)" : "var(--text-tertiary)",
-                  cursor: "pointer",
-                  padding: "4px 8px",
-                  borderRadius: 4,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontSize: 11,
-                  fontWeight: 500,
-                  transition: "all 0.15s ease",
-                }}
-              >
-                <LayoutGrid size={12} />
-                {t("terminal.blocks")}
-              </button>
-              <button
-                onClick={() => setViewMode("classic")}
-                aria-label={t("terminal.classicView")}
-                style={{
-                  border: "none",
-                  background: viewMode === "classic" ? "var(--accent-muted)" : "transparent",
-                  color: viewMode === "classic" ? "var(--accent)" : "var(--text-tertiary)",
-                  cursor: "pointer",
-                  padding: "4px 8px",
-                  borderRadius: 4,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontSize: 11,
-                  fontWeight: 500,
-                  transition: "all 0.15s ease",
-                }}
-              >
-                <TerminalIcon size={12} />
-                {t("terminal.classic")}
-              </button>
-            </div>
-            )}
-
             <button
-              onClick={() => setTerminalOpen(false)}
-              aria-label={t("terminal.close")}
+              onClick={() => setViewMode("blocks")}
+              aria-label={t("terminal.blockView")}
               style={{
-                marginLeft: remoteBinding ? "auto" : undefined,
                 border: "none",
-                background: "transparent",
-                color: "var(--text-tertiary)",
+                background: viewMode === "blocks" ? "var(--accent-muted)" : "transparent",
+                color: viewMode === "blocks" ? "var(--accent)" : "var(--text-tertiary)",
                 cursor: "pointer",
-                fontSize: 13,
-                padding: "2px 6px",
-                borderRadius: 6,
-              }}
-            >
-              <X size={13} />
-            </button>
-          </div>
-
-          {/* Content area: blocks view or classic xterm */}
-          <div
-            onContextMenu={openMenu}
-            style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
-          >
-            {effectiveViewMode === "blocks" ? (
-              <TerminalBlocks />
-            ) : (
-              <div
-                ref={hostRef}
-                style={{ flex: 1, minHeight: 0, padding: "0 12px 8px 16px" }}
-              />
-            )}
-          </div>
-
-          {/* Input row (blocks mode only) */}
-          {effectiveViewMode === "blocks" && <TerminalInput />}
-
-          {/*
-            Drop affordance. Purely visual — the drop itself is delivered by the
-            OS to the window, so this cannot be a `dragover` target and must not
-            take pointer events away from the terminal underneath it.
-          */}
-          {dropActive && (
-            <div
-              aria-hidden
-              style={{
-                position: "absolute",
-                inset: 6,
-                zIndex: 5,
-                borderRadius: 8,
-                border: "1.5px dashed var(--accent)",
-                background: "var(--accent-muted)",
+                padding: "4px 8px",
+                borderRadius: 4,
                 display: "flex",
                 alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                fontSize: 12,
+                gap: 4,
+                fontSize: 11,
                 fontWeight: 500,
-                color: "var(--accent)",
-                pointerEvents: "none",
               }}
             >
-              <FileDown size={13} />
-              {t("terminal.dropHint")}
-            </div>
-          )}
+              <LayoutGrid size={12} />
+              {t("terminal.blocks")}
+            </button>
+            <button
+              onClick={() => setViewMode("classic")}
+              aria-label={t("terminal.classicView")}
+              style={{
+                border: "none",
+                background: viewMode === "classic" ? "var(--accent-muted)" : "transparent",
+                color: viewMode === "classic" ? "var(--accent)" : "var(--text-tertiary)",
+                cursor: "pointer",
+                padding: "4px 8px",
+                borderRadius: 4,
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 11,
+                fontWeight: 500,
+              }}
+            >
+              <TerminalIcon size={12} />
+              {t("terminal.classic")}
+            </button>
+          </div>
+        )}
 
-          {menu && (
-            <TerminalContextMenu state={menu} onClose={() => setMenu(null)} />
-          )}
-        </motion.section>
+        <button
+          onClick={() => setTerminalOpen(false)}
+          aria-label={t("terminal.close")}
+          style={{
+            marginLeft: activeUsesNativePty ? "auto" : undefined,
+            border: "none",
+            background: "transparent",
+            color: "var(--text-tertiary)",
+            cursor: "pointer",
+            padding: "3px 6px",
+            borderRadius: 6,
+            display: "flex",
+          }}
+        >
+          <X size={13} />
+        </button>
+      </div>
+
+      <div
+        role="tablist"
+        aria-label={t("terminal.tabs")}
+        style={{
+          display: "flex",
+          alignItems: "stretch",
+          minHeight: 32,
+          padding: "0 10px",
+          borderTop: "1px solid color-mix(in srgb, var(--separator) 65%, transparent)",
+          borderBottom: "1px solid var(--separator)",
+          background: "var(--bg-base)",
+          overflowX: "auto",
+          flexShrink: 0,
+        }}
+      >
+        {tabsState.tabs.map((tab, index) => {
+          const selected = tab.id === tabsState.activeId;
+          const canCloseTab = tab.kind === "ssh" || localTabCount > 1;
+          const label =
+            tab.name ||
+            (tab.kind === "local"
+              ? tab.ordinal === 1
+                ? t("terminal.localTab")
+                : t("terminal.localTabNumber", { number: tab.ordinal })
+              : tab.binding.hostAlias);
+          const title =
+            tab.kind === "ssh"
+              ? `${tab.binding.hostAlias} · ${tab.binding.remoteCwd}`
+              : tab.cwd
+                ? `${label} · ${tab.cwd}`
+                : label;
+          return (
+            <span
+              key={tab.id}
+              style={{
+                position: "relative",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                minWidth: 86,
+                maxWidth: 180,
+                padding: canCloseTab ? "0 5px 0 9px" : "0 9px",
+                borderRight: "1px solid var(--separator)",
+                color: selected ? "var(--text-primary)" : "var(--text-tertiary)",
+                background: selected ? "var(--bg-sunken)" : "transparent",
+                userSelect: "none",
+                flexShrink: 0,
+              }}
+            >
+              <button
+                id={`terminal-tab-${tab.id}`}
+                type="button"
+                role="tab"
+                tabIndex={selected ? 0 : -1}
+                aria-selected={selected}
+                title={title}
+                onClick={() =>
+                  setTabsState((state) => ({ ...state, activeId: tab.id }))
+                }
+                onDoubleClick={() => startRenaming(tab)}
+                onAuxClick={(event) => {
+                  if (event.button === 1 && canCloseTab) closeTab(tab.id);
+                }}
+                onKeyDown={(event) => {
+                  let nextIndex: number | null = null;
+                  if (event.key === "ArrowLeft") {
+                    nextIndex = (index - 1 + tabsState.tabs.length) % tabsState.tabs.length;
+                  } else if (event.key === "ArrowRight") {
+                    nextIndex = (index + 1) % tabsState.tabs.length;
+                  } else if (event.key === "Home") {
+                    nextIndex = 0;
+                  } else if (event.key === "End") {
+                    nextIndex = tabsState.tabs.length - 1;
+                  }
+                  if (nextIndex === null) return;
+                  event.preventDefault();
+                  const nextTab = tabsState.tabs[nextIndex];
+                  setTabsState((state) => ({ ...state, activeId: nextTab.id }));
+                  requestAnimationFrame(() =>
+                    document.getElementById(`terminal-tab-${nextTab.id}`)?.focus()
+                  );
+                }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  minWidth: 0,
+                  flex: 1,
+                  border: "none",
+                  background: "transparent",
+                  color: "inherit",
+                  padding: 0,
+                  cursor: editingTabId === tab.id ? "default" : "pointer",
+                  outline: "none",
+                  opacity: editingTabId === tab.id ? 0 : 1,
+                  pointerEvents: editingTabId === tab.id ? "none" : "auto",
+                }}
+              >
+                {tab.kind === "ssh" ? (
+                  <Server size={12} style={{ flexShrink: 0 }} />
+                ) : (
+                  <TerminalIcon size={12} style={{ flexShrink: 0 }} />
+                )}
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    fontSize: 11.5,
+                  }}
+                >
+                  {label}
+                </span>
+              </button>
+              {editingTabId === tab.id && (
+                <input
+                  autoFocus
+                  value={editingName}
+                  aria-label={t("terminal.renameTab")}
+                  onChange={(event) => setEditingName(event.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") commitRename();
+                    if (event.key === "Escape") setEditingTabId(null);
+                  }}
+                  style={{
+                    position: "absolute",
+                    zIndex: 2,
+                    left: 8,
+                    right: canCloseTab ? 24 : 8,
+                    minWidth: 0,
+                    border: "1px solid var(--accent)",
+                    borderRadius: 3,
+                    background: "var(--bg-base)",
+                    color: "var(--text-primary)",
+                    font: "inherit",
+                    padding: "1px 4px",
+                    outline: "none",
+                  }}
+                />
+              )}
+              {canCloseTab && (
+                <button
+                  type="button"
+                  onClick={() => closeTab(tab.id)}
+                  aria-label={t("terminal.closeTab", { name: label })}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "inherit",
+                    padding: 2,
+                    borderRadius: 4,
+                    display: "flex",
+                    cursor: "pointer",
+                    opacity: selected ? 1 : 0.55,
+                    flexShrink: 0,
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              )}
+              {selected && (
+                <span
+                  aria-hidden
+                  style={{
+                    position: "absolute",
+                    left: 8,
+                    right: 8,
+                    bottom: -1,
+                    height: 2,
+                    borderRadius: 2,
+                    background: "var(--accent)",
+                  }}
+                />
+              )}
+            </span>
+          );
+        })}
+        <button
+          onClick={addTerminal}
+          disabled={!canAdd}
+          aria-label={addTitle}
+          title={addTitle}
+          style={{
+            width: 32,
+            flex: "0 0 32px",
+            border: "none",
+            background: "transparent",
+            color: canAdd ? "var(--text-secondary)" : "var(--text-quaternary)",
+            cursor: canAdd ? "pointer" : "not-allowed",
+            display: "grid",
+            placeItems: "center",
+          }}
+        >
+          <Plus size={13} />
+        </button>
+      </div>
+
+      <div
+        onContextMenu={openMenu}
+        style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
+      >
+        {effectiveViewMode === "blocks" && activeTab?.kind === "local" && <TerminalBlocks />}
+        {tabsState.tabs
+          .filter((tab) => mountedTabIds.has(tab.id))
+          .map((tab) => (
+            <TerminalXtermPane
+              key={tab.id}
+              tab={tab}
+              visible={
+                tab.id === tabsState.activeId &&
+                (tab.kind === "ssh" || effectiveViewMode === "classic")
+              }
+              drawerOpen={terminalOpen}
+              onReady={registerController}
+              onPasteRequest={pasteFromClipboard}
+            />
+          ))}
+      </div>
+
+      {effectiveViewMode === "blocks" && activeTab?.kind === "local" && <TerminalInput />}
+
+      {dropActive && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            inset: 6,
+            zIndex: 5,
+            borderRadius: 8,
+            border: "1.5px dashed var(--accent)",
+            background: "var(--accent-muted)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            fontSize: 12,
+            fontWeight: 500,
+            color: "var(--accent)",
+            pointerEvents: "none",
+          }}
+        >
+          <FileDown size={13} />
+          {t("terminal.dropHint")}
+        </div>
       )}
-    </AnimatePresence>
+
+      {menu && <TerminalContextMenu state={menu} onClose={() => setMenu(null)} />}
+    </motion.section>
   );
 }

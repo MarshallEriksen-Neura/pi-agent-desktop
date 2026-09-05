@@ -90,6 +90,11 @@ export class DesktopRemoteTerminalPort implements RemoteTerminalPort {
           sessionId: options.sessionId,
           generation,
           executionBinding: options.executionBinding,
+          cwd: options.cwd ?? null,
+          localShell:
+            options.executionBinding.kind === "local"
+              ? (options.localShell ?? { kind: "auto" })
+              : null,
           cols: options.cols,
           rows: options.rows,
         }

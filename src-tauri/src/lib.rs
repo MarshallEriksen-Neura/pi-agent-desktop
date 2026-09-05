@@ -17,6 +17,10 @@ mod skills_cli;
 mod updater;
 mod wsl;
 
+#[cfg(all(test, windows))]
+#[link(name = "resource", kind = "static")]
+extern "C" {}
+
 use pi_backend_core::backend_health::{BackendHealthSnapshot, ComponentStatus};
 use pi_backend_core::backend_lifecycle::{ShutdownCoordinator, ShutdownStage};
 use pi_backend_core::pi_process::ProcessPhase;

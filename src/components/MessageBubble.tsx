@@ -10,12 +10,15 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  FileText,
+  Maximize2,
   MoreVertical,
   RotateCcw,
   TriangleAlert,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useT } from "@/lib/i18n";
+import { isLongText, longTextPreview, longTextStats } from "@/lib/long-text";
 import { useMessageActions } from "@/lib/pi/message-actions";
 import { useSessions } from "@/lib/pi/sessions";
 import {
@@ -39,6 +42,7 @@ import { openExternal, openHtmlFile } from "@/lib/open-external";
 import { ActivityLine } from "./ActivityLine";
 import { DiffStatBadge } from "./DiffStatBadge";
 import { ImageLightbox } from "./ImageLightbox";
+import { LongTextModal } from "./LongTextModal";
 import { useChat, type ChatMessage } from "@/lib/pi/chat";
 
 // Lazy: keeps streamdown + shiki out of the route's First Load JS.
@@ -116,6 +120,9 @@ export function hasRenderableContent(m: ChatMessage): boolean {
 export function MessageBubble({ m, animateIn = true, tight = false }: MessageBubbleProps) {
   const t = useT();
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [longTextOpen, setLongTextOpen] = useState(false);
+  const userLongText = m.role === "user" && hasText(m) && isLongText(m.text);
+  const userLongTextStats = userLongText ? longTextStats(m.text) : null;
   const [showCopy, showCopyOn, hideCopySoon, keepCopy] = useHoverReveal();
 
   if (m.role === "user") {
@@ -190,22 +197,106 @@ export function MessageBubble({ m, animateIn = true, tight = false }: MessageBub
         )}
         {hasText(m) && (
           <>
-            <div
-              style={{
-                maxWidth: "85%",
-                padding: "8px 13px",
-                borderRadius: 16,
-                borderBottomRightRadius: 5,
-                background: "var(--accent)",
-                color: "var(--text-on-accent)",
-                fontSize: 13,
-                lineHeight: 1.5,
-                whiteSpace: "pre-wrap",
-                overflowWrap: "anywhere",
-              }}
-            >
-              {m.text}
-            </div>
+            {userLongText ? (
+              <button
+                type="button"
+                onClick={() => setLongTextOpen(true)}
+                aria-label={t("longText.openViewer")}
+                title={t("longText.openViewer")}
+                style={{
+                  width: "min(92%, 520px)",
+                  display: "grid",
+                  gridTemplateColumns: "34px minmax(0, 1fr) 24px",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "10px 11px",
+                  border: "1px solid var(--separator)",
+                  borderLeft: "3px solid var(--accent)",
+                  borderRadius: 14,
+                  borderBottomRightRadius: 5,
+                  background: "var(--bg-elevated)",
+                  color: "var(--text-primary)",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 34,
+                    height: 34,
+                    display: "grid",
+                    placeItems: "center",
+                    borderRadius: 9,
+                    background: "var(--accent-muted)",
+                    color: "var(--accent)",
+                  }}
+                >
+                  <FileText size={16} />
+                </span>
+                <span style={{ minWidth: 0, display: "grid", gap: 3 }}>
+                  <span
+                    style={{
+                      display: "flex",
+                      alignItems: "baseline",
+                      gap: 8,
+                      minWidth: 0,
+                    }}
+                  >
+                    <span style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>
+                      {t("longText.viewTitle")}
+                    </span>
+                    <span
+                      style={{
+                        minWidth: 0,
+                        overflow: "hidden",
+                        color: "var(--text-tertiary)",
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 10,
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {t("longText.stats", {
+                        characters: String(userLongTextStats?.characters ?? 0),
+                        lines: String(userLongTextStats?.lines ?? 0),
+                      })}
+                    </span>
+                  </span>
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      color: "var(--text-secondary)",
+                      fontSize: 11.5,
+                      lineHeight: 1.35,
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {longTextPreview(m.text)}
+                  </span>
+                </span>
+                <Maximize2 size={14} style={{ color: "var(--text-tertiary)" }} />
+              </button>
+            ) : (
+              <div
+                style={{
+                  maxWidth: "85%",
+                  padding: "8px 13px",
+                  borderRadius: 16,
+                  borderBottomRightRadius: 5,
+                  background: "var(--accent)",
+                  color: "var(--text-on-accent)",
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                }}
+              >
+                {m.text}
+              </div>
+            )}
             <BubbleCopyButton
               text={m.text}
               visible={showCopy}
@@ -217,6 +308,12 @@ export function MessageBubble({ m, animateIn = true, tight = false }: MessageBub
         )}
         </motion.div>
         <ImageLightbox src={previewSrc} onClose={() => setPreviewSrc(null)} />
+        <LongTextModal
+          open={longTextOpen}
+          value={m.text}
+          mode="view"
+          onClose={() => setLongTextOpen(false)}
+        />
       </>
     );
   }

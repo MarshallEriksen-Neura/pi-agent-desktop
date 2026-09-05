@@ -329,3 +329,67 @@ test("addModel on a credential-only provider keeps its key and starts a models l
   assert.equal("baseUrl" in written!, false, "and no empty baseUrl is introduced");
   reset();
 });
+
+test("removeModel tolerates a malformed non-array models field", async () => {
+  reset();
+  const disk = stubBackend({ stored: [], upstream: [] });
+  await usePiModels.getState().load();
+  usePiModels.setState({
+    data: {
+      providers: {
+        broken: { models: "not-an-array" } as unknown as CustomProvider,
+      },
+    },
+  });
+
+  await usePiModels.getState().removeModel("broken", "anything");
+
+  assert.equal("broken" in disk.models().providers, false);
+  reset();
+});
+
+test("model capability overrides preserve string/null semantics and prune empty entries", async () => {
+  reset();
+  const disk = stubBackend({ stored: ["gpt-4o"], upstream: [] });
+  await usePiModels.getState().load();
+
+  await usePiModels.getState().updateModelCapabilities("openai", "gpt-5", {
+    reasoning: true,
+    thinkingLevelMap: { high: "high", xhigh: null },
+  });
+
+  const written = disk.models().providers.openai;
+  assert.deepEqual(written?.modelOverrides?.["gpt-5"], {
+    reasoning: true,
+    thinkingLevelMap: { high: "high", xhigh: null },
+  });
+  assert.equal("models" in written!, false, "a built-in override does not invent a models list");
+
+  await usePiModels.getState().updateModelCapabilities("openai", "gpt-5", {
+    reasoning: undefined,
+    thinkingLevelMap: undefined,
+  });
+
+  assert.equal("openai" in disk.models().providers, false, "clearing the last override prunes its provider");
+  assert.deepEqual(storedModelIds(disk.models(), PROVIDER), ["gpt-4o"]);
+  reset();
+});
+
+test("capability edits for a local model stay on the model definition", async () => {
+  reset();
+  const disk = stubBackend({ stored: ["gpt-4o"], upstream: [] });
+  await usePiModels.getState().load();
+
+  await usePiModels.getState().updateModelCapabilities(PROVIDER, "gpt-4o", {
+    reasoning: false,
+    thinkingLevelMap: { minimal: null, low: "low-budget" },
+  });
+
+  const provider = disk.models().providers[PROVIDER];
+  const model = providerModels(provider)[0];
+  assert.equal(model.reasoning, false);
+  assert.deepEqual(model.thinkingLevelMap, { minimal: null, low: "low-budget" });
+  assert.equal(provider?.modelOverrides, undefined, "local definitions do not create duplicate overrides");
+  assert.equal(provider?.apiKey, "sk-stub", "unrelated provider fields survive");
+  reset();
+});

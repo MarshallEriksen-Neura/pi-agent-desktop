@@ -94,6 +94,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     useUI.getState().initInspectorPanelWidth();
     // restore the dragged height of the terminal drawer
     useUI.getState().initTerminalHeight();
+    // restore the shell profile used by newly launched native local terminals
+    useUI.getState().initTerminalShellProfile();
     // restore user-customized appearance (colors, background, text scale)
     useAppearance.getState().init();
     try {

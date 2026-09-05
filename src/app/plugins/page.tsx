@@ -21,7 +21,8 @@ import { usePackageManager } from "@/lib/pi/package-manager";
 import { usePiManagement } from "@/lib/pi/management";
 import { useWorkspace } from "@/lib/workspace";
 import { useT } from "@/lib/i18n";
-import { SettingsPage, Segmented } from "@/components/settings-ui";
+import { Skeleton } from "@appica/ui-react/skeleton";
+import { GroupRow, InsetGroup, SettingsPage, Segmented } from "@/components/settings-ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InstalledPanel } from "@/components/plugins/InstalledPanel";
 import { DiscoverPanel } from "@/components/plugins/DiscoverPanel";
@@ -73,16 +74,45 @@ export default function PluginsPage() {
   const canReadRemote = management.availability?.capabilities.includes("pi-packages-read-v1") ?? false;
   const canMutate = !remote ||
     (management.availability?.capabilities.includes("pi-packages-mutate-v1") ?? false);
-  if (remote && (!management.loaded || !canReadRemote)) {
-    const detail = !management.loaded
-      ? t("common.loading")
-      : management.error ?? t("remoteManagement.unavailableDetail");
+  if (remote && !management.loaded) {
+    return (
+      <SettingsPage title={t("plugins.title")}>
+        <div role="status" aria-label={t("common.loading")} aria-busy="true">
+          <Skeleton
+            style={{ width: "42%", height: 13, borderRadius: 7, margin: "0 0 20px" }}
+          />
+          <Skeleton style={{ width: "100%", height: 32, borderRadius: 9 }} />
+          <InsetGroup
+            header={<Skeleton style={{ width: 92, height: 12, borderRadius: 6 }} />}
+            footer={<Skeleton style={{ width: "68%", height: 12, borderRadius: 6 }} />}
+          >
+            {[0, 1, 2].map((i) => (
+              <GroupRow
+                key={i}
+                first={i === 0}
+                title={<Skeleton style={{ width: `${44 - i * 4}%`, height: 14 }} />}
+                detail={<Skeleton style={{ width: `${72 - i * 5}%`, height: 12 }} />}
+                trailing={<Skeleton style={{ width: 54, height: 28, borderRadius: 8 }} />}
+              />
+            ))}
+          </InsetGroup>
+        </div>
+      </SettingsPage>
+    );
+  }
+
+  if (remote && !canReadRemote) {
     return (
       <SettingsPage
         title={t("plugins.title")}
         subtitle={t("remoteManagement.unavailableSubtitle")}
       >
-        <StatusBanner status={{ ok: false, text: detail }} />
+        <StatusBanner
+          status={{
+            ok: false,
+            text: management.error ?? t("remoteManagement.unavailableDetail"),
+          }}
+        />
       </SettingsPage>
     );
   }

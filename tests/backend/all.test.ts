@@ -24,6 +24,7 @@ import "./workspace-target.test";
 // remote-exit-recovery and workspace-retarget run from isolated.test.ts — see
 // the note there.
 import "./project-switch.test";
+import "./remote-project-switch.test";
 import "./session-delete.test";
 import "./session-lifecycle.test";
 import "./session-pin.test";
@@ -35,8 +36,10 @@ import "./package-versions.test";
 import "./model-scope.test";
 import "./model-sync.test";
 import "./provider-entries.test";
+import "./thinking-capabilities.test";
 import "./composer-shortcut.test";
 import "./file-match.test";
+import "./long-text.test";
 import "./git-head.test";
 import "./git-branch.test";
 import "./shortcuts.test";
@@ -50,4 +53,6 @@ import "./turn.test";
 import "./html-preview.test";
 import "./terminal-paste.test";
 import "./terminal-drop.test";
+import "./terminal-tabs.test";
+import "./terminal-shell-profile.test";
 import "./management-load.test";

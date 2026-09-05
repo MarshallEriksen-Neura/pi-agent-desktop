@@ -13,6 +13,13 @@ import {
   type ShortcutOverrides,
 } from "./shortcuts";
 
+import {
+  AUTO_TERMINAL_SHELL_PROFILE,
+  loadTerminalShellProfile,
+  parseTerminalShellProfile,
+  persistTerminalShellProfile,
+  type LocalTerminalShellProfile,
+} from "./terminal-shell-profile";
 export type Theme = "light" | "dark";
 export type TaskStatus = "done" | "running" | "queued" | "error";
 
@@ -186,6 +193,10 @@ interface UIState {
   terminalOpen: boolean;
   /** user-dragged height of the terminal drawer (px) */
   terminalHeight: number;
+  /** App-local preference for newly launched native local PTYs. */
+  terminalShellProfile: LocalTerminalShellProfile;
+  /** True after the persisted terminal shell preference has been restored on the client. */
+  terminalShellProfileReady: boolean;
   terminalResizing: boolean;
   activeFile: string;
 
@@ -255,6 +266,9 @@ interface UIState {
   setTerminalResizing: (resizing: boolean) => void;
   resetTerminalHeight: () => void;
   initTerminalHeight: () => void;
+  setTerminalShellProfile: (profile: LocalTerminalShellProfile) => void;
+  /** Restore the shell preference; corrupt or obsolete values resolve to Auto. */
+  initTerminalShellProfile: () => void;
   setCommandPalette: (open: boolean) => void;
   setActiveFile: (file: string) => void;
 
@@ -324,6 +338,8 @@ export const useUI = create<UIState>((set) => ({
 
   terminalOpen: false,
   terminalHeight: TERMINAL_HEIGHT_DEFAULT,
+  terminalShellProfile: AUTO_TERMINAL_SHELL_PROFILE,
+  terminalShellProfileReady: false,
   terminalResizing: false,
   agentRunning: false,
   demoTick: 0,
@@ -595,6 +611,34 @@ export const useUI = create<UIState>((set) => ({
       const px = saved === null ? NaN : Number(saved);
       if (!Number.isFinite(px)) return {};
       return { terminalHeight: clampTerminalHeight(px) };
+    }),
+
+  setTerminalShellProfile: (profile) =>
+    set(() => {
+      const normalized = parseTerminalShellProfile(profile);
+      try {
+        return {
+          terminalShellProfile: persistTerminalShellProfile(localStorage, normalized),
+          terminalShellProfileReady: true,
+        };
+      } catch {
+        // storage unavailable — keep the preference in memory for this session
+        return { terminalShellProfile: normalized, terminalShellProfileReady: true };
+      }
+    }),
+  initTerminalShellProfile: () =>
+    set(() => {
+      try {
+        return {
+          terminalShellProfile: loadTerminalShellProfile(localStorage),
+          terminalShellProfileReady: true,
+        };
+      } catch {
+        return {
+          terminalShellProfile: AUTO_TERMINAL_SHELL_PROFILE,
+          terminalShellProfileReady: true,
+        };
+      }
     }),
 
   beginAgentRun: () => set((s) => (s.agentRunning ? {} : { agentRunning: true })),

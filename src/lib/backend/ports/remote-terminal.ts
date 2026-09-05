@@ -1,8 +1,13 @@
 import type { ExecutionBinding } from "./execution-target";
+import type { LocalTerminalShellProfile } from "../../terminal-shell-profile";
 
 export interface RemoteTerminalStartOptions {
   sessionId: string;
   executionBinding: ExecutionBinding;
+  /** Local-only working-directory snapshot. Omitted for SSH bindings. */
+  cwd?: string | null;
+  /** Local-only shell selection snapshot. Ignored for SSH bindings. */
+  localShell?: LocalTerminalShellProfile | null;
   cols: number;
   rows: number;
 }
@@ -10,6 +15,8 @@ export interface RemoteTerminalStartOptions {
 export interface RemoteTerminalStartResult {
   sessionId: string;
   targetId: string;
+  /** True when a custom local executable was rejected or failed and Auto was used. */
+  shellFallback: boolean;
 }
 
 export interface RemoteTerminalData {

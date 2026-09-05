@@ -68,7 +68,11 @@ test("own definitions win over pi's catalog, and only they are editable", () => 
     buildProviderEntries(custom, groupPiModels(PI_MODELS), ""),
     "anthropic"
   );
-  assert.deepEqual(anthropic.allModels.map((m) => m.id), ["claude-opus-5"]);
+  assert.deepEqual(
+    anthropic.allModels.map((m) => m.id),
+    ["claude-opus-5", "claude-sonnet-5"],
+    "the live merged catalog stays visible while local definitions overlay matching ids"
+  );
   assert.equal(anthropic.allModels[0]?.name, "Opus (tuned)", "the local definition is shown");
   assert.deepEqual([...anthropic.localIds], ["claude-opus-5"], "and it is editable");
 });
@@ -80,6 +84,7 @@ test("a modelOverrides-only entry is treated the same way", () => {
   const openai = entryFor(buildProviderEntries(custom, groupPiModels(PI_MODELS), ""), "openai");
   assert.deepEqual(openai.allModels.map((m) => m.id), ["gpt-5"]);
   assert.equal(openai.localIds.size, 0);
+  assert.equal(openai.builtin, true, "an override-only entry keeps built-in provider actions hidden");
 });
 
 test("a hand-written non-array `models` degrades to empty rather than throwing", () => {

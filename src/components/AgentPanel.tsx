@@ -27,6 +27,7 @@ import { useRemoteConversations } from "@/lib/remote-conversations/store";
 import { useSubagents } from "@/lib/pi/subagents";
 import { useExtUi } from "@/lib/pi/ext-ui";
 import { useT } from "@/lib/i18n";
+import { composeLongTextPrompt, isLongText } from "@/lib/long-text";
 import {
   filterSlashCommands,
   runBuiltinCommand,
@@ -93,6 +94,7 @@ function LocalAgentPanel({ width }: { width?: number }) {
   const piStatus = usePi((s) => s.status);
   const piCommands = usePi((s) => s.commands);
   const [draft, setDraft] = useState("");
+  const [longTextDraft, setLongTextDraft] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<string[]>([]);
   const [isAtTop, setIsAtTop] = useState(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -172,31 +174,47 @@ function LocalAgentPanel({ width }: { width?: number }) {
   const extEditorText = useExtUi((s) => s.editorText);
   useEffect(() => {
     if (extEditorText === null) return;
-    setDraft(extEditorText);
+    if (isLongText(extEditorText)) {
+      setLongTextDraft(extEditorText);
+      setDraft("");
+    } else {
+      setLongTextDraft(null);
+      setDraft(extEditorText);
+    }
     useExtUi.getState().clearEditorText();
   }, [extEditorText]);
 
-  /** clipboard paste — lift image blobs into data-URL attachments */
+  /** Lift images into attachments and large plain-text pastes into a document chip. */
   const onComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const files: File[] = [];
     for (const item of e.clipboardData.items) {
       if (item.kind === "file" && item.type.startsWith("image/")) {
-        const f = item.getAsFile();
-        if (f) files.push(f);
+        const file = item.getAsFile();
+        if (file) files.push(file);
       }
     }
-    if (files.length === 0) return; // plain text paste — default behavior
-    e.preventDefault();
-    for (const f of files) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          const url = reader.result;
-          setAttachments((prev) => [...prev, url]);
-        }
-      };
-      reader.readAsDataURL(f);
+
+    if (files.length > 0) {
+      e.preventDefault();
+      for (const file of files) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === "string") {
+            setAttachments((prev) => [...prev, reader.result as string]);
+          }
+        };
+        reader.readAsDataURL(file);
+      }
+      return;
     }
+
+    const pastedText = e.clipboardData.getData("text/plain");
+    if (!isLongText(pastedText)) return;
+
+    e.preventDefault();
+    setLongTextDraft((current) =>
+      current ? `${current}\n\n${pastedText}` : pastedText
+    );
   };
 
   /* slash-command menu — open while the draft is "/<partial-name>" */
@@ -257,10 +275,11 @@ function LocalAgentPanel({ width }: { width?: number }) {
      them locally when `streaming` flipped false is what used to double-send. */
 
   const submit = (alt = false) => {
-    const text = draft.trim();
+    const text = composeLongTextPrompt(longTextDraft, draft);
     const images = attachments;
     if (!text && images.length === 0) return;
     setDraft("");
+    setLongTextDraft(null);
     setAttachments([]);
     if (text.toLowerCase() === "demo") {
       if (!agentRunning) startDemo(); // local streaming-edit showcase
@@ -639,6 +658,8 @@ function LocalAgentPanel({ width }: { width?: number }) {
             setDraft(value);
             setSlashDismissed(false); // typing re-opens an escaped menu
           }}
+          longTextDraft={longTextDraft}
+          setLongTextDraft={setLongTextDraft}
           attachments={attachments}
           setAttachments={setAttachments}
           streaming={streaming}

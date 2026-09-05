@@ -27,11 +27,13 @@ import { ProviderMeta, PROVIDER_META } from "@/components/provider-meta";
 import { ModelIcon } from "@/components/icons";
 import { resolveModelMetaOrFallback } from "@/lib/model-icon";
 import { useT } from "@/lib/i18n";
-import { usePi } from "@/lib/pi/store";
+import { THINKING_LEVELS, usePi } from "@/lib/pi/store";
 import { type SettingsScope, usePiSettings } from "@/lib/pi/settings";
 import {
   API_TYPES,
   type CustomModelDef,
+  type ThinkingLevelMap,
+  type ModelCapabilityOverride,
   type CustomProvider,
   providerModels,
   usePiModels,
@@ -117,6 +119,11 @@ export default function ModelsPage() {
   const [editingModel, setEditingModel] = useState<
     { providerId: string; model: CustomModelDef } | null
   >(null);
+  const [editingCapabilities, setEditingCapabilities] = useState<{
+    providerId: string;
+    model: CustomModelDef;
+    local: boolean;
+  } | null>(null);
   const [fetchingProviderId, setFetchingProviderId] = useState<string | null>(null);
   const [fetchResult, setFetchResult] = useState<FetchDiff | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -776,6 +783,23 @@ export default function ModelsPage() {
                                         {model.id}
                                       </p>
                                     </div>
+                                    <button
+                                      onClick={() =>
+                                        setEditingCapabilities({
+                                          providerId,
+                                          model,
+                                          local: editable,
+                                        })
+                                      }
+                                      aria-label={t("models.editCapabilitiesFor", {
+                                        model: model.name || model.id,
+                                      })}
+                                      title={t("models.editCapabilities")}
+                                      className="opacity-60 transition-opacity hover:opacity-100"
+                                      style={{ color: "var(--muted-foreground)" }}
+                                    >
+                                      <Settings2 size={13} />
+                                    </button>
                                     {editable && (
                                       <button
                                         onClick={() =>
@@ -913,6 +937,32 @@ export default function ModelsPage() {
               modelId: editingModel.model.id,
             })
           }
+        />
+      )}
+      {editingCapabilities && (
+        <CapabilityDialog
+          open
+          providerId={editingCapabilities.providerId}
+          modelId={editingCapabilities.model.id}
+          modelName={editingCapabilities.model.name}
+          capabilities={
+            editingCapabilities.local
+              ? providerModels(customProviders[editingCapabilities.providerId]).find(
+                  (model) => model.id === editingCapabilities.model.id
+                )
+              : customProviders[editingCapabilities.providerId]?.modelOverrides?.[
+                  editingCapabilities.model.id
+                ]
+          }
+          onClose={() => setEditingCapabilities(null)}
+          onSave={async (capabilities) => {
+            await piModelsStore.updateModelCapabilities(
+              editingCapabilities.providerId,
+              editingCapabilities.model.id,
+              capabilities
+            );
+            setEditingCapabilities(null);
+          }}
         />
       )}
       {fetchResult && (
@@ -1251,6 +1301,16 @@ function ProviderDialog({
   );
 }
 
+function normalizeThinkingLevelMap(map: ThinkingLevelMap): ThinkingLevelMap | undefined {
+  const normalized: ThinkingLevelMap = {};
+  for (const level of THINKING_LEVELS) {
+    const value = map[level];
+    if (value === null) normalized[level] = null;
+    else if (typeof value === "string" && value.trim()) normalized[level] = value.trim();
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function ModelDialog({
   open,
   providerId,
@@ -1270,7 +1330,12 @@ function ModelDialog({
   const [name, setName] = useState(model?.name ?? "");
   const [contextWindow, setContextWindow] = useState(model?.contextWindow?.toString() ?? "");
   const [maxTokens, setMaxTokens] = useState(model?.maxTokens?.toString() ?? "");
-  const [reasoning, setReasoning] = useState(model?.reasoning ?? false);
+  const [reasoning, setReasoning] = useState<boolean | undefined>(
+    model ? model.reasoning : false
+  );
+  const [thinkingLevelMap, setThinkingLevelMap] = useState<ThinkingLevelMap>({
+    ...(model?.thinkingLevelMap ?? {}),
+  });
 
   useEffect(() => {
     if (open) {
@@ -1278,18 +1343,23 @@ function ModelDialog({
       setName(model?.name ?? "");
       setContextWindow(model?.contextWindow?.toString() ?? "");
       setMaxTokens(model?.maxTokens?.toString() ?? "");
-      setReasoning(model?.reasoning ?? false);
+      setReasoning(model ? model.reasoning : false);
+      setThinkingLevelMap({ ...(model?.thinkingLevelMap ?? {}) });
     }
   }, [open, model]);
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
+    const normalizedThinkingLevelMap = normalizeThinkingLevelMap(thinkingLevelMap);
+
     onSave({
+      ...model,
       id: id.trim(),
       name: name.trim() || undefined,
       contextWindow: contextWindow ? Number(contextWindow) : undefined,
       maxTokens: maxTokens ? Number(maxTokens) : undefined,
       reasoning,
+      thinkingLevelMap: normalizedThinkingLevelMap,
     });
   };
 
@@ -1297,6 +1367,7 @@ function ModelDialog({
     <Dialog
       open={open}
       title={isEdit ? t("models.editModel") : t("models.addModel")}
+      maxWidth={620}
       onClose={onClose}
       actions={
         <>
@@ -1349,17 +1420,203 @@ function ModelDialog({
             />
           </Field>
         </div>
-        <label className="flex items-center gap-2 text-sm" style={{ color: "var(--foreground)" }}>
-          <input
-            type="checkbox"
-            checked={reasoning}
-            onChange={(e) => setReasoning(e.target.checked)}
-            className="h-4 w-4 rounded border"
-            style={{ accentColor: "var(--ink-accent)" }}
-          />
-          {t("models.reasoningToggle")}
-        </label>
+        <ThinkingCapabilitiesEditor
+          reasoning={reasoning}
+          thinkingLevelMap={thinkingLevelMap}
+          onReasoningChange={setReasoning}
+          onThinkingLevelMapChange={setThinkingLevelMap}
+        />
       </form>
+    </Dialog>
+  );
+}
+
+function ThinkingCapabilitiesEditor({
+  reasoning,
+  thinkingLevelMap,
+  onReasoningChange,
+  onThinkingLevelMapChange,
+}: {
+  reasoning: boolean | undefined;
+  thinkingLevelMap: ThinkingLevelMap;
+  onReasoningChange: (value: boolean | undefined) => void;
+  onThinkingLevelMapChange: (value: ThinkingLevelMap) => void;
+}) {
+  const t = useT();
+  const reasoningMode = reasoning === undefined ? "inherit" : reasoning ? "enabled" : "disabled";
+  const mapDisabled = reasoning === false;
+
+  const setThinkingMode = (
+    level: (typeof THINKING_LEVELS)[number],
+    mode: "default" | "custom" | "unsupported"
+  ) => {
+    const next = { ...thinkingLevelMap };
+    if (mode === "default") delete next[level];
+    else if (mode === "unsupported") next[level] = null;
+    else next[level] = typeof thinkingLevelMap[level] === "string" ? thinkingLevelMap[level] : "";
+    onThinkingLevelMapChange(next);
+  };
+
+  return (
+    <div className="space-y-3 border-t pt-3" style={{ borderColor: "var(--ink-border)" }}>
+      <Field label={t("models.reasoningMode")}>
+        <select
+          value={reasoningMode}
+          onChange={(event) => {
+            const value = event.target.value;
+            onReasoningChange(value === "inherit" ? undefined : value === "enabled");
+          }}
+          className="pi-native-select w-full rounded-xl border px-3 py-2 text-sm outline-none"
+          style={{ borderColor: "var(--ink-border)" }}
+        >
+          <option value="inherit">{t("models.reasoningInherit")}</option>
+          <option value="enabled">{t("models.reasoningEnabled")}</option>
+          <option value="disabled">{t("models.reasoningDisabled")}</option>
+        </select>
+      </Field>
+      <div
+        className="space-y-2"
+        style={{ opacity: mapDisabled ? 0.55 : 1 }}
+      >
+        <div>
+          <p className="text-sm font-medium" style={{ color: "var(--foreground)" }}>
+            {t("models.thinkingOverrides")}
+          </p>
+          <p className="mt-0.5 text-xs" style={{ color: "var(--muted-foreground)" }}>
+            {t("models.thinkingOverridesHint")}
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          {THINKING_LEVELS.map((level) => {
+            const value = thinkingLevelMap[level];
+            const mode =
+              value === undefined ? "default" : value === null ? "unsupported" : "custom";
+            return (
+              <div
+                key={level}
+                className="flex flex-wrap items-center gap-2 rounded-xl border px-2.5 py-2"
+                style={{ borderColor: "var(--ink-border)", background: "var(--input-bg)" }}
+              >
+                <span
+                  className="w-16 shrink-0 text-xs font-medium"
+                  style={{ color: "var(--foreground)" }}
+                >
+                  {t(`thinking.level.${level}`)}
+                </span>
+                <select
+                  value={mode}
+                  disabled={mapDisabled}
+                  onChange={(event) =>
+                    setThinkingMode(
+                      level,
+                      event.target.value as "default" | "custom" | "unsupported"
+                    )
+                  }
+                  aria-label={t("models.thinkingOverrideMode", {
+                    level: t(`thinking.level.${level}`),
+                  })}
+                  className="pi-native-select w-32 rounded-lg border px-2 py-1.5 text-xs outline-none disabled:cursor-not-allowed"
+                  style={{ borderColor: "var(--ink-border)" }}
+                >
+                  <option value="default">{t("models.thinkingModeDefault")}</option>
+                  <option value="custom">{t("models.thinkingModeCustom")}</option>
+                  <option value="unsupported">{t("models.thinkingModeUnsupported")}</option>
+                </select>
+                {mode === "custom" && (
+                  <input
+                    value={typeof value === "string" ? value : ""}
+                    disabled={mapDisabled}
+                    onChange={(event) =>
+                      onThinkingLevelMapChange({
+                        ...thinkingLevelMap,
+                        [level]: event.target.value,
+                      })
+                    }
+                    aria-label={t("models.thinkingOverrideValue", {
+                      level: t(`thinking.level.${level}`),
+                    })}
+                    placeholder={t("models.thinkingValuePlaceholder")}
+                    className="min-w-40 flex-1 rounded-lg border bg-transparent px-2.5 py-1.5 text-xs outline-none focus:border-[var(--ink-accent)] disabled:cursor-not-allowed"
+                    style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CapabilityDialog({
+  open,
+  providerId,
+  modelId,
+  modelName,
+  capabilities,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  providerId: string;
+  modelId: string;
+  modelName?: string;
+  capabilities?: Pick<ModelCapabilityOverride, "reasoning" | "thinkingLevelMap">;
+  onClose: () => void;
+  onSave: (capabilities: Pick<ModelCapabilityOverride, "reasoning" | "thinkingLevelMap">) => void;
+}) {
+  const t = useT();
+  const [reasoning, setReasoning] = useState<boolean | undefined>(capabilities?.reasoning);
+  const [thinkingLevelMap, setThinkingLevelMap] = useState<ThinkingLevelMap>({
+    ...(capabilities?.thinkingLevelMap ?? {}),
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    setReasoning(capabilities?.reasoning);
+    setThinkingLevelMap({ ...(capabilities?.thinkingLevelMap ?? {}) });
+  }, [open, capabilities]);
+
+  return (
+    <Dialog
+      open={open}
+      title={t("models.editCapabilities")}
+      maxWidth={620}
+      onClose={onClose}
+      actions={
+        <>
+          <GroupButton onClick={onClose}>{t("models.cancel")}</GroupButton>
+          <GroupButton
+            primary
+            onClick={() =>
+              onSave({
+                reasoning,
+                thinkingLevelMap: normalizeThinkingLevelMap(thinkingLevelMap),
+              })
+            }
+          >
+            {t("models.editConfirm")}
+          </GroupButton>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div className="rounded-xl border px-3 py-2" style={{ borderColor: "var(--ink-border)" }}>
+          <p className="text-sm font-medium" style={{ color: "var(--foreground)" }}>
+            {modelName || modelId}
+          </p>
+          <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+            {providerId} / {modelId}
+          </p>
+        </div>
+        <ThinkingCapabilitiesEditor
+          reasoning={reasoning}
+          thinkingLevelMap={thinkingLevelMap}
+          onReasoningChange={setReasoning}
+          onThinkingLevelMapChange={setThinkingLevelMap}
+        />
+      </div>
     </Dialog>
   );
 }
@@ -1673,6 +1930,7 @@ function Dialog({
             exit={{ opacity: 0, scale: 0.96, y: 10 }}
             transition={spring}
             onClick={(e) => e.stopPropagation()}
+            className="flex flex-col"
             style={{
               width: "100%",
               maxWidth,
@@ -1702,7 +1960,7 @@ function Dialog({
                 <X size={18} />
               </button>
             </div>
-            <div className="p-5">{children}</div>
+            <div className="min-h-0 overflow-y-auto p-5">{children}</div>
             {actions && (
               <div
                 className="flex justify-end gap-2 border-t px-5 py-4"

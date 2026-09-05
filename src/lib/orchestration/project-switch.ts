@@ -1,5 +1,7 @@
 import type { ProjectCatalogPort, WorkspaceFsPort } from "../backend/ports";
-import type { FsEntry } from "../workspace";
+import type { ExecutionBinding } from "../backend/ports/execution-target";
+import type { WorkspaceTargetId } from "../workspace-target";
+import type { FsEntry, RecentProject } from "../workspace";
 import { useSessions, flushActiveSession, peekLatestSessionPath } from "../pi/sessions";
 import { disposeAllPiClients } from "../pi/client";
 
@@ -75,4 +77,72 @@ async function restorePreviousProject(
   if (!root) return;
   const restored = await services.restartPi(root, resumePath || undefined);
   if (restored) await services.switchSessionProject(root);
+}
+
+type SshExecutionBinding = Extract<ExecutionBinding, { kind: "ssh" }>;
+
+export interface RemoteProjectSwitchInput {
+  path: string;
+  currentRoot: string | null;
+  targetId: WorkspaceTargetId;
+  executionBinding: SshExecutionBinding;
+  projectCatalog: ProjectCatalogPort;
+  workspaceFs: WorkspaceFsPort;
+  setActiveFile: (path: string) => void;
+  applyProjectRoot: (root: string, topEntries: FsEntry[]) => void;
+  applyRecentProjects: (projects: RecentProject[]) => void;
+}
+
+export interface RemoteProjectSwitchServices {
+  switchExecutionTarget(binding: ExecutionBinding): Promise<void>;
+}
+
+const defaultRemoteServices: RemoteProjectSwitchServices = {
+  switchExecutionTarget: (binding) =>
+    useSessions.getState().switchExecutionTarget(binding, ""),
+};
+
+/**
+ * A detached task belongs to one remote cwd. Carrying its id into another
+ * workspace would reattach the old process instead of starting in the new root.
+ */
+export function bindingForRemoteProject(
+  binding: SshExecutionBinding,
+  remoteCwd: string
+): SshExecutionBinding {
+  if (binding.remoteCwd === remoteCwd) return binding;
+  return {
+    ...binding,
+    remoteCwd,
+    remoteTaskId: null,
+    remoteTaskPending: false,
+  };
+}
+
+/**
+ * Switch the remote session/process scope before committing the visible tree.
+ * If either the session switch or durable recent-project write fails, restore
+ * the previous binding so the agent and workspace cannot silently diverge.
+ */
+export async function switchRemoteWorkspaceProject(
+  input: RemoteProjectSwitchInput,
+  services: RemoteProjectSwitchServices = defaultRemoteServices
+): Promise<void> {
+  const nextBinding = bindingForRemoteProject(input.executionBinding, input.path);
+  const scopeChanged = nextBinding !== input.executionBinding;
+  if (!scopeChanged && input.path === input.currentRoot) return;
+
+  const top = await input.workspaceFs.listDir(input.path);
+  let recentProjects: RecentProject[];
+  try {
+    if (scopeChanged) await services.switchExecutionTarget(nextBinding);
+    recentProjects = await input.projectCatalog.commitRemote(input.path, input.targetId);
+  } catch (error) {
+    if (scopeChanged) await services.switchExecutionTarget(input.executionBinding);
+    throw error;
+  }
+
+  input.applyProjectRoot(input.path, top);
+  input.setActiveFile("");
+  input.applyRecentProjects(recentProjects);
 }

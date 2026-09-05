@@ -37,7 +37,7 @@ import { APP_VERSION } from "@/lib/update";
 import { usePiSettings, type SettingsScope, type PiSettings } from "@/lib/pi/settings";
 import { usePi, THINKING_LEVELS, clearRememberedThinking } from "@/lib/pi/store";
 import { useSessions } from "@/lib/pi/sessions";
-import { getPort } from "@/lib/backend/composition/container";
+import { getBackendKind, getPort } from "@/lib/backend/composition/container";
 import { useWorkspace } from "@/lib/workspace";
 import { useI18n, useT } from "@/lib/i18n";
 import type { ThinkingLevel } from "@/lib/pi/protocol";
@@ -222,11 +222,17 @@ export default function PiSettingsPage() {
     setCloseBehavior,
     layoutMode,
     setLayoutMode,
+    terminalShellProfile,
+    setTerminalShellProfile,
   } = useUI();
   const editorRemoved = layoutMode === "work-only";
   const [notifPermission, setNotifPermission] =
     useState<NotificationPermissionState>("default");
   const [category, setCategory] = useState<SettingsCategory>("general");
+  const [terminalShellMode, setTerminalShellMode] = useState<"auto" | "custom">(
+    terminalShellProfile.kind
+  );
+  const [desktopRuntime, setDesktopRuntime] = useState(false);
   const remoteMode = useSessions((state) => state.executionBinding.kind === "ssh");
 
   const allCategories: SettingsCategoryItem[] = [
@@ -288,6 +294,14 @@ export default function PiSettingsPage() {
   useEffect(() => {
     if (!remoteMode) void loadSettings();
   }, [loadSettings, remoteMode]);
+
+  useEffect(() => {
+    setDesktopRuntime(getBackendKind() === "desktop-tauri");
+  }, []);
+
+  useEffect(() => {
+    setTerminalShellMode(terminalShellProfile.kind);
+  }, [terminalShellProfile.kind]);
 
   useEffect(() => {
     // Check notification permission on mount (async on the Tauri path)
@@ -1228,6 +1242,51 @@ export default function PiSettingsPage() {
                 </>
               );
             })()}
+          </InsetGroup>}
+
+          {category === "runtime" && <InsetGroup
+            header={t("settings.integratedTerminal")}
+            footer={t(
+              desktopRuntime
+                ? "settings.integratedTerminalFooter"
+                : "settings.integratedTerminalDesktopOnly"
+            )}
+          >
+            <GroupRow
+              first
+              title={t("settings.terminalShellProfile")}
+              detail={t("settings.terminalShellProfileDetail")}
+              trailing={
+                <Segmented
+                  options={["auto", "custom"] as const}
+                  value={terminalShellMode}
+                  disabled={!desktopRuntime}
+                  labelOf={(option) => t(`settings.terminalShell.${option}`)}
+                  onChange={(option) => {
+                    setTerminalShellMode(option);
+                    if (option === "auto") setTerminalShellProfile({ kind: "auto" });
+                  }}
+                />
+              }
+            />
+            {desktopRuntime && terminalShellMode === "custom" && <TextRow
+              label={t("settings.terminalShellExecutable")}
+              detail={t("settings.terminalShellExecutableDetail")}
+              value={
+                terminalShellProfile.kind === "custom"
+                  ? terminalShellProfile.executable
+                  : undefined
+              }
+              placeholder={t("settings.terminalShellExecutablePlaceholder")}
+              onCommit={(executable) => {
+                if (executable) {
+                  setTerminalShellProfile({ kind: "custom", executable });
+                } else {
+                  setTerminalShellProfile({ kind: "auto" });
+                  setTerminalShellMode("auto");
+                }
+              }}
+            />}
           </InsetGroup>}
 
           {/* shell & sessions */}

@@ -5,10 +5,15 @@ import { isImageFile } from "./image-files";
 import { useUI } from "./store";
 import { useFileIndex } from "./file-index";
 import { getBackendKind, getPort } from "./backend/composition/container";
-import { switchWorkspaceProject } from "./orchestration/project-switch";
+import {
+  switchRemoteWorkspaceProject,
+  switchWorkspaceProject,
+} from "./orchestration/project-switch";
+import { useSessions } from "./pi/sessions";
 import {
   LOCAL_WORKSPACE_TARGET,
   workspaceFsFor,
+  workspaceTargetIdFor,
   type WorkspaceTargetId,
 } from "./workspace-target";
 import {
@@ -263,21 +268,34 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     const targetId = get().targetId;
     if (targetId === LOCAL_WORKSPACE_TARGET) return;
     if (get().mock || get().switching) return;
+    const executionBinding = useSessions.getState().executionBinding;
+    if (
+      executionBinding.kind !== "ssh" ||
+      workspaceTargetIdFor(executionBinding) !== targetId
+    ) return;
+
     set({ switching: true, loadError: null });
     try {
-      const top = await workspaceFsFor(targetId).listDir(path);
-      set({
-        root: path,
-        entries: { [path]: top },
-        expanded: {},
-        docs: {},
-        loadError: null,
+      await switchRemoteWorkspaceProject({
+        path,
+        currentRoot: get().root,
+        targetId,
+        executionBinding,
+        projectCatalog: getPort("projectCatalog"),
+        workspaceFs: workspaceFsFor(targetId),
+        setActiveFile: (activePath) => useUI.getState().setActiveFile(activePath),
+        applyProjectRoot: (root, top) =>
+          set({
+            root,
+            entries: { [root]: top },
+            expanded: {},
+            docs: {},
+            docHashes: {},
+            conflicts: {},
+            loadError: null,
+          }),
+        applyRecentProjects: (recents) => set({ recents }),
       });
-      // Whatever was open belonged to the previous project, and on a remote target it
-      // may not even exist here.
-      useUI.getState().setActiveFile("");
-      const recents = await getPort("projectCatalog").commitRemote(path, targetId);
-      set({ recents });
     } catch (e) {
       set({ loadError: e instanceof Error ? e.message : String(e) });
     } finally {

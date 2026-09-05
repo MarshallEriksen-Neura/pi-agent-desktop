@@ -25,10 +25,20 @@ import { create } from "zustand";
 import { getBackendKind, getPort } from "../backend/composition/container";
 import { usePiSettings } from "./settings";
 
+import type { ThinkingLevel } from "./protocol";
+
+export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
+export interface ModelCapabilityOverride {
+  reasoning?: boolean;
+  thinkingLevelMap?: ThinkingLevelMap;
+  [key: string]: unknown;
+}
+
 export interface CustomModelDef {
   id: string;
   name?: string;
   reasoning?: boolean;
+  thinkingLevelMap?: ThinkingLevelMap;
   input?: ("text" | "image")[];
   contextWindow?: number;
   maxTokens?: number;
@@ -50,6 +60,7 @@ export interface CustomProvider {
   api?: string;
   apiKey?: string;
   models?: CustomModelDef[];
+  modelOverrides?: Record<string, ModelCapabilityOverride>;
   [key: string]: unknown;
 }
 
@@ -118,7 +129,7 @@ interface PiModelsStore {
   updateProvider: (providerId: string, cfg: ProviderConfig) => Promise<void>;
   /** Remove a whole provider (and all its models). */
   removeProvider: (providerId: string) => Promise<void>;
-  /** Remove a model; a provider left with no models is dropped entirely. */
+  /** Remove a model; drop only an otherwise-empty provider. */
   removeModel: (providerId: string, modelId: string) => Promise<void>;
   /**
    * Edit an existing model. Handles provider/model ID renames atomically:
@@ -131,6 +142,11 @@ interface PiModelsStore {
     newProviderId: string,
     cfg: ProviderConfig,
     model: CustomModelDef
+  ) => Promise<void>;
+  updateModelCapabilities: (
+    providerId: string,
+    modelId: string,
+    capabilities: Pick<ModelCapabilityOverride, "reasoning" | "thinkingLevelMap">
   ) => Promise<void>;
 }
 
@@ -324,8 +340,9 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
     const data = structuredClone(st.data);
     const provider = data.providers[providerId];
     if (!provider) return;
-    provider.models = (provider.models ?? []).filter((m) => m.id !== modelId);
-    if (provider.models.length === 0) delete data.providers[providerId];
+    provider.models = providerModels(provider).filter((m) => m.id !== modelId);
+    if (provider.models.length === 0) delete provider.models;
+    if (Object.keys(provider).length === 0) delete data.providers[providerId];
     await save(data, set, get);
   },
 
@@ -345,7 +362,8 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
     const oldProvider = data.providers[oldProviderId];
     if (oldProvider) {
       oldProvider.models = providerModels(oldProvider).filter((m) => m.id !== oldModelId);
-      if (oldProvider.models.length === 0) delete data.providers[oldProviderId];
+      if (oldProvider.models.length === 0) delete oldProvider.models;
+      if (Object.keys(oldProvider).length === 0) delete data.providers[oldProviderId];
     }
 
     // Upsert into the (possibly renamed) provider
@@ -372,6 +390,47 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
     if (idx >= 0) models[idx] = model;
     else models.push(model);
     data.providers[newProviderId] = provider;
+
+    await save(data, set, get);
+  },
+
+  updateModelCapabilities: async (providerId, modelId, capabilities) => {
+    const st = get();
+    if (st.parseError || !providerId.trim() || !modelId.trim()) return;
+    const data = structuredClone(st.data);
+    const existingProvider = data.providers[providerId];
+    const localIndex = providerModels(existingProvider).findIndex((model) => model.id === modelId);
+
+    if (existingProvider && localIndex >= 0) {
+      const models = [...providerModels(existingProvider)];
+      const model = { ...models[localIndex] };
+      if (capabilities.reasoning === undefined) delete model.reasoning;
+      else model.reasoning = capabilities.reasoning;
+      if (capabilities.thinkingLevelMap === undefined) delete model.thinkingLevelMap;
+      else model.thinkingLevelMap = capabilities.thinkingLevelMap;
+      models[localIndex] = model;
+      data.providers[providerId] = { ...existingProvider, models };
+    } else {
+      const provider: CustomProvider = { ...(existingProvider ?? {}) };
+      const sourceOverrides =
+        provider.modelOverrides && typeof provider.modelOverrides === "object"
+          ? provider.modelOverrides
+          : {};
+      const overrides = { ...sourceOverrides };
+      const override = { ...(overrides[modelId] ?? {}) };
+      if (capabilities.reasoning === undefined) delete override.reasoning;
+      else override.reasoning = capabilities.reasoning;
+      if (capabilities.thinkingLevelMap === undefined) delete override.thinkingLevelMap;
+      else override.thinkingLevelMap = capabilities.thinkingLevelMap;
+
+      if (Object.keys(override).length > 0) overrides[modelId] = override;
+      else delete overrides[modelId];
+      if (Object.keys(overrides).length > 0) provider.modelOverrides = overrides;
+      else delete provider.modelOverrides;
+
+      if (Object.keys(provider).length > 0) data.providers[providerId] = provider;
+      else delete data.providers[providerId];
+    }
 
     await save(data, set, get);
   },

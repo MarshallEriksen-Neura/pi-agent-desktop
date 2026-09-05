@@ -20,7 +20,7 @@ import {
   StringListEditor,
 } from "@/components/settings-ui";
 import { SkillsInstall } from "@/components/SkillsInstall";
-import { Skeleton } from "@/components/primitives";
+import { Skeleton } from "@appica/ui-react/skeleton";
 import {
   Search,
   Wand2,
@@ -52,6 +52,24 @@ function tileColor(name: string) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
   return TILE_COLORS[h % TILE_COLORS.length];
+}
+
+function SkillListSkeleton({ count = 4 }: { count?: number }) {
+  return (
+    <>
+      {Array.from({ length: count }, (_, i) => (
+        <GroupRow
+          key={i}
+          first={i === 0}
+          icon={<Skeleton style={{ width: 30, height: 30, borderRadius: 8 }} />}
+          iconBg="transparent"
+          title={<Skeleton style={{ width: `${42 - i * 3}%`, height: 13 }} />}
+          detail={<Skeleton style={{ width: `${72 - i * 4}%`, height: 12 }} />}
+          trailing={<Skeleton style={{ width: 46, height: 24, borderRadius: 7 }} />}
+        />
+      ))}
+    </>
+  );
 }
 
 /**
@@ -564,7 +582,33 @@ export default function SkillsPage() {
   const canReadRemote = management.availability?.capabilities.includes("pi-skills-read-v1") ?? false;
   const canMutate = !remote ||
     (management.availability?.capabilities.includes("pi-skills-mutate-v1") ?? false);
-  if (remote && (!management.loaded || !canReadRemote)) {
+  if (remote && !management.loaded) {
+    return (
+      <SettingsPage title={t("skills.title")}>
+        <div role="status" aria-label={t("common.loading")} aria-busy="true">
+          <Skeleton
+            style={{ width: "42%", height: 13, borderRadius: 7, margin: "0 0 20px" }}
+          />
+          <div style={{ display: "grid", gap: 10, marginTop: 18 }}>
+            <Skeleton style={{ width: "100%", height: 6, borderRadius: 3 }} />
+            <div style={{ display: "flex", gap: 14 }}>
+              {["28%", "24%", "22%"].map((width) => (
+                <Skeleton key={width} style={{ width, height: 12, borderRadius: 6 }} />
+              ))}
+            </div>
+          </div>
+          <InsetGroup
+            header={<Skeleton style={{ width: 88, height: 12, borderRadius: 6 }} />}
+            footer={<Skeleton style={{ width: "64%", height: 12, borderRadius: 6 }} />}
+          >
+            <SkillListSkeleton />
+          </InsetGroup>
+        </div>
+      </SettingsPage>
+    );
+  }
+
+  if (remote && !canReadRemote) {
     return (
       <SettingsPage
         title={t("skills.title")}
@@ -574,12 +618,8 @@ export default function SkillsPage() {
           <GroupRow
             first
             icon={<Wand2 size={15} />}
-            title={management.loaded ? t("remoteManagement.unavailableTitle") : t("common.loading")}
-            detail={
-              management.loaded
-                ? management.error ?? t("remoteManagement.unavailableDetail")
-                : undefined
-            }
+            title={t("remoteManagement.unavailableTitle")}
+            detail={management.error ?? t("remoteManagement.unavailableDetail")}
           />
         </InsetGroup>
       </SettingsPage>
@@ -645,17 +685,11 @@ export default function SkillsPage() {
       </div>
 
       {sk.loading && !sk.scanned ? (
-        <InsetGroup header={t("skills.title")}>
-          {[0, 1, 2, 3].map((i) => (
-            <GroupRow
-              key={i}
-              first={i === 0}
-              icon={<Skeleton width={16} height={16} radius={5} />}
-              title={<Skeleton width="40%" height={13} />}
-              detail={<Skeleton width="70%" height={12} />}
-            />
-          ))}
-        </InsetGroup>
+        <div role="status" aria-label={t("common.loading")} aria-busy="true">
+          <InsetGroup header={t("skills.title")}>
+            <SkillListSkeleton />
+          </InsetGroup>
+        </div>
       ) : sk.skills.length === 0 ? (
         <InsetGroup>
           <GroupRow

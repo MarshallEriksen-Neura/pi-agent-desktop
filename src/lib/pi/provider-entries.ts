@@ -35,7 +35,7 @@ import { type CustomModelDef, type CustomProvider, providerModels } from "./mode
 export interface ProviderEntry {
   providerId: string;
   provider: CustomProvider;
-  /** What the card shows: own definitions, else pi's catalog for the provider. */
+  /** Pi's merged catalog overlaid with local definitions awaiting restart. */
   allModels: CustomModelDef[];
   /** Ids in `allModels` that models.json defines — the editable/deletable ones. */
   localIds: Set<string>;
@@ -100,10 +100,23 @@ export function buildProviderEntries(
   const collect = (source: Record<string, CustomProvider>, builtin: boolean) => {
     for (const [providerId, provider] of Object.entries(source)) {
       const own = providerModels(provider);
-      // No definitions of its own — a credential- or override-only entry. Stand
-      // in for the built-in card this one suppresses.
-      const allModels = own.length > 0 ? own : (piProviderModels[providerId] ?? []);
+      // Pi reports the effective merged catalog. Overlay local definitions so newly
+      // saved models are visible before the restart that makes Pi load models.json.
+      const allModels = [...(piProviderModels[providerId] ?? [])];
+      const positions = new Map(allModels.map((model, index) => [model.id, index]));
+      for (const model of own) {
+        const index = positions.get(model.id);
+        if (index === undefined) {
+          positions.set(model.id, allModels.length);
+          allModels.push(model);
+        } else {
+          allModels[index] = { ...allModels[index], ...model };
+        }
+      }
       const providerMatch = providerId.toLowerCase().includes(term);
+      const isEditableProvider = Object.keys(provider).some((key) => key !== "modelOverrides");
+      const effectiveBuiltin =
+        builtin || (!isEditableProvider && Boolean(piProviderModels[providerId]));
       entries.push({
         providerId,
         provider,
@@ -116,7 +129,7 @@ export function buildProviderEntries(
             (m.name && m.name.toLowerCase().includes(term))
         ),
         providerMatch,
-        builtin,
+        builtin: effectiveBuiltin,
       });
     }
   };

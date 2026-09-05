@@ -196,7 +196,7 @@ jobs:
           fail_on_unmatched_files: false
 
   publish-release:
-    needs: release
+    needs: [release, android]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4

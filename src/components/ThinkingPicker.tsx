@@ -11,7 +11,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@appica/ui-react/dropdown-menu";
-import { usePi, THINKING_LEVELS } from "@/lib/pi/store";
+import { usePi } from "@/lib/pi/store";
 import { useT } from "@/lib/i18n";
 import { Brain, Check, ChevronDown, SlidersHorizontal } from "lucide-react";
 
@@ -25,10 +25,21 @@ import { Brain, Check, ChevronDown, SlidersHorizontal } from "lucide-react";
  */
 export function ThinkingPicker({ compact = false }: { compact?: boolean }) {
   const level = usePi((s) => s.thinkingLevel);
+  const availableLevels = usePi((s) => s.availableThinkingLevels);
+  const levelsStatus = usePi((s) => s.thinkingLevelsStatus);
+  const levelsModelKey = usePi((s) => s.thinkingLevelsModelKey);
+  const currentModel = usePi((s) => s.currentModel);
   const setThinking = usePi((s) => s.setThinking);
   const t = useT();
 
   const labelOf = (l: string) => t(`thinking.level.${l}`);
+  const currentModelKey = currentModel ? `${currentModel.provider}/${currentModel.id}` : null;
+  const levelsCurrent = levelsModelKey === currentModelKey;
+  const levelsReady = levelsStatus === "ready" && levelsCurrent;
+  const statusText =
+    levelsStatus === "error" && levelsCurrent
+      ? t("thinking.capabilityError")
+      : t("thinking.capabilityLoading");
   // Glanceable signal that extra reasoning is on, without adding a badge.
   const tint =
     level === "off"
@@ -113,7 +124,21 @@ export function ThinkingPicker({ compact = false }: { compact?: boolean }) {
             {t("models.thinkingLevel")}
           </DropdownMenuGroupLabel>
 
-          {THINKING_LEVELS.map((l) => {
+          {!levelsReady && (
+            <DropdownMenuItem
+              disabled
+              style={{
+                padding: "7px 10px",
+                borderRadius: 8,
+                fontSize: 12.5,
+                color: "var(--text-tertiary)",
+              }}
+            >
+              {statusText}
+            </DropdownMenuItem>
+          )}
+
+          {(levelsReady ? availableLevels : []).map((l) => {
             const active = l === level;
             return (
               <DropdownMenuItem

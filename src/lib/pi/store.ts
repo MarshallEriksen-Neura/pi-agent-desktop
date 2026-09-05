@@ -31,6 +31,10 @@ interface PiStore {
   models: PiModel[];
   currentModel: PiModel | null;
   thinkingLevel: ThinkingLevel;
+  availableThinkingLevels: ThinkingLevel[];
+  thinkingLevelsModelKey: string | null;
+  thinkingLevelsStatus: "idle" | "loading" | "ready" | "error";
+  thinkingLevelsError: string | null;
   commands: PiCommandInfo[];
   /** Error from the latest get_available_models request only. */
   modelsError: string | null;
@@ -71,6 +75,10 @@ const THINKING_STORAGE_KEY = "pi-desktop.thinkingLevel";
 
 function isThinkingLevel(v: unknown): v is ThinkingLevel {
   return typeof v === "string" && (THINKING_LEVELS as string[]).includes(v);
+}
+
+function thinkingModelKey(model: Pick<PiModel, "provider" | "id"> | null | undefined): string | null {
+  return model ? `${model.provider}/${model.id}` : null;
 }
 
 /**
@@ -137,14 +145,96 @@ export function createPiStore(taskId: string, executionBinding?: ExecutionBindin
   let activityHooked = false;
   let modelChangeSeq = 0;
   let thinkingChangeSeq = 0;
+  let controlChangeSeq = 0;
+  let thinkingSnapshotSeq = 0;
+  let controlQueue: Promise<void> = Promise.resolve();
   /** false until the remembered level has been pushed into the current process */
   let appliedRemembered = false;
-  /** >0 while a set_thinking_level round-trip is open — refresh must not clobber it */
-  let thinkingInFlight = 0;
+  /** >0 while a model/thinking control transaction is queued or running. */
+  let controlInFlight = 0;
 
   return create<PiStore>()((set, get) => {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
+    const enqueueControl = <T,>(operation: () => Promise<T>): Promise<T> => {
+      const request = controlQueue.then(operation);
+      controlQueue = request.then(
+        () => undefined,
+        () => undefined
+      );
+      return request;
+    };
+
+    const refreshThinkingSnapshot = async (expectedModel?: {
+      provider: string;
+      id: string;
+    }): Promise<ThinkingLevel | null> => {
+      const snapshotSeq = ++thinkingSnapshotSeq;
+      const [levels, state] = await Promise.allSettled([
+        client.request<{ levels: ThinkingLevel[] }>(
+          { type: "get_available_thinking_levels" },
+          REFRESH_TIMEOUT_MS
+        ),
+        client.request<PiState>({ type: "get_state" }, REFRESH_TIMEOUT_MS),
+      ]);
+      if (snapshotSeq !== thinkingSnapshotSeq) return null;
+
+      const patch: Partial<PiStore> = {};
+      let actualLevel: ThinkingLevel | null = null;
+      if (state.status !== "fulfilled" || !state.value.success) {
+        if (expectedModel) {
+          patch.thinkingLevelsStatus = "error";
+          patch.thinkingLevelsError =
+            state.status === "rejected"
+              ? state.reason instanceof Error
+                ? state.reason.message
+                : String(state.reason)
+              : state.value.error ?? "get_state failed";
+          set(patch);
+        }
+        return null;
+      }
+
+      const piState = state.value.data;
+      const actualModel = piState?.model ?? null;
+      if (
+        expectedModel &&
+        (actualModel?.provider !== expectedModel.provider || actualModel.id !== expectedModel.id)
+      ) {
+        // Pi may have changed models outside this UI while the command was in flight.
+        // Reconcile to its actual model instead of leaving the optimistic snapshot loading.
+        return refreshThinkingSnapshot();
+      }
+
+      if (piState?.model !== undefined) patch.currentModel = actualModel;
+      if (isThinkingLevel(piState?.thinkingLevel)) {
+        actualLevel = piState.thinkingLevel;
+        patch.thinkingLevel = actualLevel;
+      }
+
+      const actualModelKey = thinkingModelKey(actualModel);
+      if (levels.status === "fulfilled" && levels.value.success) {
+        patch.availableThinkingLevels = levels.value.data?.levels ?? [];
+        patch.thinkingLevelsModelKey = actualModelKey;
+        patch.thinkingLevelsStatus = "ready";
+        patch.thinkingLevelsError = null;
+      } else {
+        if (get().thinkingLevelsModelKey !== actualModelKey) {
+          patch.availableThinkingLevels = [];
+        }
+        patch.thinkingLevelsModelKey = actualModelKey;
+        patch.thinkingLevelsStatus = "error";
+        patch.thinkingLevelsError =
+          levels.status === "rejected"
+            ? levels.reason instanceof Error
+              ? levels.reason.message
+              : String(levels.reason)
+            : levels.value.error ?? "get_available_thinking_levels failed";
+      }
+
+      set(patch);
+      return actualLevel;
+    };
     /**
      * Keep asking for the model list while it is still empty. A single refresh at
      * connect time is not enough: a slow pi boot (session resume or extension load)
@@ -173,6 +263,10 @@ export function createPiStore(taskId: string, executionBinding?: ExecutionBindin
       // Seeded, not hardcoded: the chip animates on change, so starting at
       // "medium" made every launch visibly roll to the restored level.
       thinkingLevel: readRememberedThinking() ?? "medium",
+      availableThinkingLevels: [],
+      thinkingLevelsModelKey: null,
+      thinkingLevelsStatus: "idle",
+      thinkingLevelsError: null,
       commands: [],
       modelsError: null,
       lastError: null,
@@ -253,12 +347,13 @@ export function createPiStore(taskId: string, executionBinding?: ExecutionBindin
       },
 
       refresh: async () => {
-        // allSettled, not all: these are three independent queries, and
+        const snapshotSeq = ++thinkingSnapshotSeq;
+        // allSettled, not all: these are independent queries, and
         // `get_commands` is the slowest (it waits on extension registration). Under
         // Promise.all a single slow reply discarded the model list and the current
         // model with it, which is what left the composer showing "no models
         // configured" against a perfectly healthy pi.
-        const [models, state, commands] = await Promise.allSettled([
+        const [models, state, commands, thinkingLevels] = await Promise.allSettled([
           client.request<{ models: PiModel[] }>(
             { type: "get_available_models" },
             REFRESH_TIMEOUT_MS
@@ -266,6 +361,10 @@ export function createPiStore(taskId: string, executionBinding?: ExecutionBindin
           client.request<PiState>({ type: "get_state" }, REFRESH_TIMEOUT_MS),
           client.request<{ commands: PiCommandInfo[] }>(
             { type: "get_commands" },
+            REFRESH_TIMEOUT_MS
+          ),
+          client.request<{ levels: ThinkingLevel[] }>(
+            { type: "get_available_thinking_levels" },
             REFRESH_TIMEOUT_MS
           ),
         ]);
@@ -295,38 +394,82 @@ export function createPiStore(taskId: string, executionBinding?: ExecutionBindin
           modelsError = modelFailure;
         }
         const stateFailure = failure("get_state", state);
+        let stateModelKey: string | null | undefined;
+        const canCommitThinkingSnapshot =
+          snapshotSeq === thinkingSnapshotSeq && controlInFlight === 0;
         if (stateFailure) errors.push(stateFailure);
-        else if (state.status === "fulfilled") {
-          patch.currentModel = state.value.data?.model ?? null;
-          const piLevel = state.value.data?.thinkingLevel ?? "medium";
+        else if (state.status === "fulfilled" && canCommitThinkingSnapshot) {
+          const piState = state.value.data;
+          const stateModel = piState?.model ?? null;
+          stateModelKey = thinkingModelKey(stateModel);
+          patch.currentModel = stateModel;
+          const piLevel = piState?.thinkingLevel;
 
-          if (thinkingInFlight > 0) {
-            // A change is mid-flight; pi is still reporting the old level. Adopting
-            // it here would flicker the chip back and re-persist the stale value.
-          } else if (!appliedRemembered) {
-            appliedRemembered = true;
-            const remembered = readRememberedThinking();
-            patch.thinkingLevel = remembered ?? piLevel;
-            if (remembered && remembered !== piLevel) {
-              void client
-                .request({ type: "set_thinking_level", level: remembered })
-                .then((r) => {
-                  // pi refused (e.g. this model has no such level) — show the truth
-                  if (!r.success) set({ thinkingLevel: piLevel });
-                })
-                .catch(() => set({ thinkingLevel: piLevel }));
-            }
-          } else {
-            // Past the first refresh pi owns the level: `/thinking` cycles it
-            // there, so mirror it back into storage to keep the two in step.
+          if (isThinkingLevel(piLevel)) {
             patch.thinkingLevel = piLevel;
-            rememberThinking(piLevel);
+            if (!appliedRemembered) {
+              appliedRemembered = true;
+              const remembered = readRememberedThinking();
+              if (remembered && remembered !== piLevel) {
+                const expectedModel = stateModel
+                  ? { provider: stateModel.provider, id: stateModel.id }
+                  : undefined;
+                const restoreSeq = ++controlChangeSeq;
+                ++thinkingSnapshotSeq;
+                controlInFlight++;
+                void enqueueControl(async () => {
+                  const response = await client.request({
+                    type: "set_thinking_level",
+                    level: remembered,
+                  });
+                  if (restoreSeq !== controlChangeSeq) return;
+                  if (!response.success) {
+                    set({ lastError: response.error ?? t("agent.taskFailed") });
+                    return;
+                  }
+                  const actual = await refreshThinkingSnapshot(expectedModel);
+                  if (restoreSeq === controlChangeSeq && actual) rememberThinking(actual);
+                })
+                  .catch((error) => {
+                    if (restoreSeq === controlChangeSeq) {
+                      set({ lastError: piRequestErrorText(error) });
+                    }
+                  })
+                  .finally(() => {
+                    controlInFlight--;
+                  });
+              }
+            } else {
+              // Past startup pi owns the level, including changes made by /thinking.
+              rememberThinking(piLevel);
+            }
           }
         }
         const commandsFailure = failure("get_commands", commands);
         if (commandsFailure) errors.push(commandsFailure);
         else if (commands.status === "fulfilled") {
           patch.commands = commands.value.data?.commands ?? [];
+        }
+        const levelsFailure = failure("get_available_thinking_levels", thinkingLevels);
+        if (levelsFailure) errors.push(levelsFailure);
+        if (
+          stateModelKey !== undefined &&
+          snapshotSeq === thinkingSnapshotSeq &&
+          controlInFlight === 0
+        ) {
+          if (thinkingLevels.status === "fulfilled" && !levelsFailure) {
+            patch.availableThinkingLevels = thinkingLevels.value.data?.levels ?? [];
+            patch.thinkingLevelsModelKey = stateModelKey;
+            patch.thinkingLevelsStatus = "ready";
+            patch.thinkingLevelsError = null;
+          } else {
+            if (get().thinkingLevelsModelKey !== stateModelKey) {
+              patch.availableThinkingLevels = [];
+            }
+            patch.thinkingLevelsModelKey = stateModelKey;
+            patch.thinkingLevelsStatus = "error";
+            patch.thinkingLevelsError = levelsFailure;
+          }
         }
 
         set({
@@ -337,50 +480,82 @@ export function createPiStore(taskId: string, executionBinding?: ExecutionBindin
       },
 
       setModel: async (m) => {
-        const prev = get().currentModel;
         const requestSeq = ++modelChangeSeq;
-        set({ currentModel: m, lastError: null }); // optimistic — feels iOS-instant
+        ++thinkingChangeSeq;
+        const controlSeq = ++controlChangeSeq;
+        // Invalidate model-specific reads as soon as this selection becomes the latest intent.
+        ++thinkingSnapshotSeq;
+        controlInFlight++;
+        set({
+          currentModel: m,
+          availableThinkingLevels: [],
+          thinkingLevelsModelKey: thinkingModelKey(m),
+          thinkingLevelsStatus: "loading",
+          thinkingLevelsError: null,
+          lastError: null,
+        });
         try {
-          const r = await client.request({
-            type: "set_model",
-            provider: m.provider,
-            modelId: m.id,
+          const error = await enqueueControl(async () => {
+            const response = await client.request({
+              type: "set_model",
+              provider: m.provider,
+              modelId: m.id,
+            });
+            if (controlSeq !== controlChangeSeq) return null;
+            if (response.success) {
+              await refreshThinkingSnapshot({ provider: m.provider, id: m.id });
+              return null;
+            }
+            await refreshThinkingSnapshot();
+            return response.error || t("agent.taskFailed");
           });
-          if (r.success || requestSeq !== modelChangeSeq) return;
-          const error = r.error || t("agent.taskFailed");
-          set({ currentModel: prev, lastError: error });
+          if (!error || requestSeq !== modelChangeSeq || controlSeq !== controlChangeSeq) return;
+          set({ lastError: error });
           surfaceSettingFailure("modelPicker.switchFailed", error);
         } catch (error) {
-          if (requestSeq !== modelChangeSeq) return;
+          if (requestSeq !== modelChangeSeq || controlSeq !== controlChangeSeq) return;
           const detail = piRequestErrorText(error);
-          set({ currentModel: prev, lastError: detail });
+          await refreshThinkingSnapshot();
+          if (requestSeq !== modelChangeSeq || controlSeq !== controlChangeSeq) return;
+          set({ lastError: detail });
           surfaceSettingFailure("modelPicker.switchFailed", detail);
+        } finally {
+          controlInFlight--;
         }
       },
 
       setThinking: async (level) => {
-        const prev = get().thinkingLevel;
         const requestSeq = ++thinkingChangeSeq;
-        set({ thinkingLevel: level, lastError: null });
-        thinkingInFlight++;
+        const controlSeq = ++controlChangeSeq;
+        const model = get().currentModel;
+        const expectedModel = model ? { provider: model.provider, id: model.id } : undefined;
+        ++thinkingSnapshotSeq;
+        controlInFlight++;
+        set({ lastError: null });
         try {
-          const r = await client.request({ type: "set_thinking_level", level });
-          if (requestSeq !== thinkingChangeSeq) return;
-          if (r.success) {
-            // Only after pi agrees: a rejected level must not come back next launch.
-            rememberThinking(level);
-            return;
-          }
-          const error = r.error || t("agent.taskFailed");
-          set({ thinkingLevel: prev, lastError: error });
+          const error = await enqueueControl(async () => {
+            const response = await client.request({ type: "set_thinking_level", level });
+            if (controlSeq !== controlChangeSeq) return null;
+            if (response.success) {
+              const actual = await refreshThinkingSnapshot(expectedModel);
+              if (controlSeq === controlChangeSeq && actual) rememberThinking(actual);
+              return null;
+            }
+            await refreshThinkingSnapshot(expectedModel);
+            return response.error || t("agent.taskFailed");
+          });
+          if (!error || requestSeq !== thinkingChangeSeq || controlSeq !== controlChangeSeq) return;
+          set({ lastError: error });
           surfaceSettingFailure("thinking.switchFailed", error);
         } catch (error) {
-          if (requestSeq !== thinkingChangeSeq) return;
+          if (requestSeq !== thinkingChangeSeq || controlSeq !== controlChangeSeq) return;
           const detail = piRequestErrorText(error);
-          set({ thinkingLevel: prev, lastError: detail });
+          await refreshThinkingSnapshot(expectedModel);
+          if (requestSeq !== thinkingChangeSeq || controlSeq !== controlChangeSeq) return;
+          set({ lastError: detail });
           surfaceSettingFailure("thinking.switchFailed", detail);
         } finally {
-          thinkingInFlight--;
+          controlInFlight--;
         }
       },
 
@@ -437,14 +612,4 @@ export const usePi = Object.assign(usePiHook, {
 export function resetPiStoreForTests(): void {
   piStores.clear();
   clearRememberedThinking(); // persisted level would otherwise leak between tests
-  usePi.setState({
-    status: "disconnected",
-    mock: isMockBackend(),
-    models: [],
-    currentModel: null,
-    thinkingLevel: "medium",
-    commands: [],
-    modelsError: null,
-    lastError: null,
-  });
 }

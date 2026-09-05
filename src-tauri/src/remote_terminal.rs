@@ -1,15 +1,16 @@
-//! Interactive SSH terminals backed by a local PTY.
+//! Interactive local and SSH terminals backed by independent native PTYs.
 //!
-//! The existing Pi SSH bridge is a JSONL RPC channel and must remain line based.
-//! This module gives OpenSSH its own PTY so terminal bytes, signals and window
-//! changes never share or corrupt that protocol.
+//! Pi's JSONL RPC channel remains line based and completely separate. This module
+//! owns raw terminal bytes, process lifecycle, signals, and window-size changes for
+//! both local shells and OpenSSH clients.
 
 use crate::remote_profiles::{self, ExecutionBinding};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
@@ -19,6 +20,12 @@ const MAX_TERMINAL_COLS: u16 = 1_000;
 const MAX_TERMINAL_ROWS: u16 = 1_000;
 const OUTPUT_CHUNK_BYTES: usize = 16 * 1024;
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LocalTerminalShellProfile {
+    Auto,
+    Custom { executable: String },
+}
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoteTerminalDataEvent {
@@ -42,6 +49,7 @@ struct RemoteTerminalExitEvent {
 pub struct RemoteTerminalStartResult {
     session_id: String,
     target_id: String,
+    shell_fallback: bool,
 }
 
 struct ManagedTerminal {
@@ -72,6 +80,21 @@ impl RemoteTerminalState {
     }
 }
 
+fn kill_terminal(killer: &mut (dyn ChildKiller + Send + Sync)) -> Result<(), String> {
+    let result = killer.kill();
+    #[cfg(windows)]
+    {
+        // portable-pty 0.9.0 inverts TerminateProcess's success result on Windows.
+        // Closing the retained PTY handles still provides deterministic cleanup.
+        let _ = result;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        result.map_err(|error| format!("cannot stop terminal: {error}"))
+    }
+}
+
 fn validate_session_id(session_id: &str) -> Result<(), String> {
     if session_id.is_empty()
         || session_id.len() > MAX_SESSION_ID_BYTES
@@ -79,14 +102,14 @@ fn validate_session_id(session_id: &str) -> Result<(), String> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
-        return Err("remote terminal session id is invalid".into());
+        return Err("terminal session id is invalid".into());
     }
     Ok(())
 }
 
 fn terminal_size(cols: u16, rows: u16) -> Result<PtySize, String> {
     if cols == 0 || rows == 0 || cols > MAX_TERMINAL_COLS || rows > MAX_TERMINAL_ROWS {
-        return Err("remote terminal size is invalid".into());
+        return Err("terminal size is invalid".into());
     }
     Ok(PtySize {
         rows,
@@ -96,6 +119,128 @@ fn terminal_size(cols: u16, rows: u16) -> Result<PtySize, String> {
     })
 }
 
+fn validated_local_cwd(cwd: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let Some(cwd) = cwd.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let path = Path::new(cwd);
+    if !path.is_absolute() {
+        return Err("local terminal working directory must be absolute".into());
+    }
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("cannot access local terminal working directory: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("local terminal working directory is not a directory".into());
+    }
+    Ok(Some(path.to_path_buf()))
+}
+
+#[cfg(windows)]
+fn automatic_windows_shell_candidates_from(
+    program_files_roots: &[PathBuf],
+    system_root: Option<PathBuf>,
+    comspec: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from("pwsh.exe")];
+    for root in program_files_roots {
+        let candidate = root.join("PowerShell").join("7").join("pwsh.exe");
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates.push(PathBuf::from("powershell.exe"));
+    if let Some(system_root) = system_root {
+        candidates.push(
+            system_root
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe"),
+        );
+    }
+    if let Some(comspec) = comspec {
+        candidates.push(comspec);
+    }
+    candidates.push(PathBuf::from("cmd.exe"));
+    candidates
+}
+
+#[cfg(windows)]
+fn automatic_windows_shell_candidates() -> Vec<PathBuf> {
+    let mut program_files_roots = Vec::new();
+    for name in ["ProgramW6432", "ProgramFiles"] {
+        if let Some(root) = std::env::var_os(name).map(PathBuf::from) {
+            if root.is_absolute() && !program_files_roots.contains(&root) {
+                program_files_roots.push(root);
+            }
+        }
+    }
+    automatic_windows_shell_candidates_from(
+        &program_files_roots,
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .filter(|root| root.is_absolute()),
+        std::env::var_os("COMSPEC")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute()),
+    )
+}
+
+#[cfg(windows)]
+fn local_shell_command_builder(executable: PathBuf) -> CommandBuilder {
+    let executable = std::fs::canonicalize(&executable).unwrap_or(executable);
+    let keep_command_prompt_open = executable
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("cmd.exe"));
+    let mut command = CommandBuilder::new(executable);
+    if keep_command_prompt_open {
+        command.arg("/K");
+        command.arg("rem");
+    }
+    command
+}
+
+#[cfg(not(windows))]
+fn local_shell_command_builder(executable: PathBuf) -> CommandBuilder {
+    CommandBuilder::new(executable)
+}
+
+#[cfg(windows)]
+fn automatic_local_shell_command() -> CommandBuilder {
+    automatic_windows_shell_candidates()
+        .into_iter()
+        .find_map(|candidate| crate::pi_command::resolve_executable(&candidate.to_string_lossy()))
+        .map(local_shell_command_builder)
+        .unwrap_or_else(CommandBuilder::new_default_prog)
+}
+
+#[cfg(not(windows))]
+fn automatic_local_shell_command() -> CommandBuilder {
+    CommandBuilder::new_default_prog()
+}
+
+fn local_shell_command(profile: Option<&LocalTerminalShellProfile>) -> (CommandBuilder, bool) {
+    let Some(LocalTerminalShellProfile::Custom { executable }) = profile else {
+        return (automatic_local_shell_command(), false);
+    };
+    let executable = executable.trim();
+    if executable.is_empty() || !Path::new(executable).is_absolute() {
+        return (automatic_local_shell_command(), true);
+    }
+    match crate::pi_command::resolve_executable(executable) {
+        Some(executable) => (local_shell_command_builder(executable), false),
+        None => (automatic_local_shell_command(), true),
+    }
+}
+
+fn configure_terminal_command(command: &mut CommandBuilder, cwd: Option<&Path>) {
+    if let Some(cwd) = cwd {
+        command.cwd(cwd);
+    }
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
+}
+
 #[tauri::command]
 pub fn remote_terminal_start(
     app: AppHandle,
@@ -103,27 +248,53 @@ pub fn remote_terminal_start(
     session_id: String,
     generation: u64,
     execution_binding: ExecutionBinding,
+    cwd: Option<String>,
+    local_shell: Option<LocalTerminalShellProfile>,
     cols: u16,
     rows: u16,
 ) -> Result<RemoteTerminalStartResult, String> {
     validate_session_id(&session_id)?;
     if generation == 0 {
-        return Err("remote terminal generation is invalid".into());
+        return Err("terminal generation is invalid".into());
     }
     let size = terminal_size(cols, rows)?;
-    let ExecutionBinding::Ssh { profile_id, .. } = &execution_binding else {
-        return Err("remote terminal requires an SSH execution binding".into());
-    };
-    let profile = remote_profiles::load_profile(profile_id)?;
-    let spec = remote_profiles::ssh_terminal_spec(&profile, &execution_binding)?;
+    let (mut command, target_id, mut shell_fallback, local_cwd, custom_shell_selected) =
+        match &execution_binding {
+            ExecutionBinding::Local { target_id } => {
+                if target_id != "local" {
+                    return Err("local terminal target is invalid".into());
+                }
+                let (command, shell_fallback) = local_shell_command(local_shell.as_ref());
+                let local_cwd = validated_local_cwd(cwd.as_deref())?;
+                let custom_shell_selected = matches!(
+                    local_shell.as_ref(),
+                    Some(LocalTerminalShellProfile::Custom { .. })
+                ) && !shell_fallback;
+                (
+                    command,
+                    target_id.clone(),
+                    shell_fallback,
+                    local_cwd,
+                    custom_shell_selected,
+                )
+            }
+            ExecutionBinding::Ssh { profile_id, .. } => {
+                let profile = remote_profiles::load_profile(profile_id)?;
+                let spec = remote_profiles::ssh_terminal_spec(&profile, &execution_binding)?;
+                let mut command = CommandBuilder::new(&spec.program);
+                command.args(&spec.args);
+                (command, format!("ssh:{profile_id}"), false, None, false)
+            }
+        };
+    configure_terminal_command(&mut command, local_cwd.as_deref());
 
     {
         let sessions = state
             .sessions
             .lock()
-            .map_err(|_| "remote terminal state lock is poisoned".to_owned())?;
+            .map_err(|_| "terminal state lock is poisoned".to_owned())?;
         if sessions.contains_key(&session_id) {
-            return Err("remote terminal session is already running".into());
+            return Err("terminal session is already running".into());
         }
     }
 
@@ -131,15 +302,20 @@ pub fn remote_terminal_start(
     let pair = pty_system
         .openpty(size)
         .map_err(|error| format!("cannot create terminal: {error}"))?;
-    let mut command = CommandBuilder::new(&spec.program);
-    command.args(&spec.args);
-    command.env("TERM", "xterm-256color");
-    command.env("COLORTERM", "truecolor");
-
-    let mut child = pair
-        .slave
-        .spawn_command(command)
-        .map_err(|error| format!("cannot start SSH terminal: {error}"))?;
+    let mut child = match pair.slave.spawn_command(command) {
+        Ok(child) => child,
+        Err(custom_error) if custom_shell_selected => {
+            let mut fallback = automatic_local_shell_command();
+            configure_terminal_command(&mut fallback, local_cwd.as_deref());
+            shell_fallback = true;
+            pair.slave.spawn_command(fallback).map_err(|fallback_error| {
+                format!(
+                    "cannot start custom terminal shell ({custom_error}); automatic fallback also failed: {fallback_error}"
+                )
+            })?
+        }
+        Err(error) => return Err(format!("cannot start terminal: {error}")),
+    };
     drop(pair.slave);
 
     let mut reader = match pair.master.try_clone_reader() {
@@ -147,7 +323,7 @@ pub fn remote_terminal_start(
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("cannot read SSH terminal: {error}"));
+            return Err(format!("cannot read terminal: {error}"));
         }
     };
     let writer = match pair.master.take_writer() {
@@ -155,7 +331,7 @@ pub fn remote_terminal_start(
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("cannot write SSH terminal: {error}"));
+            return Err(format!("cannot write terminal: {error}"));
         }
     };
     let killer = child.clone_killer();
@@ -166,13 +342,13 @@ pub fn remote_terminal_start(
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("remote terminal state lock is poisoned".into());
+                return Err("terminal state lock is poisoned".into());
             }
         };
         if sessions.contains_key(&session_id) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("remote terminal session is already running".into());
+            return Err("terminal session is already running".into());
         }
         sessions.insert(
             session_id.clone(),
@@ -303,7 +479,8 @@ pub fn remote_terminal_start(
 
     Ok(RemoteTerminalStartResult {
         session_id,
-        target_id: format!("ssh:{profile_id}"),
+        target_id,
+        shell_fallback,
     })
 }
 
@@ -341,7 +518,7 @@ pub async fn remote_terminal_write(
         writer
             .write_all(data.as_bytes())
             .and_then(|_| writer.flush())
-            .map_err(|error| format!("cannot write SSH terminal: {error}"))
+            .map_err(|error| format!("cannot write terminal: {error}"))
     })
     .await
     .map_err(|error| format!("remote terminal writer task failed: {error}"))?
@@ -373,7 +550,34 @@ pub fn remote_terminal_resize(
     session
         .master
         .resize(size)
-        .map_err(|error| format!("cannot resize SSH terminal: {error}"))
+        .map_err(|error| format!("cannot resize terminal: {error}"))
+}
+fn stop_terminal_session(
+    sessions: &mut HashMap<String, ManagedTerminal>,
+    session_id: &str,
+    generation: u64,
+) -> Result<(), String> {
+    let should_remove = match sessions.get_mut(session_id) {
+        Some(session) => {
+            if session.generation != generation {
+                return Err("remote terminal generation does not match".into());
+            }
+            if session.stopping {
+                return Ok(());
+            }
+            session.stopping = true;
+            if let Err(error) = kill_terminal(session.killer.as_mut()) {
+                session.stopping = false;
+                return Err(error);
+            }
+            true
+        }
+        None => false,
+    };
+    if should_remove {
+        sessions.remove(session_id);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -387,20 +591,7 @@ pub fn remote_terminal_stop(
         .sessions
         .lock()
         .map_err(|_| "remote terminal state lock is poisoned".to_owned())?;
-    if let Some(session) = sessions.get_mut(&session_id) {
-        if session.generation != generation {
-            return Err("remote terminal generation does not match".into());
-        }
-        if session.stopping {
-            return Ok(());
-        }
-        session.stopping = true;
-        if let Err(error) = session.killer.kill() {
-            session.stopping = false;
-            return Err(format!("cannot stop SSH terminal: {error}"));
-        }
-    }
-    Ok(())
+    stop_terminal_session(&mut sessions, &session_id, generation)
 }
 
 #[cfg(test)]
@@ -414,5 +605,243 @@ mod tests {
         assert!(terminal_size(80, 24).is_ok());
         assert!(terminal_size(0, 24).is_err());
         assert!(terminal_size(80, 1001).is_err());
+    }
+
+    #[test]
+    fn local_cwd_must_be_an_existing_absolute_directory() {
+        assert_eq!(validated_local_cwd(None).unwrap(), None);
+        assert_eq!(validated_local_cwd(Some("   ")).unwrap(), None);
+        assert!(validated_local_cwd(Some("relative/path")).is_err());
+        assert_eq!(
+            validated_local_cwd(std::env::temp_dir().to_str()).unwrap(),
+            Some(std::env::temp_dir())
+        );
+        let missing = std::env::temp_dir().join(format!(
+            "ragcode-terminal-missing-directory-{}",
+            std::process::id()
+        ));
+        assert!(validated_local_cwd(missing.to_str()).is_err());
+    }
+
+    #[test]
+    fn custom_local_shell_requires_an_existing_absolute_executable() {
+        let current_exe = std::env::current_exe().expect("test executable path should resolve");
+        let expected = std::fs::canonicalize(&current_exe).expect("test executable should resolve");
+        let profile = LocalTerminalShellProfile::Custom {
+            executable: current_exe.to_string_lossy().into_owned(),
+        };
+        let (command, fell_back) = local_shell_command(Some(&profile));
+        assert!(!fell_back);
+        assert_eq!(command.get_argv().first(), Some(&expected.into_os_string()));
+
+        let relative = LocalTerminalShellProfile::Custom {
+            executable: "relative-shell".into(),
+        };
+        let (_, fell_back) = local_shell_command(Some(&relative));
+        assert!(fell_back);
+
+        let missing =
+            std::env::temp_dir().join(format!("ragcode-missing-shell-{}", std::process::id()));
+        let missing = LocalTerminalShellProfile::Custom {
+            executable: missing.to_string_lossy().into_owned(),
+        };
+        let (_, fell_back) = local_shell_command(Some(&missing));
+        assert!(fell_back);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn command_prompt_shell_is_kept_open_for_interactive_use() {
+        let executable = PathBuf::from(r"C:\Windows\System32\CMD.EXE");
+        let expected = std::fs::canonicalize(&executable).expect("command prompt should resolve");
+        let command = local_shell_command_builder(executable.clone());
+        assert_eq!(
+            command.get_argv(),
+            &vec![
+                expected.into_os_string(),
+                std::ffi::OsString::from("/K"),
+                std::ffi::OsString::from("rem"),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn command_prompt_shell_stays_alive_in_a_native_pty() {
+        let executable = PathBuf::from("C:/Windows/System32/cmd.exe");
+        assert!(executable.is_file(), "Windows command prompt should exist");
+        let pty = native_pty_system()
+            .openpty(terminal_size(80, 24).unwrap())
+            .expect("native PTY should open");
+        let mut child = pty
+            .slave
+            .spawn_command(local_shell_command_builder(executable))
+            .expect("command prompt should start");
+        drop(pty.slave);
+        let mut writer = pty
+            .master
+            .take_writer()
+            .expect("command prompt writer should open");
+
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        assert!(
+            child
+                .try_wait()
+                .expect("command prompt should be pollable")
+                .is_none(),
+            "command prompt should remain interactive without initial input"
+        );
+        writer
+            .write_all(b"exit\r\n")
+            .expect("command prompt should accept input");
+        writer.flush().expect("command prompt input should flush");
+        assert!(
+            child.wait().expect("command prompt should exit").success(),
+            "command prompt should exit successfully"
+        );
+    }
+    #[cfg(not(windows))]
+    #[test]
+    fn automatic_unix_shell_keeps_portable_pty_system_default() {
+        let (command, fell_back) = local_shell_command(Some(&LocalTerminalShellProfile::Auto));
+        assert!(!fell_back);
+        assert!(command.is_default_prog());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn automatic_windows_shell_uses_the_documented_priority() {
+        let candidates = automatic_windows_shell_candidates_from(
+            &[
+                PathBuf::from(r"C:\Program Files"),
+                PathBuf::from(r"D:\Program Files"),
+            ],
+            Some(PathBuf::from(r"C:\Windows")),
+            Some(PathBuf::from(r"C:\Windows\System32\cmd.exe")),
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("pwsh.exe"),
+                PathBuf::from(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+                PathBuf::from(r"D:\Program Files\PowerShell\7\pwsh.exe"),
+                PathBuf::from("powershell.exe"),
+                PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+                PathBuf::from(r"C:\Windows\System32\cmd.exe"),
+                PathBuf::from("cmd.exe"),
+            ]
+        );
+
+        let expected = automatic_windows_shell_candidates()
+            .into_iter()
+            .find_map(|candidate| {
+                crate::pi_command::resolve_executable(&candidate.to_string_lossy())
+            });
+        let command = automatic_local_shell_command();
+        if let Some(expected) = expected {
+            let expected = std::fs::canonicalize(&expected).unwrap_or(expected);
+            assert_eq!(command.get_argv().first(), Some(&expected.into_os_string()));
+        } else {
+            assert!(command.is_default_prog());
+        }
+    }
+    #[test]
+    fn successful_stop_releases_the_session_id_before_returning() {
+        let pair = native_pty_system()
+            .openpty(terminal_size(80, 24).unwrap())
+            .expect("native PTY should open");
+        let mut child = pair
+            .slave
+            .spawn_command(CommandBuilder::new_default_prog())
+            .expect("default local shell should start");
+        drop(pair.slave);
+        let writer = pair
+            .master
+            .take_writer()
+            .expect("local PTY writer should open");
+        let killer = child.clone_killer();
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            "terminal-local".to_owned(),
+            ManagedTerminal {
+                generation: 1,
+                master: pair.master,
+                writer: Arc::new(Mutex::new(writer)),
+                killer,
+                stopping: false,
+            },
+        );
+
+        stop_terminal_session(&mut sessions, "terminal-local", 1)
+            .expect("local terminal should stop");
+
+        assert!(!sessions.contains_key("terminal-local"));
+        child.wait().expect("stopped local shell should be reaped");
+    }
+
+    #[test]
+    fn default_local_shell_supports_io_resize_and_stop_in_a_native_pty() {
+        let pty = native_pty_system()
+            .openpty(terminal_size(80, 24).unwrap())
+            .expect("native PTY should open");
+        let mut command = CommandBuilder::new_default_prog();
+        command.cwd(std::env::temp_dir());
+        command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
+
+        let mut reader = pty
+            .master
+            .try_clone_reader()
+            .expect("local PTY reader should clone");
+        let mut writer = pty
+            .master
+            .take_writer()
+            .expect("local PTY writer should open");
+        let mut child = pty
+            .slave
+            .spawn_command(command)
+            .expect("default local shell should start");
+        drop(pty.slave);
+
+        let sentinel = format!("RAGCODE_LOCAL_PTY_{}", std::process::id());
+        let expected = sentinel.as_bytes().to_vec();
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+        let reader_thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                match reader.read(&mut chunk) {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => {
+                        output.extend_from_slice(&chunk[..read]);
+                        if output
+                            .windows(expected.len())
+                            .any(|window| window == expected.as_slice())
+                        {
+                            let _ = seen_tx.send(());
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
+        writer
+            .write_all(format!("echo {sentinel}\r").as_bytes())
+            .and_then(|_| writer.flush())
+            .expect("local PTY should accept input");
+        pty.master
+            .resize(terminal_size(100, 32).unwrap())
+            .expect("local PTY should resize");
+        let saw_output = seen_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_ok();
+
+        child.kill().expect("default local shell should stop");
+        child.wait().expect("stopped local shell should be reaped");
+        drop(writer);
+        drop(pty.master);
+        reader_thread.join().expect("local PTY reader should join");
+        assert!(saw_output, "default local shell should echo terminal input");
     }
 }
