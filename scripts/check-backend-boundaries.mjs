@@ -20,6 +20,7 @@ const EXPECTED_COMMAND_NAMES = [
   // Moving pi's own transcript into `~/.pi/agent/session-trash/` is a separate
   // command from `chat_session_delete` because the index row and the file fail
   // differently — see `pi_sessions.rs`.
+  "repository_diff", "repository_mutate", "repository_status",
   "pi_session_trash",
   "mcp_adapter_check", "mcp_config_discover", "mcp_config_open_dir", "mcp_config_read", "mcp_config_write",
   "project_resolve",
@@ -47,6 +48,7 @@ const EXPECTED_COMMAND_NAMES = [
   "remote_task_status", "remote_task_stop", "remote_task_reap",
   // Read-only remote workspace browsing (V2.3).
   "remote_workspace_request",
+  "remote_repository_request",
 ].sort();
 const EXPECTED_PI_EVENTS = ["pi://exit", "pi://line", "pi://stderr"];
 

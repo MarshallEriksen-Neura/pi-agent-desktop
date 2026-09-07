@@ -36,7 +36,7 @@ if [ "$mode" = "--capabilities" ]; then
     printf '%s\n' 'capabilities_invalid_arguments' >&2
     exit 64
   fi
-  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":5,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1"]}'
+  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":10,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1"]}'
   exit 0
 fi
 
@@ -78,7 +78,8 @@ elif [ "$mode" = "--stop" ] || [ "$mode" = "--send" ]; then
   decoded="$payload"
 elif [ "$mode" = "--run" ] || [ "$mode" = "--preflight" ] || \
      [ "$mode" = "--start-detached" ] || [ "$mode" = "--supervise" ] || \
-     [ "$mode" = "--attach" ] || [ "$mode" = "--workspace" ]; then
+     [ "$mode" = "--attach" ] || [ "$mode" = "--workspace" ] || \
+     [ "$mode" = "--repository" ]; then
   if [ "$#" -ne 2 ] || [ -z "$payload" ]; then
     printf '%s\n' 'missing launcher payload' >&2
     exit 64
@@ -1120,6 +1121,9 @@ const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
 // expand a byte into six (a \uXXXX escape), so a file inside the file cap can still serialize
 // into something no channel should be asked to carry.
 const MAX_WORKSPACE_REPLY_BYTES = 8 * 1024 * 1024;
+const MAX_REPOSITORY_STATUS_BYTES = 1024 * 1024;
+const MAX_REPOSITORY_DIFF_BYTES = 4 * 1024 * 1024;
+const REPOSITORY_GIT_TIMEOUT_MS = 30_000;
 
 function taskReply(value) {
   writeReplySync(`${JSON.stringify(value)}\n`);
@@ -1149,6 +1153,425 @@ function writeReplySync(text) {
   }
 }
 
+// Repository Review: bounded reads plus generation-checked stage, unstage, and commit.
+// Git is invoked directly with fixed verbs (never through a shell), and repository identity
+// is revalidated for every operation.
+function runRepositoryMode() {
+  const os = require("node:os");
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const crypto = require("node:crypto");
+  const { spawnSync } = require("node:child_process");
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const absolute = (value) => typeof value === "string" && path.isAbsolute(value) &&
+    Buffer.byteLength(value) <= MAX_WORKSPACE_PATH_BYTES && !/[\u0000-\u001f\u007f]/.test(value);
+  const relative = (value) => typeof value === "string" && value.length > 0 &&
+    !value.startsWith("/") && Buffer.byteLength(value) <= MAX_WORKSPACE_PATH_BYTES &&
+    !/[\u0000-\u001f\u007f]/.test(value) && !value.split("/").includes("..");
+  const reply = (value) => {
+    let line = `${JSON.stringify(value)}\n`;
+    if (Buffer.byteLength(line) > MAX_WORKSPACE_REPLY_BYTES && value?.ok === true && typeof value.text === "string") {
+      let low = 0;
+      let high = value.text.length;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        const candidate = `${JSON.stringify({ ...value, text: value.text.slice(0, middle), truncated: true })}\n`;
+        if (Buffer.byteLength(candidate) <= MAX_WORKSPACE_REPLY_BYTES) low = middle;
+        else high = middle - 1;
+      }
+      line = `${JSON.stringify({ ...value, text: value.text.slice(0, low), truncated: true })}\n`;
+    }
+    if (Buffer.byteLength(line) > MAX_WORKSPACE_REPLY_BYTES) {
+      writeReplySync(`${JSON.stringify({ ok: false, reason: "gitUnavailable", detail: "Repository reply exceeded its safety limit.", applied: false })}\n`);
+    } else {
+      writeReplySync(line);
+    }
+    process.exit(0);
+  };
+  const gitEnvironment = (indexPath = null) => {
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.toUpperCase().startsWith("GIT_")) delete env[key];
+    Object.assign(env, {
+      GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C",
+      GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
+    });
+    if (indexPath) env.GIT_INDEX_FILE = indexPath;
+    return env;
+  };
+  const git = (root, args, maxBuffer = 64 * 1024, indexPath = null) => spawnSync(
+    "git", ["-C", root, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args], {
+      encoding: "buffer", maxBuffer, timeout: REPOSITORY_GIT_TIMEOUT_MS, killSignal: "SIGKILL",
+      input: Buffer.alloc(0),
+      env: gitEnvironment(indexPath),
+      windowsHide: true,
+    },
+  );
+  const detailOf = (result) => {
+    if (result.error?.code === "ENOENT") return "Git executable was not found.";
+    return result.error?.message || result.stderr?.toString("utf8").trim() || "Git could not inspect this workspace.";
+  };
+  const operationOf = (root) => {
+    const result = git(root, ["rev-parse", "--absolute-git-dir"]);
+    if (result.error || result.status !== 0) return null;
+    const gitDir = result.stdout.toString("utf8").trim();
+    const markers = [["MERGE_HEAD", "merge"], ["rebase-merge", "rebase"], ["rebase-apply", "rebase"],
+      ["CHERRY_PICK_HEAD", "cherryPick"], ["REVERT_HEAD", "revert"], ["BISECT_LOG", "bisect"]];
+    return markers.find(([marker]) => fs.existsSync(path.join(gitDir, marker)))?.[1] ?? null;
+  };
+  const worktreePaths = (porcelain) => {
+    const records = porcelain.split("\0");
+    const paths = [];
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index];
+      if (record.startsWith("1 ")) {
+        const fields = record.split(" ", 9);
+        if (fields[1]?.[1] !== "." && fields[8] != null) paths.push(fields[8]);
+      } else if (record.startsWith("2 ")) {
+        const fields = record.split(" ", 10);
+        if (fields[1]?.[1] !== "." && fields[9] != null) paths.push(fields[9]);
+        index += 1;
+      } else if (record.startsWith("u ")) {
+        const fields = record.split(" ", 11);
+        if (fields[10] != null) paths.push(fields[10]);
+      } else if (record.startsWith("? ")) {
+        paths.push(record.slice(2));
+      }
+    }
+    return [...new Set(paths)].sort();
+  };
+  const updateHashSegment = (hasher, bytes) => {
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64LE(BigInt(bytes.length));
+    hasher.update(length);
+    hasher.update(bytes);
+  };
+  const worktreeFingerprint = (root, porcelain, depth = 0) => {
+    if (depth > 8) throw new Error("submodule nesting exceeded the generation safety limit");
+    const hasher = crypto.createHash("sha256");
+    let totalBytes = 0;
+    for (const relativePath of worktreePaths(porcelain)) {
+      updateHashSegment(hasher, Buffer.from(relativePath));
+      const absolutePath = path.join(root, relativePath);
+      let metadata;
+      try { metadata = fs.lstatSync(absolutePath); }
+      catch (error) {
+        if (error?.code === "ENOENT") { updateHashSegment(hasher, Buffer.from("missing")); continue; }
+        throw new Error(`inspect \`${relativePath}\` for generation: ${error.message}`);
+      }
+      if (metadata.isSymbolicLink()) {
+        updateHashSegment(hasher, Buffer.from("symlink"));
+        const target = fs.readlinkSync(absolutePath, { encoding: "buffer" });
+        totalBytes += target.length;
+        updateHashSegment(hasher, target);
+      } else if (metadata.isFile()) {
+        updateHashSegment(hasher, Buffer.from("file"));
+        const fileHasher = crypto.createHash("sha256");
+        const descriptor = fs.openSync(absolutePath, "r");
+        try {
+          const buffer = Buffer.allocUnsafe(64 * 1024);
+          for (;;) {
+            const count = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+            if (count === 0) break;
+            totalBytes += count;
+            fileHasher.update(buffer.subarray(0, count));
+          }
+        } finally { fs.closeSync(descriptor); }
+        updateHashSegment(hasher, fileHasher.digest());
+      } else if (metadata.isDirectory()) {
+        updateHashSegment(hasher, Buffer.from("directory"));
+        const head = git(absolutePath, ["rev-parse", "HEAD"]);
+        if (head.error || head.status !== 0) throw new Error(`inspect submodule \`${relativePath}\`: ${detailOf(head)}`);
+        const nested = statusOf(absolutePath);
+        if (nested.error) throw new Error(`inspect submodule \`${relativePath}\`: ${nested.error}`);
+        totalBytes += Buffer.byteLength(nested.porcelain);
+        updateHashSegment(hasher, head.stdout);
+        updateHashSegment(hasher, Buffer.from(worktreeFingerprint(absolutePath, nested.porcelain, depth + 1)));
+        updateHashSegment(hasher, Buffer.from(nested.porcelain));
+      } else {
+        updateHashSegment(hasher, Buffer.from("other"));
+        updateHashSegment(hasher, Buffer.from(String(metadata.size)));
+      }
+    }
+    return `content-${totalBytes.toString(16)}-${hasher.digest("hex")}`;
+  };
+  const ensureSafeRepositoryConfig = (root) => {
+    const configured = git(root, ["config", "--local", "--get-regexp", "^filter\\..*\\.(clean|process)$"]);
+    if (configured.status === 0 && configured.stdout.length > 0) {
+      return "unsafeRepositoryConfiguration: executable Git clean filters are not supported";
+    }
+    if (configured.status !== 1) return detailOf(configured);
+    return null;
+  };
+  const mutationEntries = (porcelain) => {
+    const records = porcelain.split("\0");
+    const entries = [];
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index];
+      if (record.startsWith("1 ")) {
+        const fields = record.split(" ", 9);
+        if (fields[1] && fields[8] != null) entries.push({
+          path: fields[8], originalPath: null, indexChanged: fields[1][0] !== ".", worktreeChanged: fields[1][1] !== ".",
+        });
+      } else if (record.startsWith("2 ")) {
+        const fields = record.split(" ", 10);
+        if (fields[1] && fields[9] != null) entries.push({
+          path: fields[9], originalPath: records[index + 1] ?? null,
+          indexChanged: fields[1][0] !== ".", worktreeChanged: fields[1][1] !== ".",
+        });
+        index += 1;
+      } else if (record.startsWith("u ")) {
+        const fields = record.split(" ", 11);
+        if (fields[10] != null) entries.push({ path: fields[10], originalPath: null, indexChanged: true, worktreeChanged: true });
+      } else if (record.startsWith("? ")) {
+        entries.push({ path: record.slice(2), originalPath: null, indexChanged: false, worktreeChanged: true });
+      }
+    }
+    return entries;
+  };
+  const validatedMutationPaths = (porcelain, operation, requestedPath, originalPath) => {
+    const entry = mutationEntries(porcelain).find((candidate) => candidate.path === requestedPath);
+    if (!entry || (operation === "stage" ? !entry.worktreeChanged : !entry.indexChanged) ||
+        entry.originalPath !== (originalPath ?? null)) return null;
+    return entry.originalPath ? [entry.path, entry.originalPath] : [entry.path];
+  };
+  const gitDirectory = (root) => {
+    const result = git(root, ["rev-parse", "--absolute-git-dir"]);
+    if (result.error || result.status !== 0) throw new Error(detailOf(result));
+    return result.stdout.toString("utf8").trim();
+  };
+  const acquireIndexLock = (root) => {
+    const gitDir = gitDirectory(root);
+    const lockPath = path.join(gitDir, "index.lock");
+    let descriptor;
+    try { descriptor = fs.openSync(lockPath, "wx", 0o600); }
+    catch (error) { throw new Error(`indexLocked: cannot acquire ${lockPath}: ${error.message}`); }
+    return { gitDir, lockPath, descriptor };
+  };
+  const releaseIndexLock = (lock) => {
+    if (!lock) return;
+    if (lock.descriptor != null) { try { fs.closeSync(lock.descriptor); } catch { /* cleanup */ } lock.descriptor = null; }
+    try { fs.unlinkSync(lock.lockPath); } catch { /* cleanup */ }
+  };
+  const installIndex = (lock, source) => {
+    const bytes = fs.readFileSync(source);
+    fs.writeFileSync(lock.descriptor, bytes);
+    fs.fsyncSync(lock.descriptor);
+    fs.closeSync(lock.descriptor);
+    lock.descriptor = null;
+    fs.renameSync(lock.lockPath, path.join(lock.gitDir, "index"));
+  };
+  const snapshotIndex = (lock) => {
+    const directory = fs.mkdtempSync(path.join(lock.gitDir, "pi-desktop-index-"));
+    const temporaryIndex = path.join(directory, "index");
+    const liveIndex = path.join(lock.gitDir, "index");
+    if (fs.existsSync(liveIndex)) fs.copyFileSync(liveIndex, temporaryIndex);
+    return { directory, temporaryIndex };
+  };
+  const statusOf = (root) => {
+    const unsafe = ensureSafeRepositoryConfig(root);
+    if (unsafe) return { error: unsafe };
+    const result = git(root, ["-c", "core.quotepath=false", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"], MAX_REPOSITORY_STATUS_BYTES + 1);
+    if (result.error?.code === "ENOBUFS" || (result.stdout?.length ?? 0) > MAX_REPOSITORY_STATUS_BYTES) {
+      return { error: "Repository status exceeded its safety limit." };
+    }
+    if (result.error || result.status !== 0) return { error: detailOf(result) };
+    return { porcelain: result.stdout.toString("utf8"), repositoryOperation: operationOf(root) };
+  };
+  const generationOf = (repoRoot, operation, porcelain, contentFingerprint) => {
+    const hasher = crypto.createHash("sha256");
+    for (const value of [repoRoot, operation ?? "", porcelain, contentFingerprint]) {
+      updateHashSegment(hasher, Buffer.from(value));
+    }
+    return `repo-sha256-${hasher.digest("hex")}`;
+  };
+  const failure = (reason, detail, applied = false) => reply({ ok: false, reason, detail, applied });
+
+  let request;
+  try { request = JSON.parse(process.env.PI_DESKTOP_LAUNCHER_PAYLOAD ?? ""); }
+  catch { failure("gitUnavailable", "Repository payload is not JSON."); }
+  if (!isObject(request) || request.protocolVersion !== 1 ||
+      !["status", "diff", "stage", "unstage", "commit"].includes(request.operation) || !absolute(request.workspaceRoot)) {
+    failure("invalidRequest", "Repository payload is invalid.");
+  }
+  const rootResult = git(request.workspaceRoot, ["rev-parse", "--show-toplevel"]);
+  if (rootResult.error || rootResult.status !== 0) {
+    const detail = detailOf(rootResult);
+    failure(/not a git repository/.test(detail) ? "notRepository" : "gitUnavailable", detail);
+  }
+  const repoRoot = rootResult.stdout.toString("utf8").trim();
+  if (!absolute(repoRoot)) failure("gitUnavailable", "Git returned an invalid repository root.");
+
+  if (request.operation === "status") {
+    if (request.repoRoot != null || request.path != null || request.diffKind != null || request.generation != null || request.originalPath != null || request.message != null) {
+      failure("invalidRequest", "Repository status payload has extra fields.");
+    }
+    const status = statusOf(repoRoot);
+    if (status.error) failure(status.error.startsWith("unsafeRepositoryConfiguration:") ?
+      "unsafeRepositoryConfiguration" : "gitUnavailable", status.error);
+    let contentFingerprint;
+    try { contentFingerprint = worktreeFingerprint(repoRoot, status.porcelain); }
+    catch (error) { failure("gitUnavailable", error.message); }
+    reply({
+      ok: true, repoRoot, porcelain: status.porcelain,
+      generation: generationOf(repoRoot, status.repositoryOperation, status.porcelain, contentFingerprint),
+      operation: status.repositoryOperation,
+    });
+  }
+
+  if (!absolute(request.repoRoot)) failure("invalidRequest", "Repository root is invalid.");
+  let actualRoot = repoRoot;
+  let claimedRoot = request.repoRoot;
+  try { actualRoot = fs.realpathSync(repoRoot); claimedRoot = fs.realpathSync(request.repoRoot); } catch { /* exact fallback */ }
+  if (actualRoot !== claimedRoot) failure("repositoryChanged", "Repository identity changed; refresh status and try again.");
+
+  if (request.operation === "diff") {
+    if (!relative(request.path) || !["staged", "unstaged"].includes(request.diffKind) ||
+        request.generation != null || request.originalPath != null || request.message != null) {
+      failure("invalidRequest", "Repository diff payload is invalid.");
+    }
+    const args = ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
+    if (request.diffKind === "staged") args.push("--cached");
+    args.push("--", request.path);
+    const result = git(repoRoot, args, MAX_REPOSITORY_DIFF_BYTES + 1);
+    const overflow = result.error?.code === "ENOBUFS" || (result.stdout?.length ?? 0) > MAX_REPOSITORY_DIFF_BYTES;
+    if ((result.error && !overflow) || (result.status !== 0 && !overflow)) failure("gitUnavailable", detailOf(result));
+    const bytes = (result.stdout ?? Buffer.alloc(0)).subarray(0, MAX_REPOSITORY_DIFF_BYTES);
+    reply({ ok: true, text: bytes.toString("utf8"), truncated: overflow });
+  }
+
+  if (typeof request.generation !== "string" || request.generation.length === 0 ||
+      !["stage", "unstage", "commit"].includes(request.operation)) {
+    failure("invalidRequest", "Repository mutation payload is invalid.");
+  }
+  if (["stage", "unstage"].includes(request.operation)) {
+    if (!relative(request.path) || (request.originalPath != null && !relative(request.originalPath)) ||
+        request.diffKind != null || request.message != null) {
+      failure("invalidRequest", "Stage or unstage payload is invalid.");
+    }
+  } else if (request.path != null || request.originalPath != null || request.diffKind != null ||
+      typeof request.message !== "string" || request.message.trim().length === 0 ||
+      Buffer.byteLength(request.message) > 4096 || request.message.includes("\0")) {
+    failure(request.message?.trim?.().length === 0 ? "emptyMessage" : "invalidRequest", "Commit message is invalid.");
+  }
+
+  const before = statusOf(repoRoot);
+  if (before.error) failure(before.error.startsWith("unsafeRepositoryConfiguration:") ?
+    "unsafeRepositoryConfiguration" : "gitUnavailable", before.error);
+  let beforeFingerprint;
+  try { beforeFingerprint = worktreeFingerprint(repoRoot, before.porcelain); }
+  catch (error) { failure("gitUnavailable", error.message); }
+  if (generationOf(repoRoot, before.repositoryOperation, before.porcelain, beforeFingerprint) !== request.generation) {
+    failure("staleGeneration", "Repository files or index changed; refresh and review before writing.");
+  }
+  if (before.porcelain.split("\0").some((record) => record.startsWith("u "))) {
+    failure("conflictsPresent", "Resolve repository conflicts before staging or committing.");
+  }
+  if (before.repositoryOperation) failure("operationInProgress", "Finish the current Git operation before staging or committing.");
+
+  const mutationPaths = request.operation === "commit" ? null :
+    validatedMutationPaths(before.porcelain, request.operation, request.path, request.originalPath);
+  if (request.operation !== "commit" && !mutationPaths) {
+    failure("invalidRequest", "Repository path did not identify exactly one reviewed file.");
+  }
+
+  let indexLock = null;
+  let temporary = null;
+  const cleanupMutation = () => {
+    if (temporary) { try { fs.rmSync(temporary.directory, { recursive: true, force: true }); } catch { /* cleanup */ } }
+    releaseIndexLock(indexLock);
+    indexLock = null;
+  };
+  const lockedFailure = (reason, detail, applied = false) => { cleanupMutation(); failure(reason, detail, applied); };
+  try { indexLock = acquireIndexLock(repoRoot); }
+  catch (error) { failure("indexLocked", error.message); }
+
+  const locked = statusOf(repoRoot);
+  if (locked.error) lockedFailure(locked.error.startsWith("unsafeRepositoryConfiguration:") ?
+    "unsafeRepositoryConfiguration" : "gitUnavailable", locked.error);
+  let lockedFingerprint;
+  try { lockedFingerprint = worktreeFingerprint(repoRoot, locked.porcelain); }
+  catch (error) { lockedFailure("gitUnavailable", error.message); }
+  if (locked.repositoryOperation !== before.repositoryOperation ||
+      generationOf(repoRoot, locked.repositoryOperation, locked.porcelain, lockedFingerprint) !== request.generation) {
+    lockedFailure("staleGeneration", "Repository files or index changed before the write lock was acquired.");
+  }
+  try { temporary = snapshotIndex(indexLock); }
+  catch (error) { lockedFailure("gitUnavailable", `Could not snapshot the reviewed index: ${error.message}`); }
+
+  let expectedCommitTree = null;
+  let result;
+  if (request.operation === "stage") {
+    result = git(repoRoot, ["--literal-pathspecs", "add", "--all", "--", ...mutationPaths],
+      64 * 1024, temporary.temporaryIndex);
+  } else if (request.operation === "unstage") {
+    const head = git(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+    const args = head.status === 0
+      ? ["--literal-pathspecs", "reset", "-q", "HEAD", "--", ...mutationPaths]
+      : ["--literal-pathspecs", "rm", "--cached", "-q", "--ignore-unmatch", "--", ...mutationPaths];
+    result = git(repoRoot, args, 64 * 1024, temporary.temporaryIndex);
+  } else {
+    const staged = git(repoRoot, ["diff", "--cached", "--quiet", "--exit-code"],
+      64 * 1024, temporary.temporaryIndex);
+    if (staged.status === 0) lockedFailure("nothingStaged", "There are no explicitly staged changes to commit.");
+    if (staged.status !== 1) lockedFailure("gitUnavailable", detailOf(staged));
+    const tree = git(repoRoot, ["write-tree"], 64 * 1024, temporary.temporaryIndex);
+    if (tree.error || tree.status !== 0) lockedFailure("gitUnavailable", detailOf(tree));
+    expectedCommitTree = tree.stdout.toString("utf8").trim();
+    const oldHeadResult = git(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+    const oldHead = oldHeadResult.status === 0 ? oldHeadResult.stdout.toString("utf8").trim() : null;
+    let hooksDir;
+    try { hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-desktop-hooks-")); }
+    catch (error) { lockedFailure("gitUnavailable", `Could not isolate Git hooks: ${error.message}`); }
+    const commitArgs = ["-c", "commit.gpgSign=false", "-c", `core.hooksPath=${hooksDir}`,
+      "commit-tree", expectedCommitTree];
+    if (oldHead) commitArgs.push("-p", oldHead);
+    commitArgs.push("-m", request.message);
+    let commitTree;
+    try { commitTree = git(repoRoot, commitArgs, 64 * 1024, temporary.temporaryIndex); }
+    finally { try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ } }
+    if (commitTree.error || commitTree.status !== 0) lockedFailure("gitUnavailable", detailOf(commitTree));
+    const commitOid = commitTree.stdout.toString("utf8").trim();
+    const symbolic = git(repoRoot, ["symbolic-ref", "-q", "HEAD"]);
+    const reference = symbolic.status === 0 ? symbolic.stdout.toString("utf8").trim() : "HEAD";
+    result = git(repoRoot, ["update-ref", reference, commitOid, oldHead ?? "0".repeat(commitOid.length)]);
+    if (result.error || result.status !== 0) {
+      lockedFailure("staleGeneration", detailOf(result));
+    }
+  }
+  if (result.error || result.status !== 0) {
+    const detail = detailOf(result);
+    lockedFailure(/index\.lock|indexLocked:|Unable to create/.test(detail) ? "indexLocked" : "gitUnavailable", detail);
+  }
+  if (request.operation === "stage" || request.operation === "unstage") {
+    try { installIndex(indexLock, temporary.temporaryIndex); }
+    catch (error) { lockedFailure("gitUnavailable", `Could not install repository index: ${error.message}`); }
+  }
+  cleanupMutation();
+  if (expectedCommitTree !== null) {
+    const committedTree = git(repoRoot, ["show", "-s", "--format=%T", "HEAD"]);
+    if (committedTree.error || committedTree.status !== 0 ||
+        committedTree.stdout.toString("utf8").trim() !== expectedCommitTree) {
+      failure("refreshFailed", detailOf(committedTree) || "Committed tree did not match the reviewed index.", true);
+    }
+  }
+
+  const after = statusOf(repoRoot);
+  if (after.error) failure("refreshFailed", after.error, true);
+  let afterFingerprint;
+  try { afterFingerprint = worktreeFingerprint(repoRoot, after.porcelain); }
+  catch (error) { failure("refreshFailed", error.message, true); }
+  let commitOid = null;
+  if (request.operation === "commit") {
+    const oid = git(repoRoot, ["rev-parse", "HEAD"]);
+    if (!oid.error && oid.status === 0) commitOid = oid.stdout.toString("utf8").trim();
+  }
+  reply({
+    ok: true, repoRoot, porcelain: after.porcelain,
+    generation: generationOf(repoRoot, after.repositoryOperation, after.porcelain, afterFingerprint),
+    repositoryOperation: after.repositoryOperation, commitOid, applied: true,
+  });
+}
+
 /**
  * Loud on both channels. A probe that answered failure with silence would be
  * indistinguishable from a host that genuinely has no tasks — the exact trap that
@@ -1162,6 +1585,7 @@ function taskFail(errorCode, detail) {
 // `--supervise` is the one mode that returns instead of exiting, because it has to
 // stay in the event loop. That makes this an either/or rather than a fall-through.
 if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--workspace") runWorkspaceMode();
+else if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--repository") runRepositoryMode();
 else if (TASK_MODES.includes(process.env.PI_DESKTOP_LAUNCHER_MODE)) runTaskMode();
 else runLauncherMode();
 
@@ -1700,6 +2124,7 @@ function runWorkspaceWrite(context) {
 
 function runTaskMode() {
   const fs = require("node:fs");
+  const crypto = require("node:crypto");
   const path = require("node:path");
   const os = require("node:os");
   const mode = process.env.PI_DESKTOP_LAUNCHER_MODE;
@@ -1820,10 +2245,8 @@ function runTaskMode() {
   const hasOnlyTaskKeys = (value, allowed) =>
     isObject(value) && Object.keys(value).every((key) => allowed.includes(key));
 
-  // The `(key, fingerprint, expiry)` triple comes from task_manager.rs. A malformed
-  // file is treated as empty rather than fatal: losing idempotency history degrades
-  // a retry into a possible duplicate, but refusing to send at all would strand the
-  // task with no way back.
+  // The supervisor owns the durable record. New records move from pending to sent only
+  // after Node confirms that the payload was handed to the Pi stdin stream.
   const readSendRecords = (target) => {
     let text;
     try { text = fs.readFileSync(target, "utf8"); } catch { return []; }
@@ -1831,8 +2254,10 @@ function runTaskMode() {
     try { parsed = JSON.parse(text); } catch { return []; }
     if (!isObject(parsed) || !Array.isArray(parsed.sends)) return [];
     return parsed.sends.filter((record) =>
-      hasOnlyTaskKeys(record, ["key", "fingerprint", "bytes", "sentAt", "expiresAt"]) &&
+      hasOnlyTaskKeys(record, ["key", "fingerprint", "attemptId", "state", "bytes", "sentAt", "expiresAt"]) &&
       typeof record.key === "string" && typeof record.fingerprint === "string" &&
+      (record.attemptId === undefined || /^[a-f0-9]{32}$/.test(record.attemptId)) &&
+      (record.state === undefined || record.state === "pending" || record.state === "sent") &&
       Number.isSafeInteger(record.bytes) && Number.isSafeInteger(record.sentAt) &&
       Number.isSafeInteger(record.expiresAt));
   };
@@ -1866,6 +2291,7 @@ function runTaskMode() {
       remoteTaskId: taskId,
       previousTaskId: status.previousTaskId ?? null,
       state: stale ? "exited" : status.state,
+      busy: !stale && !terminal && status.busy === true,
       // Once a death has been recorded as unwitnessed it stays that way: a repaired
       // record must not read as a clean exit on the next poll.
       stale: stale || status.stale === true,
@@ -2041,8 +2467,12 @@ function runTaskMode() {
       idempotencyKey = envelope.idempotencyKey;
       bytes = Buffer.from(envelope.payload, "utf8");
     }
-    const fingerprint = require("node:crypto").createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+    const fingerprint = crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 32);
 
+    const attemptId = idempotencyKey === null ? null : crypto.randomBytes(16).toString("hex");
+    const wireBytes = idempotencyKey === null ? bytes : Buffer.from(`${JSON.stringify({
+      type: "pi-desktop-send-v1", idempotencyKey, fingerprint, attemptId, payload: bytes.toString("base64"),
+    })}\n`, "utf8");
     // Exclusive writer, same mkdir lock provider-sync uses: two desktops attached to
     // one task must not interleave halves of two JSONL lines into pi's stdin. Held
     // for one send, not a whole session, so a second desktop can take over without
@@ -2069,50 +2499,56 @@ function runTaskMode() {
     if (!owned) taskFail("taskLockTimeout");
     const fail = (errorCode, detail) => { release(); taskFail(errorCode, detail); };
 
-    // Written under the same lock that guards the FIFO, so the record and the write
-    // it describes cannot disagree.
-    let records = [];
+    // The supervisor owns the durable pending/sent transition. This short-lived
+    // SSH process succeeds only after observing the sent state.
+    let shouldWrite = true;
     if (idempotencyKey !== null) {
-      const stored = readSendRecords(sendsPath);
-      const now = Date.now();
-      records = stored.filter((record) => record.expiresAt > now);
+      const records = readSendRecords(sendsPath).filter((record) => record.expiresAt > Date.now());
       const existing = records.find((record) => record.key === idempotencyKey);
       if (existing) {
         if (existing.fingerprint !== fingerprint) fail("sendIdempotencyConflict", idempotencyKey);
-        release();
-        taskReply({
-          ok: true,
-          remoteTaskId: argument,
-          bytes: existing.bytes,
-          duplicate: true,
-          idempotencyKey,
-          sentAt: existing.sentAt,
-        });
+        if (existing.state === "pending") {
+          shouldWrite = false;
+        } else {
+          release();
+          taskReply({ ok: true, remoteTaskId: argument, bytes: existing.bytes, duplicate: true,
+            idempotencyKey, sentAt: existing.sentAt });
+        }
       }
     }
-    let written = 0;
-    try {
-      const fd = fs.openSync(fifo, fs.constants.O_WRONLY | noFollow);
+    let transferred = 0;
+    if (shouldWrite) {
       try {
-        fs.writeSync(fd, bytes);
-        written = bytes.length;
-      } finally {
-        fs.closeSync(fd);
+        const fd = fs.openSync(fifo, fs.constants.O_WRONLY | noFollow);
+        try {
+          while (transferred < wireBytes.length) {
+            const count = fs.writeSync(fd, wireBytes, transferred, wireBytes.length - transferred);
+            if (count <= 0) throw new Error("FIFO write made no progress");
+            transferred += count;
+          }
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch (error) {
+        fail("taskWriteFailed", error?.message);
       }
-    } catch (error) {
-      fail("taskWriteFailed", error?.message);
     }
     if (idempotencyKey !== null) {
-      const sentAt = Date.now();
-      records.push({ key: idempotencyKey, fingerprint, bytes: written, sentAt, expiresAt: sentAt + SEND_IDEMPOTENCY_TTL_MS });
-      // Oldest-first so a burst of new keys cannot evict the one being retried.
-      while (records.length > MAX_SEND_RECORDS) records.shift();
-      try { writeSendRecords(sendsPath, directory, records); } catch { /* the write already happened */ }
-      release();
-      taskReply({ ok: true, remoteTaskId: argument, bytes: written, duplicate: false, idempotencyKey, sentAt });
+      const acknowledgementDeadline = Date.now() + STDIN_LOCK_TIMEOUT_MS;
+      while (Date.now() < acknowledgementDeadline) {
+        const record = readSendRecords(sendsPath).find((candidate) => candidate.key === idempotencyKey);
+        if (record && record.state !== "pending") {
+          if (record.fingerprint !== fingerprint) fail("sendIdempotencyConflict", idempotencyKey);
+          release();
+          taskReply({ ok: true, remoteTaskId: argument, bytes: record.bytes,
+            duplicate: record.attemptId !== attemptId, idempotencyKey, sentAt: record.sentAt });
+        }
+        sleep(20);
+      }
+      fail("taskWriteFailed", "the supervisor did not durably acknowledge the send");
     }
     release();
-    taskReply({ ok: true, remoteTaskId: argument, bytes: written });
+    taskReply({ ok: true, remoteTaskId: argument, bytes: bytes.length });
   }
 
   if (mode === "--reap") {
@@ -2246,6 +2682,7 @@ function runTaskMode() {
       remoteTaskId: taskId,
       state: described.state,
       after: payload.after ?? null,
+      busy: described.busy,
       baseSequence: base,
       nextSequence: opening.journal?.nextSequence ?? base,
       snapshotRequired,
@@ -2407,6 +2844,7 @@ function runTaskMode() {
         remoteTaskId: taskId,
         previousTaskId: payload.previousTaskId ?? null,
         state: "starting",
+        busy: false,
         pid: null,
         supervisorPid: null,
         startedAt: Date.now(),
@@ -2591,7 +3029,7 @@ function runTaskMode() {
       if (truncated) record.truncated = true;
       append(record);
     };
-    const framer = (stream) => {
+    const framer = (stream, observe = null) => {
       let pending = Buffer.alloc(0);
       return {
         push(chunk) {
@@ -2599,7 +3037,9 @@ function runTaskMode() {
           for (;;) {
             const index = pending.indexOf(0x0a);
             if (index === -1) break;
-            emit(stream, pending.subarray(0, index));
+            const record = pending.subarray(0, index);
+            if (observe) observe(record);
+            emit(stream, record);
             pending = pending.subarray(index + 1);
           }
           if (pending.length > MAX_EVENT_BYTES) {
@@ -2609,6 +3049,7 @@ function runTaskMode() {
         },
         flush() {
           if (pending.length === 0) return;
+          if (observe) observe(pending);
           emit(stream, pending);
           pending = Buffer.alloc(0);
         },
@@ -2616,7 +3057,7 @@ function runTaskMode() {
     };
 
     const abort = (errorCode, detail) => {
-      commit({ state: "exited", exitCode: null, exitSignal: null, stale: true, errorCode, error: detail ?? null }, true);
+      commit({ state: "exited", busy: false, exitCode: null, exitSignal: null, stale: true, errorCode, error: detail ?? null }, true);
       process.exit(0);
     };
     try { openLive(liveBase); } catch (error) { abort("taskWriteFailed", error?.message); }
@@ -2650,7 +3091,49 @@ function runTaskMode() {
     append({ ts: Date.now(), stream: "control", event: "started", pid: child.pid, supervisorPid: process.pid });
     commit({ state: "running", pid: child.pid, supervisorPid: process.pid }, true);
 
-    const outFramer = framer("stdout");
+
+    let activityEpoch = 0;
+    let activityActive = current.busy === true;
+    let anonymousPending = 0;
+    const pendingTurns = new Map();
+    const publishBusy = () => {
+      commit({ busy: activityActive || anonymousPending > 0 || pendingTurns.size > 0 }, true);
+    };
+    const reserveTurn = (bytes) => {
+      let command;
+      try { command = JSON.parse(bytes.toString("utf8")); } catch { return; }
+      if (command?.type !== "prompt" && command?.type !== "follow_up") return;
+      const requestId = typeof command.id === "string" ? command.id : null;
+      activityEpoch += 1;
+      if (requestId) pendingTurns.set(requestId, activityEpoch);
+      else anonymousPending += 1;
+      publishBusy();
+    };
+    const observeActivity = (bytes) => {
+      let event;
+      try { event = JSON.parse(bytes.toString("utf8")); } catch { return; }
+      if (event?.type === "response" && event.success === false && typeof event.id === "string") {
+        if (!pendingTurns.delete(event.id)) return;
+        activityEpoch += 1;
+        publishBusy();
+        return;
+      }
+      if (event?.type === "agent_start") {
+        activityEpoch += 1;
+        activityActive = true;
+        const first = pendingTurns.keys().next();
+        if (!first.done) pendingTurns.delete(first.value);
+        else if (anonymousPending > 0) anonymousPending -= 1;
+        publishBusy();
+        return;
+      }
+      if (event?.type === "agent_settled" || (event?.type === "agent_end" && event.willRetry !== true)) {
+        activityEpoch += 1;
+        activityActive = false;
+        publishBusy();
+      }
+    };
+    const outFramer = framer("stdout", observeActivity);
     const errFramer = framer("stderr");
     child.stdout.on("data", (chunk) => outFramer.push(chunk));
     child.stderr.on("data", (chunk) => errFramer.push(chunk));
@@ -2659,16 +3142,66 @@ function runTaskMode() {
     // writer closes, which would end input forwarding after the first --send.
     try {
       const net = require("node:net");
+      let inputPending = Buffer.alloc(0);
+      const forwardInput = (line) => {
+        let envelope = null;
+        try { envelope = JSON.parse(line.toString("utf8")); } catch { /* bare Pi command */ }
+        const keyed = isObject(envelope) && hasOnlyTaskKeys(envelope,
+          ["type", "idempotencyKey", "fingerprint", "attemptId", "payload"]) &&
+          envelope.type === "pi-desktop-send-v1";
+        if (!keyed) {
+          reserveTurn(line);
+          try { child.stdin.write(Buffer.concat([line, Buffer.from("\n")])); } catch { /* pi is gone */ }
+          return;
+        }
+        if (!/^[A-Za-z0-9_.-]{1,128}$/.test(envelope.idempotencyKey) ||
+            !/^[a-f0-9]{32}$/.test(envelope.fingerprint) ||
+            !/^[a-f0-9]{32}$/.test(envelope.attemptId) || typeof envelope.payload !== "string") return;
+        let payloadBytes;
+        try { payloadBytes = Buffer.from(envelope.payload, "base64"); } catch { return; }
+        if (payloadBytes.length === 0 || payloadBytes.length > MAX_SEND_BYTES ||
+            crypto.createHash("sha256").update(payloadBytes).digest("hex").slice(0, 32) !== envelope.fingerprint) return;
+        const sendsPath = path.join(directory, "stdin.sends.json");
+        const now = Date.now();
+        const records = readSendRecords(sendsPath).filter((record) => record.expiresAt > now);
+        const existing = records.find((record) => record.key === envelope.idempotencyKey);
+        if (existing) return;
+        records.push({ key: envelope.idempotencyKey, fingerprint: envelope.fingerprint,
+          attemptId: envelope.attemptId, state: "pending", bytes: payloadBytes.length, sentAt: now,
+          expiresAt: now + SEND_IDEMPOTENCY_TTL_MS });
+        while (records.length > MAX_SEND_RECORDS) records.shift();
+        try { writeSendRecords(sendsPath, directory, records); } catch { return; }
+        reserveTurn(payloadBytes);
+        const finalizeSend = (error) => {
+          const current = readSendRecords(sendsPath).filter((record) => record.expiresAt > Date.now());
+          const index = current.findIndex((record) => record.key === envelope.idempotencyKey &&
+            record.fingerprint === envelope.fingerprint && record.attemptId === envelope.attemptId);
+          if (index === -1 || current[index].state !== "pending") return;
+          if (error) current.splice(index, 1);
+          else current[index] = { ...current[index], state: "sent" };
+          try { writeSendRecords(sendsPath, directory, current); } catch { /* sender times out conservatively */ }
+        };
+        try { child.stdin.write(payloadBytes, finalizeSend); } catch (error) { finalizeSend(error); }
+      };
+      const observeInput = (chunk) => {
+        inputPending = inputPending.length > 0 ? Buffer.concat([inputPending, chunk]) : chunk;
+        for (;;) {
+          const index = inputPending.indexOf(0x0a);
+          if (index === -1) break;
+          forwardInput(inputPending.subarray(0, index));
+          inputPending = inputPending.subarray(index + 1);
+        }
+        if (inputPending.length > MAX_SEND_BYTES * 2) inputPending = Buffer.alloc(0);
+      };
       const fifoFd = fs.openSync(
         path.join(directory, "stdin.pipe"),
         fs.constants.O_RDWR | (fs.constants.O_NONBLOCK ?? 0),
       );
       const socket = new net.Socket({ fd: fifoFd, readable: true, writable: false });
       socket.on("error", () => { /* a broken pipe must not kill the task */ });
-      socket.on("data", (chunk) => { try { child.stdin.write(chunk); } catch { /* pi is gone */ } });
+      socket.on("data", observeInput);
       socket.unref();
     } catch { /* no FIFO on this platform; --send reports it */ }
-
     // Deliberately ignored. Run mode forwards SIGHUP to its pi child, and that
     // forwarding is exactly what makes an attached task die with its channel — so
     // a detached task must invert it. SIGTERM and SIGINT still mean a real stop.
@@ -2699,6 +3232,7 @@ function runTaskMode() {
       // released.
       commit({
         state: "exited",
+        busy: false,
         exitCode: code ?? null,
         exitSignal: signal ?? null,
         stopConfirmedAt: stopRequestedAt === null ? null : exitedAt,

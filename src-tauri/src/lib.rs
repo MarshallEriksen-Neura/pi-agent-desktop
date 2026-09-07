@@ -13,6 +13,7 @@ mod remote_control;
 mod remote_profiles;
 mod remote_provider_sync;
 mod remote_terminal;
+mod repository;
 mod skills_cli;
 mod updater;
 mod wsl;
@@ -367,6 +368,10 @@ pub fn run() {
             remote_profiles::remote_profile_capabilities,
             remote_profiles::remote_launcher_autoupgrade,
             remote_profiles::remote_workspace_request,
+            remote_profiles::remote_repository_request,
+            repository::repository_status,
+            repository::repository_diff,
+            repository::repository_mutate,
             remote_profiles::remote_pi_management_request,
             remote_profiles::remote_task_ensure,
             remote_profiles::remote_task_status,

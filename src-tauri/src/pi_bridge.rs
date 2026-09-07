@@ -12,6 +12,7 @@ use pi_backend_core::pi_process::{
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -31,6 +32,64 @@ fn task_key(task_id: Option<String>) -> String {
         DEFAULT_TASK_ID.to_owned()
     } else {
         task.to_owned()
+    }
+}
+
+fn canonical_local_workspace(path: Option<&str>) -> Result<String, String> {
+    let candidate = match path.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => PathBuf::from(value),
+        None => std::env::current_dir()
+            .map_err(|error| format!("resolve current workspace: {error}"))?,
+    };
+    std::fs::canonicalize(&candidate)
+        .map(|value| value.to_string_lossy().into_owned())
+        .map_err(|error| format!("resolve workspace `{}`: {error}", candidate.display()))
+}
+
+fn normalized_remote_workspace(path: &str) -> Option<String> {
+    if !path.starts_with('/') || path.contains('\0') {
+        return None;
+    }
+    let mut components = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            value => components.push(value),
+        }
+    }
+    Some(if components.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("/{}", components.join("/"))
+    })
+}
+
+fn workspace_identity(binding: &ExecutionBinding, cwd: Option<&str>) -> Result<String, String> {
+    match binding {
+        ExecutionBinding::Local { .. } => canonical_local_workspace(cwd),
+        ExecutionBinding::Ssh { remote_cwd, .. } => normalized_remote_workspace(remote_cwd)
+            .ok_or_else(|| "remote workspace identity must be an absolute path".to_owned()),
+    }
+}
+
+fn workspace_matches(process: &ManagedProcess, claimed: &str) -> Result<bool, String> {
+    match &process.execution_binding {
+        ExecutionBinding::Local { .. } => {
+            let claimed = canonical_local_workspace(Some(claimed))?;
+            #[cfg(windows)]
+            {
+                Ok(process.workspace_root.eq_ignore_ascii_case(&claimed))
+            }
+            #[cfg(not(windows))]
+            {
+                Ok(process.workspace_root == claimed)
+            }
+        }
+        ExecutionBinding::Ssh { .. } => Ok(normalized_remote_workspace(claimed)
+            .is_some_and(|value| value == process.workspace_root)),
     }
 }
 
@@ -62,12 +121,160 @@ struct PiExitEvent {
 /// One or more independently-running `pi --mode rpc` processes, keyed by task
 /// id. A task's process is a full agent loop over its own session file, so
 /// parallel conversations each get their own process.
-pub struct PiProc(pub Mutex<PiRuntime>);
+pub struct PiProc(pub Mutex<PiRuntime>, AtomicBool);
 
 struct ManagedProcess {
     process: Arc<PiProcess>,
     target_id: String,
     execution_binding: ExecutionBinding,
+    workspace_root: String,
+    activity: Arc<PiActivity>,
+}
+
+#[derive(Clone, Copy)]
+struct TurnReservation {
+    token: u64,
+    reused: bool,
+}
+
+#[derive(Clone)]
+struct PendingTurn {
+    token: u64,
+    request_id: Option<String>,
+    idempotency_key: Option<String>,
+}
+
+#[derive(Default)]
+struct PiActivityState {
+    active: bool,
+    epoch: u64,
+    pending: Vec<PendingTurn>,
+}
+
+#[derive(Default)]
+struct PiActivity(Mutex<PiActivityState>);
+
+impl PiActivity {
+    fn is_busy(&self) -> bool {
+        self.0
+            .lock()
+            .map(|state| state.active || !state.pending.is_empty())
+            .unwrap_or(true)
+    }
+
+    fn reserve_turn(
+        &self,
+        request_id: Option<&str>,
+        idempotency_key: Option<&str>,
+    ) -> Result<TurnReservation, String> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| "Pi activity lock is poisoned".to_owned())?;
+        if let Some(key) = idempotency_key {
+            if let Some(existing) = state
+                .pending
+                .iter()
+                .find(|pending| pending.idempotency_key.as_deref() == Some(key))
+            {
+                return Ok(TurnReservation {
+                    token: existing.token,
+                    reused: true,
+                });
+            }
+        }
+        state.epoch = state.epoch.wrapping_add(1);
+        let token = state.epoch;
+        state.pending.push(PendingTurn {
+            token,
+            request_id: request_id.map(str::to_owned),
+            idempotency_key: idempotency_key.map(str::to_owned),
+        });
+        Ok(TurnReservation {
+            token,
+            reused: false,
+        })
+    }
+
+    fn restore_if_current(&self, reservation: TurnReservation) {
+        let Ok(mut state) = self.0.lock() else {
+            return;
+        };
+        state
+            .pending
+            .retain(|pending| pending.token != reservation.token);
+    }
+
+    fn apply_line(&self, line: &str) {
+        let Ok(mut event) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            return;
+        };
+        if event.get("type").and_then(serde_json::Value::as_str) == Some("event")
+            && event.get("stream").and_then(serde_json::Value::as_str) == Some("stdout")
+        {
+            let Some(data) = event.get("data").and_then(serde_json::Value::as_str) else {
+                return;
+            };
+            let Ok(inner) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
+                return;
+            };
+            event = inner;
+        }
+        let Ok(mut state) = self.0.lock() else {
+            return;
+        };
+        match event.get("type").and_then(serde_json::Value::as_str) {
+            Some("attached") => {
+                let Some(busy) = event.get("busy").and_then(serde_json::Value::as_bool) else {
+                    return;
+                };
+                state.epoch = state.epoch.wrapping_add(1);
+                state.active = busy;
+            }
+            Some("response")
+                if event.get("success").and_then(serde_json::Value::as_bool) == Some(false) =>
+            {
+                let Some(id) = event.get("id").and_then(serde_json::Value::as_str) else {
+                    return;
+                };
+                state
+                    .pending
+                    .retain(|pending| pending.request_id.as_deref() != Some(id));
+            }
+            Some("agent_start") => {
+                state.epoch = state.epoch.wrapping_add(1);
+                state.active = true;
+                if !state.pending.is_empty() {
+                    state.pending.remove(0);
+                }
+            }
+            Some("agent_settled") => {
+                state.epoch = state.epoch.wrapping_add(1);
+                state.active = false;
+            }
+            Some("agent_end")
+                if event.get("willRetry").and_then(serde_json::Value::as_bool) != Some(true) =>
+            {
+                state.epoch = state.epoch.wrapping_add(1);
+                state.active = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+enum PiSendReservation {
+    Detached {
+        profile_id: String,
+        remote_task_id: String,
+        activity: Arc<PiActivity>,
+        turn: Option<TurnReservation>,
+    },
+    Attached {
+        process: Arc<PiProcess>,
+        activity: Arc<PiActivity>,
+        turn: Option<TurnReservation>,
+    },
 }
 
 pub struct PiRuntime {
@@ -77,10 +284,76 @@ pub struct PiRuntime {
 
 impl Default for PiProc {
     fn default() -> Self {
-        Self(Mutex::new(PiRuntime {
-            next_generation: 1,
-            processes: HashMap::new(),
-        }))
+        Self(
+            Mutex::new(PiRuntime {
+                next_generation: 1,
+                processes: HashMap::new(),
+            }),
+            AtomicBool::new(false),
+        )
+    }
+}
+
+fn command_turn_request_id(line: &str) -> Option<Option<String>> {
+    let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let kind = value.get("type").and_then(serde_json::Value::as_str)?;
+    if !matches!(kind, "prompt" | "follow_up") {
+        return None;
+    }
+    Some(
+        value
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    )
+}
+
+fn command_starts_turn(line: &str) -> bool {
+    command_turn_request_id(line).is_some()
+}
+
+fn update_busy_from_line(activity: &PiActivity, line: &str) {
+    activity.apply_line(line);
+}
+
+pub(crate) struct RepositoryWriteGuard<'a>(&'a AtomicBool);
+
+impl Drop for RepositoryWriteGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+impl PiProc {
+    pub(crate) fn begin_repository_write(
+        &self,
+        target_id: &str,
+        workspace_root: &str,
+    ) -> Result<RepositoryWriteGuard<'_>, String> {
+        let runtime = self
+            .0
+            .lock()
+            .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
+        for process in runtime.processes.values() {
+            if process.target_id == target_id
+                && process.activity.is_busy()
+                && workspace_matches(process, workspace_root)?
+            {
+                return Err("Pi is running for this workspace.".to_owned());
+            }
+        }
+        // This reservation and pi_send's turn reservation are both performed while
+        // holding the runtime mutex. Neither side can pass its check before the other
+        // publishes its state, closing the check-then-act race between Git and Pi.
+        if self
+            .1
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err("Another repository write is already in progress.".to_owned());
+        }
+        drop(runtime);
+        Ok(RepositoryWriteGuard(&self.1))
     }
 }
 
@@ -151,6 +424,7 @@ pub fn pi_start(
         }
         ExecutionBinding::Ssh { profile_id, .. } => format!("ssh:{profile_id}"),
     };
+    let workspace_root = workspace_identity(&binding, cwd.as_deref())?;
     let is_remote = matches!(binding, ExecutionBinding::Ssh { .. });
     if !is_remote {
         // Retry immediately before local Pi reads settings. A failure leaves the
@@ -175,6 +449,11 @@ pub fn pi_start(
             if managed.execution_binding != binding {
                 return Err(format!(
                     "task `{task}` is already bound to a different execution target or profile revision"
+                ));
+            }
+            if !workspace_matches(managed, &workspace_root)? {
+                return Err(format!(
+                    "task `{task}` is already running in a different workspace"
                 ));
             }
             return Ok(PiStartResult {
@@ -247,6 +526,8 @@ pub fn pi_start(
         .ok_or("Pi process generation overflow")?;
     let task_for_sink = task.clone();
     let target_for_sink = target_id.clone();
+    let activity = Arc::new(PiActivity::default());
+    let activity_for_sink = activity.clone();
     let process =
         PiProcess::spawn(
             generation,
@@ -254,6 +535,7 @@ pub fn pi_start(
             ProcessLimits::default(),
             move |event| match event {
                 ProcessEvent::Stdout(line) => {
+                    update_busy_from_line(&activity_for_sink, &line);
                     let _ = app.emit(
                         "pi://line",
                         PiLineEvent {
@@ -298,12 +580,100 @@ pub fn pi_start(
             process: Arc::new(process),
             target_id: target_id.clone(),
             execution_binding: binding,
+            workspace_root,
+            activity,
         },
     );
     Ok(PiStartResult {
         generation,
         target_id,
     })
+}
+
+fn reserve_pi_send(
+    state: &PiProc,
+    task: &str,
+    starts_turn: bool,
+    request_id: Option<&str>,
+    idempotency_key: Option<&str>,
+    expected_generation: u64,
+    expected_target_id: &str,
+) -> Result<PiSendReservation, String> {
+    let runtime = state
+        .0
+        .lock()
+        .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
+    if starts_turn && state.1.load(Ordering::Acquire) {
+        return Err("a repository write is in progress".to_owned());
+    }
+    let managed = runtime.processes.get(task).ok_or("pi is not running")?;
+    validate_process_identity(managed, expected_generation, expected_target_id)?;
+    let turn = if starts_turn {
+        // Publish busy before releasing the same mutex repository writes use for
+        // their final check. A write can now observe either the old idle state and
+        // reserve first, or this busy state, but never the gap between send and mark.
+        Some(managed.activity.reserve_turn(request_id, idempotency_key)?)
+    } else {
+        None
+    };
+    match &managed.execution_binding {
+        ExecutionBinding::Ssh {
+            profile_id,
+            remote_task_id: Some(remote_task_id),
+            ..
+        } => Ok(PiSendReservation::Detached {
+            profile_id: profile_id.clone(),
+            remote_task_id: remote_task_id.clone(),
+            activity: managed.activity.clone(),
+            turn,
+        }),
+        // Local, or attached remote: the child's stdin *is* pi's stdin.
+        _ => Ok(PiSendReservation::Attached {
+            process: managed.process.clone(),
+            activity: managed.activity.clone(),
+            turn,
+        }),
+    }
+}
+
+fn settle_detached_send(
+    activity: &PiActivity,
+    turn: Option<TurnReservation>,
+    result: Result<bool, String>,
+) -> Result<(), String> {
+    match result {
+        Ok(duplicate) => {
+            if duplicate {
+                if let Some(turn) = turn.filter(|turn| !turn.reused) {
+                    // A duplicate can settle only a reservation created by this retry.
+                    // Reused pending work remains busy until Pi emits lifecycle evidence.
+                    activity.restore_if_current(turn);
+                }
+            }
+            Ok(())
+        }
+        Err(error) => {
+            // A failed SSH round trip is delivery-ambiguous: the FIFO write may have landed
+            // before the reply was lost. Keep this keyed reservation until it is retried or
+            // an authoritative response/lifecycle event settles it.
+            Err(error)
+        }
+    }
+}
+
+fn send_attached(
+    process: &PiProcess,
+    activity: &PiActivity,
+    turn: Option<TurnReservation>,
+    line: &str,
+) -> Result<(), String> {
+    if let Err(error) = process.send_json_line(line) {
+        if let Some(turn) = turn {
+            activity.restore_if_current(turn);
+        }
+        return Err(format!("write to pi failed: {error}"));
+    }
+    Ok(())
 }
 
 /// Send one JSONL command to a task's pi.
@@ -327,33 +697,36 @@ pub async fn pi_send(
     idempotency_key: Option<String>,
 ) -> Result<(), String> {
     let task = task_key(task_id);
-    // The lock is released before any await: holding it across an SSH round trip would
-    // stall every other task for the duration.
-    let detached = {
-        let runtime = state
-            .0
-            .lock()
-            .map_err(|_| "Pi runtime lock is poisoned".to_owned())?;
-        let managed = runtime.processes.get(&task).ok_or("pi is not running")?;
-        validate_process_identity(managed, expected_generation, &expected_target_id)?;
-        match &managed.execution_binding {
-            ExecutionBinding::Ssh {
-                profile_id,
-                remote_task_id: Some(remote_task_id),
-                ..
-            } => Some((profile_id.clone(), remote_task_id.clone())),
-            // Local, or attached remote: the child's stdin *is* pi's stdin.
-            _ => {
-                let process = managed.process.clone();
-                drop(runtime);
-                return process
-                    .send_json_line(&line)
-                    .map_err(|error| format!("write to pi failed: {error}"));
-            }
+    let turn_request_id = command_turn_request_id(&line);
+    let starts_turn = turn_request_id.is_some();
+    // Reservation releases the runtime lock before any SSH await, so unrelated tasks
+    // are not stalled by a network round trip.
+    let reservation = reserve_pi_send(
+        state.inner(),
+        &task,
+        starts_turn,
+        turn_request_id.as_ref().and_then(Option::as_deref),
+        idempotency_key.as_deref(),
+        expected_generation,
+        &expected_target_id,
+    )?;
+    let (profile_id, remote_task_id, activity, turn) = match reservation {
+        PiSendReservation::Attached {
+            process,
+            activity,
+            turn,
+        } => {
+            send_attached(&process, &activity, turn, &line)?;
+            return Ok(());
         }
+        PiSendReservation::Detached {
+            profile_id,
+            remote_task_id,
+            activity,
+            turn,
+        } => (profile_id, remote_task_id, activity, turn),
     };
-    let (profile_id, remote_task_id) = detached.ok_or("pi is not running")?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let send_result = tauri::async_runtime::spawn_blocking(move || {
         remote_profiles::send_to_remote_task(
             &profile_id,
             &remote_task_id,
@@ -362,7 +735,9 @@ pub async fn pi_send(
         )
     })
     .await
-    .map_err(|error| format!("remote send failed: {error}"))?
+    .map_err(|error| format!("remote send failed: {error}"))
+    .and_then(|result| result);
+    settle_detached_send(&activity, turn, send_result)
 }
 
 #[tauri::command]
@@ -612,9 +987,51 @@ fn normalize_title(raw: &str) -> String {
 }
 
 #[cfg(test)]
-mod title_tests {
-    use super::normalize_title;
+mod tests {
+    use super::{
+        canonical_local_workspace, command_starts_turn, normalize_title,
+        normalized_remote_workspace, reserve_pi_send, send_attached, settle_detached_send,
+        update_busy_from_line, ExecutionBinding, LaunchSpec, ManagedProcess, PiActivity, PiProc,
+        PiProcess, ProcessLimits, DEFAULT_TASK_ID, PROCESS_STOP_TIMEOUT,
+    };
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    fn test_process() -> Arc<PiProcess> {
+        #[cfg(windows)]
+        let spec = LaunchSpec::new("cmd.exe")
+            .arg("/Q")
+            .arg("/D")
+            .arg("/C")
+            .arg("more");
+        #[cfg(not(windows))]
+        let spec = LaunchSpec::new("sh").arg("-c").arg("cat");
+        Arc::new(
+            PiProcess::spawn(1, &spec, ProcessLimits::default(), |_| {})
+                .expect("spawn test Pi process"),
+        )
+    }
 
+    fn state_with_idle_process(
+        workspace: &std::path::Path,
+    ) -> (Arc<PiProc>, Arc<PiActivity>, Arc<PiProcess>) {
+        let state = Arc::new(PiProc::default());
+        let activity = Arc::new(PiActivity::default());
+        let process = test_process();
+        state.0.lock().expect("runtime lock").processes.insert(
+            DEFAULT_TASK_ID.to_owned(),
+            ManagedProcess {
+                process: process.clone(),
+                target_id: "local".into(),
+                execution_binding: ExecutionBinding::Local {
+                    target_id: "local".into(),
+                },
+                workspace_root: canonical_local_workspace(Some(&workspace.to_string_lossy()))
+                    .expect("canonical workspace"),
+                activity: activity.clone(),
+            },
+        );
+        (state, activity, process)
+    }
     #[test]
     fn normalizes_model_title_output() {
         assert_eq!(
@@ -625,5 +1042,225 @@ mod title_tests {
             normalize_title("Title: Improve model picker\nExplanation"),
             "Improve model picker"
         );
+    }
+
+    #[test]
+    fn repository_write_guard_is_exclusive() {
+        let state = PiProc::default();
+        let guard = state.begin_repository_write("local", "/work").unwrap();
+        assert!(state.begin_repository_write("local", "/work").is_err());
+        drop(guard);
+        assert!(state.begin_repository_write("local", "/work").is_ok());
+    }
+
+    #[test]
+    fn pi_turn_and_repository_write_cannot_both_win_the_reservation_race() {
+        let directory = tempfile::tempdir().expect("create workspace fixture");
+        let workspace = directory.path().to_string_lossy().into_owned();
+        let (state, activity, process) = state_with_idle_process(directory.path());
+        for _ in 0..100 {
+            update_busy_from_line(&activity, r#"{"type":"agent_settled"}"#);
+            let start = Arc::new(Barrier::new(3));
+            let finish = Arc::new(Barrier::new(3));
+
+            let pi_state = state.clone();
+            let pi_start = start.clone();
+            let pi_finish = finish.clone();
+            let pi = thread::spawn(move || {
+                pi_start.wait();
+                let won = reserve_pi_send(
+                    &pi_state,
+                    DEFAULT_TASK_ID,
+                    true,
+                    Some("req-race"),
+                    Some("key-race"),
+                    1,
+                    "local",
+                )
+                .is_ok();
+                pi_finish.wait();
+                won
+            });
+
+            let repository_state = state.clone();
+            let repository_start = start.clone();
+            let repository_finish = finish.clone();
+            let repository_workspace = workspace.clone();
+            let repository = thread::spawn(move || {
+                repository_start.wait();
+                let reservation =
+                    repository_state.begin_repository_write("local", &repository_workspace);
+                let won = reservation.is_ok();
+                repository_finish.wait();
+                drop(reservation);
+                won
+            });
+
+            start.wait();
+            finish.wait();
+            let pi_won = pi.join().expect("join Pi reservation");
+            let repository_won = repository.join().expect("join repository reservation");
+            assert_ne!(
+                pi_won, repository_won,
+                "exactly one reservation must win each race"
+            );
+        }
+
+        state
+            .0
+            .lock()
+            .expect("runtime lock")
+            .processes
+            .remove(DEFAULT_TASK_ID);
+        process
+            .stop(PROCESS_STOP_TIMEOUT)
+            .expect("stop test Pi process");
+    }
+
+    #[test]
+    fn detached_send_settling_is_epoch_safe_and_reuses_the_original_reservation() {
+        let activity = PiActivity::default();
+        let first = activity
+            .reserve_turn(Some("req-1"), Some("key-1"))
+            .expect("initial reservation");
+        let error = settle_detached_send(&activity, Some(first), Err("ssh reply was lost".into()))
+            .expect_err("ambiguous failure");
+        assert_eq!(error, "ssh reply was lost");
+        assert!(activity.is_busy());
+
+        let retry = activity
+            .reserve_turn(Some("req-1"), Some("key-1"))
+            .expect("retry reservation");
+        assert_eq!(
+            retry.token, first.token,
+            "the same keyed send reuses its reservation"
+        );
+        settle_detached_send(&activity, Some(retry), Ok(true)).expect("duplicate retry");
+        assert!(
+            activity.is_busy(),
+            "a duplicate write acknowledgement does not settle queued work"
+        );
+        update_busy_from_line(
+            &activity,
+            r#"{"type":"response","id":"req-1","success":false}"#,
+        );
+        assert!(!activity.is_busy());
+        let accepted = activity
+            .reserve_turn(Some("req-2"), Some("key-2"))
+            .expect("new reservation");
+        settle_detached_send(&activity, Some(accepted), Ok(false)).expect("new send");
+        assert!(
+            activity.is_busy(),
+            "a newly accepted turn remains busy until its lifecycle event"
+        );
+
+        let settled_during_retry = activity
+            .reserve_turn(Some("req-2"), Some("key-2"))
+            .expect("accepted send retry");
+        update_busy_from_line(&activity, r#"{"type":"agent_start"}"#);
+        update_busy_from_line(&activity, r#"{"type":"agent_settled"}"#);
+        settle_detached_send(&activity, Some(settled_during_retry), Ok(true))
+            .expect("late duplicate response");
+        assert!(
+            !activity.is_busy(),
+            "a stale duplicate response must not resurrect busy after settlement"
+        );
+    }
+
+    #[test]
+    fn attached_send_failure_restores_the_previous_busy_state() {
+        let process = test_process();
+        process
+            .stop(PROCESS_STOP_TIMEOUT)
+            .expect("stop test Pi process");
+        let activity = PiActivity::default();
+        let turn = activity
+            .reserve_turn(Some("req-attached"), None)
+            .expect("attached reservation");
+        let result = send_attached(
+            &process,
+            &activity,
+            Some(turn),
+            r#"{"type":"prompt","id":"req-attached","message":"go"}"#,
+        );
+        assert!(result.is_err());
+        assert!(!activity.is_busy());
+    }
+
+    #[test]
+    fn refused_prompt_releases_only_its_current_reservation() {
+        let activity = PiActivity::default();
+        activity
+            .reserve_turn(Some("req-refused"), Some("key-refused"))
+            .expect("prompt reservation");
+        update_busy_from_line(
+            &activity,
+            r#"{"type":"response","id":"req-refused","success":false,"error":"preflight"}"#,
+        );
+        assert!(!activity.is_busy(), "a preflight NACK never started a turn");
+
+        update_busy_from_line(&activity, r#"{"type":"agent_start"}"#);
+        activity
+            .reserve_turn(Some("req-queued"), Some("key-queued"))
+            .expect("queued prompt reservation");
+        update_busy_from_line(
+            &activity,
+            r#"{"type":"response","id":"req-queued","success":false,"error":"preflight"}"#,
+        );
+        assert!(
+            activity.is_busy(),
+            "refusing a queued prompt must not clear an older active turn"
+        );
+        update_busy_from_line(&activity, r#"{"type":"agent_settled"}"#);
+        assert!(!activity.is_busy());
+
+        update_busy_from_line(&activity, r#"{"type":"agent_start"}"#);
+        activity
+            .reserve_turn(Some("req-delayed-nack"), Some("key-delayed-nack"))
+            .expect("queued reservation");
+        update_busy_from_line(&activity, r#"{"type":"agent_settled"}"#);
+        assert!(
+            activity.is_busy(),
+            "a queued reservation closes the gap between consecutive turns"
+        );
+        update_busy_from_line(
+            &activity,
+            r#"{"type":"response","id":"req-delayed-nack","success":false}"#,
+        );
+        assert!(!activity.is_busy());
+    }
+    #[test]
+    fn pi_activity_tracks_raw_and_detached_events() {
+        let activity = PiActivity::default();
+        assert!(command_starts_turn(r#"{"type":"prompt","message":"go"}"#));
+        update_busy_from_line(&activity, r#"{"type":"attached","busy":true}"#);
+        assert!(activity.is_busy());
+        update_busy_from_line(&activity, r#"{"type":"attached","busy":false}"#);
+        assert!(!activity.is_busy());
+        update_busy_from_line(&activity, r#"{"type":"agent_start"}"#);
+        assert!(activity.is_busy());
+        update_busy_from_line(
+            &activity,
+            r#"{"type":"event","stream":"stdout","data":"{\"type\":\"agent_settled\"}"}"#,
+        );
+        assert!(!activity.is_busy());
+    }
+
+    #[test]
+    fn workspace_identities_normalize_equivalent_paths() {
+        assert_eq!(
+            normalized_remote_workspace("/srv/project/./src/.."),
+            Some("/srv/project".to_owned())
+        );
+        assert_eq!(normalized_remote_workspace("srv/project"), None);
+
+        let directory = tempfile::tempdir().expect("create workspace fixture");
+        std::fs::create_dir(directory.path().join("nested")).expect("create nested directory");
+        let direct = canonical_local_workspace(Some(&directory.path().to_string_lossy()))
+            .expect("canonical direct path");
+        let equivalent_path = directory.path().join("nested").join("..");
+        let equivalent = canonical_local_workspace(Some(&equivalent_path.to_string_lossy()))
+            .expect("canonical equivalent path");
+        assert_eq!(direct, equivalent);
     }
 }

@@ -104,6 +104,21 @@ export type {
 } from "./remote-control";
 export type { RemoteConversationsPort } from "./remote-conversations";
 export type {
+  RepositoryDiff,
+  RepositoryDiffKind,
+  RepositoryDiffRequest,
+  RepositoryFileStatus,
+  RepositoryHead,
+  RepositoryIdentity,
+  RepositoryOperation,
+  RepositoryPort,
+  RepositorySnapshot,
+  RepositoryStatus,
+  RepositoryStatusRequest,
+  RepositoryUnavailable,
+  RepositoryUnavailableReason,
+} from "./repository";
+export type {
   GenerateTitleInput,
   SessionRepositoryPort,
   SessionSaveInput,

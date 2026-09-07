@@ -99,6 +99,7 @@ export default function Home() {
     const actions: Record<string, () => void> = {
       commandPalette: () => setCommandPalette(!useUI.getState().commandPaletteOpen),
       toggleTerminal: () => useUI.getState().toggleTerminal(),
+      openRepository: () => useFileInspector.getState().openRepository(),
       ...(!remoteMode
         ? {
             zenMode: () => toggleZen(),

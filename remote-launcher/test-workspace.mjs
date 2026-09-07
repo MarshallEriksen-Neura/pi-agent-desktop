@@ -116,6 +116,9 @@ test("the capability handshake advertises read-only workspace browsing", () => {
     // Reads and writes are separate names: a desktop must be able to offer browsing on
     // a host whose launcher predates hash-checked writes, and refuse editing there.
     assert.ok(reply.capabilities.includes("workspace-writes-v1"));
+    assert.ok(reply.capabilities.includes("repository-read-v1"));
+    assert.ok(reply.capabilities.includes("repository-write-v1"));
+    assert.equal(reply.launcherRevision, 10);
     // Gated by name, never inferred: the payload protocol did not move for this.
     assert.equal(reply.launcherProtocolVersion, 1);
   });

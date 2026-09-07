@@ -144,6 +144,31 @@ test("chat and terminal both keep ⌘⇧C — only one can have focus", () => {
   assert.equal(findConflict("copyLastReply", { key: "c", mod: true, shift: true }, {}, true), null);
 });
 
+test("repository commit is a rebindable panel command", () => {
+  const command = shortcutById("repositoryCommit");
+  assert.ok(command);
+  assert.equal(command.scope, "panel");
+  assert.equal(command.rebindable, true);
+  assert.deepEqual(command.defaults, [{ key: "Enter", mod: true }]);
+  assert.equal(
+    matchesBinding(ev({ key: "Enter", metaKey: true }), command.defaults[0], true),
+    true
+  );
+  assert.equal(
+    matchesBinding(ev({ key: "Enter", ctrlKey: true }), command.defaults[0], false),
+    true
+  );
+
+  const overrides = { repositoryCommit: { key: "r", mod: true, alt: true } };
+  assert.deepEqual(effectiveBindings(command, overrides), [overrides.repositoryCommit]);
+  assert.equal(
+    findConflict("repositoryCommit", { key: "g", mod: true, shift: true }, {}, true)?.id,
+    "openRepository",
+    "global commands still conflict with a panel override"
+  );
+});
+
+
 test("an override moves the chord and is what conflict detection sees", () => {
   const overrides = { commandPalette: { key: "p", mod: true, shift: true } };
   const command = shortcutById("commandPalette");
@@ -182,7 +207,7 @@ test("registry ids are unique and rebindable commands ship exactly one chord", (
       assert.ok(command.reason, `${command.id} is fixed without a reason`);
     }
   }
-  assert.equal(REBINDABLE_IDS.length, 7);
+  assert.equal(REBINDABLE_IDS.length, 9);
 });
 
 test("no two rebindable defaults collide out of the box", () => {

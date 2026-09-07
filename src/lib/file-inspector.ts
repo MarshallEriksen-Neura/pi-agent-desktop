@@ -23,7 +23,7 @@ export type InspectorView = "source" | "diff";
  * for the same slot. `task` is the plan plus this turn's changes; `file` is the
  * viewer this store was originally written for.
  */
-export type InspectorSegment = "task" | "file";
+export type InspectorSegment = "task" | "repository" | "file";
 
 /** A section of the task segment, for the entry point that opened it. */
 export type TaskSection = "plan" | "changes";
@@ -84,6 +84,8 @@ interface FileInspectorStore {
   close: () => void;
   /** Open the column on the task segment, landing on `section`. */
   openTask: (section: TaskSection) => void;
+  /** Open the column on the authoritative Git working-tree view. */
+  openRepository: () => void;
   setSegment: (segment: InspectorSegment) => void;
   clearFocusSection: () => void;
   setView: (view: InspectorView) => void;
@@ -167,6 +169,8 @@ export const useFileInspector = create<FileInspectorStore>((set, get) => ({
   close: () => set({ open: false, missed: 0, focusSection: null }),
 
   openTask: (section) => set({ open: true, segment: "task", focusSection: section }),
+
+  openRepository: () => set({ open: true, segment: "repository", focusSection: null }),
 
   setSegment: (segment) => set({ segment, focusSection: null }),
 

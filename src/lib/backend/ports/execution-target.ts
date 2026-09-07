@@ -168,7 +168,11 @@ export type LauncherCapability =
   | "pi-packages-read-v1"
   | "pi-packages-mutate-v1"
   | "pi-skills-read-v1"
-  | "pi-skills-mutate-v1";
+  | "pi-skills-mutate-v1"
+  /** Read-only repository status and staged/unstaged diffs. */
+  | "repository-read-v1"
+  /** Generation-checked stage, unstage, and staged-only commit. */
+  | "repository-write-v1";
 
 /**
  * What a host's launcher reports it can do.

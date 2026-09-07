@@ -1257,16 +1257,18 @@ export default function PiSettingsPage() {
               title={t("settings.terminalShellProfile")}
               detail={t("settings.terminalShellProfileDetail")}
               trailing={
-                <Segmented
-                  options={["auto", "custom"] as const}
-                  value={terminalShellMode}
-                  disabled={!desktopRuntime}
-                  labelOf={(option) => t(`settings.terminalShell.${option}`)}
-                  onChange={(option) => {
-                    setTerminalShellMode(option);
-                    if (option === "auto") setTerminalShellProfile({ kind: "auto" });
-                  }}
-                />
+                <div style={{ width: 220, maxWidth: "42%", flexShrink: 0 }}>
+                  <Segmented
+                    options={["auto", "custom"] as const}
+                    value={terminalShellMode}
+                    disabled={!desktopRuntime}
+                    labelOf={(option) => t(`settings.terminalShell.${option}`)}
+                    onChange={(option) => {
+                      setTerminalShellMode(option);
+                      if (option === "auto") setTerminalShellProfile({ kind: "auto" });
+                    }}
+                  />
+                </div>
               }
             />
             {desktopRuntime && terminalShellMode === "custom" && <TextRow

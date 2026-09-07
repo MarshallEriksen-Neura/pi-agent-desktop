@@ -27,6 +27,7 @@ class FakeDesktopBackend {
     generation: 1,
     targetId: "local",
   });
+  failNextPiSend = false;
 
   readonly dependencies: DesktopPiProcessDependencies = {
     listen: async (event, handler) => {
@@ -38,6 +39,10 @@ class FakeDesktopBackend {
     invoke: async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
       this.calls.push({ command, args });
       if (command === "pi_start") return (await this.startResult) as T;
+      if (command === "pi_send" && this.failNextPiSend) {
+        this.failNextPiSend = false;
+        throw new Error("ambiguous remote failure");
+      }
       return undefined as T;
     },
   };
@@ -280,6 +285,82 @@ test("a detached send carries an idempotency key and a fresh one each time", asy
   // Two calls are two messages. Reusing one key across them would make the launcher
   // refuse the second as a conflict, or worse, silently swallow it as a duplicate.
   assert.notEqual(keys[0], keys[1]);
+});
+
+test("a detached correlated retry reuses its launcher idempotency key", async () => {
+  const harness = await startedDetached();
+  const command = { type: "prompt", id: "req-retry", message: "once" } as never;
+  harness.backend.failNextPiSend = true;
+  await assert.rejects(() => harness.port.send(command), /ambiguous remote failure/);
+  await harness.port.send(command);
+
+  const sends = harness.backend.calls.filter((call) => call.command === "pi_send");
+  assert.equal(sends.length, 2);
+  assert.equal(
+    sends[1].args?.idempotencyKey,
+    sends[0].args?.idempotencyKey,
+    "the retry must prove to the launcher that it is the same logical message"
+  );
+});
+
+test("a detached correlated key survives reattach to the same remote task", async () => {
+  const harness = await startedDetached();
+  const command = { type: "prompt", id: "req-reattach", message: "once" } as never;
+  harness.backend.failNextPiSend = true;
+  await assert.rejects(() => harness.port.send(command), /ambiguous remote failure/);
+  const first = harness.backend.calls.find((call) => call.command === "pi_send");
+
+  harness.push({ type: "detached", reason: "caughtUp", exitCode: 0, nextSequence: 1 });
+  harness.backend.startResult = Promise.resolve({ generation: 8, targetId: "ssh:work" });
+  await harness.port.start({ cwd: "/srv/app", executionBinding: DETACHED, attachAfter: 1 });
+  await harness.port.send(command);
+
+  const sends = harness.backend.calls.filter((call) => call.command === "pi_send");
+  assert.equal(sends.length, 2);
+  assert.equal(sends[1].args?.idempotencyKey, first?.args?.idempotencyKey);
+});
+
+test("a detached correlated key is cleared when the remote task identity changes", async () => {
+  const harness = await startedDetached();
+  const command = { type: "prompt", id: "req-replaced", message: "once" } as never;
+  harness.backend.failNextPiSend = true;
+  await assert.rejects(() => harness.port.send(command), /ambiguous remote failure/);
+  const first = harness.backend.calls.find((call) => call.command === "pi_send");
+
+  const replacement = { ...DETACHED, remoteTaskId: "t-0000000a0002" };
+  harness.push({ type: "detached", reason: "taskExited", exitCode: 0, nextSequence: 1 });
+  harness.backend.startResult = Promise.resolve({ generation: 8, targetId: "ssh:work" });
+  await harness.port.start({ cwd: "/srv/app", executionBinding: replacement, attachAfter: 1 });
+  await harness.port.send(command);
+
+  const sends = harness.backend.calls.filter((call) => call.command === "pi_send");
+  assert.equal(sends.length, 2);
+  assert.notEqual(sends[1].args?.idempotencyKey, first?.args?.idempotencyKey);
+});
+
+test("a detached correlated key survives transport success until Pi responds", async () => {
+  const harness = await startedDetached();
+  const command = { type: "prompt", id: "req-timeout", message: "once" } as never;
+
+  await harness.port.send(command);
+  await harness.port.send(command);
+  let sends = harness.backend.calls.filter((call) => call.command === "pi_send");
+  assert.equal(sends[1].args?.idempotencyKey, sends[0].args?.idempotencyKey);
+
+  harness.push({
+    type: "event",
+    sequence: 1,
+    ts: 1,
+    stream: "stdout",
+    data: '{"type":"response","id":"req-timeout","success":false}',
+  });
+  await harness.port.send(command);
+  sends = harness.backend.calls.filter((call) => call.command === "pi_send");
+  assert.notEqual(
+    sends[2].args?.idempotencyKey,
+    sends[1].args?.idempotencyKey,
+    "an explicit Pi response settles the delivery identity"
+  );
 });
 
 test("only taskExited reports pi's own exit code", async () => {

@@ -229,6 +229,7 @@ export const SHORTCUT_REGISTRY: readonly ShortcutCommand[] = [
   { id: "zenMode", scope: "global", defaults: [{ key: ".", mod: true }], rebindable: true },
   { id: "workMode", scope: "global", defaults: [{ key: "/", mod: true }], rebindable: true },
   { id: "toggleTerminal", scope: "global", defaults: [{ key: "j", mod: true }], rebindable: true },
+  { id: "openRepository", scope: "global", defaults: [{ key: "g", mod: true, shift: true }], rebindable: true },
 
   // ── chat ──────────────────────────────────────────────────────────────────
   {
@@ -368,6 +369,13 @@ export const SHORTCUT_REGISTRY: readonly ShortcutCommand[] = [
     id: "prevHunk",
     scope: "diff",
     defaults: [{ key: "ArrowUp", alt: true }],
+    rebindable: true,
+  },
+
+  {
+    id: "repositoryCommit",
+    scope: "panel",
+    defaults: [{ key: "Enter", mod: true }],
     rebindable: true,
   },
 

@@ -409,7 +409,7 @@ export default function ModelsPage() {
     return () => observer.disconnect();
   }, [filteredProviderEntries]);
 
-  const paperBg = "var(--ink-paper-bg)";
+
 
   return (
     <SettingsPage
@@ -421,7 +421,9 @@ export default function ModelsPage() {
       <div
         className="min-h-full"
         style={{
-          background: paperBg,
+          background: "color-mix(in srgb, var(--bg-elevated) 76%, transparent)",
+          backdropFilter: "blur(18px) saturate(120%)",
+          WebkitBackdropFilter: "blur(18px) saturate(120%)",
           padding: "8px 0 48px",
         }}
       >

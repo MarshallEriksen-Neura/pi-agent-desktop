@@ -1341,14 +1341,14 @@ mod tests {
             "Permission denied (publickey)."
         ));
         assert!(!is_unsupported_launcher_mode(None, "invalid launcher mode"));
-        // Without the fix this is what the UI actually received.
+        // Shared transport classification sends the same legacy reply to the launcher row.
         assert_eq!(
             remote_profiles::ssh_transport_error_code(
                 Some(64),
                 "invalid launcher mode",
                 "/home/me/.local/bin/pi-desktop-launcher"
             ),
-            "ssh_failed"
+            "launcher_mode_unsupported"
         );
     }
 }

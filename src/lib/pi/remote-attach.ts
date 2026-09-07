@@ -18,6 +18,8 @@ export interface AttachHandshake {
   type: "attached";
   remoteTaskId: string;
   state: "starting" | "running" | "stopping" | "exited";
+  /** Authoritative supervisor state; absent only on pre-revision-8 launchers. */
+  busy?: boolean;
   after: number | null;
   baseSequence: number;
   nextSequence: number;

@@ -60,7 +60,10 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // tree wants one directory's entries and completion wants the whole project's
   // paths, ignore rules applied. Removing the WSL runtime mode takes out five —
   // runtime_config_read/write and the three wsl_* commands — down to 86.
-  assert.equal(result.inventory.commandUniqueCount, 86);
+  // Repository Review adds local status/diff plus one capability-gated SSH bridge,
+  // bringing the strict command inventory to 89. Safe local mutations add one
+  // separate write command; SSH mutations continue through the gated bridge.
+  assert.equal(result.inventory.commandUniqueCount, 90);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -152,6 +155,8 @@ test("locks the desktop command names and Pi process event names", () => {
     "remote_provider_sync_apply",
     "remote_provider_sync_candidates",
     "remote_provider_sync_prepare",
+    // capability-gated, bounded read-only Git status and diff over SSH
+    "remote_repository_request",
     // idempotently starts or reattaches a caller-persisted detached task id; two
     // SSH round trips, so it is deliberately not part of synchronous pi_start
     "remote_task_ensure",
@@ -169,6 +174,10 @@ test("locks the desktop command names and Pi process event names", () => {
     // read-only remote browsing: list a directory, read a file. Writes stay
     // refused until V2.4 adds the hash check
     "remote_workspace_request",
+    // authoritative local Git baselines; status and file diff remain separate intents
+    "repository_diff",
+    "repository_mutate",
+    "repository_status",
     // `npx skills …` — skill install/remove/update, allowlisted subcommands only
     "skills_cli",
     // native catalogue search: skills.sh sends no CORS headers, so the webview

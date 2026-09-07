@@ -33,6 +33,8 @@ class ScriptedProcess implements PiProcessPort {
   readonly sent: (PiCommand & { id?: string })[] = [];
   /** When set, every `prompt` is NACKed with this reason instead of acked. */
   nackPromptWith: string | null = null;
+  /** Simulate an ambiguous transport failure after observing one prompt. */
+  failPromptOnce = false;
   private readonly lineHandlers = new Set<(line: string) => void>();
 
   async start(): Promise<void> {}
@@ -41,6 +43,10 @@ class ScriptedProcess implements PiProcessPort {
   async send(command: PiCommand): Promise<void> {
     const cmd = command as PiCommand & { id?: string };
     this.sent.push(cmd);
+    if (cmd.type === "prompt" && this.failPromptOnce) {
+      this.failPromptOnce = false;
+      throw new Error("ambiguous transport failure");
+    }
     const nack = cmd.type === "prompt" && this.nackPromptWith !== null;
     // Ack on a microtask, mirroring a real round-trip closely enough that the
     // store's `await` resolves without a timer.
@@ -144,6 +150,29 @@ test("retryLast also names its streaming behavior", async () => {
       (prompts[1] as { streamingBehavior?: string }).streamingBehavior,
       "followUp",
       "retry is the likeliest desync: pi runs compaction after a model error",
+    );
+  } finally {
+    teardown();
+  }
+});
+
+test("retryLast reuses the request identity after an ambiguous send failure", async () => {
+  const { process, chat } = setup();
+  try {
+    process.failPromptOnce = true;
+    await chat.getState().send("retry safely");
+    assert.equal(chat.getState().messages.at(-1)?.isError, true);
+
+    // A real retry happens after the detached channel reports usable again.
+    getPiStore(TASK).setState({ status: "ready", lastError: null });
+    await chat.getState().retryLast();
+
+    const prompts = process.sent.filter((command) => command.type === "prompt");
+    assert.equal(prompts.length, 2);
+    assert.equal(
+      prompts[1].id,
+      prompts[0].id,
+      "a retry must preserve the request id that owns the detached launcher key"
     );
   } finally {
     teardown();

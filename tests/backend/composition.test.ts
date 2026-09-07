@@ -18,6 +18,7 @@ import type { RemoteControlPort } from "../../src/lib/backend/ports/remote-contr
 import type { RemoteConversationsPort } from "../../src/lib/backend/ports/remote-conversations";
 import type { RemotePiProfilePort } from "../../src/lib/backend/ports/remote-profiles";
 import type { RemoteProviderSyncPort } from "../../src/lib/backend/ports/remote-provider-sync";
+import type { RepositoryPort } from "../../src/lib/backend/ports/repository";
 import type { RemoteTerminalPort } from "../../src/lib/backend/ports/remote-terminal";
 import { unreachablePort } from "./fixtures/unreachable-port";
 import type { WorkspaceFsPort } from "../../src/lib/backend/ports/workspace-fs";
@@ -66,6 +67,7 @@ function fakePorts(label = "fake"): BackendPorts {
       generateTitle: async () => label,
     },
     workspaceFs: workspaceFs(label),
+    repository: unreachablePort<RepositoryPort>("repository"),
     // Mirrors the real compositions: a remote target must not resolve to the
     // local port, or this fixture would hide the property the refactor adds.
     createWorkspaceFs: (targetId) =>

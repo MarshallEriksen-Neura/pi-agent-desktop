@@ -4,6 +4,7 @@ import { desktopFileDropPort } from "../desktop/file-drop";
 import { desktopNotificationPort } from "../desktop/notification";
 import { desktopPetWindowPort } from "../desktop/pet-window";
 import { createDesktopPiConfigurationPort } from "../desktop/pi-configuration";
+import { createDesktopRepositoryPort } from "../desktop/repository";
 import { createDesktopPiManagementFactory } from "../desktop/pi-management";
 import { createDesktopRemotePiManagement } from "../desktop/remote-pi-management";
 import { createDesktopPiProcessPort } from "../desktop/pi-process";
@@ -31,6 +32,7 @@ export function createDesktopBackendPorts(): BackendPorts {
     createPiProcess: (taskId, executionBinding) => createDesktopPiProcessPort(taskId, executionBinding),
     sessionRepository: desktopSessionRepositoryPort,
     workspaceFs: desktopWorkspaceFsPort,
+    repository: createDesktopRepositoryPort(),
     // An SSH binding never resolves to the local bridge, so a remote path cannot
     // reach the local filesystem even if a caller forgets to check the target. The
     // read half is real as of V2.3; the mutating half still refuses until V2.4

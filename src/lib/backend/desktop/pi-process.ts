@@ -99,6 +99,8 @@ export class DesktopPiProcessPort implements PiProcessPort {
   private startOperation: Promise<void> | null = null;
   private pendingEvents: PendingEvent[] = [];
   private readonly transcriptResetHandlers = new Set<() => void>();
+  private readonly detachedSendKeys = new Map<string, string>();
+  private detachedTaskIdentity: string | null = null;
   /**
    * Non-null exactly when the child is `--attach`, i.e. a detached remote target.
    *
@@ -133,8 +135,13 @@ export class DesktopPiProcessPort implements PiProcessPort {
     // The binding already carries the signal: `remoteTaskId` is present exactly when the
     // profile is detached, an invariant `validate_binding` enforces on the Rust side. So
     // the adapter needs no second source of truth for the lifecycle.
-    const detached = binding.kind === "ssh" && Boolean(binding.remoteTaskId);
-    this.targetId = targetIdForBinding(binding);
+    const remoteTaskId = binding.kind === "ssh" ? binding.remoteTaskId ?? null : null;
+    const detached = remoteTaskId !== null;
+    const nextTargetId = targetIdForBinding(binding);
+    const nextDetachedTaskIdentity = detached ? `${nextTargetId}\0${remoteTaskId}` : null;
+    if (this.detachedTaskIdentity !== nextDetachedTaskIdentity) this.detachedSendKeys.clear();
+    this.detachedTaskIdentity = nextDetachedTaskIdentity;
+    this.targetId = nextTargetId;
     this.generation = null;
     this.starting = true;
     this.pendingEvents = [];
@@ -185,20 +192,28 @@ export class DesktopPiProcessPort implements PiProcessPort {
 
   async send(command: PiCommand): Promise<void> {
     if (this.generation === null) throw new Error("Pi is not running");
+    const line = JSON.stringify(command);
+    const requestId =
+      (command.type === "prompt" || command.type === "follow_up") &&
+      typeof (command as { id?: unknown }).id === "string"
+        ? (command as { id: string }).id
+        : null;
+    let idempotencyKey: string | null = null;
+    if (this.cursor !== null) {
+      // A correlated turn retry keeps its request id. Retain the matching launcher key
+      // until the response arrives: an invoke success proves FIFO delivery, but a later
+      // client timeout still cannot prove whether Pi accepted and started the turn.
+      idempotencyKey = requestId
+        ? this.detachedSendKeys.get(requestId) ?? nextIdempotencyKey()
+        : nextIdempotencyKey();
+      if (requestId) this.detachedSendKeys.set(requestId, idempotencyKey);
+    }
     await this.dependencies.invoke("pi_send", {
       taskId: this.taskId,
-      line: JSON.stringify(command),
+      line,
       expectedGeneration: this.generation,
       expectedTargetId: this.targetId,
-      // Only for a detached target: on any other transport the write either reaches pi's
-      // stdin or throws, with no ambiguous middle state to protect against.
-      //
-      // Per *call* rather than per attempt is the point. A transport-level retry of this
-      // same send has to reuse the key, because a disconnect leaves it unknown whether the
-      // first attempt landed — retrying blind would duplicate a turn, and not retrying
-      // would lose one. A caller deciding to send again is a different message and gets a
-      // different key.
-      idempotencyKey: this.cursor !== null ? nextIdempotencyKey() : null,
+      idempotencyKey,
     });
   }
 
@@ -210,6 +225,8 @@ export class DesktopPiProcessPort implements PiProcessPort {
     this.starting = false;
     this.generation = null;
     this.pendingEvents = [];
+    this.detachedSendKeys.clear();
+    this.detachedTaskIdentity = null;
     this.cleanupListeners();
     try {
       if (generation !== null) {
@@ -274,6 +291,18 @@ export class DesktopPiProcessPort implements PiProcessPort {
     this.dispatchEvent(event);
   }
 
+  private observePiResponse(line: string): void {
+    if (this.detachedSendKeys.size === 0) return;
+    try {
+      const event = JSON.parse(line) as { type?: unknown; id?: unknown };
+      if (event.type === "response" && typeof event.id === "string") {
+        this.detachedSendKeys.delete(event.id);
+      }
+    } catch {
+      // Non-JSON diagnostics are forwarded unchanged and cannot settle a request key.
+    }
+  }
+
   private dispatchEvent(event: PendingEvent): void {
     if (event.payload.generation !== this.generation) return;
     if (event.kind === "line") {
@@ -292,6 +321,7 @@ export class DesktopPiProcessPort implements PiProcessPort {
           this.transcriptResetHandlers.forEach((handler) => handler());
         }
         step.lines.forEach((line) => {
+          this.observePiResponse(line);
           this.lineHandlers.forEach((handler) => handler(line));
         });
         step.diagnostics.forEach((line) => {
@@ -307,6 +337,7 @@ export class DesktopPiProcessPort implements PiProcessPort {
         }
         return;
       }
+      this.observePiResponse(event.payload.line);
       this.lineHandlers.forEach((handler) => handler(event.payload.line));
       return;
     }

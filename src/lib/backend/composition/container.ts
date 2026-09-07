@@ -11,6 +11,7 @@ import type {
   ProviderAuthPort,
   RemoteControlPort,
   RemoteConversationsPort,
+  RepositoryPort,
   RemotePiProfilePort,
   RemoteTerminalPort,
   RemoteProviderSyncPort,
@@ -42,6 +43,8 @@ export interface BackendPorts {
    * SSH binding cannot resolve to the local implementation, so a remote path has
    * no route to the local filesystem bridge.
    */
+  /** Authoritative Git status and staged/unstaged diffs for local or SSH workspaces. */
+  repository: RepositoryPort;
   createWorkspaceFs: WorkspaceFsPortFactory;
   projectCatalog: ProjectCatalogPort;
   providerAuth: ProviderAuthPort;

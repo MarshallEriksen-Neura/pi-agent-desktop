@@ -1,14 +1,9 @@
 "use client";
 
 /**
- * The docked column beside the conversation, and the segment control that says
- * which of its two tenants is showing.
- *
- * One column with segments rather than two panels racing for the slot: before
- * this, whichever transcript row was clicked last won, and adding a third
- * surface to that arrangement would have made the arbitration guesswork. The
- * task panel and the file viewer are both "show me more about this turn", so
- * they share a frame and a width.
+ * The docked column beside the conversation and its shared segment control.
+ * Task progress, authoritative repository state, and file inspection arbitrate
+ * through this one frame instead of opening competing side panels.
  */
 
 import { useEffect } from "react";
@@ -17,8 +12,10 @@ import { X } from "lucide-react";
 import { INSPECTOR_PANEL_WIDTH_DEFAULT } from "@/lib/store";
 import { useT } from "@/lib/i18n";
 import { useFileInspector, type InspectorSegment } from "@/lib/file-inspector";
+import { useRepository } from "@/lib/repository";
 import { FileInspector } from "./FileInspector";
 import { TurnPanel } from "./TurnPanel";
+import { RepositoryInspector } from "./RepositoryInspector";
 import { IconButton } from "./primitives";
 
 function SegmentButton({
@@ -72,9 +69,9 @@ export function InspectorColumn({ width }: { width?: number }) {
   const effective: InspectorSegment = segment === "file" && !hasTabs ? "task" : segment;
 
   /**
-   * Esc closes the column — but it is docked, not modal, so it does not own the
-   * key. While the caret is in a field, Esc belongs to whatever is being typed
-   * into. Same contract as the subagent inspector's in AppShell.
+   * Esc returns from a repository diff, then closes the docked column. Because
+   * the panel is docked rather than modal, it does not own the key while the caret
+   * is in a field. Same contract as the subagent inspector's in AppShell.
    *
    * Mounted here rather than in the file viewer so it works on both segments.
    */
@@ -87,7 +84,11 @@ export function InspectorColumn({ width }: { width?: number }) {
         el instanceof HTMLTextAreaElement ||
         el?.isContentEditable === true;
       if (typing) return;
-      useFileInspector.getState().close();
+      if (useFileInspector.getState().segment === "repository" && useRepository.getState().selected) {
+        useRepository.getState().clearSelection();
+      } else {
+        useFileInspector.getState().close();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -128,6 +129,11 @@ export function InspectorColumn({ width }: { width?: number }) {
           active={effective === "task"}
         />
         <SegmentButton
+          segment="repository"
+          label={t("repository.tab")}
+          active={effective === "repository"}
+        />
+        <SegmentButton
           segment="file"
           label={t("task.tabFile")}
           active={effective === "file"}
@@ -151,7 +157,13 @@ export function InspectorColumn({ width }: { width?: number }) {
         transition={{ duration: 0.09, ease: "easeOut" }}
         style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
       >
-        {effective === "task" ? <TurnPanel /> : <FileInspector />}
+        {effective === "task" ? (
+          <TurnPanel />
+        ) : effective === "repository" ? (
+          <RepositoryInspector />
+        ) : (
+          <FileInspector />
+        )}
       </motion.div>
     </aside>
   );

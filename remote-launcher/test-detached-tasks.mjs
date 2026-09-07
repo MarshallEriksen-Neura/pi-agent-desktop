@@ -557,6 +557,30 @@ test("--send reaches pi's stdin through the FIFO", { skip: !posix }, () => {
   });
 });
 
+test("detached busy state survives status and attach, then a prompt NACK settles it", { skip: !posix }, () => {
+  withHome((home) => {
+    const pi = writeFakePi(
+      home,
+      "while IFS= read -r line; do sleep 1; printf '%s\\n' '{\"type\":\"response\",\"id\":\"req-nack\",\"success\":false}'; done"
+    );
+    const started = startDetached(home, "task-busy01", pi);
+    assert.equal(started.ok, true, JSON.stringify(started));
+
+    const sent = run(home, ["--send", "task-busy01"], {
+      input: '{"type":"prompt","id":"req-nack","message":"blocked"}\n',
+    });
+    assert.equal(sent.ok, true, JSON.stringify(sent));
+    assert.equal(run(home, ["--status", "task-busy01"]).task.busy, true);
+
+    const frames = attach(home, { remoteTaskId: "task-busy01", follow: false });
+    assert.equal(frames[0].type, "attached");
+    assert.equal(frames[0].busy, true);
+
+    waitFor(home, "task-busy01", (task) => task.busy === false);
+    run(home, ["--stop", "task-busy01"]);
+  });
+});
+
 test("a pi exit code is recorded without a stop request", { skip: !posix }, () => {
   withHome((home) => {
     const pi = writeFakePi(home, "printf '%s\\n' '{\"type\":\"bye\"}'\nexit 7");
@@ -646,6 +670,7 @@ test("attach replays a terminal task in order and reports why it detached", () =
       remoteTaskId: "task-play01",
       state: "exited",
       after: null,
+      busy: false,
       baseSequence: 1,
       nextSequence: 5,
       snapshotRequired: false,
@@ -823,6 +848,15 @@ test("attach streams records while the task is still running", { skip: !posix },
   });
 });
 
+test("keyed sends use a supervisor-owned pending-to-sent acknowledgement", () => {
+  const source = readFileSync(launcher, "utf8");
+  assert.match(source, /type: "pi-desktop-send-v1"/);
+  assert.match(source, /state: "pending"/);
+  assert.match(source, /child\.stdin\.write\(payloadBytes, finalizeSend\)/);
+  assert.match(source, /state: "sent"/);
+  assert.match(source, /record\.state !== "pending"/);
+});
+
 test("a keyed send is applied once however many times it is retried", { skip: !posix }, () => {
   withHome((home) => {
     const pi = writeFakePi(home, 'while IFS= read -r line; do printf "%s\\n" "echo:$line"; done');
@@ -834,6 +868,10 @@ test("a keyed send is applied once however many times it is retried", { skip: !p
     assert.equal(first.ok, true, JSON.stringify(first));
     assert.equal(first.duplicate, false);
     assert.equal(first.idempotencyKey, "k-abc123");
+    const durable = JSON.parse(readFileSync(join(taskDir(home, "task-idem01"), "stdin.sends.json"), "utf8"));
+    assert.equal(durable.sends.length, 1);
+    assert.equal(durable.sends[0].state, "sent");
+    assert.match(durable.sends[0].attemptId, /^[a-f0-9]{32}$/);
 
     // A disconnect at 24s tells the desktop nothing about whether the write landed.
     // Retrying with the same key must not duplicate the turn.
@@ -842,6 +880,12 @@ test("a keyed send is applied once however many times it is retried", { skip: !p
     assert.equal(retry.sentAt, first.sentAt, "the recorded outcome is returned, not a new one");
     assert.equal(retry.bytes, first.bytes);
 
+
+    delete durable.sends[0].attemptId;
+    delete durable.sends[0].state;
+    writeFileSync(join(taskDir(home, "task-idem01"), "stdin.sends.json"), `${JSON.stringify(durable)}\n`);
+    const legacyRetry = run(home, ["--send", "task-idem01"], { input: envelope("one") });
+    assert.equal(legacyRetry.duplicate, true, "legacy durable records remain valid evidence");
     // The same key with a different payload is a bug in the caller, not a retry.
     assert.deepEqual(run(home, ["--send", "task-idem01"], { input: envelope("two") }), {
       ok: false,

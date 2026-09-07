@@ -313,6 +313,7 @@ export function createChatStore(taskId: string) {
   const nid = () => `msg-${++seq}`;
   let qseq = 0;
   const qid = () => `q-${++qseq}`;
+  const promptRequestIds = new Map<string, string>();
   let pendingStderr = "";
 
   return create<ChatStore>()((set, get) => {
@@ -486,16 +487,21 @@ export function createChatStore(taskId: string) {
      * genuinely idle, so passing it unconditionally costs nothing on the happy path.
      */
     const dispatchPrompt = async (
+      userMessageId: string,
       message: string,
       images: PiImage[]
     ): Promise<void> => {
+      const requestId = promptRequestIds.get(userMessageId) ?? `prompt-${userMessageId}`;
+      promptRequestIds.set(userMessageId, requestId);
       try {
         const res = await client.request({
           type: "prompt",
+          id: requestId,
           message,
           ...(images.length ? { images } : {}),
           streamingBehavior: "followUp",
         });
+        promptRequestIds.delete(userMessageId);
         // A NACK here is a refusal, not a failed run: pi throws only from the
         // preflight half of `prompt`, and the RPC reports exactly that half
         // (`preflightResult` gates the success/error output, and `_runAgentPrompt`
@@ -1038,11 +1044,12 @@ export function createChatStore(taskId: string) {
           return;
         }
 
+        const userMessageId = nid();
         set((s) => ({
           messages: [
             ...s.messages,
             {
-              id: nid(),
+              id: userMessageId,
               role: "user" as const,
               text: trimmed,
               ...(images?.length ? { images } : {}),
@@ -1054,7 +1061,7 @@ export function createChatStore(taskId: string) {
           streaming: true,
         }));
 
-        await dispatchPrompt(trimmed, piImages);
+        await dispatchPrompt(userMessageId, trimmed, piImages);
       },
 
       retryLast: async () => {
@@ -1095,7 +1102,7 @@ export function createChatStore(taskId: string) {
           activeRetries: dropLoadingRetries(s.activeRetries),
         });
 
-        await dispatchPrompt(trimmed, piImages);
+        await dispatchPrompt(source.id, trimmed, piImages);
       },
 
       steer: (text, images) => deliverMidTurn("steer", text, images),
@@ -1129,9 +1136,13 @@ export function createChatStore(taskId: string) {
         }));
       },
 
-      clear: () => set({ messages: [], streaming: false, waiting: false, queue: [] }),
+      clear: () => {
+        promptRequestIds.clear();
+        set({ messages: [], streaming: false, waiting: false, queue: [] });
+      },
 
       load: (messages) => {
+        promptRequestIds.clear();
         // continue the id sequence past loaded ids so new messages never collide
         for (const m of messages) {
           const n = Number(m.id.replace(/^msg-/, ""));

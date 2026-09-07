@@ -1,5 +1,6 @@
 //! Non-secret SSH target profiles and the fixed remote launcher contract.
 
+use crate::pi_bridge::PiProc;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use pi_backend_core::pi_process::LaunchSpec;
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::State;
 
 /// Save-time fallback, kept for profiles written before the in-app installer
 /// existed. New profiles get the resolved path returned by the installer, which
@@ -281,7 +283,7 @@ struct CapabilitiesReply {
 
 /// This build's embedded launcher revision. Must equal `launcherRevision` in
 /// `remote-launcher/pi-desktop-launcher`; a test pins the two together.
-const LAUNCHER_REVISION: u32 = 5;
+const LAUNCHER_REVISION: u32 = 10;
 /// The task-state version this build's launcher reads and writes.
 const LAUNCHER_STATUS_VERSION: u32 = 1;
 
@@ -1231,6 +1233,118 @@ fn ssh_workspace_spec(
     ))
 }
 
+fn ssh_repository_spec(
+    profile: &RemotePiProfile,
+    workspace_root: &str,
+    operation: &str,
+    repo_root: Option<&str>,
+    path: Option<&str>,
+    diff_kind: Option<&str>,
+    generation: Option<&str>,
+    original_path: Option<&str>,
+    message: Option<&str>,
+) -> Result<LaunchSpec, String> {
+    validate_profile(profile)?;
+    validate_remote_path(workspace_root, "remote workspace root")?;
+    if !matches!(
+        operation,
+        "status" | "diff" | "stage" | "unstage" | "commit"
+    ) {
+        return Err(format!(
+            "unsupported remote repository operation `{operation}`"
+        ));
+    }
+    let relative_path = |value: &str| {
+        !value.is_empty()
+            && !value.starts_with('/')
+            && value.len() <= 4096
+            && !value.chars().any(|ch| ch == '\0' || ch.is_control())
+            && !value.split('/').any(|part| part == "..")
+    };
+    match operation {
+        "status" => {
+            if repo_root.is_some()
+                || path.is_some()
+                || diff_kind.is_some()
+                || generation.is_some()
+                || original_path.is_some()
+                || message.is_some()
+            {
+                return Err("repository status takes no additional arguments".into());
+            }
+        }
+        "diff" => {
+            let root = repo_root.ok_or("repository diff requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            if !relative_path(path.ok_or("repository diff requires a path")?) {
+                return Err(
+                    "repository path must be relative and remain inside the repository".into(),
+                );
+            }
+            if !matches!(diff_kind, Some("staged") | Some("unstaged")) {
+                return Err("repository diff kind must be staged or unstaged".into());
+            }
+            if generation.is_some() || original_path.is_some() || message.is_some() {
+                return Err("repository diff received mutation arguments".into());
+            }
+        }
+        "stage" | "unstage" => {
+            let root = repo_root.ok_or("repository mutation requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            if generation.filter(|value| !value.is_empty()).is_none() {
+                return Err("repository mutation requires a generation".into());
+            }
+            if !relative_path(path.ok_or("repository mutation requires a path")?)
+                || original_path.is_some_and(|value| !relative_path(value))
+            {
+                return Err(
+                    "repository path must be relative and remain inside the repository".into(),
+                );
+            }
+            if diff_kind.is_some() || message.is_some() {
+                return Err("stage or unstage received invalid arguments".into());
+            }
+        }
+        "commit" => {
+            let root = repo_root.ok_or("repository commit requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            if generation.filter(|value| !value.is_empty()).is_none() {
+                return Err("repository commit requires a generation".into());
+            }
+            let message = message.ok_or("repository commit requires a message")?;
+            if message.trim().is_empty() || message.len() > 4096 || message.contains('\0') {
+                return Err("repository commit message is invalid".into());
+            }
+            if path.is_some() || original_path.is_some() || diff_kind.is_some() {
+                return Err("repository commit received file arguments".into());
+            }
+        }
+        _ => unreachable!(),
+    }
+    let payload = serde_json::json!({
+        "protocolVersion": LAUNCHER_PROTOCOL_VERSION,
+        "operation": operation,
+        "workspaceRoot": workspace_root,
+        "repoRoot": repo_root,
+        "path": path,
+        "diffKind": diff_kind,
+        "generation": generation,
+        "originalPath": original_path,
+        "message": message,
+    });
+    let encoded = STANDARD.encode(
+        serde_json::to_vec(&payload)
+            .map_err(|error| format!("encode repository payload: {error}"))?,
+    );
+    Ok(ssh_spec_for(
+        &profile.ssh_host,
+        &profile.launcher_path,
+        "--repository",
+        &encoded,
+        ConnectionReuse::Shared,
+    ))
+}
+
 /// What `--status` reports about one task, as the desktop sees it.
 ///
 /// These are **process** states, observed from the same host as pi. The four *connection*
@@ -1410,7 +1524,7 @@ pub fn send_to_remote_task(
     remote_task_id: &str,
     line: &str,
     idempotency_key: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let profile = load_profile(profile_id)?;
     if profile.lifecycle != LIFECYCLE_DETACHED {
         return Err("remote send requires a detached remote profile".into());
@@ -1461,7 +1575,10 @@ pub fn send_to_remote_task(
     let reply: serde_json::Value = serde_json::from_str(line.trim())
         .map_err(|error| format!("invalid send reply: {error}"))?;
     if reply.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
-        return Ok(());
+        return Ok(reply
+            .get("duplicate")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false));
     }
     let code = reply
         .get("errorCode")
@@ -1776,6 +1893,81 @@ pub async fn remote_workspace_request(
     })
     .await
     .map_err(|error| format!("remote workspace task failed: {error}"))?
+}
+
+/// One bounded Git repository request against an SSH workspace.
+#[tauri::command]
+pub async fn remote_repository_request(
+    state: State<'_, PiProc>,
+    id: String,
+    profile_revision: u64,
+    workspace_root: String,
+    operation: String,
+    repo_root: Option<String>,
+    path: Option<String>,
+    diff_kind: Option<String>,
+    generation: Option<String>,
+    original_path: Option<String>,
+    message: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let _write_guard = if matches!(operation.as_str(), "stage" | "unstage" | "commit") {
+        let target_id = format!("ssh:{id}");
+        match state.begin_repository_write(&target_id, &workspace_root) {
+            Ok(guard) => Some(guard),
+            Err(detail) => {
+                return Ok(serde_json::json!({
+                    "ok": false,
+                    "reason": "piBusy",
+                    "detail": detail,
+                    "applied": false,
+                }))
+            }
+        }
+    } else {
+        None
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let profile = load_profile(&id)?;
+        if profile.revision != profile_revision {
+            return Err("remote profile changed; refresh the target and try again".into());
+        }
+        let spec = ssh_repository_spec(
+            &profile,
+            &workspace_root,
+            &operation,
+            repo_root.as_deref(),
+            path.as_deref(),
+            diff_kind.as_deref(),
+            generation.as_deref(),
+            original_path.as_deref(),
+            message.as_deref(),
+        )?;
+        ensure_control_master(&profile.ssh_host);
+        let output =
+            run_bounded_command(&spec, WORKSPACE_TIMEOUT, None, WORKSPACE_OUTPUT_MAX_BYTES)?;
+        if output.timed_out {
+            return Err(format!(
+                "remote repository request timed out after {}s",
+                WORKSPACE_TIMEOUT.as_secs()
+            ));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if output.status.code() != Some(0) {
+            let (_, error_code, message) =
+                classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
+            return Err(format!("{error_code}: {message}"));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let line = stdout
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .ok_or("remote repository request returned no reply")?;
+        serde_json::from_str(line.trim())
+            .map_err(|error| format!("invalid repository reply: {error}"))
+    })
+    .await
+    .map_err(|error| format!("remote repository task failed: {error}"))?
 }
 
 /// Executes one bounded, semantic package/skill management request on the target host.
@@ -2985,7 +3177,7 @@ exit 1
     }
 
     #[test]
-    fn binding_requires_the_exact_profile_snapshot() {
+    fn binding_requires_the_host_snapshot_but_allows_a_conversation_workspace() {
         let profile = profile();
         let binding = binding(&profile);
         assert!(validate_binding(&profile, &binding).is_ok());
@@ -3010,7 +3202,18 @@ exit 1
             remote_task_id: None,
             remote_task_pending: false,
         };
-        assert!(validate_binding(&profile, &moved).is_err());
+        assert!(validate_binding(&profile, &moved).is_ok());
+
+        let relative = ExecutionBinding::Ssh {
+            profile_id: profile.id.clone(),
+            profile_revision: profile.revision,
+            host_alias: profile.ssh_host.clone(),
+            remote_cwd: "srv/other".into(),
+            launcher_protocol_version: profile.launcher_protocol_version,
+            remote_task_id: None,
+            remote_task_pending: false,
+        };
+        assert!(validate_binding(&profile, &relative).is_err());
     }
 
     /// The checklist is only useful if each failure lands on the row whose fix
@@ -3740,15 +3943,37 @@ exit 1
         assert_eq!(
             argv(&spec),
             [
+                "-T",
                 "-o",
                 "BatchMode=yes",
                 "-o",
-                "ConnectTimeout=10",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "KbdInteractiveAuthentication=no",
+                "-o",
+                "PasswordAuthentication=no",
+                "-o",
+                "NumberOfPasswordPrompts=0",
+                "-o",
+                "ForwardAgent=no",
+                "-o",
+                "ForwardX11=no",
+                "-o",
+                "ClearAllForwardings=yes",
+                "-o",
+                "PermitLocalCommand=no",
+                "-o",
+                "RemoteCommand=none",
+                "-o",
+                "EscapeChar=none",
+                "-o",
+                "ConnectTimeout=15",
                 "-o",
                 "ServerAliveInterval=15",
                 "-o",
-                "ServerAliveCountMax=2",
-                "--",
+                "ServerAliveCountMax=3",
+                "-o",
+                "RequestTTY=no",
                 "prod",
                 "'/opt/pi launcher'",
                 "--manage",
@@ -3772,7 +3997,7 @@ exit 1
         )
         .unwrap();
         let args = argv(&spec);
-        assert_eq!(args[args.len() - 2], "--workspace");
+        assert_eq!(args[args.len() - 2].trim_matches('\''), "--workspace");
         assert!(args.contains(&"ServerAliveInterval=15".to_owned()));
         // One opaque token: a remote path with a space or a quote can never be read
         // as a shell word.
@@ -3797,7 +4022,7 @@ exit 1
         assert!(listed.get("encoding").is_none());
 
         for (operation, path, encoding) in [
-            ("delete", "/srv", None),
+            ("chmod", "/srv", None),
             ("list", "relative", None),
             ("read", "/srv/a.txt", Some("hex")),
             ("stat", "/srv/evil", None),

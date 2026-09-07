@@ -2,6 +2,7 @@ import { mockAssetUrlPort } from "../mock/asset-url";
 import { mockExternalNavigationPort } from "../mock/external-navigation";
 import { mockNotificationPort } from "../mock/notification";
 import { mockPetWindowPort } from "../mock/pet-window";
+import { createMockRepositoryPort } from "../mock/repository";
 import { createMockPiConfigurationPort } from "../mock/pi-configuration";
 import { createBrowserPiManagementFactory } from "../browser/pi-management";
 import { createMockPiProcessPort } from "../mock/pi-process";
@@ -36,6 +37,7 @@ export function createBrowserBackendPorts(): BackendPorts {
     remoteTerminal: createUnsupportedRemoteTerminalPort(),
     remoteProviderSync: mockRemoteProviderSyncPort,
     workspaceFs,
+    repository: createMockRepositoryPort(),
     // The preview has no SSH transport at all, so an SSH binding must refuse
     // here too — resolving it to the mock would make remote browsing look
     // implemented in preview and absent on desktop.
