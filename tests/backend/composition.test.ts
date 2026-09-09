@@ -60,9 +60,13 @@ function fakePorts(label = "fake"): BackendPorts {
     sessionRepository: {
       list: async () => [],
       load: async () => [],
+      readNativeTranscript: async () => null,
       save: async () => undefined,
       rename: async () => undefined,
       delete: async () => undefined,
+      listTrash: async () => [],
+      restoreTrash: async () => undefined,
+      purgeTrash: async () => undefined,
       trashSessionFile: async () => undefined,
       generateTitle: async () => label,
     },

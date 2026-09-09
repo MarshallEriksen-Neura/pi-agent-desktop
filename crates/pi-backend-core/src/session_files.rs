@@ -190,12 +190,159 @@ pub fn trash_transcript(
     }
     if move_runs {
         let target = destination.join(format!("{prefix}__{stem}"));
-        std::fs::rename(&runs, &target).map_err(|error| {
-            format!("could not move subagent runs into the session trash: {error}")
-        })?;
+        if let Err(error) = std::fs::rename(&runs, &target) {
+            if let Some(moved_file) = outcome.file.as_deref() {
+                // Keep deletion atomic at the session-footprint level: if the
+                // second move fails, put the transcript back so the caller does
+                // not lose track of a partially recycled conversation.
+                let _ = std::fs::rename(moved_file, &transcript);
+                outcome.file = None;
+            }
+            return Err(format!(
+                "could not move subagent runs into the session trash: {error}"
+            ));
+        }
         outcome.directory = Some(target.to_string_lossy().into_owned());
     }
     Ok(outcome)
+}
+
+fn resolve_existing_in(root: &Path, raw: &str) -> Result<Option<PathBuf>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("session trash root is unavailable: {error}"))?;
+    let candidate = Path::new(raw);
+    if !candidate.exists() {
+        return Ok(None);
+    }
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve recycle-bin entry: {error}"))?;
+    if !resolved.starts_with(&root) {
+        return Err("recycle-bin entry is outside the trusted session trash".into());
+    }
+    Ok(Some(resolved))
+}
+
+/// Put a recycled transcript and its optional subagent run directory back at
+/// their original Pi-owned paths. Existing destinations are never overwritten.
+pub fn restore_transcript(
+    root: &Path,
+    trash: &Path,
+    original_path: &str,
+    trash_file: Option<&str>,
+    trash_directory: Option<&str>,
+) -> Result<(), String> {
+    let original = original_path.trim();
+    if original.is_empty() {
+        return Ok(()); // a conversation deleted before its first turn had no file
+    }
+    let destination = resolve_within(root, original)
+        .map_err(|outcome| outcome.skipped.unwrap_or_else(|| "invalid original transcript path".into()))?;
+    let file_source = match trash_file {
+        Some(path) => resolve_existing_in(trash, path)?,
+        None => None,
+    };
+    let dir_source = match trash_directory {
+        Some(path) => resolve_existing_in(trash, path)?,
+        None => None,
+    };
+
+    if file_source.is_some() && destination.exists() {
+        return Err("cannot restore transcript because the original path already exists".into());
+    }
+    let stem = destination
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "original transcript has no valid stem".to_owned())?;
+    let run_destination = destination.with_file_name(stem);
+    if dir_source.is_some() && run_destination.exists() {
+        return Err("cannot restore subagent runs because the original directory already exists".into());
+    }
+
+    if file_source.is_none() && !destination.is_file() {
+        return Err("the recycled transcript file is no longer available".into());
+    }
+
+    if let Some(source) = file_source.as_ref() {
+        std::fs::rename(source, &destination)
+            .map_err(|error| format!("could not restore transcript: {error}"))?;
+    }
+    if let Some(source) = dir_source.as_ref() {
+        if let Err(error) = std::fs::rename(source, &run_destination) {
+            if let Some(file_source) = file_source.as_ref() {
+                // Best-effort rollback keeps the pair together if the second move fails.
+                let _ = std::fs::rename(&destination, file_source);
+            }
+            return Err(format!("could not restore subagent runs: {error}"));
+        }
+    }
+    Ok(())
+}
+
+/// Permanently remove one recycled conversation. This covers both normal trash
+/// entries and the fallback case where the index delete succeeded but moving the
+/// original transcript into the recycle bin did not.
+pub fn purge_transcript(
+    root: &Path,
+    trash: &Path,
+    original_path: &str,
+    trash_file: Option<&str>,
+    trash_directory: Option<&str>,
+) -> Result<(), String> {
+    let recycled_file = match trash_file {
+        Some(raw) => resolve_existing_in(trash, raw)?,
+        None => None,
+    };
+    if let Some(path) = recycled_file {
+        if path.is_file() {
+            std::fs::remove_file(&path)
+                .map_err(|error| format!("could not permanently delete recycled transcript: {error}"))?;
+        }
+    }
+    let recycled_directory = match trash_directory {
+        Some(raw) => resolve_existing_in(trash, raw)?,
+        None => None,
+    };
+    if let Some(path) = recycled_directory {
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+                .map_err(|error| format!("could not permanently delete recycled subagent runs: {error}"))?;
+        }
+    }
+
+    let original = original_path.trim();
+    if original.is_empty() {
+        return Ok(());
+    }
+    let transcript = match resolve_within(root, original) {
+        Ok(path) => path,
+        Err(outcome) => {
+            return Err(outcome
+                .skipped
+                .unwrap_or_else(|| "invalid original transcript path".into()))
+        }
+    };
+    if transcript.is_file() {
+        std::fs::remove_file(&transcript)
+            .map_err(|error| format!("could not permanently delete original transcript: {error}"))?;
+    }
+    let stem = transcript
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if !stem.is_empty() {
+        let runs = transcript.with_file_name(stem);
+        if runs.is_dir() {
+            std::fs::remove_dir_all(&runs)
+                .map_err(|error| format!("could not permanently delete original subagent runs: {error}"))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -406,6 +553,67 @@ mod tests {
             prefix(&directory),
             "a restore has to be able to tell which runs belonged to which transcript",
         );
+    }
+
+    #[test]
+    fn restores_a_recycled_transcript_and_its_runs() {
+        let f = fixture("restore");
+        let path = transcript(&f, "restore-me.jsonl");
+        let runs = f.slug.join("restore-me");
+        std::fs::create_dir_all(&runs).expect("runs dir");
+        std::fs::write(runs.join("run.jsonl"), "{}\n").expect("run file");
+        let outcome = trash(&f, &path);
+
+        restore_transcript(
+            &f.root,
+            &f.trash,
+            path.to_str().unwrap(),
+            outcome.file.as_deref(),
+            outcome.directory.as_deref(),
+        )
+        .expect("restore");
+
+        assert!(path.is_file());
+        assert!(runs.join("run.jsonl").is_file());
+        assert!(!Path::new(outcome.file.as_deref().unwrap()).exists());
+    }
+
+    #[test]
+    fn permanently_purges_a_recycled_transcript_and_its_runs() {
+        let f = fixture("purge");
+        let path = transcript(&f, "purge-me.jsonl");
+        let runs = f.slug.join("purge-me");
+        std::fs::create_dir_all(&runs).expect("runs dir");
+        let outcome = trash(&f, &path);
+        let recycled_file = outcome.file.clone().expect("recycled file");
+        let recycled_runs = outcome.directory.clone().expect("recycled runs");
+
+        purge_transcript(
+            &f.root,
+            &f.trash,
+            path.to_str().unwrap(),
+            outcome.file.as_deref(),
+            outcome.directory.as_deref(),
+        )
+        .expect("purge");
+
+        assert!(!path.exists());
+        assert!(!Path::new(&recycled_file).exists());
+        assert!(!Path::new(&recycled_runs).exists());
+    }
+
+    #[test]
+    fn permanent_purge_cleans_an_original_left_behind_by_a_failed_trash_move() {
+        let f = fixture("purge-original");
+        let path = transcript(&f, "left-behind.jsonl");
+        let runs = f.slug.join("left-behind");
+        std::fs::create_dir_all(&runs).expect("runs dir");
+
+        purge_transcript(&f.root, &f.trash, path.to_str().unwrap(), None, None)
+            .expect("purge original");
+
+        assert!(!path.exists());
+        assert!(!runs.exists());
     }
 
     #[test]

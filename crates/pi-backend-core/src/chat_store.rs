@@ -5,7 +5,7 @@ use thiserror::Error;
 pub const MAX_SESSION_MESSAGES_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SESSION_NAME_BYTES: usize = 512;
 pub const MAX_SESSION_PREVIEW_BYTES: usize = 8 * 1024;
-pub const CHAT_SCHEMA_VERSION: i64 = 3;
+pub const CHAT_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Error)]
 pub enum ChatStoreError {
@@ -110,6 +110,17 @@ pub fn configure_and_migrate(
            target_key TEXT NOT NULL,
            authority_session_id TEXT,
            session_path TEXT,
+           session_id TEXT,
+           name TEXT NOT NULL DEFAULT '',
+           preview TEXT NOT NULL DEFAULT '',
+           messages TEXT NOT NULL DEFAULT '[]',
+           project_root TEXT NOT NULL DEFAULT '',
+           execution_binding TEXT NOT NULL DEFAULT '{\"kind\":\"local\",\"targetId\":\"local\"}',
+           source TEXT NOT NULL DEFAULT 'native',
+           created_at INTEGER NOT NULL DEFAULT 0,
+           updated_at INTEGER NOT NULL DEFAULT 0,
+           trash_file TEXT,
+           trash_directory TEXT,
            deleted_at INTEGER NOT NULL,
            CHECK (authority_session_id IS NOT NULL OR session_path IS NOT NULL)
          );
@@ -124,6 +135,39 @@ pub fn configure_and_migrate(
            WHERE authority_session_id IS NOT NULL;
          CREATE INDEX IF NOT EXISTS idx_chat_sessions_scope
            ON chat_sessions (target_key, project_root, updated_at DESC);",
+    )?;
+
+    // v4 turns tombstones into real recycle-bin records. Older installs only
+    // stored enough identity to suppress rediscovery, so add the display and
+    // restore metadata without invalidating those historical rows.
+    for (column, ddl) in [
+        ("session_id", "ALTER TABLE chat_session_tombstones ADD COLUMN session_id TEXT;"),
+        ("name", "ALTER TABLE chat_session_tombstones ADD COLUMN name TEXT NOT NULL DEFAULT '';"),
+        ("preview", "ALTER TABLE chat_session_tombstones ADD COLUMN preview TEXT NOT NULL DEFAULT '';"),
+        ("messages", "ALTER TABLE chat_session_tombstones ADD COLUMN messages TEXT NOT NULL DEFAULT '[]';"),
+        ("project_root", "ALTER TABLE chat_session_tombstones ADD COLUMN project_root TEXT NOT NULL DEFAULT '';"),
+        (
+            "execution_binding",
+            "ALTER TABLE chat_session_tombstones ADD COLUMN execution_binding TEXT NOT NULL DEFAULT '{\"kind\":\"local\",\"targetId\":\"local\"}';",
+        ),
+        ("source", "ALTER TABLE chat_session_tombstones ADD COLUMN source TEXT NOT NULL DEFAULT 'native';"),
+        ("created_at", "ALTER TABLE chat_session_tombstones ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;"),
+        ("updated_at", "ALTER TABLE chat_session_tombstones ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;"),
+        ("trash_file", "ALTER TABLE chat_session_tombstones ADD COLUMN trash_file TEXT;"),
+        ("trash_directory", "ALTER TABLE chat_session_tombstones ADD COLUMN trash_directory TEXT;"),
+    ] {
+        let exists: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('chat_session_tombstones') WHERE name = ?1",
+            [column],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            transaction.execute_batch(ddl)?;
+        }
+    }
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_chat_tombstone_scope
+           ON chat_session_tombstones (target_key, project_root, deleted_at DESC);",
     )?;
     transaction.pragma_update(None, "user_version", CHAT_SCHEMA_VERSION)?;
     transaction.commit()?;

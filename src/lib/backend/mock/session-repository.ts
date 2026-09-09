@@ -61,6 +61,8 @@ export function createMockSessionRepositoryPort(
     load: async (scope, id) =>
       read().find((session) => session.id === id && inScope(session, scope))?.messages ?? [],
 
+    readNativeTranscript: async (_scope, _path) => null,
+
     save: async (_scope, session: SessionSaveInput) => {
       const rest = read().filter((item) => item.id !== session.id);
       write([{ ...session, updatedAt: Date.now() }, ...rest]);
@@ -73,6 +75,10 @@ export function createMockSessionRepositoryPort(
     delete: async (scope, id) => {
       write(read().filter((session) => session.id !== id || !inScope(session, scope)));
     },
+
+    listTrash: async () => [],
+    restoreTrash: async () => {},
+    purgeTrash: async () => {},
 
     // Browser preview has no pi process, so there is no transcript on disk to move.
     trashSessionFile: async (_scope, _path) => {},

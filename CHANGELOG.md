@@ -7,6 +7,26 @@ All notable changes to Pi Desktop will be documented in this file.
 ### Fixed
 - 发布 workflow 的桌面与 Android 上传步骤现在显式保持 draft，仅最终 `publish-release` job 可以公开 Release，避免首个完成的上传任务提前发布不完整资产
 
+## [0.15.0] — 2026-09-09
+
+### Added
+- **会话回收站与可恢复删除**。删除本地 Pi 会话时会同时记录完整回收信息，并把 Pi 原始 JSONL 与该会话专属的 subagent run 目录移动到 `~/.pi/agent/session-trash/`；侧边栏新增回收站入口，可恢复单条会话、永久删除单条或清空回收站。永久操作都有二次确认，共享的 `subagent-artifacts` 不会被误删。
+- **原生 Pi 历史会话可直接从 JSONL 快速载入**。点击历史会话时先从受信任的 session root 读取并渲染 transcript，不再必须等待新 Pi RPC 进程完成恢复后才能看到正文。
+
+### Changed
+- 原生会话扫描会从 JSONL 提取真实标题与预览，并以 transcript 文件时间作为 native 会话的历史更新时间；查看旧会话不再把它重新顶到列表最前。
+- 切换会话时会回收已经空闲的 Pi 客户端，真正仍在运行的后台任务继续保留，避免浏览大量历史会话后累积一批无用 RPC 进程。
+
+### Fixed
+- **修复 Windows 原生会话目录编码错误**。`fs::canonicalize()` 返回的 `\\?\` / verbatim UNC 路径现在会先规范化，再按 Pi CLI 的目录规则编码，Desktop 能正确发现 `~/.pi/agent/sessions/--C--...--` 下的 CLI 会话。
+- 修复原生会话初次导入只有空 `name` / `preview` / `messages`，导致侧边栏出现大量“新会话”、正文延迟出现或保持空白的问题。
+- 修复只读打开历史会话也会保存并刷新 `updated_at`，导致旧会话排序不断跳动的问题。
+- 修复官方 Windows C/C++ compiler wrapper 在 `vswhere` 返回空结果时无法识别已安装的 Visual Studio Build Tools，导致 `ring` / `vswhom-sys` release 构建失败的问题。
+
+### Internal
+- SQLite chat schema 升级到 v4，为回收站记录补充会话元数据、原始/回收路径与删除时间；旧 tombstone 继续兼容。
+- 会话文件恢复、永久删除、路径越界保护和迁移均新增回归测试；永久删除只允许操作受信任的 Pi `sessions` / `session-trash` 根目录。
+
 ## [0.14.0] — 2026-09-05
 
 ### Added

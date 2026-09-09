@@ -62,8 +62,11 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // runtime_config_read/write and the three wsl_* commands — down to 86.
   // Repository Review adds local status/diff plus one capability-gated SSH bridge,
   // bringing the strict command inventory to 89. Safe local mutations add one
-  // separate write command; SSH mutations continue through the gated bridge.
-  assert.equal(result.inventory.commandUniqueCount, 90);
+  // separate write command, bringing it to 90; SSH mutations continue through
+  // the gated bridge. The v0.15 lifecycle folds transcript recycling into
+  // chat_session_delete and removes the redundant pi_session_trash command, down
+  // to 89; pi_session_read plus recycle-bin list / purge / restore bring it to 93.
+  assert.equal(result.inventory.commandUniqueCount, 93);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -77,6 +80,9 @@ test("locks the desktop command names and Pi process event names", () => {
     "chat_session_load",
     "chat_session_rename",
     "chat_session_save",
+    "chat_session_trash_list",
+    "chat_session_trash_purge",
+    "chat_session_trash_restore",
     "chat_sessions_list",
     "fs_create_dir",
     "fs_create_file",
@@ -108,7 +114,7 @@ test("locks the desktop command names and Pi process event names", () => {
     "pi_fetch_models",
     "pi_generate_title",
     "pi_send",
-    "pi_session_trash",
+    "pi_session_read",
     "pi_settings_read",
     "pi_settings_write",
     "pi_start",

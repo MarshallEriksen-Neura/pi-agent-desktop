@@ -13,6 +13,7 @@ pub struct NativeSessionMetadata {
     pub session_path: String,
     pub cwd: String,
     pub name: String,
+    pub preview: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -70,6 +71,75 @@ fn read_header(path: &Path) -> Option<SessionHeader> {
     }
 }
 
+fn truncate_chars(value: &str, limit: usize) -> String {
+    value.trim().chars().take(limit).collect()
+}
+
+fn message_text(message: &serde_json::Value) -> String {
+    let Some(content) = message.get("content") else {
+        return String::new();
+    };
+    if let Some(text) = content.as_str() {
+        return text.trim().to_owned();
+    }
+    let Some(blocks) = content.as_array() else {
+        return String::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|block| {
+            if block.get("type").and_then(|value| value.as_str()) != Some("text") {
+                return None;
+            }
+            block.get("text").and_then(|value| value.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
+}
+
+/// Stream only the display metadata needed by the history sidebar. Full chat
+/// projection stays lazy and is loaded separately when a conversation is opened.
+fn read_display_metadata(path: &Path) -> (String, String) {
+    let Ok(file) = File::open(path) else {
+        return (String::new(), String::new());
+    };
+    let reader = BufReader::new(file);
+    let mut name = String::new();
+    let mut preview = String::new();
+    for line in reader.lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if value.get("type").and_then(|value| value.as_str()) != Some("message") {
+            continue;
+        }
+        let Some(message) = value.get("message") else {
+            continue;
+        };
+        let Some(role) = message.get("role").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        let text = message_text(message);
+        if text.is_empty() {
+            continue;
+        }
+        if name.is_empty() && role == "user" {
+            name = truncate_chars(&text, 40);
+        }
+        preview = truncate_chars(&text, 80);
+    }
+    (name, preview)
+}
+
 /// Discover Pi transcripts without loading transcript bodies into memory.
 ///
 /// Custom session roots are shared by projects, so callers set `filter_cwd` for
@@ -97,11 +167,13 @@ pub fn discover_sessions(
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
+        let (name, preview) = read_display_metadata(&path);
         sessions.push(NativeSessionMetadata {
             authority_session_id: header.id,
             session_path: path.to_string_lossy().into_owned(),
             cwd: header.cwd,
-            name: String::new(),
+            name,
+            preview,
             created_at: metadata
                 .created()
                 .map(millis)
@@ -145,12 +217,41 @@ mod tests {
                 serde_json::json!({ "type": "session", "version": 3, "id": id, "cwd": cwd })
             )
             .unwrap();
-            writeln!(file, "{{\"type\":\"message\",\"id\":\"large-body\"}}").unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "type": "message",
+                    "id": "user-message",
+                    "parentId": null,
+                    "message": {
+                        "role": "user",
+                        "content": [{ "type": "text", "text": "hello from native history" }]
+                    }
+                })
+            )
+            .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "type": "message",
+                    "id": "assistant-message",
+                    "parentId": "user-message",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{ "type": "text", "text": "native reply preview" }]
+                    }
+                })
+            )
+            .unwrap();
         }
 
         let found = discover_sessions(&sessions, &project, true);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].authority_session_id, "native-a");
+        assert_eq!(found[0].name, "hello from native history");
+        assert_eq!(found[0].preview, "native reply preview");
         assert_eq!(discover_sessions(&sessions, &project, false).len(), 2);
         let _ = fs::remove_dir_all(base);
     }

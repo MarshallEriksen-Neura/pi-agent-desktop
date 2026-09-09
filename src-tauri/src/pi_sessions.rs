@@ -7,11 +7,15 @@
 //! directories on this machine are the session root and the trash.
 
 use pi_backend_core::session_discovery::{discover_sessions, NativeSessionMetadata};
-use pi_backend_core::session_files::{trash_transcript, SessionTrashOutcome};
+use pi_backend_core::session_files::{
+    purge_transcript, restore_transcript, trash_transcript, SessionTrashOutcome,
+};
 use serde_json::Value;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const MAX_SESSION_READ_BYTES: u64 = 32 * 1024 * 1024;
 
 fn agent_dir() -> Result<PathBuf, String> {
     if let Some(value) = env::var_os("PI_CODING_AGENT_DIR").filter(|value| !value.is_empty()) {
@@ -53,14 +57,23 @@ fn setting_session_dir(path: &Path) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn default_session_root(project_root: &Path, agent: &Path) -> PathBuf {
-    let resolved = fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
-    let mut encoded = resolved.to_string_lossy().into_owned();
+fn default_session_dir_name(resolved_project_root: &Path) -> String {
+    // `fs::canonicalize` returns verbatim paths (`\\?\C:\...` / `\\?\UNC\...`)
+    // on Windows. Pi's Node CLI encodes the normal path shape, so normalize the
+    // canonical path back to that shape before mirroring Pi's directory-name rule.
+    let mut encoded = crate::projects::normalize(resolved_project_root);
     if encoded.starts_with('/') || encoded.starts_with('\\') {
         encoded.remove(0);
     }
     encoded = encoded.replace(['/', '\\', ':'], "-");
-    agent.join("sessions").join(format!("--{encoded}--"))
+    format!("--{encoded}--")
+}
+
+fn default_session_root(project_root: &Path, agent: &Path) -> PathBuf {
+    let resolved = fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    agent
+        .join("sessions")
+        .join(default_session_dir_name(&resolved))
 }
 
 /// Resolve the effective local session root used by the Pi child process.
@@ -95,6 +108,48 @@ pub fn discover_local_sessions(project_root: &str) -> Result<Vec<NativeSessionMe
     Ok(discover_sessions(&root, &project, custom))
 }
 
+/// Read one local Pi transcript for instant history rendering.
+///
+/// `session_path` comes from SQLite, so it is treated as untrusted even though
+/// the desktop wrote it there. Canonicalize both sides and require the transcript
+/// to remain inside the effective session root before reading it.
+#[tauri::command]
+pub fn pi_session_read(path: String, project_root: String) -> Result<String, String> {
+    let raw = path.trim();
+    if raw.is_empty() {
+        return Err("session path is empty".into());
+    }
+    let candidate = Path::new(raw);
+    if candidate.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+        return Err("session path is not a .jsonl transcript".into());
+    }
+
+    let trusted_root = resolve_local_session_root(Path::new(&project_root))?.0;
+    let trusted_root = trusted_root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve local session root: {error}"))?;
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve session transcript: {error}"))?;
+    if !candidate.starts_with(&trusted_root) {
+        return Err("session transcript is outside the local session root".into());
+    }
+
+    let metadata = fs::metadata(&candidate)
+        .map_err(|error| format!("cannot stat session transcript: {error}"))?;
+    if !metadata.is_file() {
+        return Err("session transcript is not a file".into());
+    }
+    if metadata.len() > MAX_SESSION_READ_BYTES {
+        return Err(format!(
+            "session transcript is too large to render ({} MB)",
+            metadata.len() / (1024 * 1024)
+        ));
+    }
+    fs::read_to_string(&candidate)
+        .map_err(|error| format!("cannot read session transcript: {error}"))
+}
+
 /// The root every trashable transcript must resolve under.
 ///
 /// Anything that does not is refused rather than moved — see `resolve_within` in
@@ -108,6 +163,46 @@ fn trash_root() -> Result<PathBuf, String> {
     Ok(agent_dir()?.join("session-trash"))
 }
 
+pub(crate) fn recycle_local_transcript(
+    project_root: &str,
+    path: &str,
+) -> Result<SessionTrashOutcome, String> {
+    let trusted_root = resolve_local_session_root(Path::new(project_root))?.0;
+    trash_transcript(&trusted_root, &trash_root()?, path)
+}
+
+pub(crate) fn restore_local_transcript(
+    project_root: &str,
+    original_path: &str,
+    trash_file: Option<&str>,
+    trash_directory: Option<&str>,
+) -> Result<(), String> {
+    let trusted_root = resolve_local_session_root(Path::new(project_root))?.0;
+    restore_transcript(
+        &trusted_root,
+        &trash_root()?,
+        original_path,
+        trash_file,
+        trash_directory,
+    )
+}
+
+pub(crate) fn purge_local_transcript(
+    project_root: &str,
+    original_path: &str,
+    trash_file: Option<&str>,
+    trash_directory: Option<&str>,
+) -> Result<(), String> {
+    let trusted_root = resolve_local_session_root(Path::new(project_root))?.0;
+    purge_transcript(
+        &trusted_root,
+        &trash_root()?,
+        original_path,
+        trash_file,
+        trash_directory,
+    )
+}
+
 /// Move one conversation's transcript into `~/.pi/agent/session-trash/`.
 ///
 /// Separate from `chat_store::chat_session_delete` on purpose: the caller drops
@@ -118,9 +213,32 @@ pub fn pi_session_trash(
     path: String,
     project_root: Option<String>,
 ) -> Result<SessionTrashOutcome, String> {
-    let trusted_root = match project_root.filter(|value| !value.trim().is_empty()) {
-        Some(project_root) => resolve_local_session_root(Path::new(&project_root))?.0,
-        None => sessions_root()?,
-    };
-    trash_transcript(&trusted_root, &trash_root()?, &path)
+    match project_root.filter(|value| !value.trim().is_empty()) {
+        Some(project_root) => recycle_local_transcript(&project_root, &path),
+        None => trash_transcript(&sessions_root()?, &trash_root()?, &path),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_session_dir_name;
+    use std::path::Path;
+
+    #[cfg(windows)]
+    #[test]
+    fn default_session_dir_strips_windows_verbatim_disk_prefix() {
+        assert_eq!(
+            default_session_dir_name(Path::new(r"\\?\C:\Users\V\Documents\Pix")),
+            "--C--Users-V-Documents-Pix--"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_session_dir_normalizes_windows_verbatim_unc_prefix() {
+        assert_eq!(
+            default_session_dir_name(Path::new(r"\\?\UNC\server\share\project")),
+            "---server-share-project--"
+        );
+    }
 }

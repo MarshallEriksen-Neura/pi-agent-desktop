@@ -49,7 +49,7 @@ interface Harness {
   restore: () => void;
 }
 
-function harness(failures: { delete?: boolean; trash?: boolean } = {}): Harness {
+function harness(failures: { delete?: boolean } = {}): Harness {
   const order: string[] = [];
   const repository = {
     list: async () => [],
@@ -60,9 +60,11 @@ function harness(failures: { delete?: boolean; trash?: boolean } = {}): Harness 
       order.push(`delete:${id}`);
       if (failures.delete) throw new Error("index write failed");
     },
+    listTrash: async () => [],
+    restoreTrash: async () => {},
+    purgeTrash: async () => {},
     trashSessionFile: async (_scope: unknown, path: string) => {
       order.push(`trash:${path}`);
-      if (failures.trash) throw new Error("rename failed");
     },
     generateTitle: async () => "",
   } as unknown as SessionRepositoryPort;
@@ -95,40 +97,17 @@ function seed(doomed: ChatSessionMeta): string {
   return doomed.id;
 }
 
-test("deleting a conversation removes the index row, then pi's transcript", async () => {
+test("deleting a conversation delegates the complete recycle operation to the repository", async () => {
   const { order, restore } = harness();
   try {
     const id = seed(meta({ id: "doomed", sessionPath: "D:/sessions/doomed.jsonl" }));
 
     await useSessions.getState().deleteSession(id);
 
-    assert.deepEqual(
-      order,
-      ["delete:doomed", "trash:D:/sessions/doomed.jsonl"],
-      "the row must go first: a transcript moved out from under a surviving row " +
-        "would be recreated empty by the next --session resume",
-    );
+    assert.deepEqual(order, ["delete:doomed"]);
     assert.deepEqual(
       useSessions.getState().sessions.map((session) => session.id),
       ["keeper"],
-    );
-  } finally {
-    restore();
-  }
-});
-
-test("a failed transcript move still leaves the conversation deleted", async () => {
-  const { order, restore } = harness({ trash: true });
-  try {
-    const id = seed(meta({ id: "doomed", sessionPath: "D:/sessions/doomed.jsonl" }));
-
-    await useSessions.getState().deleteSession(id);
-
-    assert.deepEqual(order, ["delete:doomed", "trash:D:/sessions/doomed.jsonl"]);
-    assert.deepEqual(
-      useSessions.getState().sessions.map((session) => session.id),
-      ["keeper"],
-      "an orphan transcript is the pre-existing state, not a reason to restore the row",
     );
   } finally {
     restore();

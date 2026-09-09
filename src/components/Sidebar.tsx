@@ -14,6 +14,7 @@ import {
   Smartphone,
   RefreshCw,
   AtSign,
+  ArchiveRestore,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { ScrollArea } from "@appica/ui-react/scroll-area";
@@ -32,6 +33,7 @@ import { useRemoteConversations } from "@/lib/remote-conversations/store";
 import type { RemoteConversationSnapshot } from "@pi/remote-control-contracts";
 import { useT } from "@/lib/i18n";
 import { SectionLabel } from "./primitives";
+import { SessionTrashDialog } from "./SessionTrashDialog";
 
 //─── Tree editing context ─────────────────────────────────────────────────────
 
@@ -247,7 +249,7 @@ const SESSION_COLLAPSE_THRESHOLD = 8;
 export function Sidebar() {
   const workspace = useWorkspace();
   const { root, entries, init, loadError } = workspace;
-  const { sessions, activeId, newSession } = useSessions();
+  const { sessions, activeId, newSession, trashedSessions, trashLoaded } = useSessions();
   const t = useT();
 
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
@@ -256,6 +258,7 @@ export function Sidebar() {
   const [explorerHover, setExplorerHover] = useState(false);
   const [focusedEntry, setFocusedEntry] = useState<FsEntry | null>(null);
   const [sessionsExpanded, setSessionsExpanded] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
   /* work-only is the one layout with no editor to open a file into — see the
      Explorer section below. The workspace still initializes: its root is what
      the agent runs against, whether or not a tree is drawn. */
@@ -436,6 +439,46 @@ export function Sidebar() {
             </motion.button>
           )}
 
+          <motion.button
+            whileTap={{ scale: 0.98 }}
+            onClick={() => setTrashOpen(true)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "calc(100% - 12px)",
+              margin: "3px 6px 0",
+              padding: "6px 10px",
+              fontSize: 12,
+              border: "none",
+              borderRadius: 8,
+              background: "transparent",
+              color: "var(--text-tertiary)",
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+          >
+            <ArchiveRestore size={13} />
+            <span style={{ flex: 1 }}>{t("trash.title")}</span>
+            {trashLoaded && trashedSessions.length > 0 && (
+              <span
+                style={{
+                  minWidth: 18,
+                  height: 18,
+                  padding: "0 5px",
+                  display: "grid",
+                  placeItems: "center",
+                  borderRadius: 9,
+                  background: "var(--bg-sunken)",
+                  fontSize: 10.5,
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {trashedSessions.length}
+              </span>
+            )}
+          </motion.button>
+
           {/* conversations started on a paired phone — same list, own section */}
           <RemoteSection />
 
@@ -551,6 +594,8 @@ export function Sidebar() {
           )}
         </ScrollArea>
       </nav>
+
+      <SessionTrashDialog open={trashOpen} onClose={() => setTrashOpen(false)} />
 
       {/* Floating context menu */}
       <AnimatePresence>

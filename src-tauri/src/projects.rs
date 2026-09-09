@@ -132,7 +132,7 @@ fn read_state_unlocked() -> Result<DesktopState, String> {
 
 /// Forward slashes everywhere; strip the Windows `\\?\` verbatim prefix that
 /// `fs::canonicalize` produces.
-fn normalize(p: &Path) -> String {
+pub(crate) fn normalize(p: &Path) -> String {
     let s = p.to_string_lossy().replace('\\', "/");
     // Verbatim UNC (`\\?\UNC\server\share`) → `//server/share` so the
     // frontend receives the normal UNC shape.
