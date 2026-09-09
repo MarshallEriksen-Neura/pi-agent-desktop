@@ -106,7 +106,8 @@ fn read_display_metadata(path: &Path) -> (String, String) {
         return (String::new(), String::new());
     };
     let reader = BufReader::new(file);
-    let mut name = String::new();
+    let mut first_user_name = String::new();
+    let mut native_name: Option<String> = None;
     let mut preview = String::new();
     for line in reader.lines().map_while(Result::ok) {
         let trimmed = line.trim();
@@ -116,6 +117,13 @@ fn read_display_metadata(path: &Path) -> (String, String) {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
             continue;
         };
+        if value.get("type").and_then(|value| value.as_str()) == Some("session_info") {
+            native_name = value
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(|value| truncate_chars(value, 40));
+            continue;
+        }
         if value.get("type").and_then(|value| value.as_str()) != Some("message") {
             continue;
         }
@@ -132,11 +140,14 @@ fn read_display_metadata(path: &Path) -> (String, String) {
         if text.is_empty() {
             continue;
         }
-        if name.is_empty() && role == "user" {
-            name = truncate_chars(&text, 40);
+        if first_user_name.is_empty() && role == "user" {
+            first_user_name = truncate_chars(&text, 40);
         }
         preview = truncate_chars(&text, 80);
     }
+    let name = native_name
+        .filter(|value| !value.is_empty())
+        .unwrap_or(first_user_name);
     (name, preview)
 }
 
@@ -245,12 +256,23 @@ mod tests {
                 })
             )
             .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "type": "session_info",
+                    "id": "session-info",
+                    "parentId": "assistant-message",
+                    "name": "Native custom title"
+                })
+            )
+            .unwrap();
         }
 
         let found = discover_sessions(&sessions, &project, true);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].authority_session_id, "native-a");
-        assert_eq!(found[0].name, "hello from native history");
+        assert_eq!(found[0].name, "Native custom title");
         assert_eq!(found[0].preview, "native reply preview");
         assert_eq!(discover_sessions(&sessions, &project, false).len(), 2);
         let _ = fs::remove_dir_all(base);

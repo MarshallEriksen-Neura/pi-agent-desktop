@@ -5,7 +5,11 @@ import { getChatStore, clearChatStores, type ChatMessage } from "./chat";
 import { getPiStore, clearPiStore, clearPiStores } from "./store";
 import { getPiClient, disposeAllPiClients, disposePiClient } from "./client";
 import { prepareRemoteBinding } from "./remote-task-binding";
-import { sessionEntriesToChatMessages, type PiEntriesSnapshot } from "./session-transcript";
+import {
+  nativeSnapshotFromJsonl,
+  sessionEntriesToChatMessages,
+  type PiEntriesSnapshot,
+} from "./session-transcript";
 import { foldPlan, usePlan } from "./plan";
 import { useExtUi } from "./ext-ui";
 import { t } from "../i18n";
@@ -653,26 +657,6 @@ async function repaint(taskId: string): Promise<Error | null> {
   } finally {
     restoringTasks.delete(taskId);
   }
-}
-
-/** Build the same structural snapshot returned by Pi's `get_entries` directly
- * from its append-only JSONL transcript. The last non-session entry is Pi's
- * current leaf in persisted session files; branch reconstruction is still done
- * by `sessionEntriesToChatMessages`, so sibling branches are not flattened. */
-function nativeSnapshotFromJsonl(raw: string): PiEntriesSnapshot {
-  const entries: PiEntriesSnapshot["entries"] = [];
-  let leafId: string | null = null;
-  for (const rawLine of raw.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const entry = JSON.parse(line) as PiEntriesSnapshot["entries"][number];
-    if (!entry || typeof entry !== "object" || typeof entry.type !== "string") continue;
-    entries.push(entry);
-    if (entry.type !== "session" && typeof entry.id === "string" && entry.id) {
-      leafId = entry.id;
-    }
-  }
-  return { entries, leafId };
 }
 
 /**
