@@ -40,6 +40,7 @@ Most "AI coding" tools are either a chat box bolted onto an editor, or a heavy I
 - **Code editor** — CodeMirror 6 with syntax highlighting and interactive code blocks.
 - **Local-first persistence** — chat history is saved in SQLite and works fully offline.
 - **Built-in auto-update** — `tauri-plugin-updater` produces a signed `latest.json` for one-click in-app updates.
+- **Reviewed Git workflows** — Repository Inspector separates Fetch from integration and supports immutable, reviewed fast-forward, Merge commit, and linear Rebase operations on local and SSH repositories.
 - **Truly cross-platform** — one build yields Windows (NSIS / MSI), macOS (DMG), and Linux (AppImage / deb / rpm).
 
 ## Quick start
@@ -101,6 +102,22 @@ flowchart LR
 - **State** — zustand stores (`usePi` / `chat` / `useUI`); `agent-bridge.ts` maps pi tool events into UI agent-task state.
 
 The platform boundary and mobile-sharing rules are documented in [docs/backend-architecture.md](docs/backend-architecture.md).
+
+### Reviewed Git workflows
+
+Repository Inspector deliberately does not provide an implicit Pull operation. Fetch is reviewed and executed separately; integration then uses an immutable snapshot of the repository root, generation, local branch and `HEAD`, upstream destination and OID, merge-base, and selected strategy.
+
+- **Fast-forward only** is available only for a clean behind-only branch and uses the reviewed upstream OID.
+- **Merge commit** is available only for clean, genuinely diverged histories. Its normalized reviewed message must be nonempty and already trimmed, is limited to 4096 UTF-8 bytes, and is preserved exactly.
+- **Linear Rebase** is available only for a bounded, merge-free reviewed local range and accepts no message.
+- Merge or Rebase conflicts are automatically aborted only when Git confirms the matching operation. A conflict is reported as safely unapplied only after the original branch, `HEAD`, operation state, refs, index, locks, and worktree are verified restored; otherwise the result is treated as potentially applied and forces an authoritative refresh.
+- Group **Stage all** / **Unstage all** actions submit one generation-bound batch containing the exact reviewed file entries, including rename origins. The backend validates the entire 1–4096 entry batch and its 16 KiB cumulative UTF-8 path budget before one temporary-index Git operation and one live-index installation; it never loops single-file mutations.
+- Conflicts block all staging writes and are disclosed beside the file groups. The Commit helper only stages the reviewed unstaged/untracked scope—it never combines staging with commit. Worktree drift before index installation is rejected as unapplied; uncertainty after dispatch or installation forces an authoritative refresh.
+- Local writes require the canonical `local` execution target. SSH Merge/Rebase requires launcher revision 13 with `repository-integration-v2`; SSH batch staging requires launcher revision 14 with the independent `repository-batch-write-v1` capability. Integration and batch replies are accepted only as one strict, operation-appropriate JSON document.
+- Effective Git configuration, including included and worktree-scoped configuration, is inspected. Executable filters and merge drivers, configured merge options, hooks, editors, signing prompts, autostash, rerere, update-refs, and submodule recursion are rejected or disabled.
+
+Integration makes no network request, never force-updates, never autostashes, and never performs automatic conflict resolution. A lost, malformed, or semantically ambiguous integration reply is treated as potentially applied and forces an authoritative refresh.
+
 
 The frontend is a Next.js App Router static export (`output: "export"`) — all pages are client-rendered, and the borderless window chrome is drawn by the app itself.
 

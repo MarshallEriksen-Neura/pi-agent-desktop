@@ -40,6 +40,7 @@
 - **代码编辑器** —— CodeMirror 6，支持语法高亮与代码块交互。
 - **本地优先持久化** —— SQLite 保存聊天记录，完全离线可用。
 - **内置自动更新** —— 基于 `tauri-plugin-updater`，构建自动生成签名 `latest.json`，应用内一键更新。
+- **审阅式 Git 工作流** —— Repository Inspector 将 Fetch 与集成分开，并在本地与 SSH 仓库上提供不可变审阅的仅快进、Merge commit 和线性 Rebase。
 - **真正跨平台** —— 一次构建产出 Windows（NSIS / MSI）、macOS（DMG）、Linux（AppImage / deb / rpm）。
 
 ## 快速开始
@@ -99,6 +100,21 @@ flowchart LR
 - **后端能力层**（`src/lib/backend/`）——桌面与浏览器组合根会在 UI 挂载前，显式注入进程、文件系统、会话、运行时、窗口、通知和更新能力。
 - **协议**（`src/lib/pi/protocol.ts`）—— 所有 RPC 命令与事件，严格 JSONL（每行一个 JSON 对象）。
 - **状态** —— zustand stores（`usePi` / `chat` / `useUI`），`agent-bridge.ts` 把 pi 工具事件翻译为 UI agent-task 状态。
+
+### 审阅式 Git 工作流
+
+Repository Inspector 有意不提供隐式 Pull。Fetch 需要单独审阅和执行；随后集成使用一个不可变快照，绑定仓库根目录、代次、本地分支与 `HEAD`、上游目标与 OID、merge-base，以及所选策略。
+
+- **仅快进**只对干净且仅落后的分支开放，并使用已审阅的上游 OID。
+- **Merge commit**只对干净且真正分叉的历史开放。归一化后的审阅消息必须非空、已去除首尾空白，最多 4096 个 UTF-8 字节，并按审阅值原样保存。
+- **线性 Rebase**只对有界、无 merge commit 的已审阅本地提交范围开放，且不接受消息。
+- Merge 或 Rebase 冲突只会在 Git 确认对应操作后自动 abort。只有原分支、`HEAD`、操作状态、引用、索引、锁和工作区均验证恢复后，冲突才会报告为安全地未应用；否则按可能已应用处理并强制权威刷新。
+- 分组的**全部暂存 / 全部取消暂存**操作只发送一个绑定代次的批请求，其中包含精确审阅过的文件条目及重命名来源。后端会先完整验证 1–4096 个条目和累计 16 KiB 的 UTF-8 路径预算，再执行一次临时索引 Git 操作和一次实时索引安装；不会循环调用单文件写入。
+- 冲突会阻止所有暂存写入，并在文件分组旁明确说明。Commit 区域的辅助操作只暂存已审阅的未暂存/未跟踪范围，绝不会把暂存和提交合并。索引安装前发现工作区漂移会按未应用拒绝；远程分派或安装后的不确定状态会强制权威刷新。
+- 本地写入要求规范的 `local` 执行目标。SSH Merge/Rebase 要求 launcher revision 13 和 `repository-integration-v2`；SSH 批量暂存要求 launcher revision 14 和独立的 `repository-batch-write-v1` 能力。集成和批量回复都必须是单一、严格且与操作匹配的 JSON 文档。
+- 会检查实际生效的 Git 配置，包括 include 和 worktree 作用域；可执行 filter、merge driver、已配置 merge option、hooks、编辑器、签名提示、autostash、rerere、update-refs 与子模块递归会被拒绝或禁用。
+
+集成过程不发起网络请求、不做 force 更新、不 autostash，也不自动解决冲突。集成回复一旦丢失、格式错误或语义含糊，就按可能已应用处理并强制权威刷新。
 
 前端为 Next.js App Router 静态导出（`output: "export"`），所有页面客户端渲染；无边框窗口的装饰由应用自身绘制。
 
