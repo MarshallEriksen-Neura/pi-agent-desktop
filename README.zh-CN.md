@@ -111,7 +111,7 @@ Repository Inspector 有意不提供隐式 Pull。Fetch 需要单独审阅和执
 - Merge 或 Rebase 冲突只会在 Git 确认对应操作后自动 abort。只有原分支、`HEAD`、操作状态、引用、索引、锁和工作区均验证恢复后，冲突才会报告为安全地未应用；否则按可能已应用处理并强制权威刷新。
 - 分组的**全部暂存 / 全部取消暂存**操作只发送一个绑定代次的批请求，其中包含精确审阅过的文件条目及重命名来源。后端会先完整验证 1–4096 个条目和累计 16 KiB 的 UTF-8 路径预算，再执行一次临时索引 Git 操作和一次实时索引安装；不会循环调用单文件写入。
 - 冲突会阻止所有暂存写入，并在文件分组旁明确说明。Commit 区域的辅助操作只暂存已审阅的未暂存/未跟踪范围，绝不会把暂存和提交合并。索引安装前发现工作区漂移会按未应用拒绝；远程分派或安装后的不确定状态会强制权威刷新。
-- 本地写入要求规范的 `local` 执行目标。SSH Merge/Rebase 要求 launcher revision 13 和 `repository-integration-v2`；SSH 批量暂存要求 launcher revision 14 和独立的 `repository-batch-write-v1` 能力。集成和批量回复都必须是单一、严格且与操作匹配的 JSON 文档。
+- 本地写入要求规范的 `local` 执行目标。SSH Merge/Rebase 要求 launcher revision 13 和 `repository-integration-v2`；SSH 批量暂存要求 launcher revision 14 和独立的 `repository-batch-write-v1` 能力。Launcher revision 15 修复了仅存在于全局配置中的 Git 身份解析；revision 16 为 HTTPS fetch/push 增加经过来源验证、禁止交互的 Git Credential Manager 访问，同时写操作仍与任意全局/系统 Git 配置隔离。联网子进程会绑定到经过来源验证的 Git 可执行文件，并通过绝对路径调用已审阅的规范 GCM 可执行文件；网络访问前会拒绝仓库本地 credential helper 和全部仓库本地 `http.*` 设置，防止 header、cookie、客户端密钥或代理绕过仅允许 GCM 的边界。审阅后的多引用 fetch 使用原子引用更新。Push 会固定已审阅的提交和目标，验证已审阅上游的祖先关系，并使用带预期 OID 的精确 lease，使远端并发变化安全失败。Phase 3、集成和批量回复都必须是单一、严格且与操作匹配的 JSON 文档。
 - 会检查实际生效的 Git 配置，包括 include 和 worktree 作用域；可执行 filter、merge driver、已配置 merge option、hooks、编辑器、签名提示、autostash、rerere、update-refs 与子模块递归会被拒绝或禁用。
 
 集成过程不发起网络请求、不做 force 更新、不 autostash，也不自动解决冲突。集成回复一旦丢失、格式错误或语义含糊，就按可能已应用处理并强制权威刷新。
