@@ -29,6 +29,7 @@ import "./workspace-target.test";
 import "./project-switch.test";
 import "./remote-project-switch.test";
 import "./session-delete.test";
+import "./session-trash-dialog-a11y.test";
 import "./session-lifecycle.test";
 import "./session-pin.test";
 import "./backend-provider.test";

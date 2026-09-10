@@ -80,9 +80,6 @@ export function createMockSessionRepositoryPort(
     restoreTrash: async () => {},
     purgeTrash: async () => {},
 
-    // Browser preview has no pi process, so there is no transcript on disk to move.
-    trashSessionFile: async (_scope, _path) => {},
-
     generateTitle: async () => "",
   };
 }

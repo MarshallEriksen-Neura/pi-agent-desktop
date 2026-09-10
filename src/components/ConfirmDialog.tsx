@@ -1,9 +1,10 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { Button } from "@appica/ui-react/button";
+import { useModalFocus } from "@/hooks/useModalFocus";
 import { useT } from "@/lib/i18n";
 
 /**
@@ -57,6 +58,16 @@ export const ConfirmDialog = memo(function ConfirmDialog({
   const latest = useRef({ onConfirm, onCancel });
   latest.current = { onConfirm, onCancel };
 
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const messageId = useId();
+  const dialogRef = useModalFocus<HTMLDivElement>({
+    open,
+    initialFocusRef: cancelButtonRef,
+    onEscape: () => {
+      if (!busy) latest.current.onCancel();
+    },
+  });
   // Clear in-flight state if the parent closes the dialog from underneath us.
   useEffect(() => {
     if (!open) setBusy(false);
@@ -72,17 +83,6 @@ export const ConfirmDialog = memo(function ConfirmDialog({
     }
   }, [busy]);
 
-  // Esc cancels; Enter confirms. Both inert while work is in flight.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (busy) return;
-      if (e.key === "Escape") latest.current.onCancel();
-      if (e.key === "Enter") void run();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, busy, run]);
 
   return (
     <AnimatePresence>
@@ -91,13 +91,16 @@ export const ConfirmDialog = memo(function ConfirmDialog({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={() => !busy && onCancel()}
+          onClick={() => !busy && latest.current.onCancel()}
           style={OVERLAY}
-          role="dialog"
-          aria-modal="true"
-          aria-label={title}
         >
           <motion.div
+            ref={dialogRef}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            aria-describedby={message ? messageId : undefined}
+            tabIndex={-1}
             initial={{ opacity: 0, scale: 0.94, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.96, y: 6 }}
@@ -114,12 +117,17 @@ export const ConfirmDialog = memo(function ConfirmDialog({
               )}
             </div>
 
-            <h2 style={TITLE}>{title}</h2>
-            {message && <p style={MESSAGE}>{message}</p>}
+            <h2 id={titleId} style={TITLE}>{title}</h2>
+            {message && <p id={messageId} style={MESSAGE}>{message}</p>}
             {detail && <div style={DETAIL}>{detail}</div>}
 
             <div style={ACTIONS}>
-              <Button variant="ghost" onClick={onCancel} disabled={busy}>
+              <Button
+                ref={cancelButtonRef}
+                variant="ghost"
+                onClick={() => latest.current.onCancel()}
+                disabled={busy}
+              >
                 {cancelLabel ?? t("common.cancel")}
               </Button>
               <Button

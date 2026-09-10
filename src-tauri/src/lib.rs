@@ -358,7 +358,6 @@ pub fn run() {
             chat_store::chat_session_trash_restore,
             chat_store::chat_session_trash_purge,
             pi_sessions::pi_session_read,
-            pi_sessions::pi_session_trash,
             pi_bridge::pi_start,
             pi_bridge::pi_send,
             pi_bridge::pi_stop,

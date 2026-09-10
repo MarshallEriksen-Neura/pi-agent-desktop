@@ -8,7 +8,8 @@
 
 use pi_backend_core::session_discovery::{discover_sessions, NativeSessionMetadata};
 use pi_backend_core::session_files::{
-    purge_transcript, restore_transcript, trash_transcript, SessionTrashOutcome,
+    purge_transcript, restore_transcript, rollback_restore_transcript, trash_transcript,
+    SessionRestoreOutcome, SessionTrashOutcome,
 };
 use serde_json::Value;
 use std::env;
@@ -150,14 +151,6 @@ pub fn pi_session_read(path: String, project_root: String) -> Result<String, Str
         .map_err(|error| format!("cannot read session transcript: {error}"))
 }
 
-/// The root every trashable transcript must resolve under.
-///
-/// Anything that does not is refused rather than moved — see `resolve_within` in
-/// the core module for why a database-sourced path cannot be trusted.
-fn sessions_root() -> Result<PathBuf, String> {
-    Ok(agent_dir()?.join("sessions"))
-}
-
 /// Deleted transcripts land here instead of being unlinked.
 fn trash_root() -> Result<PathBuf, String> {
     Ok(agent_dir()?.join("session-trash"))
@@ -176,7 +169,7 @@ pub(crate) fn restore_local_transcript(
     original_path: &str,
     trash_file: Option<&str>,
     trash_directory: Option<&str>,
-) -> Result<(), String> {
+) -> Result<SessionRestoreOutcome, String> {
     let trusted_root = resolve_local_session_root(Path::new(project_root))?.0;
     restore_transcript(
         &trusted_root,
@@ -184,6 +177,24 @@ pub(crate) fn restore_local_transcript(
         original_path,
         trash_file,
         trash_directory,
+    )
+}
+
+pub(crate) fn rollback_local_transcript_restore(
+    project_root: &str,
+    original_path: &str,
+    trash_file: Option<&str>,
+    trash_directory: Option<&str>,
+    restored: &SessionRestoreOutcome,
+) -> Result<(), String> {
+    let trusted_root = resolve_local_session_root(Path::new(project_root))?.0;
+    rollback_restore_transcript(
+        &trusted_root,
+        &trash_root()?,
+        original_path,
+        trash_file,
+        trash_directory,
+        restored,
     )
 }
 
@@ -201,22 +212,6 @@ pub(crate) fn purge_local_transcript(
         trash_file,
         trash_directory,
     )
-}
-
-/// Move one conversation's transcript into `~/.pi/agent/session-trash/`.
-///
-/// Separate from `chat_store::chat_session_delete` on purpose: the caller drops
-/// the index row first and treats this as best-effort cleanup, because the two
-/// halves fail differently. See the core module's header for the full argument.
-#[tauri::command]
-pub fn pi_session_trash(
-    path: String,
-    project_root: Option<String>,
-) -> Result<SessionTrashOutcome, String> {
-    match project_root.filter(|value| !value.trim().is_empty()) {
-        Some(project_root) => recycle_local_transcript(&project_root, &path),
-        None => trash_transcript(&sessions_root()?, &trash_root()?, &path),
-    }
 }
 
 #[cfg(test)]

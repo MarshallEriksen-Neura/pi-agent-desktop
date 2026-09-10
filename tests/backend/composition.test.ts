@@ -67,7 +67,6 @@ function fakePorts(label = "fake"): BackendPorts {
       listTrash: async () => [],
       restoreTrash: async () => undefined,
       purgeTrash: async () => undefined,
-      trashSessionFile: async () => undefined,
       generateTitle: async () => label,
     },
     workspaceFs: workspaceFs(label),

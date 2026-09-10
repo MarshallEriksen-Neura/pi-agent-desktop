@@ -60,8 +60,6 @@ export const desktopSessionRepositoryPort: SessionRepositoryPort = {
   purgeTrash: (scope, tombstoneId) =>
     desktopInvoke<void>("chat_session_trash_purge", { ...scope, tombstoneId }),
 
-  trashSessionFile: (scope, path) =>
-    desktopInvoke<void>("pi_session_trash", { path, projectRoot: scope.projectRoot }),
 
   generateTitle: (input: GenerateTitleInput) =>
     desktopInvoke<string>("pi_generate_title", {

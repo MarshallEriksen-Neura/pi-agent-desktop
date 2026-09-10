@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Loader2, RotateCcw, Trash2, X } from "lucide-react";
 import { useSessions, type TrashedSessionMeta } from "@/lib/pi/sessions";
 import { useT } from "@/lib/i18n";
+import { useModalFocus } from "@/hooks/useModalFocus";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 export function SessionTrashDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -21,6 +22,16 @@ export function SessionTrashDialog({ open, onClose }: { open: boolean; onClose: 
   const [purgeTarget, setPurgeTarget] = useState<TrashedSessionMeta | null>(null);
   const [confirmEmpty, setConfirmEmpty] = useState(false);
   const [error, setError] = useState("");
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const nestedDialogOpen = purgeTarget !== null || confirmEmpty;
+  const titleId = useId();
+  const subtitleId = useId();
+  const dialogRef = useModalFocus<HTMLDivElement>({
+    open,
+    paused: nestedDialogOpen,
+    initialFocusRef: closeButtonRef,
+    onEscape: onClose,
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -29,6 +40,12 @@ export function SessionTrashDialog({ open, onClose }: { open: boolean; onClose: 
       setError(reason instanceof Error ? reason.message : String(reason));
     });
   }, [open, loadTrash]);
+
+  useEffect(() => {
+    if (open) return;
+    setPurgeTarget(null);
+    setConfirmEmpty(false);
+  }, [open]);
 
   const sorted = useMemo(
     () => [...trashedSessions].sort((a, b) => b.deletedAt - a.deletedAt),
@@ -80,13 +97,19 @@ export function SessionTrashDialog({ open, onClose }: { open: boolean; onClose: 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={onClose}
+            onClick={() => {
+              if (!nestedDialogOpen) onClose();
+            }}
             style={OVERLAY}
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("trash.title")}
           >
             <motion.div
+              ref={dialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby={titleId}
+              aria-describedby={subtitleId}
+              aria-hidden={nestedDialogOpen || undefined}
+              tabIndex={-1}
               initial={{ opacity: 0, y: 10, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 6, scale: 0.985 }}
@@ -96,8 +119,8 @@ export function SessionTrashDialog({ open, onClose }: { open: boolean; onClose: 
             >
               <div style={HEADER}>
                 <div>
-                  <div style={TITLE}>{t("trash.title")}</div>
-                  <div style={SUBTITLE}>{t("trash.subtitle")}</div>
+                  <h2 id={titleId} style={TITLE}>{t("trash.title")}</h2>
+                  <p id={subtitleId} style={SUBTITLE}>{t("trash.subtitle")}</p>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   {sorted.length > 0 && (
@@ -112,6 +135,7 @@ export function SessionTrashDialog({ open, onClose }: { open: boolean; onClose: 
                   )}
                   <button
                     className="pi-row"
+                    ref={closeButtonRef}
                     onClick={onClose}
                     aria-label={t("common.close")}
                     title={t("common.close")}
@@ -236,13 +260,14 @@ const HEADER: React.CSSProperties = {
 };
 
 const TITLE: React.CSSProperties = {
+  margin: 0,
   fontSize: 15,
   fontWeight: 650,
   color: "var(--text-primary)",
 };
 
 const SUBTITLE: React.CSSProperties = {
-  marginTop: 3,
+  margin: "3px 0 0",
   fontSize: 12,
   color: "var(--text-tertiary)",
 };

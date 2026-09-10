@@ -2,10 +2,10 @@
 //!
 //! SQLite ([`crate::chat_store`]) indexes conversations; pi owns their content.
 //! Deleting a conversation therefore has to reach both, and the two halves fail
-//! differently: losing the index row is the outcome the user asked for, while
-//! failing to move the transcript only leaves an orphan. The index delete stays a
-//! pure database operation and this module owns the file half, so the caller can
-//! order the two deliberately instead of hiding the ordering inside one command.
+//! differently. The desktop caller creates the database tombstone first, then uses
+//! this module for the file move, persists the resulting trash paths, and compensates
+//! a failed path update by restoring the moved files. Keeping the file operations
+//! here makes that orchestration explicit and independently testable.
 //!
 //! Files are moved into a trash directory rather than unlinked. Any install that
 //! predates this has a backlog of orphans — every delete before it left the
@@ -53,6 +53,23 @@ impl SessionTrashOutcome {
     }
 }
 
+/// Files moved back to the live session tree by [`restore_transcript`].
+///
+/// The caller keeps this receipt until its database transaction commits. If that
+/// transaction fails, [`rollback_restore_transcript`] uses the receipt to put only
+/// the files moved by this attempt back into their exact recycle-bin locations.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct SessionRestoreOutcome {
+    pub file_restored: bool,
+    pub directory_restored: bool,
+}
+
+impl SessionRestoreOutcome {
+    pub fn is_empty(&self) -> bool {
+        !self.file_restored && !self.directory_restored
+    }
+}
+
 /// Resolve `raw` to a transcript inside `root`, or explain why it is refused.
 ///
 /// The path comes from a database row, so it is not trusted: it may predate the
@@ -83,7 +100,9 @@ fn resolve_within(root: &Path, raw: &str) -> Result<PathBuf, SessionTrashOutcome
         return Err(SessionTrashOutcome::skipped("transcript directory is gone"));
     };
     if !parent.starts_with(&root) {
-        return Err(SessionTrashOutcome::skipped("outside the local session root"));
+        return Err(SessionTrashOutcome::skipped(
+            "outside the local session root",
+        ));
     }
     Ok(parent.join(file_name))
 }
@@ -135,8 +154,8 @@ fn free_prefix(destination: &Path, file_name: &str, stem: &str) -> String {
 
 /// Move one conversation's transcript from `root` into `trash`.
 ///
-/// Best-effort by contract: the caller removes the index row first, so a skip or
-/// an error here is cleanup that did not happen, never a delete that did not.
+/// Best-effort by contract: the caller creates a database tombstone first, so a
+/// skip or error leaves a recoverable record pointing at the original path.
 pub fn trash_transcript(
     root: &Path,
     trash: &Path,
@@ -184,8 +203,9 @@ pub fn trash_transcript(
 
     if move_transcript {
         let target = destination.join(format!("{prefix}__{file_name}"));
-        std::fs::rename(&transcript, &target)
-            .map_err(|error| format!("could not move transcript into the session trash: {error}"))?;
+        std::fs::rename(&transcript, &target).map_err(|error| {
+            format!("could not move transcript into the session trash: {error}")
+        })?;
         outcome.file = Some(target.to_string_lossy().into_owned());
     }
     if move_runs {
@@ -195,7 +215,11 @@ pub fn trash_transcript(
                 // Keep deletion atomic at the session-footprint level: if the
                 // second move fails, put the transcript back so the caller does
                 // not lose track of a partially recycled conversation.
-                let _ = std::fs::rename(moved_file, &transcript);
+                if let Err(rollback_error) = std::fs::rename(moved_file, &transcript) {
+                    return Err(format!(
+                        "could not move subagent runs into the session trash: {error}; transcript rollback also failed: {rollback_error}"
+                    ));
+                }
                 outcome.file = None;
             }
             return Err(format!(
@@ -230,19 +254,24 @@ fn resolve_existing_in(root: &Path, raw: &str) -> Result<Option<PathBuf>, String
 
 /// Put a recycled transcript and its optional subagent run directory back at
 /// their original Pi-owned paths. Existing destinations are never overwritten.
+/// The returned receipt must be retained until the caller's database transaction
+/// commits so the move can be compensated if that transaction fails.
 pub fn restore_transcript(
     root: &Path,
     trash: &Path,
     original_path: &str,
     trash_file: Option<&str>,
     trash_directory: Option<&str>,
-) -> Result<(), String> {
+) -> Result<SessionRestoreOutcome, String> {
     let original = original_path.trim();
     if original.is_empty() {
-        return Ok(()); // a conversation deleted before its first turn had no file
+        return Ok(SessionRestoreOutcome::default());
     }
-    let destination = resolve_within(root, original)
-        .map_err(|outcome| outcome.skipped.unwrap_or_else(|| "invalid original transcript path".into()))?;
+    let destination = resolve_within(root, original).map_err(|outcome| {
+        outcome
+            .skipped
+            .unwrap_or_else(|| "invalid original transcript path".into())
+    })?;
     let file_source = match trash_file {
         Some(path) => resolve_existing_in(trash, path)?,
         None => None,
@@ -261,24 +290,135 @@ pub fn restore_transcript(
         .ok_or_else(|| "original transcript has no valid stem".to_owned())?;
     let run_destination = destination.with_file_name(stem);
     if dir_source.is_some() && run_destination.exists() {
-        return Err("cannot restore subagent runs because the original directory already exists".into());
+        return Err(
+            "cannot restore subagent runs because the original directory already exists".into(),
+        );
     }
 
-    if file_source.is_none() && !destination.is_file() {
-        return Err("the recycled transcript file is no longer available".into());
-    }
-
+    // A missing recycled file is not allowed to trap the cached conversation in
+    // the recycle bin forever. Restoring the SQLite row is still useful; the
+    // existing resumability guard will start a fresh Pi session if the transcript
+    // cannot be recovered.
+    let mut outcome = SessionRestoreOutcome::default();
     if let Some(source) = file_source.as_ref() {
         std::fs::rename(source, &destination)
             .map_err(|error| format!("could not restore transcript: {error}"))?;
+        outcome.file_restored = true;
     }
     if let Some(source) = dir_source.as_ref() {
         if let Err(error) = std::fs::rename(source, &run_destination) {
-            if let Some(file_source) = file_source.as_ref() {
-                // Best-effort rollback keeps the pair together if the second move fails.
-                let _ = std::fs::rename(&destination, file_source);
+            if outcome.file_restored {
+                let file_source = file_source.as_ref().expect("restored file source");
+                if let Err(rollback_error) = std::fs::rename(&destination, file_source) {
+                    return Err(format!(
+                        "could not restore subagent runs: {error}; transcript rollback also failed: {rollback_error}"
+                    ));
+                }
             }
             return Err(format!("could not restore subagent runs: {error}"));
+        }
+        outcome.directory_restored = true;
+    }
+    Ok(outcome)
+}
+
+fn resolve_restore_target(root: &Path, raw: &str) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("session trash root is unavailable: {error}"))?;
+    let candidate = Path::new(raw.trim());
+    let file_name = candidate
+        .file_name()
+        .ok_or_else(|| "recycle-bin destination has no file name".to_owned())?;
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| "recycle-bin destination has no parent".to_owned())?
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve recycle-bin destination: {error}"))?;
+    if !parent.starts_with(&root) {
+        return Err("recycle-bin destination is outside the trusted session trash".into());
+    }
+    Ok(parent.join(file_name))
+}
+
+/// Reverse only the moves reported by a failed restore attempt.
+///
+/// This is the filesystem compensation for a database transaction that could not
+/// reinsert the session row. It targets the original recycle-bin names rather than
+/// allocating new ones, so the still-live tombstone remains retryable.
+pub fn rollback_restore_transcript(
+    root: &Path,
+    trash: &Path,
+    original_path: &str,
+    trash_file: Option<&str>,
+    trash_directory: Option<&str>,
+    restored: &SessionRestoreOutcome,
+) -> Result<(), String> {
+    if restored.is_empty() {
+        return Ok(());
+    }
+
+    let destination = resolve_within(root, original_path.trim()).map_err(|outcome| {
+        outcome
+            .skipped
+            .unwrap_or_else(|| "invalid original transcript path".into())
+    })?;
+    let stem = destination
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "original transcript has no valid stem".to_owned())?;
+    let run_destination = destination.with_file_name(stem);
+
+    let file_target = if restored.file_restored {
+        let raw = trash_file
+            .ok_or_else(|| "restored transcript has no recycle-bin destination".to_owned())?;
+        let target = resolve_restore_target(trash, raw)?;
+        if target.exists() {
+            return Err(
+                "cannot roll back transcript restore because its recycle-bin path is occupied"
+                    .into(),
+            );
+        }
+        if !destination.is_file() {
+            return Err(
+                "cannot roll back transcript restore because the restored file is missing".into(),
+            );
+        }
+        Some(target)
+    } else {
+        None
+    };
+    let directory_target = if restored.directory_restored {
+        let raw = trash_directory
+            .ok_or_else(|| "restored subagent runs have no recycle-bin destination".to_owned())?;
+        let target = resolve_restore_target(trash, raw)?;
+        if target.exists() {
+            return Err(
+                "cannot roll back subagent-run restore because its recycle-bin path is occupied"
+                    .into(),
+            );
+        }
+        if !run_destination.is_dir() {
+            return Err(
+                "cannot roll back subagent-run restore because the restored directory is missing"
+                    .into(),
+            );
+        }
+        Some(target)
+    } else {
+        None
+    };
+
+    if let Some(target) = directory_target.as_ref() {
+        std::fs::rename(&run_destination, target)
+            .map_err(|error| format!("could not roll back restored subagent runs: {error}"))?;
+    }
+    if let Some(target) = file_target.as_ref() {
+        if let Err(error) = std::fs::rename(&destination, target) {
+            if let Some(directory_target) = directory_target.as_ref() {
+                let _ = std::fs::rename(directory_target, &run_destination);
+            }
+            return Err(format!("could not roll back restored transcript: {error}"));
         }
     }
     Ok(())
@@ -300,8 +440,9 @@ pub fn purge_transcript(
     };
     if let Some(path) = recycled_file {
         if path.is_file() {
-            std::fs::remove_file(&path)
-                .map_err(|error| format!("could not permanently delete recycled transcript: {error}"))?;
+            std::fs::remove_file(&path).map_err(|error| {
+                format!("could not permanently delete recycled transcript: {error}")
+            })?;
         }
     }
     let recycled_directory = match trash_directory {
@@ -310,8 +451,9 @@ pub fn purge_transcript(
     };
     if let Some(path) = recycled_directory {
         if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-                .map_err(|error| format!("could not permanently delete recycled subagent runs: {error}"))?;
+            std::fs::remove_dir_all(&path).map_err(|error| {
+                format!("could not permanently delete recycled subagent runs: {error}")
+            })?;
         }
     }
 
@@ -328,8 +470,9 @@ pub fn purge_transcript(
         }
     };
     if transcript.is_file() {
-        std::fs::remove_file(&transcript)
-            .map_err(|error| format!("could not permanently delete original transcript: {error}"))?;
+        std::fs::remove_file(&transcript).map_err(|error| {
+            format!("could not permanently delete original transcript: {error}")
+        })?;
     }
     let stem = transcript
         .file_stem()
@@ -338,8 +481,9 @@ pub fn purge_transcript(
     if !stem.is_empty() {
         let runs = transcript.with_file_name(stem);
         if runs.is_dir() {
-            std::fs::remove_dir_all(&runs)
-                .map_err(|error| format!("could not permanently delete original subagent runs: {error}"))?;
+            std::fs::remove_dir_all(&runs).map_err(|error| {
+                format!("could not permanently delete original subagent runs: {error}")
+            })?;
         }
     }
     Ok(())
@@ -385,8 +529,12 @@ mod tests {
     }
 
     fn trash(fixture: &Fixture, path: &Path) -> SessionTrashOutcome {
-        trash_transcript(&fixture.root, &fixture.trash, path.to_str().expect("utf-8 path"))
-            .expect("trash")
+        trash_transcript(
+            &fixture.root,
+            &fixture.trash,
+            path.to_str().expect("utf-8 path"),
+        )
+        .expect("trash")
     }
 
     #[test]
@@ -417,7 +565,9 @@ mod tests {
         let outcome = trash(&f, &path);
 
         assert!(!runs.exists(), "the run directory is part of the footprint");
-        let moved = outcome.directory.expect("a moved run directory is reported");
+        let moved = outcome
+            .directory
+            .expect("a moved run directory is reported");
         assert!(Path::new(&moved)
             .join("7e0aef4a/run-0/session.jsonl")
             .is_file());
@@ -463,7 +613,10 @@ mod tests {
 
         let outcome = trash(&f, &victim);
 
-        assert!(victim.is_file(), "a path outside the root must not be moved");
+        assert!(
+            victim.is_file(),
+            "a path outside the root must not be moved"
+        );
         assert_eq!(
             outcome.skipped.as_deref(),
             Some("outside the local session root")
@@ -564,7 +717,7 @@ mod tests {
         std::fs::write(runs.join("run.jsonl"), "{}\n").expect("run file");
         let outcome = trash(&f, &path);
 
-        restore_transcript(
+        let restored = restore_transcript(
             &f.root,
             &f.trash,
             path.to_str().unwrap(),
@@ -572,10 +725,76 @@ mod tests {
             outcome.directory.as_deref(),
         )
         .expect("restore");
+        assert_eq!(
+            restored,
+            SessionRestoreOutcome {
+                file_restored: true,
+                directory_restored: true,
+            }
+        );
 
         assert!(path.is_file());
         assert!(runs.join("run.jsonl").is_file());
         assert!(!Path::new(outcome.file.as_deref().unwrap()).exists());
+    }
+
+    #[test]
+    fn rolls_restored_files_back_to_the_same_trash_paths() {
+        let f = fixture("restore-rollback");
+        let path = transcript(&f, "retry-me.jsonl");
+        let runs = f.slug.join("retry-me");
+        std::fs::create_dir_all(&runs).expect("runs dir");
+        std::fs::write(runs.join("run.jsonl"), "{}\n").expect("run file");
+        let trashed = trash(&f, &path);
+        let trash_file = trashed.file.clone().expect("trash file");
+        let trash_directory = trashed.directory.clone().expect("trash directory");
+
+        let restored = restore_transcript(
+            &f.root,
+            &f.trash,
+            path.to_str().unwrap(),
+            Some(&trash_file),
+            Some(&trash_directory),
+        )
+        .expect("restore");
+        rollback_restore_transcript(
+            &f.root,
+            &f.trash,
+            path.to_str().unwrap(),
+            Some(&trash_file),
+            Some(&trash_directory),
+            &restored,
+        )
+        .expect("rollback restore");
+
+        assert!(
+            !path.exists(),
+            "the failed database restore must not leave a live file"
+        );
+        assert!(
+            !runs.exists(),
+            "the restored run directory must be compensated too"
+        );
+        assert!(Path::new(&trash_file).is_file());
+        assert!(Path::new(&trash_directory).join("run.jsonl").is_file());
+    }
+
+    #[test]
+    fn missing_recycled_files_do_not_trap_cached_history() {
+        let f = fixture("restore-missing");
+        let path = f.slug.join("missing.jsonl");
+
+        let restored = restore_transcript(
+            &f.root,
+            &f.trash,
+            path.to_str().unwrap(),
+            Some(f.trash.join("missing.jsonl").to_str().unwrap()),
+            None,
+        )
+        .expect("restore the cached row without a file");
+
+        assert!(restored.is_empty());
+        assert!(!path.exists());
     }
 
     #[test]
@@ -648,4 +867,3 @@ mod tests {
         );
     }
 }
-

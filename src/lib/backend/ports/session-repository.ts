@@ -32,15 +32,5 @@ export interface SessionRepositoryPort {
   listTrash(scope: SessionScope): Promise<TrashedSessionMeta[]>;
   restoreTrash(scope: SessionScope, tombstoneId: number): Promise<void>;
   purgeTrash(scope: SessionScope, tombstoneId: number): Promise<void>;
-  /**
-   * Move pi's own transcript for a conversation into the session trash.
-   *
-   * Deliberately separate from `delete`, because the two halves of removing a
-   * conversation fail differently: losing the index row is the outcome the user
-   * asked for, while failing to move the transcript only leaves an orphan on
-   * disk — which is where every conversation deleted before this existed already
-   * left things. Callers delete the row first and treat this as best effort.
-   */
-  trashSessionFile(scope: SessionScope, path: string): Promise<void>;
   generateTitle(input: GenerateTitleInput): Promise<string>;
 }

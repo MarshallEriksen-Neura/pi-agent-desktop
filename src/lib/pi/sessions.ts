@@ -310,26 +310,6 @@ async function backendPurgeTrash(
   await sessionDependencies().repository.purgeTrash(scope, tombstoneId);
 }
 
-async function backendTrashSessionFile(meta: ChatSessionMeta, path: string) {
-  await sessionDependencies().repository.trashSessionFile(sessionScope(meta), path);
-}
-
-/**
- * The transcript a delete should move to the trash, or null to leave disk alone.
- *
- * Two conversations are deliberately excluded. One with no pinned `sessionPath`
- * never had a transcript to begin with (pi does not materialize the file until
- * the first turn), and an SSH conversation's transcript lives on the remote
- * host — the launcher has no file operations, so reaching it would need a new
- * launcher mode and a protocol bump. Both are skips, not failures: the row still
- * goes, and the remote file stays where the remote pi can still resume it.
- */
-export function trashableTranscript(meta: ChatSessionMeta | undefined): string | null {
-  if (!meta) return null;
-  if ((meta.executionBinding?.kind ?? "local") !== "local") return null;
-  const path = meta.sessionPath.trim();
-  return path ? path : null;
-}
 
 /* ── helpers ── */
 
