@@ -4,10 +4,7 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-- 发布 workflow 的桌面与 Android 上传步骤现在显式保持 draft，仅最终 `publish-release` job 可以公开 Release，避免首个完成的上传任务提前发布不完整资产
-
-## [0.15.0] — 2026-09-09
+## [0.15.0] — 2026-09-10
 
 ### Added
 - **会话回收站与可恢复删除**。删除本地 Pi 会话时会同时记录完整回收信息，并把 Pi 原始 JSONL 与该会话专属的 subagent run 目录移动到 `~/.pi/agent/session-trash/`；侧边栏新增回收站入口，可恢复单条会话、永久删除单条或清空回收站。永久操作都有二次确认，共享的 `subagent-artifacts` 不会被误删。
@@ -22,10 +19,15 @@ All notable changes to Pi Desktop will be documented in this file.
 - 修复原生会话初次导入只有空 `name` / `preview` / `messages`，导致侧边栏出现大量“新会话”、正文延迟出现或保持空白的问题。
 - 修复只读打开历史会话也会保存并刷新 `updated_at`，导致旧会话排序不断跳动的问题。
 - 修复官方 Windows C/C++ compiler wrapper 在 `vswhere` 返回空结果时无法识别已安装的 Visual Studio Build Tools，导致 `ring` / `vswhom-sys` release 构建失败的问题。
+- 修复会话回收站在 SQLite 写入、删除或提交失败时可能留下文件与数据库状态不一致的问题；恢复与删除现在执行可验证的补偿回滚，并同时保留原始错误和回滚错误。
+- 修复大型原生 transcript 的标题与预览扫描可能读取完整 JSONL 的问题；发现流程现在只读取固定大小的文件头和文件尾，同时保留首条用户消息与最近预览。
+- 修复回收站及永久删除确认框缺少完整键盘焦点管理的问题；弹窗现在支持初始焦点、Escape、Tab 循环、嵌套弹窗接管及关闭后的焦点恢复。
+- 发布 workflow 的桌面与 Android 上传步骤现在显式保持 draft，仅最终 `publish-release` job 可以公开 Release，避免首个完成的上传任务提前发布不完整资产。
 
 ### Internal
 - SQLite chat schema 升级到 v4，为回收站记录补充会话元数据、原始/回收路径与删除时间；旧 tombstone 继续兼容。
 - 会话文件恢复、永久删除、路径越界保护和迁移均新增回归测试；永久删除只允许操作受信任的 Pi `sessions` / `session-trash` 根目录。
+- transcript 回收职责统一收敛到 Tauri `chat_session_delete`，移除前端二次移动和废弃的 `pi_session_trash` 命令；新增 insert、update、delete、commit 失败注入测试与 modal 无障碍契约测试。
 
 ## [0.14.0] — 2026-09-05
 
