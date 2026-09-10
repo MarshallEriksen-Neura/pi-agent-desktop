@@ -119,6 +119,7 @@ export type {
   RepositoryUnavailableReason,
 } from "./repository";
 export type {
+  GenerateCommitMessageInput,
   GenerateTitleInput,
   SessionRepositoryPort,
   SessionSaveInput,

@@ -81,6 +81,7 @@ export function createMockSessionRepositoryPort(
     purgeTrash: async () => {},
 
     generateTitle: async () => "",
+    generateCommitMessage: async () => "",
   };
 }
 

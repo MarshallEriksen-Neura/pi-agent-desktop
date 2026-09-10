@@ -2784,7 +2784,9 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "unicode-segmentation",
+ "url",
  "uuid",
+ "windows-sys 0.59.0",
  "zeroize",
  "zip",
 ]

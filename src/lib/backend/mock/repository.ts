@@ -11,11 +11,21 @@ export function createMockRepositoryPort(): RepositoryPort {
     diff: async () => {
       throw new Error("Repository diff is unavailable in browser preview.");
     },
+    stagedDiff: async () => {
+      throw new Error("Staged repository diff is unavailable in browser preview.");
+    },
     mutate: async (request) => ({
       kind: "failure",
       operation: request.operation,
       reason: "remoteUnsupported",
       detail: "Repository writes are unavailable in browser preview.",
+      applied: false,
+    }),
+    action: async (request) => ({
+      kind: "failure",
+      operation: request.operation,
+      reason: "remoteUnsupported",
+      detail: "Repository actions are unavailable in browser preview.",
       applied: false,
     }),
   };

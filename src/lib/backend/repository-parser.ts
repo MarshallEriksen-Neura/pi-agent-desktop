@@ -10,6 +10,12 @@ export interface RawRepositoryStatus {
   porcelain: string;
   generation: string;
   operation: RepositoryOperation;
+  upstreamRemote?: string | null;
+  upstreamBranch?: string | null;
+  upstreamOid?: string | null;
+  mergeBaseOid?: string | null;
+  remotes?: string[];
+  branches?: Array<{ name: string; oid: string }>;
 }
 
 function changed(status: string): boolean {
@@ -112,8 +118,14 @@ export function parseRepositoryStatus(input: {
     generation: input.raw.generation,
     head,
     upstream,
+    upstreamRemote: input.raw.upstreamRemote ?? null,
+    upstreamBranch: input.raw.upstreamBranch ?? null,
+    upstreamOid: input.raw.upstreamOid ?? null,
+    mergeBaseOid: input.raw.mergeBaseOid ?? null,
     ahead,
     behind,
+    remotes: input.raw.remotes ?? [],
+    branches: input.raw.branches ?? [],
     operation: input.raw.operation,
     files,
   };

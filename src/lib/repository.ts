@@ -4,6 +4,8 @@ import { create } from "zustand";
 import { getPort } from "./backend/composition/container";
 import type { ExecutionBinding } from "./backend/ports/execution-target";
 import type {
+  RepositoryActionRequest,
+  RepositoryActionResult,
   RepositoryDiffKind,
   RepositoryMutationRequest,
   RepositoryMutationResult,
@@ -26,7 +28,49 @@ export interface RepositorySelection {
 
 export type RepositoryMutationIntent =
   | { operation: "stage" | "unstage"; path: string; originalPath?: string | null }
+  | { operation: "stageBatch" | "unstageBatch"; files: Array<{ path: string; originalPath?: string | null }> }
   | { operation: "commit"; message: string };
+export type RepositoryActionIntent =
+  | { operation: "fetch"; remote: string }
+  | { operation: "push"; expectedHeadOid: string; expectedUpstreamOid: string | null; expectedUpstreamRemote: string; expectedUpstreamBranch: string }
+  | { operation: "createBranch"; branchName: string; expectedHeadOid: string }
+  | { operation: "switchBranch"; branchName: string }
+  | {
+      operation: "integrateFastForward";
+      expectedLocalBranch: string;
+      expectedHeadOid: string;
+      expectedUpstreamRemote: string;
+      expectedUpstreamBranch: string;
+      expectedUpstreamOid: string;
+      expectedMergeBaseOid: string;
+      strategy: "fastForwardOnly";
+    }
+  | {
+      operation: "integrateMerge";
+      expectedLocalBranch: string;
+      expectedHeadOid: string;
+      expectedUpstreamRemote: string;
+      expectedUpstreamBranch: string;
+      expectedUpstreamOid: string;
+      expectedMergeBaseOid: string;
+      strategy: "mergeCommit";
+      message: string;
+    }
+  | {
+      operation: "integrateRebase";
+      expectedLocalBranch: string;
+      expectedHeadOid: string;
+      expectedUpstreamRemote: string;
+      expectedUpstreamBranch: string;
+      expectedUpstreamOid: string;
+      expectedMergeBaseOid: string;
+      strategy: "rebaseLinear";
+    };
+
+type RepositoryOperationFailure =
+  | Extract<RepositoryMutationResult, { kind: "failure" }>
+  | Extract<RepositoryActionResult, { kind: "failure" }>;
+
 
 interface RepositoryStore {
   scopeKey: string | null;
@@ -39,10 +83,12 @@ interface RepositoryStore {
   diffLoading: boolean;
   diffError: string | null;
   mutating: boolean;
-  mutationError: Extract<RepositoryMutationResult, { kind: "failure" }> | null;
+  mutationError: RepositoryOperationFailure | null;
   refresh: (scope: RepositoryScope) => Promise<void>;
   select: (selection: RepositorySelection) => Promise<void>;
+  stagedDiff: () => Promise<string>;
   mutate: (request: RepositoryMutationIntent) => Promise<RepositoryMutationResult | null>;
+  action: (request: RepositoryActionIntent) => Promise<RepositoryActionResult | null>;
   clearSelection: () => void;
   clear: () => void;
 }
@@ -204,6 +250,19 @@ export const useRepository = create<RepositoryStore>((set, get) => ({
     }
   },
 
+  stagedDiff: async () => {
+    const { scope, result } = get();
+    if (!scope || result?.kind !== "repository") throw new Error("repositoryUnavailable");
+    const response = await getPort("repository").stagedDiff({
+      targetId: scope.targetId,
+      workspaceRoot: scope.workspaceRoot,
+      repoRoot: result.repoRoot,
+      generation: result.generation,
+      executionBinding: scope.binding,
+    });
+    return response.text;
+  },
+
   mutate: async (intent) => {
     const { scope, result, scopeKey } = get();
     if (!scope || result?.kind !== "repository" || !scopeKey || get().mutating) return null;
@@ -266,12 +325,102 @@ export const useRepository = create<RepositoryStore>((set, get) => ({
       if (keepSelection && selection) void get().select(selection);
       return mutation;
     } catch (error) {
+      const potentiallyApplied = intent.operation === "stageBatch" || intent.operation === "unstageBatch";
       const failure: Extract<RepositoryMutationResult, { kind: "failure" }> = {
-        kind: "failure", operation: intent.operation, reason: "gitUnavailable",
-        detail: errorText(error), applied: false,
+        kind: "failure",
+        operation: intent.operation,
+        reason: potentiallyApplied ? "refreshFailed" : "gitUnavailable",
+        detail: errorText(error),
+        applied: potentiallyApplied,
       };
       if (epoch === mutationEpoch && get().scopeKey === scopeKey) {
         set({ mutating: false, mutationError: failure });
+        if (potentiallyApplied) void get().refresh(scope);
+      }
+      return failure;
+    }
+  },
+
+  action: async (intent) => {
+    const { scope, result, scopeKey } = get();
+    if (!scope || result?.kind !== "repository" || !scopeKey || get().mutating) return null;
+    if (usePi.getState().status === "running") {
+      const failure: Extract<RepositoryActionResult, { kind: "failure" }> = {
+        kind: "failure", operation: intent.operation, reason: "piBusy",
+        detail: "Pi must be idle before repository writes.", applied: false,
+      };
+      set({ mutationError: failure });
+      return failure;
+    }
+    const epoch = ++mutationEpoch;
+    set({ mutating: true, mutationError: null });
+    const request = {
+      ...intent,
+      targetId: scope.targetId,
+      workspaceRoot: scope.workspaceRoot,
+      repoRoot: result.repoRoot,
+      generation: result.generation,
+      executionBinding: scope.binding,
+    } as RepositoryActionRequest;
+    try {
+      if (usePi.getState().status === "running") {
+        const failure: Extract<RepositoryActionResult, { kind: "failure" }> = {
+          kind: "failure", operation: intent.operation, reason: "piBusy",
+          detail: "Pi started running before the repository write.", applied: false,
+        };
+        if (epoch === mutationEpoch) set({ mutating: false, mutationError: failure });
+        return failure;
+      }
+      const action = await getPort("repository").action(request);
+      if (epoch !== mutationEpoch || get().scopeKey !== scopeKey) return action;
+      const refreshed = get().result;
+      const refreshedGeneration = refreshed?.kind === "repository" ? refreshed.generation : null;
+      const sameAuthoritativeResult = action.kind === "success"
+        && refreshedGeneration === action.snapshot.generation;
+      if (refreshedGeneration !== result.generation && !sameAuthoritativeResult) {
+        // A same-scope refresh completed while the action was pending. Do not let
+        // its older response replace that newer authoritative snapshot or surface
+        // a stale notification. Applied actions still need one final refresh.
+        set({ mutating: false, mutationError: null });
+        if (action.kind === "success" || action.applied) void get().refresh(scope);
+        return null;
+      }
+      if (action.kind === "failure") {
+        set({ mutating: false, mutationError: action });
+        if (action.reason === "staleGeneration" || action.reason === "repositoryChanged" || action.applied) {
+          void get().refresh(scope);
+        }
+        return action;
+      }
+      statusEpoch += 1;
+      diffEpoch += 1;
+      const selection = get().selected;
+      const keepSelection = selection !== null && selectionExists(action.snapshot, selection);
+      set({
+        result: action.snapshot, loading: false, error: null, mutating: false, mutationError: null,
+        selected: keepSelection ? selection : null, diff: null, diffLoading: false, diffError: null,
+      });
+      if (keepSelection && selection) void get().select(selection);
+      return action;
+    } catch (error) {
+      const mayHaveApplied = intent.operation === "integrateFastForward"
+        || intent.operation === "integrateMerge"
+        || intent.operation === "integrateRebase";
+      const failure: Extract<RepositoryActionResult, { kind: "failure" }> = {
+        kind: "failure", operation: intent.operation,
+        reason: mayHaveApplied ? "refreshFailed" : "gitUnavailable",
+        detail: errorText(error), applied: mayHaveApplied,
+      };
+      if (epoch === mutationEpoch && get().scopeKey === scopeKey) {
+        const current = get().result;
+        const currentGeneration = current?.kind === "repository" ? current.generation : null;
+        if (currentGeneration !== result.generation) {
+          set({ mutating: false, mutationError: null });
+          if (mayHaveApplied) void get().refresh(scope);
+          return null;
+        }
+        set({ mutating: false, mutationError: failure });
+        if (mayHaveApplied) void get().refresh(scope);
       }
       return failure;
     }

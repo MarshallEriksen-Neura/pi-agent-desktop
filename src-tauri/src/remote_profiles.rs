@@ -39,6 +39,8 @@ const SSH_CONNECT_TIMEOUT_OPTION: &str = "ConnectTimeout=15";
 const SSH_SERVER_ALIVE_INTERVAL_OPTION: &str = "ServerAliveInterval=15";
 const SSH_SERVER_ALIVE_COUNT_OPTION: &str = "ServerAliveCountMax=3";
 const PREFLIGHT_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+const MUTATION_BATCH_MAX_FILES: usize = 4096;
+const MUTATION_BATCH_MAX_PATH_BYTES: usize = 16 * 1024;
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an idle SSH control master lingers before reaping itself. Long enough to
 /// cover a browse-and-open session, short enough that a crashed app leaves nothing
@@ -283,7 +285,7 @@ struct CapabilitiesReply {
 
 /// This build's embedded launcher revision. Must equal `launcherRevision` in
 /// `remote-launcher/pi-desktop-launcher`; a test pins the two together.
-const LAUNCHER_REVISION: u32 = 10;
+const LAUNCHER_REVISION: u32 = 17;
 /// The task-state version this build's launcher reads and writes.
 const LAUNCHER_STATUS_VERSION: u32 = 1;
 
@@ -1233,6 +1235,13 @@ fn ssh_workspace_spec(
     ))
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteRepositoryMutationFile {
+    path: String,
+    original_path: Option<String>,
+}
+
 fn ssh_repository_spec(
     profile: &RemotePiProfile,
     workspace_root: &str,
@@ -1242,13 +1251,37 @@ fn ssh_repository_spec(
     diff_kind: Option<&str>,
     generation: Option<&str>,
     original_path: Option<&str>,
+    files: Option<&[RemoteRepositoryMutationFile]>,
     message: Option<&str>,
+    remote: Option<&str>,
+    expected_head_oid: Option<&str>,
+    expected_upstream_oid: Option<&str>,
+    expected_upstream_remote: Option<&str>,
+    expected_upstream_branch: Option<&str>,
+    branch_name: Option<&str>,
+    expected_local_branch: Option<&str>,
+    expected_merge_base_oid: Option<&str>,
+    strategy: Option<&str>,
 ) -> Result<LaunchSpec, String> {
     validate_profile(profile)?;
     validate_remote_path(workspace_root, "remote workspace root")?;
     if !matches!(
         operation,
-        "status" | "diff" | "stage" | "unstage" | "commit"
+        "status"
+            | "diff"
+            | "stage"
+            | "unstage"
+            | "stageBatch"
+            | "unstageBatch"
+            | "commit"
+            | "stagedDiff"
+            | "fetch"
+            | "push"
+            | "createBranch"
+            | "switchBranch"
+            | "integrateFastForward"
+            | "integrateMerge"
+            | "integrateRebase"
     ) {
         return Err(format!(
             "unsupported remote repository operation `{operation}`"
@@ -1261,6 +1294,28 @@ fn ssh_repository_spec(
             && !value.chars().any(|ch| ch == '\0' || ch.is_control())
             && !value.split('/').any(|part| part == "..")
     };
+    if files.is_some() && !matches!(operation, "stageBatch" | "unstageBatch") {
+        return Err("reviewed batch files are only valid for batch stage or unstage".into());
+    }
+    let integration = matches!(
+        operation,
+        "integrateFastForward" | "integrateMerge" | "integrateRebase"
+    );
+    if operation != "push"
+        && !integration
+        && (expected_upstream_remote.is_some() || expected_upstream_branch.is_some())
+    {
+        return Err(
+            "reviewed upstream destination is not valid for this repository operation".into(),
+        );
+    }
+    if !integration
+        && (expected_local_branch.is_some()
+            || expected_merge_base_oid.is_some()
+            || strategy.is_some())
+    {
+        return Err("reviewed integration fields are only valid for reviewed integration".into());
+    }
     match operation {
         "status" => {
             if repo_root.is_some()
@@ -1269,6 +1324,10 @@ fn ssh_repository_spec(
                 || generation.is_some()
                 || original_path.is_some()
                 || message.is_some()
+                || remote.is_some()
+                || expected_head_oid.is_some()
+                || expected_upstream_oid.is_some()
+                || branch_name.is_some()
             {
                 return Err("repository status takes no additional arguments".into());
             }
@@ -1284,7 +1343,14 @@ fn ssh_repository_spec(
             if !matches!(diff_kind, Some("staged") | Some("unstaged")) {
                 return Err("repository diff kind must be staged or unstaged".into());
             }
-            if generation.is_some() || original_path.is_some() || message.is_some() {
+            if generation.is_some()
+                || original_path.is_some()
+                || message.is_some()
+                || remote.is_some()
+                || expected_head_oid.is_some()
+                || expected_upstream_oid.is_some()
+                || branch_name.is_some()
+            {
                 return Err("repository diff received mutation arguments".into());
             }
         }
@@ -1301,8 +1367,55 @@ fn ssh_repository_spec(
                     "repository path must be relative and remain inside the repository".into(),
                 );
             }
-            if diff_kind.is_some() || message.is_some() {
+            if diff_kind.is_some()
+                || message.is_some()
+                || remote.is_some()
+                || expected_head_oid.is_some()
+                || expected_upstream_oid.is_some()
+                || branch_name.is_some()
+            {
                 return Err("stage or unstage received invalid arguments".into());
+            }
+        }
+        "stageBatch" | "unstageBatch" => {
+            let root = repo_root.ok_or("repository batch mutation requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            if generation.filter(|value| !value.is_empty()).is_none() {
+                return Err("repository batch mutation requires a generation".into());
+            }
+            let files = files.ok_or("repository batch mutation requires reviewed files")?;
+            let mut seen = HashSet::with_capacity(files.len());
+            let mut total_path_bytes = 0usize;
+            if files.is_empty() || files.len() > MUTATION_BATCH_MAX_FILES {
+                return Err(format!(
+                    "repository batch mutation must contain 1 to {MUTATION_BATCH_MAX_FILES} reviewed files"
+                ));
+            }
+            for file in files {
+                total_path_bytes = total_path_bytes
+                    .saturating_add(file.path.len())
+                    .saturating_add(file.original_path.as_ref().map_or(0, String::len));
+                if !relative_path(&file.path)
+                    || file
+                        .original_path
+                        .as_deref()
+                        .is_some_and(|value| !relative_path(value))
+                    || total_path_bytes > MUTATION_BATCH_MAX_PATH_BYTES
+                    || !seen.insert(file.path.as_str())
+                {
+                    return Err("repository batch mutation files are invalid".into());
+                }
+            }
+            if path.is_some()
+                || original_path.is_some()
+                || diff_kind.is_some()
+                || message.is_some()
+                || remote.is_some()
+                || expected_head_oid.is_some()
+                || expected_upstream_oid.is_some()
+                || branch_name.is_some()
+            {
+                return Err("batch stage or unstage received invalid arguments".into());
             }
         }
         "commit" => {
@@ -1315,8 +1428,179 @@ fn ssh_repository_spec(
             if message.trim().is_empty() || message.len() > 4096 || message.contains('\0') {
                 return Err("repository commit message is invalid".into());
             }
-            if path.is_some() || original_path.is_some() || diff_kind.is_some() {
-                return Err("repository commit received file arguments".into());
+            if path.is_some()
+                || original_path.is_some()
+                || diff_kind.is_some()
+                || remote.is_some()
+                || expected_head_oid.is_some()
+                || expected_upstream_oid.is_some()
+                || branch_name.is_some()
+            {
+                return Err("repository commit received invalid arguments".into());
+            }
+        }
+        "stagedDiff" => {
+            let root = repo_root.ok_or("staged diff requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            if generation.filter(|value| !value.is_empty()).is_none()
+                || path.is_some()
+                || diff_kind.is_some()
+                || original_path.is_some()
+                || message.is_some()
+                || remote.is_some()
+                || expected_head_oid.is_some()
+                || expected_upstream_oid.is_some()
+                || branch_name.is_some()
+            {
+                return Err("staged diff received invalid arguments".into());
+            }
+        }
+        "fetch" => {
+            let root = repo_root.ok_or("fetch requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            let remote = remote.ok_or("fetch requires a remote")?;
+            if generation.filter(|value| !value.is_empty()).is_none()
+                || remote.is_empty()
+                || remote.len() > 255
+                || remote.starts_with('-')
+                || remote.chars().any(|ch| ch == '\0' || ch.is_control())
+                || path.is_some()
+                || diff_kind.is_some()
+                || original_path.is_some()
+                || message.is_some()
+                || expected_head_oid.is_some()
+                || expected_upstream_oid.is_some()
+                || branch_name.is_some()
+            {
+                return Err("repository fetch received invalid arguments".into());
+            }
+        }
+        "push" => {
+            let root = repo_root.ok_or("push requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            let valid_oid = |value: &str| {
+                matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            };
+            let valid_destination = |value: &str| {
+                !value.is_empty()
+                    && value.len() <= 255
+                    && value.trim() == value
+                    && !value.starts_with('-')
+                    && !value.chars().any(|ch| ch == '\0' || ch.is_control())
+            };
+            if generation.filter(|value| !value.is_empty()).is_none()
+                || !expected_head_oid.is_some_and(valid_oid)
+                || expected_upstream_oid.is_some_and(|value| !valid_oid(value))
+                || !expected_upstream_remote.is_some_and(valid_destination)
+                || !expected_upstream_branch.is_some_and(valid_destination)
+                || path.is_some()
+                || diff_kind.is_some()
+                || original_path.is_some()
+                || message.is_some()
+                || remote.is_some()
+                || branch_name.is_some()
+            {
+                return Err("repository push received invalid arguments".into());
+            }
+        }
+        "createBranch" | "switchBranch" => {
+            let root = repo_root.ok_or("branch operation requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            let name = branch_name.ok_or("branch operation requires a local branch name")?;
+            let valid_oid = |value: &str| {
+                matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            };
+            if generation.filter(|value| !value.is_empty()).is_none()
+                || name.is_empty()
+                || name.len() > 255
+                || name.trim() != name
+                || name.starts_with('-')
+                || name.chars().any(|ch| ch == '\0' || ch.is_control())
+                || path.is_some()
+                || diff_kind.is_some()
+                || original_path.is_some()
+                || message.is_some()
+                || remote.is_some()
+                || (operation == "createBranch" && !expected_head_oid.is_some_and(valid_oid))
+                || (operation == "switchBranch" && expected_head_oid.is_some())
+                || expected_upstream_oid.is_some()
+            {
+                return Err("repository branch operation received invalid arguments".into());
+            }
+        }
+        "integrateFastForward" => {
+            let root = repo_root.ok_or("fast-forward integration requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            let valid_oid = |value: &str| {
+                matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            };
+            let valid_name = |value: &str| {
+                !value.is_empty()
+                    && value.len() <= 255
+                    && value.trim() == value
+                    && !value.starts_with('-')
+                    && !value.chars().any(|ch| ch == '\0' || ch.is_control())
+            };
+            if generation.filter(|value| !value.is_empty()).is_none()
+                || !expected_local_branch.is_some_and(valid_name)
+                || !expected_head_oid.is_some_and(valid_oid)
+                || !expected_upstream_oid.is_some_and(valid_oid)
+                || !expected_upstream_remote.is_some_and(valid_name)
+                || !expected_upstream_branch.is_some_and(valid_name)
+                || !expected_merge_base_oid.is_some_and(valid_oid)
+                || strategy != Some("fastForwardOnly")
+                || path.is_some()
+                || diff_kind.is_some()
+                || original_path.is_some()
+                || message.is_some()
+                || remote.is_some()
+                || branch_name.is_some()
+            {
+                return Err(
+                    "repository fast-forward integration received invalid arguments".into(),
+                );
+            }
+        }
+        "integrateMerge" | "integrateRebase" => {
+            let root = repo_root.ok_or("Phase 4B integration requires a repository root")?;
+            validate_remote_path(root, "remote repository root")?;
+            let valid_oid = |value: &str| {
+                matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            };
+            let valid_name = |value: &str| {
+                !value.is_empty()
+                    && value.len() <= 255
+                    && value.trim() == value
+                    && !value.starts_with('-')
+                    && !value.chars().any(|ch| ch == '\0' || ch.is_control())
+            };
+            let valid_message = if operation == "integrateMerge" {
+                message.is_some_and(|value| {
+                    !value.trim().is_empty()
+                        && value.trim() == value
+                        && value.len() <= 4096
+                        && !value.contains('\0')
+                })
+            } else {
+                message.is_none()
+            };
+            if generation.filter(|value| !value.is_empty()).is_none()
+                || !expected_local_branch.is_some_and(valid_name)
+                || !expected_head_oid.is_some_and(valid_oid)
+                || !expected_upstream_oid.is_some_and(valid_oid)
+                || !expected_upstream_remote.is_some_and(valid_name)
+                || !expected_upstream_branch.is_some_and(valid_name)
+                || !expected_merge_base_oid.is_some_and(valid_oid)
+                || (operation == "integrateMerge" && strategy != Some("mergeCommit"))
+                || (operation == "integrateRebase" && strategy != Some("rebaseLinear"))
+                || !valid_message
+                || path.is_some()
+                || diff_kind.is_some()
+                || original_path.is_some()
+                || remote.is_some()
+                || branch_name.is_some()
+            {
+                return Err("repository Phase 4B integration received invalid arguments".into());
             }
         }
         _ => unreachable!(),
@@ -1330,7 +1614,17 @@ fn ssh_repository_spec(
         "diffKind": diff_kind,
         "generation": generation,
         "originalPath": original_path,
+        "files": files,
         "message": message,
+        "remote": remote,
+        "expectedHeadOid": expected_head_oid,
+        "expectedUpstreamOid": expected_upstream_oid,
+        "expectedUpstreamRemote": expected_upstream_remote,
+        "expectedUpstreamBranch": expected_upstream_branch,
+        "branchName": branch_name,
+        "expectedLocalBranch": expected_local_branch,
+        "expectedMergeBaseOid": expected_merge_base_oid,
+        "strategy": strategy,
     });
     let encoded = STANDARD.encode(
         serde_json::to_vec(&payload)
@@ -1343,6 +1637,299 @@ fn ssh_repository_spec(
         &encoded,
         ConnectionReuse::Shared,
     ))
+}
+fn parse_remote_repository_reply(
+    operation: &str,
+    stdout: &[u8],
+) -> Result<serde_json::Value, String> {
+    let strict_reply = matches!(
+        operation,
+        "integrateFastForward"
+            | "integrateMerge"
+            | "integrateRebase"
+            | "stageBatch"
+            | "unstageBatch"
+            | "fetch"
+            | "push"
+            | "createBranch"
+            | "switchBranch"
+    );
+    if !strict_reply {
+        let stdout = String::from_utf8_lossy(stdout);
+        let line = stdout
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .ok_or("remote repository request returned no reply")?;
+        return serde_json::from_str(line.trim())
+            .map_err(|error| format!("invalid repository reply: {error}"));
+    }
+
+    let stdout = std::str::from_utf8(stdout)
+        .map_err(|_| "invalid repository integration reply: stdout was not UTF-8")?;
+    let lines = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    if lines.len() != 1 {
+        return Err(
+            "invalid repository integration reply: expected exactly one JSON document".into(),
+        );
+    }
+    let reply: serde_json::Value = serde_json::from_str(lines[0].trim())
+        .map_err(|error| format!("invalid repository integration reply: {error}"))?;
+    let object = reply
+        .as_object()
+        .ok_or("invalid repository integration reply: expected an object")?;
+    let ok = object
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or("invalid repository integration reply: `ok` must be boolean")?;
+    if !ok {
+        let allowed = ["ok", "reason", "detail", "applied"];
+        if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+            return Err("invalid repository integration reply: unsupported failure field".into());
+        }
+        let reason = object
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("invalid repository integration reply: failure reason is required")?;
+        let known_reason = matches!(
+            reason,
+            "remoteUnsupported"
+                | "piBusy"
+                | "invalidRequest"
+                | "repositoryChanged"
+                | "staleGeneration"
+                | "conflictsPresent"
+                | "operationInProgress"
+                | "unsafeRepositoryConfiguration"
+                | "indexLocked"
+                | "nothingStaged"
+                | "emptyMessage"
+                | "detachedHead"
+                | "noUpstream"
+                | "remoteUnavailable"
+                | "remoteAuthenticationUnavailable"
+                | "nothingToPush"
+                | "nonFastForward"
+                | "branchExists"
+                | "branchNotFound"
+                | "checkoutConflict"
+                | "dirtyWorktree"
+                | "nothingToIntegrate"
+                | "unsupportedHistory"
+                | "identityUnavailable"
+                | "integrationConflict"
+                | "stagedDiffTooLarge"
+                | "gitUnavailable"
+                | "refreshFailed"
+        );
+        if !known_reason
+            || !object
+                .get("applied")
+                .is_some_and(serde_json::Value::is_boolean)
+            || object.get("detail").is_some_and(|value| !value.is_string())
+        {
+            return Err("invalid repository integration reply: malformed failure".into());
+        }
+        if matches!(
+            operation,
+            "fetch" | "push" | "createBranch" | "switchBranch"
+        ) {
+            let applied = object
+                .get("applied")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if applied != (reason == "refreshFailed") {
+                return Err("invalid repository Phase 3 reply: incoherent applied state".into());
+            }
+        }
+        return Ok(reply);
+    }
+    if matches!(
+        operation,
+        "fetch" | "push" | "createBranch" | "switchBranch"
+    ) {
+        let allowed = [
+            "ok",
+            "repoRoot",
+            "porcelain",
+            "generation",
+            "repositoryOperation",
+            "upstreamRemote",
+            "upstreamBranch",
+            "upstreamOid",
+            "mergeBaseOid",
+            "remotes",
+            "branches",
+            "applied",
+        ];
+        let nullable_string = |key: &str| {
+            object
+                .get(key)
+                .is_some_and(|value| value.is_null() || value.is_string())
+        };
+        if object.len() != allowed.len()
+            || object.keys().any(|key| !allowed.contains(&key.as_str()))
+            || !["repoRoot", "porcelain", "generation"]
+                .iter()
+                .all(|key| object.get(*key).is_some_and(serde_json::Value::is_string))
+            || !object
+                .get("repositoryOperation")
+                .is_some_and(serde_json::Value::is_null)
+            || ![
+                "upstreamRemote",
+                "upstreamBranch",
+                "upstreamOid",
+                "mergeBaseOid",
+            ]
+            .iter()
+            .all(|key| nullable_string(key))
+            || object.get("applied").and_then(serde_json::Value::as_bool) != Some(true)
+            || !object.get("remotes").is_some_and(|value| {
+                value
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(serde_json::Value::is_string))
+            })
+            || !object.get("branches").is_some_and(|value| {
+                value.as_array().is_some_and(|items| {
+                    items.iter().all(|item| {
+                        item.as_object().is_some_and(|branch| {
+                            branch.len() == 2
+                                && branch.get("name").is_some_and(serde_json::Value::is_string)
+                                && branch.get("oid").is_some_and(serde_json::Value::is_string)
+                        })
+                    })
+                })
+            })
+        {
+            return Err("invalid repository Phase 3 reply: malformed success snapshot".into());
+        }
+        return Ok(reply);
+    }
+
+    if matches!(operation, "stageBatch" | "unstageBatch") {
+        let allowed = [
+            "ok",
+            "repoRoot",
+            "porcelain",
+            "generation",
+            "repositoryOperation",
+            "commitOid",
+            "upstreamRemote",
+            "upstreamBranch",
+            "upstreamOid",
+            "mergeBaseOid",
+            "remotes",
+            "branches",
+            "applied",
+        ];
+        let nullable_string = |key: &str| {
+            object
+                .get(key)
+                .is_some_and(|value| value.is_null() || value.is_string())
+        };
+        if object.len() != allowed.len()
+            || object.keys().any(|key| !allowed.contains(&key.as_str()))
+            || !["repoRoot", "porcelain", "generation"]
+                .iter()
+                .all(|key| object.get(*key).is_some_and(serde_json::Value::is_string))
+            || !object
+                .get("repositoryOperation")
+                .is_some_and(serde_json::Value::is_null)
+            || !object
+                .get("commitOid")
+                .is_some_and(serde_json::Value::is_null)
+            || ![
+                "upstreamRemote",
+                "upstreamBranch",
+                "upstreamOid",
+                "mergeBaseOid",
+            ]
+            .iter()
+            .all(|key| nullable_string(key))
+            || object.get("applied").and_then(serde_json::Value::as_bool) != Some(true)
+            || !object.get("remotes").is_some_and(|value| {
+                value
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(serde_json::Value::is_string))
+            })
+            || !object.get("branches").is_some_and(|value| {
+                value.as_array().is_some_and(|items| {
+                    items.iter().all(|item| {
+                        item.as_object().is_some_and(|branch| {
+                            branch.len() == 2
+                                && branch.get("name").is_some_and(serde_json::Value::is_string)
+                                && branch.get("oid").is_some_and(serde_json::Value::is_string)
+                        })
+                    })
+                })
+            })
+        {
+            return Err(
+                "invalid repository batch mutation reply: malformed success snapshot".into(),
+            );
+        }
+        return Ok(reply);
+    }
+
+    let allowed = [
+        "ok",
+        "repoRoot",
+        "porcelain",
+        "generation",
+        "repositoryOperation",
+        "upstreamRemote",
+        "upstreamBranch",
+        "upstreamOid",
+        "mergeBaseOid",
+        "remotes",
+        "branches",
+        "applied",
+    ];
+    if object.len() != allowed.len()
+        || object.keys().any(|key| !allowed.contains(&key.as_str()))
+        || ![
+            "repoRoot",
+            "porcelain",
+            "generation",
+            "upstreamRemote",
+            "upstreamBranch",
+            "upstreamOid",
+            "mergeBaseOid",
+        ]
+        .iter()
+        .all(|key| {
+            object
+                .get(*key)
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+        })
+        || !object
+            .get("repositoryOperation")
+            .is_some_and(serde_json::Value::is_null)
+        || object.get("applied").and_then(serde_json::Value::as_bool) != Some(true)
+        || !object.get("remotes").is_some_and(|value| {
+            value
+                .as_array()
+                .is_some_and(|items| items.iter().all(serde_json::Value::is_string))
+        })
+        || !object.get("branches").is_some_and(|value| {
+            value.as_array().is_some_and(|items| {
+                items.iter().all(|item| {
+                    item.as_object().is_some_and(|branch| {
+                        branch.len() == 2
+                            && branch.get("name").is_some_and(serde_json::Value::is_string)
+                            && branch.get("oid").is_some_and(serde_json::Value::is_string)
+                    })
+                })
+            })
+        })
+    {
+        return Err("invalid repository integration reply: malformed success snapshot".into());
+    }
+    Ok(reply)
 }
 
 /// What `--status` reports about one task, as the desktop sees it.
@@ -1897,6 +2484,7 @@ pub async fn remote_workspace_request(
 
 /// One bounded Git repository request against an SSH workspace.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn remote_repository_request(
     state: State<'_, PiProc>,
     id: String,
@@ -1908,9 +2496,33 @@ pub async fn remote_repository_request(
     diff_kind: Option<String>,
     generation: Option<String>,
     original_path: Option<String>,
+    files: Option<Vec<RemoteRepositoryMutationFile>>,
     message: Option<String>,
+    remote: Option<String>,
+    expected_head_oid: Option<String>,
+    expected_upstream_oid: Option<String>,
+    expected_upstream_remote: Option<String>,
+    expected_upstream_branch: Option<String>,
+    branch_name: Option<String>,
+    expected_local_branch: Option<String>,
+    expected_merge_base_oid: Option<String>,
+    strategy: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let _write_guard = if matches!(operation.as_str(), "stage" | "unstage" | "commit") {
+    let _write_guard = if matches!(
+        operation.as_str(),
+        "stage"
+            | "unstage"
+            | "stageBatch"
+            | "unstageBatch"
+            | "commit"
+            | "fetch"
+            | "push"
+            | "createBranch"
+            | "switchBranch"
+            | "integrateFastForward"
+            | "integrateMerge"
+            | "integrateRebase"
+    ) {
         let target_id = format!("ssh:{id}");
         match state.begin_repository_write(&target_id, &workspace_root) {
             Ok(guard) => Some(guard),
@@ -1927,11 +2539,32 @@ pub async fn remote_repository_request(
         None
     };
     tauri::async_runtime::spawn_blocking(move || {
-        let profile = load_profile(&id)?;
+        let batch_mutation = matches!(operation.as_str(), "stageBatch" | "unstageBatch");
+        let preflight_failure = |reason: &str, detail: String| {
+            Ok(serde_json::json!({
+                "ok": false,
+                "reason": reason,
+                "detail": detail,
+                "applied": false,
+            }))
+        };
+        let profile = match load_profile(&id) {
+            Ok(profile) => profile,
+            Err(error) if batch_mutation => {
+                return preflight_failure("remoteUnavailable", error);
+            }
+            Err(error) => return Err(error),
+        };
         if profile.revision != profile_revision {
+            if batch_mutation {
+                return preflight_failure(
+                    "repositoryChanged",
+                    "Remote profile changed; refresh the target and try again.".into(),
+                );
+            }
             return Err("remote profile changed; refresh the target and try again".into());
         }
-        let spec = ssh_repository_spec(
+        let spec = match ssh_repository_spec(
             &profile,
             &workspace_root,
             &operation,
@@ -1940,8 +2573,24 @@ pub async fn remote_repository_request(
             diff_kind.as_deref(),
             generation.as_deref(),
             original_path.as_deref(),
+            files.as_deref(),
             message.as_deref(),
-        )?;
+            remote.as_deref(),
+            expected_head_oid.as_deref(),
+            expected_upstream_oid.as_deref(),
+            expected_upstream_remote.as_deref(),
+            expected_upstream_branch.as_deref(),
+            branch_name.as_deref(),
+            expected_local_branch.as_deref(),
+            expected_merge_base_oid.as_deref(),
+            strategy.as_deref(),
+        ) {
+            Ok(spec) => spec,
+            Err(error) if batch_mutation => {
+                return preflight_failure("invalidRequest", error);
+            }
+            Err(error) => return Err(error),
+        };
         ensure_control_master(&profile.ssh_host);
         let output =
             run_bounded_command(&spec, WORKSPACE_TIMEOUT, None, WORKSPACE_OUTPUT_MAX_BYTES)?;
@@ -1957,14 +2606,7 @@ pub async fn remote_repository_request(
                 classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
             return Err(format!("{error_code}: {message}"));
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let line = stdout
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .ok_or("remote repository request returned no reply")?;
-        serde_json::from_str(line.trim())
-            .map_err(|error| format!("invalid repository reply: {error}"))
+        parse_remote_repository_reply(&operation, &output.stdout)
     })
     .await
     .map_err(|error| format!("remote repository task failed: {error}"))?
@@ -3064,13 +3706,14 @@ fn run_bounded_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_launcher_failure, classify_transport_failure, decide_upgrade, shell_quote,
-        ssh_capabilities_spec, ssh_launch_spec, ssh_provider_sync_spec, ssh_reuse_options,
-        ssh_start_detached_spec, ssh_task_spec, ssh_terminal_spec, validate_binding,
-        validate_profile_fields, validate_profile_id, validate_remote_task_id, CapabilitiesReply,
-        ConnectionReuse, ExecutionBinding, RemotePiProfile, RemoteTaskMode, UpgradeDecision,
-        CHECK_LAUNCHER, CHECK_NODE, CHECK_PI, CHECK_SSH, CHECK_WORKSPACE, LAUNCHER_INSTALLER,
-        LAUNCHER_REVISION, LAUNCHER_SOURCE, LAUNCHER_STATUS_VERSION,
+        classify_launcher_failure, classify_transport_failure, decide_upgrade,
+        parse_remote_repository_reply, shell_quote, ssh_capabilities_spec, ssh_launch_spec,
+        ssh_provider_sync_spec, ssh_repository_spec, ssh_reuse_options, ssh_start_detached_spec,
+        ssh_task_spec, ssh_terminal_spec, validate_binding, validate_profile_fields,
+        validate_profile_id, validate_remote_task_id, CapabilitiesReply, ConnectionReuse,
+        ExecutionBinding, RemotePiProfile, RemoteRepositoryMutationFile, RemoteTaskMode,
+        UpgradeDecision, CHECK_LAUNCHER, CHECK_NODE, CHECK_PI, CHECK_SSH, CHECK_WORKSPACE,
+        LAUNCHER_INSTALLER, LAUNCHER_REVISION, LAUNCHER_SOURCE, LAUNCHER_STATUS_VERSION,
     };
     use super::{ssh_attach_spec, ssh_management_spec, ssh_workspace_spec, LaunchSpec, STANDARD};
     use base64::Engine as _;
@@ -3087,6 +3730,30 @@ mod tests {
             launcher_protocol_version: 1,
             lifecycle: "attached".into(),
         }
+    }
+
+    fn batch_repository_spec(files: &[RemoteRepositoryMutationFile]) -> Result<LaunchSpec, String> {
+        ssh_repository_spec(
+            &profile(),
+            "/srv/work",
+            "stageBatch",
+            Some("/srv/work"),
+            None,
+            None,
+            Some("reviewed-generation"),
+            None,
+            Some(files),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     fn binding(profile: &RemotePiProfile) -> ExecutionBinding {
@@ -4224,5 +4891,194 @@ exit 1
             assert!(args.contains(&"ServerAliveInterval=15".into()));
             assert!(args.contains(&"ServerAliveCountMax=3".into()));
         }
+    }
+
+    #[test]
+    fn repository_batch_request_bounds_use_utf8_bytes_and_exact_limits() {
+        let max_count = (0..4096)
+            .map(|index| RemoteRepositoryMutationFile {
+                path: format!("{index:03x}"),
+                original_path: None,
+            })
+            .collect::<Vec<_>>();
+        assert!(batch_repository_spec(&max_count).is_ok());
+
+        let mut too_many = max_count.clone();
+        too_many.push(RemoteRepositoryMutationFile {
+            path: "1000".into(),
+            original_path: None,
+        });
+        assert!(batch_repository_spec(&too_many).is_err());
+
+        let exact_budget = vec![
+            RemoteRepositoryMutationFile {
+                path: "a".repeat(4096),
+                original_path: None,
+            },
+            RemoteRepositoryMutationFile {
+                path: "b".repeat(4096),
+                original_path: None,
+            },
+            RemoteRepositoryMutationFile {
+                path: "c".repeat(4096),
+                original_path: None,
+            },
+            RemoteRepositoryMutationFile {
+                path: "d".repeat(4096),
+                original_path: None,
+            },
+        ];
+        assert!(batch_repository_spec(&exact_budget).is_ok());
+
+        let mut over_budget = exact_budget.clone();
+        over_budget.push(RemoteRepositoryMutationFile {
+            path: "e".into(),
+            original_path: None,
+        });
+        assert!(batch_repository_spec(&over_budget).is_err());
+
+        let unicode_over_path_limit = vec![RemoteRepositoryMutationFile {
+            path: "界".repeat(1366),
+            original_path: None,
+        }];
+        assert_eq!(unicode_over_path_limit[0].path.len(), 4098);
+        assert!(batch_repository_spec(&unicode_over_path_limit).is_err());
+    }
+
+    #[test]
+    fn integration_replies_fail_closed_when_semantically_ambiguous() {
+        let valid = serde_json::json!({
+            "ok": true,
+            "repoRoot": "/srv/repo",
+            "porcelain": "",
+            "generation": "repo-sha256-reviewed",
+            "repositoryOperation": null,
+            "upstreamRemote": "origin",
+            "upstreamBranch": "main",
+            "upstreamOid": "1111111111111111111111111111111111111111",
+            "mergeBaseOid": "1111111111111111111111111111111111111111",
+            "remotes": ["origin"],
+            "branches": [{
+                "name": "feature",
+                "oid": "2222222222222222222222222222222222222222"
+            }],
+            "applied": true
+        });
+        let bytes = serde_json::to_vec(&valid).unwrap();
+        assert_eq!(
+            parse_remote_repository_reply("integrateMerge", &bytes).unwrap(),
+            valid
+        );
+
+        let authentication_failure = serde_json::json!({
+            "ok": false,
+            "reason": "remoteAuthenticationUnavailable",
+            "detail": "Git credentials for this HTTPS remote are unavailable.",
+            "applied": false
+        });
+        assert_eq!(
+            parse_remote_repository_reply(
+                "push",
+                &serde_json::to_vec(&authentication_failure).unwrap(),
+            )
+            .unwrap(),
+            authentication_failure
+        );
+
+        let valid_phase3 = serde_json::json!({
+            "ok": true,
+            "repoRoot": "/srv/repo",
+            "porcelain": "",
+            "generation": "repo-sha256-phase3",
+            "repositoryOperation": null,
+            "upstreamRemote": "origin",
+            "upstreamBranch": "main",
+            "upstreamOid": "1111111111111111111111111111111111111111",
+            "mergeBaseOid": "1111111111111111111111111111111111111111",
+            "remotes": ["origin"],
+            "branches": [{
+                "name": "main",
+                "oid": "2222222222222222222222222222222222222222"
+            }],
+            "applied": true
+        });
+        assert_eq!(
+            parse_remote_repository_reply("fetch", &serde_json::to_vec(&valid_phase3).unwrap())
+                .unwrap(),
+            valid_phase3
+        );
+        let mut malformed_phase3 = valid_phase3.clone();
+        malformed_phase3.as_object_mut().unwrap().remove("applied");
+        assert!(parse_remote_repository_reply(
+            "fetch",
+            &serde_json::to_vec(&malformed_phase3).unwrap()
+        )
+        .is_err());
+        let incoherent_failure = serde_json::json!({
+            "ok": false,
+            "reason": "remoteUnavailable",
+            "detail": "network failed",
+            "applied": true
+        });
+        assert!(parse_remote_repository_reply(
+            "push",
+            &serde_json::to_vec(&incoherent_failure).unwrap()
+        )
+        .is_err());
+
+        let valid_batch = serde_json::json!({
+            "ok": true,
+            "repoRoot": "/srv/repo",
+            "porcelain": "",
+            "generation": "repo-sha256-batch",
+            "repositoryOperation": null,
+            "commitOid": null,
+            "upstreamRemote": null,
+            "upstreamBranch": null,
+            "upstreamOid": null,
+            "mergeBaseOid": null,
+            "remotes": [],
+            "branches": [{
+                "name": "main",
+                "oid": "2222222222222222222222222222222222222222"
+            }],
+            "applied": true
+        });
+        let batch_bytes = serde_json::to_vec(&valid_batch).unwrap();
+        assert_eq!(
+            parse_remote_repository_reply("stageBatch", &batch_bytes).unwrap(),
+            valid_batch
+        );
+        let mut invalid_batch = valid_batch.clone();
+        invalid_batch["commitOid"] = serde_json::json!("2222222222222222222222222222222222222222");
+        assert!(
+            parse_remote_repository_reply(
+                "unstageBatch",
+                &serde_json::to_vec(&invalid_batch).unwrap(),
+            )
+            .is_err(),
+            "batch replies cannot claim a commit"
+        );
+
+        for malformed in [
+            b"{}".as_slice(),
+            br#"{"ok":false,"reason":"integrationConflict"}"#.as_slice(),
+            br#"{"ok":false,"reason":"invented","applied":false}"#.as_slice(),
+            br#"{"ok":true,"repoRoot":"/srv/repo"}"#.as_slice(),
+            b"banner\n{\"ok\":false,\"reason\":\"integrationConflict\",\"applied\":false}\n"
+                .as_slice(),
+            &[0xff, 0xfe],
+        ] {
+            assert!(
+                parse_remote_repository_reply("integrateRebase", malformed).is_err(),
+                "ambiguous integration reply must fail closed: {malformed:?}"
+            );
+        }
+
+        let ordinary = b"banner\n{\"ok\":false}\n";
+        assert!(
+            parse_remote_repository_reply("status", ordinary).is_ok(),
+            "non-integration compatibility keeps accepting a preceding login banner"
+        );
     }
 }

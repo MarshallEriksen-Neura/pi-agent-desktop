@@ -103,7 +103,7 @@ test("capabilities advertise independently gated read and mutation support", () 
     });
     assert.equal(result.status, 0, result.stderr);
     const reply = JSON.parse(result.stdout.trim());
-    assert.equal(reply.launcherRevision, 10);
+    assert.equal(reply.launcherRevision, 16);
     for (const capability of [
       "pi-packages-read-v1",
       "pi-packages-mutate-v1",

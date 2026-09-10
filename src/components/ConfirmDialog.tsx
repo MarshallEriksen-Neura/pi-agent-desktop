@@ -28,6 +28,7 @@ export const ConfirmDialog = memo(function ConfirmDialog({
   confirmLabel,
   cancelLabel,
   danger = true,
+  confirmDisabled = false,
   icon,
   onConfirm,
   onCancel,
@@ -42,6 +43,8 @@ export const ConfirmDialog = memo(function ConfirmDialog({
   cancelLabel?: string;
   /** Styles the confirm button as destructive. Defaults to true. */
   danger?: boolean;
+  /** Keeps confirmation inert while external authoritative state is pending. */
+  confirmDisabled?: boolean;
   icon?: React.ReactNode;
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
@@ -74,15 +77,26 @@ export const ConfirmDialog = memo(function ConfirmDialog({
   }, [open]);
 
   const run = useCallback(async () => {
-    if (busy) return;
+    if (busy || confirmDisabled) return;
     setBusy(true);
     try {
       await latest.current.onConfirm();
     } finally {
       setBusy(false);
     }
-  }, [busy]);
+  }, [busy, confirmDisabled]);
 
+  // Escape is owned by useModalFocus; Enter confirms when authoritative state allows it.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || busy || confirmDisabled) return;
+      e.preventDefault();
+      void run();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, busy, confirmDisabled, run]);
 
   return (
     <AnimatePresence>
@@ -133,7 +147,7 @@ export const ConfirmDialog = memo(function ConfirmDialog({
               <Button
                 variant="primary"
                 onClick={run}
-                disabled={busy}
+                disabled={busy || confirmDisabled}
                 style={danger ? DANGER_BTN : undefined}
               >
                 {busy ? (
@@ -211,6 +225,7 @@ const DETAIL: React.CSSProperties = {
   fontWeight: 600,
   color: "var(--text-primary)",
   wordBreak: "break-all",
+  whiteSpace: "pre-wrap",
 };
 
 const ACTIONS: React.CSSProperties = {

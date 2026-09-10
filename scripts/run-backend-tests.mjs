@@ -22,21 +22,22 @@ run(process.execPath, [
 ]);
 rewriteAliases(outDir, path.join(outDir, "src"));
 
-// Two entries, two processes. `isolated.test.js` holds specs whose setup is not
-// reversible in-process: they call the chat store's `init()`, which registers a
-// subscriber on the global ext-ui store that nothing unsubscribes — clearing the
-// chat-store map leaves it alive, holding a closure over a client the spec then
-// disposes, and a later unrelated spec inherits it and hangs.
+// Separate entries run in separate processes. `isolated.test.js` holds specs whose
+// setup is not reversible in-process: they call the chat store's `init()`, which
+// registers a subscriber on the global ext-ui store that nothing unsubscribes.
+// `repository-inspector.test.js` registers a browser-like DOM and dynamically loads
+// the UI graph; keeping it isolated prevents browser timers and globals from leaking
+// into the otherwise DOM-free backend suite.
 //
-// Both entries always run: bailing out after the first would let a failure there
-// hide whatever the second would have reported.
+// Every entry always runs: bailing out after one would hide later failures.
 const entries = [
   ".tmp/backend-tests/tests/backend/all.test.js",
   ".tmp/backend-tests/tests/backend/isolated.test.js",
+  ".tmp/backend-tests/tests/backend/repository-inspector.test.js",
 ];
 let failed = false;
 for (const entry of entries) {
-  if (!runAllowingFailure(process.execPath, ["--test", entry])) failed = true;
+  if (!runAllowingFailure(process.execPath, ["--test", "--test-force-exit", entry])) failed = true;
 }
 if (failed) process.exit(1);
 

@@ -62,11 +62,13 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // runtime_config_read/write and the three wsl_* commands — down to 86.
   // Repository Review adds local status/diff plus one capability-gated SSH bridge,
   // bringing the strict command inventory to 89. Safe local mutations add one
-  // separate write command, bringing it to 90; SSH mutations continue through
-  // the gated bridge. The v0.15 lifecycle folds transcript recycling into
-  // chat_session_delete and removes the redundant pi_session_trash command, down
-  // to 89; pi_session_read plus recycle-bin list / purge / restore bring it to 93.
-  assert.equal(result.inventory.commandUniqueCount, 93);
+  // separate write command; Phase 3 actions and isolated AI commit drafting add
+  // two more. Phase 4A adds a dedicated reviewed fast-forward integration command;
+  // Phase 4B adds a separate reviewed merge/rebase command. SSH writes continue
+  // through the capability-gated bridge. The v0.15 lifecycle folds transcript
+  // recycling into chat_session_delete, adds pi_session_read, and adds recycle-bin
+  // list / purge / restore, bringing the combined inventory to 97.
+  assert.equal(result.inventory.commandUniqueCount, 97);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -112,6 +114,7 @@ test("locks the desktop command names and Pi process event names", () => {
     "pi_cli",
     "pi_cli_update_check",
     "pi_fetch_models",
+    "pi_generate_commit_message",
     "pi_generate_title",
     "pi_send",
     "pi_session_read",
@@ -183,6 +186,9 @@ test("locks the desktop command names and Pi process event names", () => {
     // authoritative local Git baselines; status and file diff remain separate intents
     "repository_diff",
     "repository_mutate",
+    "repository_phase3",
+    "repository_phase4",
+    "repository_phase4b",
     "repository_status",
     // `npx skills …` — skill install/remove/update, allowlisted subcommands only
     "skills_cli",

@@ -14,6 +14,12 @@ export interface GenerateTitleInput {
   cwd: string | null;
 }
 
+export interface GenerateCommitMessageInput {
+  stagedDiff: string;
+  provider: string | null;
+  modelId: string | null;
+}
+
 export interface SessionScope {
   /** Stable authority namespace (for example `local` or `ssh:<profileId>`). */
   targetKey: string;
@@ -33,4 +39,5 @@ export interface SessionRepositoryPort {
   restoreTrash(scope: SessionScope, tombstoneId: number): Promise<void>;
   purgeTrash(scope: SessionScope, tombstoneId: number): Promise<void>;
   generateTitle(input: GenerateTitleInput): Promise<string>;
+  generateCommitMessage(input: GenerateCommitMessageInput): Promise<string>;
 }

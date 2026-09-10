@@ -20,11 +20,15 @@ test("parses porcelain v2 branch metadata and independent index/worktree states"
   const status = parseRepositoryStatus({
     targetId: "local",
     workspaceRoot: "/work/subdir",
-    raw: { repoRoot: "/work", porcelain, generation: "server-generation-1", operation: null },
+    raw: {
+      repoRoot: "/work", porcelain, generation: "server-generation-1", operation: null,
+      mergeBaseOid: hashes[0],
+    },
   });
 
   assert.deepEqual(status.head, { kind: "branch", name: "main", oid: hashes[0] });
   assert.equal(status.upstream, "origin/main");
+  assert.equal(status.mergeBaseOid, hashes[0]);
   assert.equal(status.ahead, 2);
   assert.equal(status.behind, 3);
   assert.deepEqual(

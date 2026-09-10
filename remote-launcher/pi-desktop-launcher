@@ -36,7 +36,7 @@ if [ "$mode" = "--capabilities" ]; then
     printf '%s\n' 'capabilities_invalid_arguments' >&2
     exit 64
   fi
-  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":10,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1"]}'
+  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":17,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","repository-batch-write-v1","repository-phase3-v1","repository-integration-v1","repository-integration-v2","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1"]}'
   exit 0
 fi
 
@@ -149,6 +149,8 @@ const { spawn } = require("node:child_process");
 
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 const MAX_DIAGNOSTIC_BYTES = 16 * 1024;
+const MUTATION_BATCH_MAX_FILES = 4096;
+const MUTATION_BATCH_MAX_PATH_BYTES = 16 * 1024;
 const MAX_PROVIDER_SYNC_BYTES = 2 * 1024 * 1024;
 const MAX_PROVIDER_SYNC_PROVIDERS = 64;
 const MAX_PROVIDER_SYNC_MODELS = 512;
@@ -1123,6 +1125,7 @@ const MAX_WORKSPACE_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_WORKSPACE_REPLY_BYTES = 8 * 1024 * 1024;
 const MAX_REPOSITORY_STATUS_BYTES = 1024 * 1024;
 const MAX_REPOSITORY_DIFF_BYTES = 4 * 1024 * 1024;
+const MAX_STAGED_DRAFT_BYTES = 256 * 1024;
 const REPOSITORY_GIT_TIMEOUT_MS = 30_000;
 
 function taskReply(value) {
@@ -1162,6 +1165,7 @@ function runRepositoryMode() {
   const path = require("node:path");
   const crypto = require("node:crypto");
   const { spawnSync } = require("node:child_process");
+  const { TextDecoder } = require("node:util");
   const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   const absolute = (value) => typeof value === "string" && path.isAbsolute(value) &&
     Buffer.byteLength(value) <= MAX_WORKSPACE_PATH_BYTES && !/[\u0000-\u001f\u007f]/.test(value);
@@ -1190,32 +1194,287 @@ function runRepositoryMode() {
   };
   const gitEnvironment = (indexPath = null) => {
     const env = { ...process.env };
-    for (const key of Object.keys(env)) if (key.toUpperCase().startsWith("GIT_")) delete env[key];
+    for (const key of Object.keys(env)) {
+      const upper = key.toUpperCase();
+      if (upper.startsWith("GIT_") || upper.startsWith("GCM_")) delete env[key];
+    }
     Object.assign(env, {
       GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C",
       GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true", GIT_MERGE_AUTOEDIT: "no",
+      GIT_ATTR_NOSYSTEM: "1",
     });
     if (indexPath) env.GIT_INDEX_FILE = indexPath;
     return env;
   };
-  const git = (root, args, maxBuffer = 64 * 1024, indexPath = null) => spawnSync(
-    "git", ["-C", root, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args], {
+  const effectiveIdentityEnvironment = () => {
+    const env = gitEnvironment();
+    delete env.GIT_CONFIG_NOSYSTEM;
+    delete env.GIT_CONFIG_GLOBAL;
+    return env;
+  };
+  const controlledIdentityEnvironment = (indexPath, identity, includeAuthor) => {
+    const env = gitEnvironment(indexPath);
+    if (includeAuthor) {
+      env.GIT_AUTHOR_NAME = identity.name;
+      env.GIT_AUTHOR_EMAIL = identity.email;
+    }
+    env.GIT_COMMITTER_NAME = identity.name;
+    env.GIT_COMMITTER_EMAIL = identity.email;
+    return env;
+  };
+  const controlledHttpTransportEnvironment = (transport) => {
+    const env = gitEnvironment();
+    for (const key of Object.keys(env)) {
+      const upper = key.toUpperCase();
+      if ([
+        "GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+      ].includes(upper)) delete env[key];
+    }
+    if (transport.helperExecutable) {
+      env.GCM_INTERACTIVE = "Never";
+      env.GCM_GUI_PROMPT = "false";
+    }
+    env.PATH = transport.pathEnvironment;
+    return env;
+  };
+  const spawnGit = (root, args, maxBuffer, input, env, executable = "git") => spawnSync(
+    executable, ["-C", root, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args], {
       encoding: "buffer", maxBuffer, timeout: REPOSITORY_GIT_TIMEOUT_MS, killSignal: "SIGKILL",
-      input: Buffer.alloc(0),
-      env: gitEnvironment(indexPath),
-      windowsHide: true,
+      input, env, windowsHide: true,
     },
   );
+  const git = (root, args, maxBuffer = 64 * 1024, indexPath = null, input = Buffer.alloc(0)) =>
+    spawnGit(root, args, maxBuffer, input, gitEnvironment(indexPath));
+  const gitWithIdentity = (root, args, maxBuffer, indexPath, identity, includeAuthor) =>
+    spawnGit(root, args, maxBuffer, Buffer.alloc(0),
+      controlledIdentityEnvironment(indexPath, identity, includeAuthor));
+  const credentialHelperCommand = (helper) => {
+    if (typeof helper !== "string" || helper.length === 0 || /[\u0000-\u001f\u007f]/u.test(helper)) {
+      throw new Error("remoteAuthenticationUnavailable: The configured Git Credential Manager path is invalid.");
+    }
+    const normalized = process.platform === "win32" ? helper.replace(/\\/gu, "/") : helper;
+    return `!'${normalized.replace(/'/gu, `'\\''`)}'`;
+  };
+  const gitWithHttpTransport = (root, args, maxBuffer, transport) => {
+    const trustedArgs = [];
+    if (transport.helperExecutable) {
+      trustedArgs.push(
+        "-c", "credential.helper=", "-c", "credential.interactive=never",
+        "-c", `credential.helper=${credentialHelperCommand(transport.helperExecutable)}`,
+      );
+    }
+    if (transport.httpProxy !== null) {
+      trustedArgs.push("-c", `http.proxy=${transport.httpProxy}`);
+    }
+    return spawnGit(
+      root, [...trustedArgs, ...args], maxBuffer, Buffer.alloc(0),
+      controlledHttpTransportEnvironment(transport), transport.gitExecutable,
+    );
+  };
   const detailOf = (result) => {
     if (result.error?.code === "ENOENT") return "Git executable was not found.";
     return result.error?.message || result.stderr?.toString("utf8").trim() || "Git could not inspect this workspace.";
+  };
+  const mutationFailureDetailOf = (result) => {
+    if (result.error?.code === "ENOENT") return "Git executable was not found.";
+    if (result.error?.message) return result.error.message;
+    return [result.stderr, result.stdout]
+      .filter((bytes) => bytes?.length)
+      .map((bytes) => bytes.toString("utf8").trim())
+      .filter(Boolean)
+      .join("\n") || "Git could not inspect this workspace.";
+  };
+  const parseCredentialHelpers = (bytes, state) => {
+    if (bytes.length > 4096) throw new Error("remoteAuthenticationUnavailable: Git credential helper configuration exceeded its safety limit.");
+    if (bytes.length === 0) return;
+    let value;
+    try { value = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch { throw new Error("remoteAuthenticationUnavailable: Git credential helper configuration is not valid UTF-8."); }
+    if (!value.endsWith("\0")) throw new Error("remoteAuthenticationUnavailable: Git credential helper configuration is malformed.");
+    for (const helper of value.slice(0, -1).split("\0")) {
+      if (helper === "") state.kind = null;
+      else if (helper === "manager" || helper === "manager-core") {
+        if (state.kind) throw new Error("remoteAuthenticationUnavailable: Git credential helper configuration is ambiguous.");
+        state.kind = helper;
+      }
+      else throw new Error("remoteAuthenticationUnavailable: Only the operating system Git Credential Manager is supported.");
+    }
+  };
+  const configuredCredentialHelper = (root, gitExecutable) => {
+    const state = { kind: null };
+    for (const scope of ["--system", "--global"]) {
+      const result = spawnGit(root, ["config", scope, "--includes", "--null", "--get-all",
+        "credential.helper"], 4097, Buffer.alloc(0), effectiveIdentityEnvironment(), gitExecutable);
+      if (result.error || ![0, 1].includes(result.status)) {
+        throw new Error("remoteAuthenticationUnavailable: Git credential helper configuration could not be inspected.");
+      }
+      if (result.status === 0) parseCredentialHelpers(result.stdout, state);
+    }
+    if (!state.kind) throw new Error("remoteAuthenticationUnavailable: No supported operating-system Git Credential Manager is configured.");
+    return state.kind;
+  };
+  const parseTrustedHttpProxy = (bytes) => {
+    const invalid = () => {
+      throw new Error("remoteUnavailable: The trusted Git HTTP proxy configuration is invalid.");
+    };
+    if (bytes.length === 0 || bytes.length > 4096) invalid();
+    let text;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch { invalid(); }
+    if (!text.endsWith("\0")) invalid();
+    const value = text.slice(0, -1);
+    if (value.includes("\\") || /[\s\u0000-\u001f\u007f]/u.test(value)) invalid();
+    if (value === "") return value;
+    const lower = value.toLowerCase();
+    const schemeLength = lower.startsWith("http://") ? 7 :
+      lower.startsWith("https://") ? 8 : 0;
+    const authority = value.slice(schemeLength).split("/")[0];
+    if (schemeLength === 0 || !authority || authority.includes("@")) invalid();
+    let parsed;
+    try { parsed = new URL(value); } catch { invalid(); }
+    if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname ||
+        parsed.username || parsed.password || parsed.search || parsed.hash) invalid();
+    return value;
+  };
+  const configuredHttpProxy = (root, remoteUrl, gitExecutable) => {
+    let selected = null;
+    for (const scope of ["--system", "--global"]) {
+      const result = spawnGit(root, ["config", scope, "--no-includes", "--null",
+        "--get-urlmatch", "http.proxy", remoteUrl], 4097, Buffer.alloc(0),
+      effectiveIdentityEnvironment(), gitExecutable);
+      if (result.error || ![0, 1].includes(result.status)) {
+        throw new Error("remoteUnavailable: The trusted Git HTTP proxy configuration could not be inspected.");
+      }
+      if (result.status === 0) selected = parseTrustedHttpProxy(result.stdout);
+    }
+    return selected;
+  };
+  const insidePath = (candidate, parent) => candidate === parent || candidate.startsWith(`${parent}${path.sep}`);
+  const secureCanonicalPath = (candidate, executableFile) => {
+    let current = candidate;
+    let first = true;
+    while (true) {
+      let stat;
+      try { stat = fs.statSync(current); } catch { return false; }
+      if (stat.uid !== 0 || (stat.mode & 0o022) !== 0) return false;
+      if (first) {
+        if (executableFile ? (!stat.isFile() || (stat.mode & 0o111) === 0) : !stat.isDirectory()) return false;
+      } else if (!stat.isDirectory()) return false;
+      const parent = path.dirname(current);
+      if (parent === current) return true;
+      current = parent;
+      first = false;
+    }
+  };
+  const trustedGitExecutable = (root) => {
+    let canonicalRepo;
+    try { canonicalRepo = fs.realpathSync(root); }
+    catch { throw new Error("gitUnavailable: The repository identity could not be verified."); }
+    for (const candidate of ["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git", "/bin/git"]) {
+      let executable;
+      try { executable = fs.realpathSync(candidate); } catch { continue; }
+      const trustedPrefix = ["/usr", "/usr/local", "/opt"].some((prefix) => insidePath(executable, prefix));
+      if (trustedPrefix && path.basename(executable) === "git" && secureCanonicalPath(executable, true) &&
+          !insidePath(executable, canonicalRepo)) return executable;
+    }
+    throw new Error("gitUnavailable: The trusted Git executable is unavailable.");
+  };
+  const trustedGitPathEnvironment = (gitExecutable) => {
+    const entries = [...new Set([
+      path.dirname(gitExecutable), "/usr/local/bin", "/usr/bin", "/bin",
+    ].filter((directory) => secureCanonicalPath(directory, false)))];
+    if (entries.length === 0) {
+      throw new Error("gitUnavailable: The trusted Git execution path is unavailable.");
+    }
+    return entries.join(path.delimiter);
+  };
+  const trustedCredentialHelper = (root, kind, gitExecutable) => {
+    const fileName = kind === "manager" ? "git-credential-manager" : "git-credential-manager-core";
+    const candidates = [
+      path.join("/usr/bin", fileName), path.join("/usr/local/bin", fileName),
+      path.join("/usr/share/gcm-core", fileName), path.join("/usr/local/share/gcm-core", fileName),
+      path.join("/opt/homebrew/bin", fileName), path.join("/opt/homebrew/share/gcm-core", fileName),
+      path.join("/opt/git-credential-manager", fileName),
+      path.join("/opt/git-credential-manager/bin", fileName),
+    ];
+    let canonicalRepo;
+    try { canonicalRepo = fs.realpathSync(root); }
+    catch { throw new Error("remoteAuthenticationUnavailable: The repository identity could not be verified."); }
+    for (const candidate of candidates) {
+      let helper;
+      let candidateParent;
+      try {
+        helper = fs.realpathSync(candidate);
+        candidateParent = fs.realpathSync(path.dirname(candidate));
+      } catch { continue; }
+      const trustedPrefix = ["/usr", "/usr/local", "/opt"].some((prefix) => insidePath(helper, prefix));
+      if (trustedPrefix && path.basename(helper) === fileName && secureCanonicalPath(candidateParent, false) &&
+          secureCanonicalPath(helper, true) && !insidePath(helper, canonicalRepo)) {
+        const pathEnvironment = [...new Set([
+          path.dirname(helper), path.dirname(gitExecutable), "/usr/local/bin", "/usr/bin", "/bin",
+        ].filter((directory) => secureCanonicalPath(directory, false)))].join(path.delimiter);
+        return { kind, gitExecutable, helperExecutable: helper, pathEnvironment };
+      }
+    }
+    throw new Error("remoteAuthenticationUnavailable: The configured Git Credential Manager is not trusted.");
+  };
+  const trustedHttpTransport = (root, remoteUrl, gitExecutable) => {
+    const lower = remoteUrl.toLowerCase();
+    const https = lower.startsWith("https://");
+    if (!https && !lower.startsWith("http://")) return null;
+    const httpProxy = configuredHttpProxy(root, remoteUrl, gitExecutable);
+    const transport = https
+      ? trustedCredentialHelper(
+        root, configuredCredentialHelper(root, gitExecutable), gitExecutable,
+      )
+      : {
+        gitExecutable, helperExecutable: null,
+        pathEnvironment: trustedGitPathEnvironment(gitExecutable),
+      };
+    return { ...transport, httpProxy };
+  };
+  const remoteAuthenticationFailed = (detail) => detail.split(/\r?\n/u).some((line) => {
+    const lower = line.trim().toLowerCase();
+    if (lower.startsWith("remote:")) return false;
+    return lower.startsWith("fatal: authentication failed") ||
+      lower.startsWith("fatal: could not read username") ||
+      lower.startsWith("fatal: could not read password") ||
+      lower.startsWith("fatal: terminal prompts disabled") ||
+      (lower.startsWith("fatal: unable to access ") &&
+        (lower.includes("the requested url returned error: 401") ||
+          lower.includes("the requested url returned error: 403"))) ||
+      lower.startsWith("error: 401 unauthorized") || lower.startsWith("error: 403 forbidden");
+  });
+  const effectiveIdentityOf = (root) => {
+    const result = spawnGit(root, ["var", "GIT_COMMITTER_IDENT"], 1025, Buffer.alloc(0),
+      effectiveIdentityEnvironment());
+    if (result.error?.code === "ENOENT") return { error: "gitUnavailable: Git executable was not found." };
+    if (result.error?.code === "ENOBUFS") {
+      return { error: "identityUnavailable: Git identity exceeds its safety limit." };
+    }
+    if (result.error) return { error: `gitUnavailable: ${result.error.message}` };
+    if (result.status !== 0 || result.stdout.length === 0 || result.stdout.length > 1024) {
+      return { error: "identityUnavailable: Configure Git user.name and user.email before creating or rewriting reviewed commits." };
+    }
+    let value;
+    try { value = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout); }
+    catch { return { error: "identityUnavailable: Git identity is not valid UTF-8." }; }
+    const match = /^(.*?) <([^<>\u0000-\u001f\u007f]+)> (-?\d+) ([+-]\d{4})(?:\r?\n)?$/u.exec(value);
+    if (!match || match[1].length === 0 || match[1].trim() !== match[1] ||
+        match[2].trim() !== match[2] || Buffer.byteLength(match[1]) > 512 ||
+        Buffer.byteLength(match[2]) > 512 || /[<>\u0000-\u001f\u007f]/u.test(match[1])) {
+      return { error: "identityUnavailable: Git identity has an invalid format." };
+    }
+    return { identity: { name: match[1], email: match[2] } };
   };
   const operationOf = (root) => {
     const result = git(root, ["rev-parse", "--absolute-git-dir"]);
     if (result.error || result.status !== 0) return null;
     const gitDir = result.stdout.toString("utf8").trim();
     const markers = [["MERGE_HEAD", "merge"], ["rebase-merge", "rebase"], ["rebase-apply", "rebase"],
-      ["CHERRY_PICK_HEAD", "cherryPick"], ["REVERT_HEAD", "revert"], ["BISECT_LOG", "bisect"]];
+      ["CHERRY_PICK_HEAD", "cherryPick"], ["sequencer", "cherryPick"], ["REVERT_HEAD", "revert"], ["BISECT_LOG", "bisect"]];
     return markers.find(([marker]) => fs.existsSync(path.join(gitDir, marker)))?.[1] ?? null;
   };
   const worktreePaths = (porcelain) => {
@@ -1294,12 +1553,18 @@ function runRepositoryMode() {
     }
     return `content-${totalBytes.toString(16)}-${hasher.digest("hex")}`;
   };
-  const ensureSafeRepositoryConfig = (root) => {
-    const configured = git(root, ["config", "--local", "--get-regexp", "^filter\\..*\\.(clean|process)$"]);
+  const ensureSafeRepositoryConfig = (root, gitExecutable = null) => {
+    const args = ["config", "--includes", "--get-regexp", "^filter\\..*\\.(clean|process|smudge)$"];
+    const configured = gitExecutable
+      ? spawnGit(root, args, MAX_REPOSITORY_STATUS_BYTES, Buffer.alloc(0),
+        gitEnvironment(), gitExecutable)
+      : git(root, args);
     if (configured.status === 0 && configured.stdout.length > 0) {
       return "unsafeRepositoryConfiguration: executable Git clean filters are not supported";
     }
-    if (configured.status !== 1) return detailOf(configured);
+    if (configured.status !== 1) {
+      return "gitUnavailable: Repository filter configuration could not be inspected.";
+    }
     return null;
   };
   const mutationEntries = (porcelain) => {
@@ -1333,6 +1598,22 @@ function runRepositoryMode() {
     if (!entry || (operation === "stage" ? !entry.worktreeChanged : !entry.indexChanged) ||
         entry.originalPath !== (originalPath ?? null)) return null;
     return entry.originalPath ? [entry.path, entry.originalPath] : [entry.path];
+  };
+  const validatedMutationBatchPaths = (porcelain, operation, reviewed) => {
+    const entries = mutationEntries(porcelain);
+    const paths = [];
+    const seenPathspecs = new Set();
+    for (const requested of reviewed) {
+      const entry = entries.find((candidate) => candidate.path === requested.path);
+      const allowed = operation === "stageBatch" ? entry?.worktreeChanged : entry?.indexChanged;
+      if (!entry || !allowed || entry.originalPath !== (requested.originalPath ?? null)) return null;
+      if (!seenPathspecs.has(entry.path)) { seenPathspecs.add(entry.path); paths.push(entry.path); }
+      if (entry.originalPath && !seenPathspecs.has(entry.originalPath)) {
+        seenPathspecs.add(entry.originalPath);
+        paths.push(entry.originalPath);
+      }
+    }
+    return paths;
   };
   const gitDirectory = (root) => {
     const result = git(root, ["rev-parse", "--absolute-git-dir"]);
@@ -1377,6 +1658,255 @@ function runRepositoryMode() {
     if (result.error || result.status !== 0) return { error: detailOf(result) };
     return { porcelain: result.stdout.toString("utf8"), repositoryOperation: operationOf(root) };
   };
+  const optionalGitText = (root, args) => {
+    const result = git(root, args);
+    if (result.error) throw new Error(detailOf(result));
+    if (result.status === 1) return null;
+    if (result.status !== 0) throw new Error(detailOf(result));
+    const value = result.stdout.toString("utf8").trim();
+    return value || null;
+  };
+  const validRemoteRefName = (root, name) => {
+    if (typeof name !== "string" || name.length === 0 || name.length > 255
+        || name.trim() !== name || name.startsWith("-")) return false;
+    const checked = git(root, ["check-ref-format", `refs/remotes/${name}/phase3-validation`]);
+    return !checked.error && checked.status === 0;
+  };
+  const validLocalBranchName = (root, name) => {
+    const checked = git(root, ["check-ref-format", "--branch", name]);
+    return !checked.error && checked.status === 0;
+  };
+  const repositoryMetadata = (root) => {
+    const remotesResult = git(root, ["remote"]);
+    if (remotesResult.error || remotesResult.status !== 0) throw new Error(detailOf(remotesResult));
+    const remotes = [...new Set(remotesResult.stdout.toString("utf8").split("\n").map((value) => value.trim()).filter(Boolean))].sort();
+    const branchesResult = git(root, ["for-each-ref", "--format=%(refname:short)\t%(objectname)", "refs/heads"], MAX_REPOSITORY_STATUS_BYTES);
+    if (branchesResult.error || branchesResult.status !== 0) throw new Error(detailOf(branchesResult));
+    const branches = branchesResult.stdout.toString("utf8").split("\n").filter(Boolean).map((line) => {
+      const separator = line.indexOf("\t");
+      return { name: line.slice(0, separator), oid: line.slice(separator + 1) };
+    }).filter((branch) => branch.name && branch.oid).sort((left, right) => left.name.localeCompare(right.name));
+    const branch = optionalGitText(root, ["symbolic-ref", "--short", "-q", "HEAD"]);
+    let upstreamRemote = null;
+    let upstreamBranch = null;
+    let upstreamOid = null;
+    let mergeBaseOid = null;
+    if (branch) {
+      upstreamRemote = optionalGitText(root, ["config", "--local", "--get", `branch.${branch}.remote`]);
+      const merge = optionalGitText(root, ["config", "--local", "--get", `branch.${branch}.merge`]);
+      upstreamBranch = merge?.startsWith("refs/heads/") ? merge.slice("refs/heads/".length) : null;
+      if (upstreamRemote && upstreamBranch) {
+        if (!validRemoteRefName(root, upstreamRemote) || !validLocalBranchName(root, upstreamBranch)) {
+          throw new Error("unsafeRepositoryConfiguration: The configured upstream cannot form a reviewed refspec.");
+        }
+        upstreamOid = optionalGitText(root, ["rev-parse", "--verify", "@{upstream}"]);
+        if (upstreamOid) mergeBaseOid = optionalGitText(root, ["merge-base", "HEAD", "@{upstream}"]);
+      }
+    }
+    return { upstreamRemote, upstreamBranch, upstreamOid, mergeBaseOid, remotes, branches };
+  };
+  const hasUntrackedIntegrationCollision = (root, head, upstream) => {
+    const changed = git(root, ["diff", "--name-only", "-z", "--no-renames", head, upstream, "--"], MAX_REPOSITORY_STATUS_BYTES + 1);
+    if (changed.error || changed.status !== 0) throw new Error(`gitUnavailable: cannot inspect fast-forward paths: ${detailOf(changed)}`);
+    if (changed.stdout.length > MAX_REPOSITORY_STATUS_BYTES) throw new Error("gitUnavailable: fast-forward path review exceeded its safety limit");
+    const listed = git(root, ["ls-files", "-z"], MAX_REPOSITORY_STATUS_BYTES + 1);
+    if (listed.error || listed.status !== 0) throw new Error(`gitUnavailable: cannot inspect tracked paths: ${detailOf(listed)}`);
+    if (listed.stdout.length > MAX_REPOSITORY_STATUS_BYTES) throw new Error("gitUnavailable: tracked path review exceeded its safety limit");
+    const decodePaths = (bytes) => {
+      let text;
+      try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+      catch { throw new Error("unsafeRepositoryConfiguration: non-UTF-8 repository paths cannot be integrated safely"); }
+      return text.split("\0").filter(Boolean);
+    };
+    const tracked = new Set(decodePaths(listed.stdout));
+    for (const relativePath of decodePaths(changed.stdout)) {
+      if (tracked.has(relativePath)) continue;
+      const candidate = path.join(root, relativePath);
+      try { fs.lstatSync(candidate); return true; }
+      catch (error) { if (error?.code !== "ENOENT") throw error; }
+      let ancestor = path.dirname(candidate);
+      while (ancestor !== root && ancestor.startsWith(`${root}${path.sep}`)) {
+        try {
+          const metadata = fs.lstatSync(ancestor);
+          if (!metadata.isDirectory() || metadata.isSymbolicLink()) return true;
+        } catch (error) { if (error?.code !== "ENOENT") throw error; }
+        ancestor = path.dirname(ancestor);
+      }
+    }
+    return false;
+  };
+  const decodeRepositoryPaths = (bytes) => {
+    let text;
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch { throw new Error("unsafeRepositoryConfiguration: non-UTF-8 repository paths cannot be integrated safely"); }
+    return text.split("\0").filter(Boolean);
+  };
+  const relativeRepositoryPath = (value) => typeof value === "string" && value.length > 0
+    && !path.posix.isAbsolute(value) && !value.includes("\0")
+    && !value.split("/").some((part) => part === "..");
+  const ensureSafePhase4bConfig = (root) => {
+    const unsafe = ensureSafeRepositoryConfig(root);
+    if (unsafe) return unsafe;
+    const configured = git(root, ["config", "--includes", "--name-only", "--get-regexp", "^(merge\\..*\\.driver|branch\\..*\\.mergeoptions)$"]);
+    if (configured.status === 0 && configured.stdout.length > 0) {
+      return "unsafeRepositoryConfiguration: executable Git merge drivers and configured merge options are not supported";
+    }
+    if (configured.status !== 1) return detailOf(configured);
+    return null;
+  };
+  const historyTouchedPaths = (root, base, tip, label, touched) => {
+    const result = git(root, ["log", "--format=", "--name-only", "-z", "--no-renames", "-m", `${base}..${tip}`, "--"], MAX_REPOSITORY_STATUS_BYTES + 1);
+    if (result.error || result.status !== 0) throw new Error(`gitUnavailable: cannot inspect reviewed ${label} history paths: ${detailOf(result)}`);
+    if (result.stdout.length > MAX_REPOSITORY_STATUS_BYTES) throw new Error("gitUnavailable: reviewed integration paths exceeded their safety limit");
+    for (const value of decodeRepositoryPaths(result.stdout)) {
+      if (!relativeRepositoryPath(value)) throw new Error("unsafeRepositoryConfiguration: an integration path is not repository-relative");
+      touched.add(value);
+    }
+  };
+  const hasPhase4bUntrackedCollision = (root, base, head, upstream) => {
+    const touched = new Set();
+    historyTouchedPaths(root, base, head, "local", touched);
+    historyTouchedPaths(root, base, upstream, "upstream", touched);
+    const untrackedResult = git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], MAX_REPOSITORY_STATUS_BYTES + 1);
+    if (untrackedResult.error || untrackedResult.status !== 0) throw new Error(`gitUnavailable: cannot inspect untracked integration paths: ${detailOf(untrackedResult)}`);
+    if (untrackedResult.stdout.length > MAX_REPOSITORY_STATUS_BYTES) throw new Error("gitUnavailable: untracked integration path review exceeded its safety limit");
+    const untracked = decodeRepositoryPaths(untrackedResult.stdout);
+    const trackedResult = git(root, ["ls-files", "-z"], MAX_REPOSITORY_STATUS_BYTES + 1);
+    if (trackedResult.error || trackedResult.status !== 0) throw new Error(`gitUnavailable: cannot inspect tracked integration paths: ${detailOf(trackedResult)}`);
+    if (trackedResult.stdout.length > MAX_REPOSITORY_STATUS_BYTES) throw new Error("gitUnavailable: tracked integration path review exceeded its safety limit");
+    const tracked = new Set(decodeRepositoryPaths(trackedResult.stdout));
+    for (const touchedPath of touched) {
+      if (untracked.some((candidate) => candidate === touchedPath || candidate.startsWith(`${touchedPath}/`) || touchedPath.startsWith(`${candidate}/`))) return true;
+      if (tracked.has(touchedPath)) continue;
+      const candidate = path.join(root, touchedPath);
+      try {
+        const metadata = fs.lstatSync(candidate);
+        if (!metadata.isDirectory() || metadata.isSymbolicLink()) return true;
+      } catch (error) { if (error?.code !== "ENOENT") throw error; }
+      let ancestor = path.dirname(candidate);
+      while (ancestor !== root && ancestor.startsWith(`${root}${path.sep}`)) {
+        try {
+          const metadata = fs.lstatSync(ancestor);
+          if (!metadata.isDirectory() || metadata.isSymbolicLink()) return true;
+        } catch (error) { if (error?.code !== "ENOENT") throw error; }
+        ancestor = path.dirname(ancestor);
+      }
+    }
+    return false;
+  };
+  const unrelatedBranchRefs = (root, localBranch) => {
+    const result = git(root, ["for-each-ref", "--format=%(refname:short)%09%(objectname)", "refs/heads"], MAX_REPOSITORY_STATUS_BYTES);
+    if (result.error || result.status !== 0) throw new Error(`gitUnavailable: cannot snapshot local branches: ${detailOf(result)}`);
+    return result.stdout.toString("utf8").split(/\r?\n/).filter(Boolean).filter((line) => line.split("\t", 1)[0] !== localBranch).sort();
+  };
+  const revisionCount = (root, base, tip) => {
+    const result = git(root, ["rev-list", "--count", `${base}..${tip}`]);
+    if (result.error || result.status !== 0) throw new Error(`gitUnavailable: cannot count reviewed commits: ${detailOf(result)}`);
+    const value = Number(result.stdout.toString("utf8").trim());
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error("gitUnavailable: Git returned an invalid reviewed commit count");
+    return value;
+  };
+  const localRangeHasMerge = (root, base, tip) => {
+    const result = git(root, ["rev-list", "--min-parents=2", "-n", "1", `${base}..${tip}`]);
+    if (result.error || result.status !== 0) throw new Error(`gitUnavailable: cannot inspect reviewed commit topology: ${detailOf(result)}`);
+    return result.stdout.toString("utf8").trim().length > 0;
+  };
+  const isAncestor = (root, ancestor, descendant) => {
+    const result = git(root, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    if (result.error || ![0, 1].includes(result.status)) throw new Error(`gitUnavailable: cannot verify integration ancestry: ${detailOf(result)}`);
+    return result.status === 0;
+  };
+  const httpRemoteUrlIsSafe = (remoteUrl) => {
+    if (/\s|[\u0000-\u001f\u007f]/u.test(remoteUrl)) return false;
+    const lower = remoteUrl.toLowerCase();
+    if (!lower.startsWith("https://") && !lower.startsWith("http://")) return true;
+    const schemeLength = lower.startsWith("https://") ? 8 : 7;
+    const authority = remoteUrl.slice(schemeLength).split(/[/?#]/u, 1)[0] ?? "";
+    if (authority.length === 0 || authority.includes("@") || remoteUrl.includes("\\")) return false;
+    let parsed;
+    try { parsed = new URL(remoteUrl); } catch { return false; }
+    return ["http:", "https:"].includes(parsed.protocol) && parsed.hostname.length > 0 &&
+      parsed.username.length === 0 && parsed.password.length === 0 &&
+      parsed.search.length === 0 && parsed.hash.length === 0;
+  };
+  const safeSyncConfig = (root, remote) => {
+    const gitExecutable = trustedGitExecutable(root);
+    const runTrusted = (args, maxBuffer = 64 * 1024) => spawnGit(
+      root, args, maxBuffer, Buffer.alloc(0), gitEnvironment(), gitExecutable,
+    );
+    const unsafe = ensureSafeRepositoryConfig(root, gitExecutable);
+    if (unsafe) return unsafe;
+    const configured = runTrusted(["config", "--includes", "--name-only", "--get-regexp", "."]);
+    if (configured.status === 0) {
+      let configuredKeys;
+      try { configuredKeys = new TextDecoder("utf-8", { fatal: true }).decode(configured.stdout); }
+      catch { return "unsafeRepositoryConfiguration: non-UTF-8 Git transport configuration is not supported"; }
+      const unsafeKey = configuredKeys.split(/\r?\n/).filter(Boolean).some((rawKey) => {
+        const key = rawKey.toLowerCase();
+        return key === "core.askpass"
+          || key === "core.sshcommand"
+          || key === "core.gitproxy"
+          || key.startsWith("http.")
+          || (key.startsWith("credential.") && key.endsWith(".helper"))
+          || (key.startsWith("remote.") && (key.endsWith(".uploadpack") || key.endsWith(".receivepack") || key.endsWith(".proxy")))
+          || (key.startsWith("url.") && (key.endsWith(".insteadof") || key.endsWith(".pushinsteadof")));
+      });
+      if (unsafeKey) return "unsafeRepositoryConfiguration: executable, credential-bearing, proxying, or redirecting Git transport configuration is not supported";
+    } else if (configured.status !== 1) {
+      return "remoteUnavailable: Git transport configuration could not be inspected.";
+    }
+    const validateUrls = (args) => {
+      const result = runTrusted(args);
+      if (result.error || result.status !== 0) {
+        return {
+          error: "remoteUnavailable: The selected remote URL could not be resolved.",
+          urls: [],
+        };
+      }
+      let decoded;
+      try { decoded = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout); }
+      catch {
+        return {
+          error: "unsafeRepositoryConfiguration: non-UTF-8 remote URL is not supported",
+          urls: [],
+        };
+      }
+      const urls = decoded.split(/\r?\n/).filter(Boolean);
+      if (urls.length === 0) {
+        return {
+          error: "remoteUnavailable: The selected remote URL could not be resolved.",
+          urls: [],
+        };
+      }
+      for (const url of urls) {
+        const lower = url.toLowerCase();
+        const allowed = ["https://", "http://", "ssh://", "git://", "file://"].some((scheme) => lower.startsWith(scheme))
+          || path.isAbsolute(url) || url.startsWith("./") || url.startsWith("../")
+          || (!url.startsWith("-") && url.includes(":") && !url.includes("::"));
+        if (!allowed || !httpRemoteUrlIsSafe(url)) return { error: "unsafeRepositoryConfiguration: unsupported or credential-bearing remote URL", urls };
+      }
+      return { error: null, urls };
+    };
+    const fetchUrls = validateUrls(["remote", "get-url", "--all", "--", remote]);
+    if (fetchUrls.error) return fetchUrls.error;
+    const pushUrls = validateUrls(["remote", "get-url", "--push", "--all", "--", remote]);
+    if (pushUrls.error) return pushUrls.error;
+    if (pushUrls.urls.length !== 1) return "unsafeRepositoryConfiguration: Push requires exactly one effective destination URL";
+    return { fetchUrl: fetchUrls.urls[0], pushUrl: pushUrls.urls[0], gitExecutable };
+  };
+  const refreshedReply = (root, applied = true) => {
+    const status = statusOf(root);
+    if (status.error) failure("refreshFailed", status.error, applied);
+    let fingerprint;
+    let metadata;
+    try { fingerprint = worktreeFingerprint(root, status.porcelain); metadata = repositoryMetadata(root); }
+    catch (error) { failure("refreshFailed", error.message, applied); }
+    reply({
+      ok: true, repoRoot: root, porcelain: status.porcelain,
+      generation: generationOf(root, status.repositoryOperation, status.porcelain, fingerprint),
+      repositoryOperation: status.repositoryOperation, ...metadata, applied,
+    });
+  };
   const generationOf = (repoRoot, operation, porcelain, contentFingerprint) => {
     const hasher = crypto.createHash("sha256");
     for (const value of [repoRoot, operation ?? "", porcelain, contentFingerprint]) {
@@ -1385,13 +1915,47 @@ function runRepositoryMode() {
     return `repo-sha256-${hasher.digest("hex")}`;
   };
   const failure = (reason, detail, applied = false) => reply({ ok: false, reason, detail, applied });
+  const trustedHttpTransportFailure = (error) => {
+    const message = error instanceof Error ? error.message : "";
+    if (message === "remoteUnavailable: The trusted Git HTTP proxy configuration is invalid.") {
+      failure("remoteUnavailable", "The trusted Git HTTP proxy configuration is invalid.");
+    }
+    if (message.startsWith("remoteUnavailable:")) {
+      failure("remoteUnavailable", "The trusted Git HTTP proxy configuration could not be inspected.");
+    }
+    if (message.startsWith("gitUnavailable:")) {
+      failure("gitUnavailable", "The trusted Git execution path is unavailable.");
+    }
+    failure("remoteAuthenticationUnavailable", "Git credentials for this HTTPS remote are unavailable.");
+  };
 
   let request;
   try { request = JSON.parse(process.env.PI_DESKTOP_LAUNCHER_PAYLOAD ?? ""); }
   catch { failure("gitUnavailable", "Repository payload is not JSON."); }
   if (!isObject(request) || request.protocolVersion !== 1 ||
-      !["status", "diff", "stage", "unstage", "commit"].includes(request.operation) || !absolute(request.workspaceRoot)) {
+      !["status", "diff", "stage", "unstage", "stageBatch", "unstageBatch", "commit", "stagedDiff", "fetch", "push", "createBranch", "switchBranch", "integrateFastForward", "integrateMerge", "integrateRebase"].includes(request.operation) || !absolute(request.workspaceRoot)) {
     failure("invalidRequest", "Repository payload is invalid.");
+  }
+  const knownRequestKeys = new Set([
+    "protocolVersion", "operation", "workspaceRoot", "repoRoot", "path", "diffKind", "generation",
+    "originalPath", "files", "message", "remote", "expectedHeadOid", "expectedUpstreamOid",
+    "expectedUpstreamRemote", "expectedUpstreamBranch", "branchName", "expectedLocalBranch",
+    "expectedMergeBaseOid", "strategy",
+  ]);
+  if (Object.keys(request).some((key) => !knownRequestKeys.has(key))) {
+    failure("invalidRequest", "Repository payload contains unsupported fields.");
+  }
+  if (request.files != null && !["stageBatch", "unstageBatch"].includes(request.operation)) {
+    failure("invalidRequest", "Reviewed batch files are only valid for batch stage or unstage.");
+  }
+  const integrationOperations = ["integrateFastForward", "integrateMerge", "integrateRebase"];
+  if (request.operation !== "push" && !integrationOperations.includes(request.operation)
+      && (request.expectedUpstreamRemote != null || request.expectedUpstreamBranch != null)) {
+    failure("invalidRequest", "Reviewed upstream destination is not valid for this operation.");
+  }
+  if (!integrationOperations.includes(request.operation)
+      && (request.expectedLocalBranch != null || request.expectedMergeBaseOid != null || request.strategy != null)) {
+    failure("invalidRequest", "Reviewed integration fields are only valid for reviewed integration.");
   }
   const rootResult = git(request.workspaceRoot, ["rev-parse", "--show-toplevel"]);
   if (rootResult.error || rootResult.status !== 0) {
@@ -1402,7 +1966,9 @@ function runRepositoryMode() {
   if (!absolute(repoRoot)) failure("gitUnavailable", "Git returned an invalid repository root.");
 
   if (request.operation === "status") {
-    if (request.repoRoot != null || request.path != null || request.diffKind != null || request.generation != null || request.originalPath != null || request.message != null) {
+    if (request.repoRoot != null || request.path != null || request.diffKind != null || request.generation != null
+        || request.originalPath != null || request.message != null || request.remote != null
+        || request.expectedHeadOid != null || request.expectedUpstreamOid != null || request.branchName != null) {
       failure("invalidRequest", "Repository status payload has extra fields.");
     }
     const status = statusOf(repoRoot);
@@ -1411,10 +1977,14 @@ function runRepositoryMode() {
     let contentFingerprint;
     try { contentFingerprint = worktreeFingerprint(repoRoot, status.porcelain); }
     catch (error) { failure("gitUnavailable", error.message); }
+    let metadata;
+    try { metadata = repositoryMetadata(repoRoot); }
+    catch (error) { failure(error.message.startsWith("unsafeRepositoryConfiguration:") ?
+      "unsafeRepositoryConfiguration" : "gitUnavailable", error.message); }
     reply({
       ok: true, repoRoot, porcelain: status.porcelain,
       generation: generationOf(repoRoot, status.repositoryOperation, status.porcelain, contentFingerprint),
-      operation: status.repositoryOperation,
+      operation: status.repositoryOperation, ...metadata,
     });
   }
 
@@ -1426,7 +1996,9 @@ function runRepositoryMode() {
 
   if (request.operation === "diff") {
     if (!relative(request.path) || !["staged", "unstaged"].includes(request.diffKind) ||
-        request.generation != null || request.originalPath != null || request.message != null) {
+        request.generation != null || request.originalPath != null || request.message != null
+        || request.remote != null || request.expectedHeadOid != null
+        || request.expectedUpstreamOid != null || request.branchName != null) {
       failure("invalidRequest", "Repository diff payload is invalid.");
     }
     const args = ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
@@ -1439,21 +2011,596 @@ function runRepositoryMode() {
     reply({ ok: true, text: bytes.toString("utf8"), truncated: overflow });
   }
 
-  if (typeof request.generation !== "string" || request.generation.length === 0 ||
-      !["stage", "unstage", "commit"].includes(request.operation)) {
-    failure("invalidRequest", "Repository mutation payload is invalid.");
-  }
-  if (["stage", "unstage"].includes(request.operation)) {
-    if (!relative(request.path) || (request.originalPath != null && !relative(request.originalPath)) ||
-        request.diffKind != null || request.message != null) {
-      failure("invalidRequest", "Stage or unstage payload is invalid.");
+  if (request.operation === "integrateFastForward") {
+    const oid = (value) => typeof value === "string" && (value.length === 40 || value.length === 64) && /^[0-9a-f]+$/i.test(value);
+    const name = (value) => typeof value === "string" && value.length > 0 && value.length <= 255
+      && value.trim() === value && !value.startsWith("-") && !/[\u0000-\u001f\u007f]/.test(value);
+    if (typeof request.generation !== "string" || request.generation.length === 0
+        || !name(request.expectedLocalBranch) || !oid(request.expectedHeadOid)
+        || !oid(request.expectedUpstreamOid) || !name(request.expectedUpstreamRemote)
+        || !name(request.expectedUpstreamBranch) || !oid(request.expectedMergeBaseOid)
+        || request.strategy !== "fastForwardOnly" || request.path != null || request.diffKind != null
+        || request.originalPath != null || request.message != null || request.remote != null
+        || request.branchName != null) {
+      failure("invalidRequest", "The Phase 4 repository payload is invalid for fast-forward integration.");
     }
-  } else if (request.path != null || request.originalPath != null || request.diffKind != null ||
-      typeof request.message !== "string" || request.message.trim().length === 0 ||
-      Buffer.byteLength(request.message) > 4096 || request.message.includes("\0")) {
-    failure(request.message?.trim?.().length === 0 ? "emptyMessage" : "invalidRequest", "Commit message is invalid.");
+    const before = statusOf(repoRoot);
+    if (before.error) failure(before.error.startsWith("unsafeRepositoryConfiguration:") ?
+      "unsafeRepositoryConfiguration" : "gitUnavailable", before.error);
+    let fingerprint;
+    let metadata;
+    try { fingerprint = worktreeFingerprint(repoRoot, before.porcelain); metadata = repositoryMetadata(repoRoot); }
+    catch (error) { failure(error.message.startsWith("unsafeRepositoryConfiguration:") ?
+      "unsafeRepositoryConfiguration" : "gitUnavailable", error.message); }
+    if (generationOf(repoRoot, before.repositoryOperation, before.porcelain, fingerprint) !== request.generation) {
+      failure("staleGeneration", "Repository files or index changed; refresh and review before writing.");
+    }
+    if (before.porcelain.split("\0").some((record) => record.startsWith("1 ") || record.startsWith("2 ")
+        || record.startsWith("u ") || record.startsWith("? "))) {
+      failure("dirtyWorktree", "Fast-forward integration requires a clean index and worktree.");
+    }
+    if (before.repositoryOperation) failure("operationInProgress", "Finish the current Git operation before integrating.");
+    const gitDirectoryResult = git(repoRoot, ["rev-parse", "--absolute-git-dir"]);
+    if (gitDirectoryResult.error || gitDirectoryResult.status !== 0) {
+      failure("gitUnavailable", detailOf(gitDirectoryResult));
+    }
+    const gitDirectory = gitDirectoryResult.stdout.toString("utf8").trim();
+    if (!gitDirectory) failure("gitUnavailable", "Git returned an empty repository metadata directory.");
+    let indexLockPresent = false;
+    try {
+      fs.lstatSync(path.join(gitDirectory, "index.lock"));
+      indexLockPresent = true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") failure("gitUnavailable", `Cannot inspect the repository index lock: ${error.message}`);
+    }
+    if (indexLockPresent) failure("indexLocked", "The repository index is locked by another Git process.");
+    if (!validLocalBranchName(repoRoot, request.expectedLocalBranch)
+        || !validRemoteRefName(repoRoot, request.expectedUpstreamRemote)
+        || !validLocalBranchName(repoRoot, request.expectedUpstreamBranch)) {
+      failure("unsafeRepositoryConfiguration", "The reviewed branch or upstream cannot form a safe ref.");
+    }
+    let branch;
+    let head;
+    try {
+      branch = optionalGitText(repoRoot, ["symbolic-ref", "--short", "-q", "HEAD"]);
+      head = optionalGitText(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+    } catch (error) { failure("gitUnavailable", error.message); }
+    if (!branch || !head) failure("detachedHead", "Fast-forward integration is unavailable from detached HEAD.");
+    if (branch !== request.expectedLocalBranch || head !== request.expectedHeadOid) {
+      failure("staleGeneration", "The reviewed local branch or HEAD changed; refresh before integrating.");
+    }
+    if (metadata.upstreamRemote !== request.expectedUpstreamRemote
+        || metadata.upstreamBranch !== request.expectedUpstreamBranch
+        || metadata.upstreamOid !== request.expectedUpstreamOid
+        || metadata.mergeBaseOid !== request.expectedMergeBaseOid) {
+      failure("staleGeneration", "The reviewed upstream or merge base changed; fetch and review again.");
+    }
+    if (head === request.expectedUpstreamOid) failure("nothingToIntegrate", "The local branch already matches its upstream.");
+    if (request.expectedMergeBaseOid !== head) failure("nonFastForward", "The reviewed upstream cannot fast-forward the local branch.");
+    try {
+      if (hasUntrackedIntegrationCollision(repoRoot, head, request.expectedUpstreamOid)) {
+        failure("dirtyWorktree", "An untracked or ignored path would be overwritten by integration.");
+      }
+    } catch (error) {
+      const unsafe = error.message.startsWith("unsafeRepositoryConfiguration:");
+      failure(unsafe ? "unsafeRepositoryConfiguration" : "gitUnavailable", error.message);
+    }
+    let hooksDir;
+    try { hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-desktop-hooks-")); }
+    catch (error) { failure("gitUnavailable", error.message); }
+    let result;
+    try {
+      result = git(repoRoot, ["-c", `core.hooksPath=${hooksDir}`, "-c", "merge.autoStash=false", "-c", "submodule.recurse=false",
+        "merge", "--ff-only", "--no-autostash", "--no-edit", "--no-stat", "--", request.expectedUpstreamOid], MAX_REPOSITORY_STATUS_BYTES);
+    } catch (error) {
+      failure("refreshFailed", `Fast-forward integration may have changed the repository, but Git did not return a result: ${error.message}`, true);
+    } finally {
+      try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+    }
+    if (result.error && ["ENOENT", "EACCES", "EPERM"].includes(result.error.code)) {
+      failure("gitUnavailable", detailOf(result));
+    }
+    let finalBranch;
+    let finalHead;
+    try {
+      finalBranch = optionalGitText(repoRoot, ["symbolic-ref", "--short", "-q", "HEAD"]);
+      finalHead = optionalGitText(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+    } catch (error) {
+      failure("refreshFailed", `Fast-forward integration may have changed the repository, but its result could not be inspected: ${error.message}`, true);
+    }
+    if (result.error || result.status !== 0) {
+      failure("refreshFailed",
+        `Fast-forward integration did not complete cleanly and may have changed the repository: ${detailOf(result)}`, true);
+    }
+    if (finalBranch !== request.expectedLocalBranch || finalHead !== request.expectedUpstreamOid) {
+      failure("refreshFailed", "Integration completed, but the checked-out branch no longer matches the reviewed result.", true);
+    }
+    refreshedReply(repoRoot, true);
   }
 
+  if (["integrateMerge", "integrateRebase"].includes(request.operation)) {
+    const phase4bKeys = new Set(["protocolVersion", "operation", "workspaceRoot", "repoRoot",
+      "path", "diffKind", "generation", "originalPath", "files", "message", "remote",
+      "expectedHeadOid", "expectedUpstreamOid", "expectedUpstreamRemote",
+      "expectedUpstreamBranch", "branchName", "expectedLocalBranch",
+      "expectedMergeBaseOid", "strategy"]);
+    if (Object.keys(request).some((key) => !phase4bKeys.has(key))) {
+      failure("invalidRequest", "The Phase 4B repository payload contains unsupported fields.");
+    }
+    const oid = (value) => typeof value === "string" && (value.length === 40 || value.length === 64) && /^[0-9a-f]+$/i.test(value);
+    const name = (value) => typeof value === "string" && value.length > 0 && value.length <= 255
+      && value.trim() === value && !value.startsWith("-") && !/[\u0000-\u001f\u007f]/.test(value);
+    const mergeMessage = request.operation === "integrateMerge" ? request.message : null;
+    const messageValid = request.operation === "integrateMerge"
+      ? typeof mergeMessage === "string" && mergeMessage.length > 0 && mergeMessage.trim() === mergeMessage
+        && Buffer.byteLength(mergeMessage) <= 4096 && !mergeMessage.includes("\0")
+      : request.message == null;
+    if (typeof request.generation !== "string" || request.generation.length === 0
+        || !name(request.expectedLocalBranch) || !oid(request.expectedHeadOid)
+        || !oid(request.expectedUpstreamOid) || !name(request.expectedUpstreamRemote)
+        || !name(request.expectedUpstreamBranch) || !oid(request.expectedMergeBaseOid)
+        || (request.operation === "integrateMerge" ? request.strategy !== "mergeCommit" : request.strategy !== "rebaseLinear")
+        || !messageValid || request.path != null || request.diffKind != null
+        || request.originalPath != null || request.remote != null || request.branchName != null) {
+      failure("invalidRequest", "The Phase 4B repository payload does not match the selected integration strategy.");
+    }
+    const before = statusOf(repoRoot);
+    if (before.error) failure(before.error.startsWith("unsafeRepositoryConfiguration:") ?
+      "unsafeRepositoryConfiguration" : "gitUnavailable", before.error);
+    let fingerprint;
+    let metadata;
+    try { fingerprint = worktreeFingerprint(repoRoot, before.porcelain); metadata = repositoryMetadata(repoRoot); }
+    catch (error) { failure(error.message.startsWith("unsafeRepositoryConfiguration:") ?
+      "unsafeRepositoryConfiguration" : "gitUnavailable", error.message); }
+    if (generationOf(repoRoot, before.repositoryOperation, before.porcelain, fingerprint) !== request.generation) {
+      failure("staleGeneration", "Repository files or index changed; refresh and review before writing.");
+    }
+    const hasChanges = (porcelain) => porcelain.split("\0").some((record) => record.startsWith("1 ")
+      || record.startsWith("2 ") || record.startsWith("u ") || record.startsWith("? "));
+    if (hasChanges(before.porcelain)) {
+      failure("dirtyWorktree", "Merge and rebase require a clean index and worktree.");
+    }
+    if (before.repositoryOperation) failure("operationInProgress", "Finish the current Git operation before integrating.");
+    const unsafePhase4b = ensureSafePhase4bConfig(repoRoot);
+    if (unsafePhase4b) failure(unsafePhase4b.startsWith("unsafeRepositoryConfiguration:") ?
+      "unsafeRepositoryConfiguration" : "gitUnavailable", unsafePhase4b);
+    let gitDir;
+    try { gitDir = gitDirectory(repoRoot); }
+    catch (error) { failure("gitUnavailable", error.message); }
+    const indexLockPath = path.join(gitDir, "index.lock");
+    try { fs.lstatSync(indexLockPath); failure("indexLocked", "The repository index is locked by another Git process."); }
+    catch (error) { if (error?.code !== "ENOENT") failure("gitUnavailable", `Cannot inspect the repository index lock: ${error.message}`); }
+    if (!validLocalBranchName(repoRoot, request.expectedLocalBranch)
+        || !validRemoteRefName(repoRoot, request.expectedUpstreamRemote)
+        || !validLocalBranchName(repoRoot, request.expectedUpstreamBranch)) {
+      failure("unsafeRepositoryConfiguration", "The reviewed branch or upstream cannot form a safe ref.");
+    }
+    let branch;
+    let head;
+    try {
+      branch = optionalGitText(repoRoot, ["symbolic-ref", "--short", "-q", "HEAD"]);
+      head = optionalGitText(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+    } catch (error) { failure("gitUnavailable", error.message); }
+    if (!branch || !head) failure("detachedHead", "Reviewed integration is unavailable from detached HEAD.");
+    if (branch !== request.expectedLocalBranch || head !== request.expectedHeadOid) {
+      failure("staleGeneration", "The reviewed local branch or HEAD changed; refresh before integrating.");
+    }
+    if (metadata.upstreamRemote !== request.expectedUpstreamRemote
+        || metadata.upstreamBranch !== request.expectedUpstreamBranch
+        || metadata.upstreamOid !== request.expectedUpstreamOid
+        || metadata.mergeBaseOid !== request.expectedMergeBaseOid) {
+      failure("staleGeneration", "The reviewed upstream or merge base changed; fetch and review again.");
+    }
+    if (head === request.expectedUpstreamOid || request.expectedMergeBaseOid === request.expectedUpstreamOid) {
+      failure("nothingToIntegrate", "The local branch already contains the reviewed upstream.");
+    }
+    if (request.expectedMergeBaseOid === head) {
+      failure("nonFastForward", "This reviewed history can be integrated with the safer fast-forward action.");
+    }
+    let localCommitCount;
+    let reviewedOtherRefs;
+    try {
+      localCommitCount = revisionCount(repoRoot, request.expectedMergeBaseOid, head);
+      if (request.operation === "integrateRebase" && localCommitCount > 256) {
+        failure("unsupportedHistory", "Linear rebase is limited to 256 reviewed local commits.");
+      }
+      if (request.operation === "integrateRebase" && localRangeHasMerge(repoRoot, request.expectedMergeBaseOid, head)) {
+        failure("unsupportedHistory", "The reviewed local range contains merge commits; preserve-merges rebase is not supported.");
+      }
+      if (hasPhase4bUntrackedCollision(repoRoot, request.expectedMergeBaseOid, head, request.expectedUpstreamOid)) {
+        failure("dirtyWorktree", "An untracked or ignored path may be overwritten during integration.");
+      }
+      reviewedOtherRefs = unrelatedBranchRefs(repoRoot, request.expectedLocalBranch);
+    } catch (error) {
+      failure(error.message.startsWith("unsafeRepositoryConfiguration:") ? "unsafeRepositoryConfiguration" : "gitUnavailable", error.message);
+    }
+    const resolvedIdentity = effectiveIdentityOf(repoRoot);
+    if (resolvedIdentity.error) {
+      failure(resolvedIdentity.error.startsWith("gitUnavailable:") ? "gitUnavailable" : "identityUnavailable",
+        resolvedIdentity.error.replace(/^[A-Za-z]+:\s*/, ""));
+    }
+    const identity = resolvedIdentity.identity;
+
+    let hooksDir;
+    try { hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-desktop-hooks-")); }
+    catch (error) { failure("gitUnavailable", error.message); }
+    const controls = ["-c", `core.hooksPath=${hooksDir}`, "-c", "commit.gpgSign=false",
+      "-c", "merge.verifySignatures=false", "-c", "merge.autoStash=false",
+      "-c", "rebase.autoStash=false", "-c", "rebase.updateRefs=false",
+      "-c", "rerere.enabled=false", "-c", "rerere.autoupdate=false",
+      "-c", "submodule.recurse=false"];
+    const command = request.operation === "integrateMerge"
+      ? [...controls, "merge", "--no-ff", "--no-autostash", "--no-edit", "--no-verify",
+        "--no-gpg-sign", "--no-stat", "--cleanup=verbatim", "--strategy=ort", "-m", mergeMessage,
+        "--", request.expectedUpstreamOid]
+      : [...controls, "rebase", "--merge", "--no-autostash", "--no-fork-point",
+        "--no-rerere-autoupdate", "--no-update-refs", "--no-rebase-merges",
+        "--reapply-cherry-picks", "--empty=keep", "--strategy=ort", "--onto",
+        request.expectedUpstreamOid, request.expectedMergeBaseOid];
+    let result;
+    try {
+      result = gitWithIdentity(repoRoot, command, MAX_REPOSITORY_STATUS_BYTES, null, identity,
+        request.operation === "integrateMerge");
+    }
+    catch (error) {
+      try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+      failure("refreshFailed", `Reviewed integration may have changed the repository, but Git did not return a result: ${error.message}`, true);
+    }
+    if (result.error && ["ENOENT", "EACCES", "EPERM"].includes(result.error.code)) {
+      try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+      failure("gitUnavailable", detailOf(result));
+    }
+    if (result.error) {
+      try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+      failure("refreshFailed", `Reviewed integration may have changed the repository, but Git did not return a result: ${detailOf(result)}`, true);
+    }
+    if (result.status !== 0) {
+      const expectedOperation = request.operation === "integrateMerge" ? "merge" : "rebase";
+      if (operationOf(repoRoot) !== expectedOperation) {
+        try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+        failure("refreshFailed", `Reviewed integration did not complete and its repository state is ambiguous: ${detailOf(result)}`, true);
+      }
+      const abortCommand = request.operation === "integrateMerge"
+        ? [...controls, "merge", "--abort"]
+        : [...controls, "rebase", "--abort"];
+      const abort = git(repoRoot, abortCommand, MAX_REPOSITORY_STATUS_BYTES);
+      if (abort.error || abort.status !== 0) {
+        try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+        failure("refreshFailed", `Git could not abort the incomplete integration: ${detailOf(abort)}`, true);
+      }
+      let restoredBranch;
+      let restoredHead;
+      let restoredStatus;
+      let restoredRefs;
+      let lockAbsent = false;
+      try {
+        restoredBranch = optionalGitText(repoRoot, ["symbolic-ref", "--short", "-q", "HEAD"]);
+        restoredHead = optionalGitText(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+        restoredStatus = statusOf(repoRoot);
+        restoredRefs = unrelatedBranchRefs(repoRoot, request.expectedLocalBranch);
+        try { fs.lstatSync(indexLockPath); }
+        catch (error) { if (error?.code === "ENOENT") lockAbsent = true; }
+      } catch { /* restoration fails closed below */ }
+      const restored = restoredBranch === request.expectedLocalBranch
+        && restoredHead === request.expectedHeadOid && restoredStatus && !restoredStatus.error
+        && !hasChanges(restoredStatus.porcelain) && operationOf(repoRoot) == null
+        && JSON.stringify(restoredRefs) === JSON.stringify(reviewedOtherRefs) && lockAbsent;
+      try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+      if (!restored) failure("refreshFailed", "The incomplete integration was aborted, but restoration could not be verified.", true);
+      failure("integrationConflict", "Git found conflicts. The incomplete integration was aborted and the reviewed branch was restored.", false);
+    }
+
+    let finalBranch;
+    let finalHead;
+    let finalStatus;
+    let finalRefs;
+    let finalMetadata;
+    let finalLockAbsent = false;
+    try {
+      finalBranch = optionalGitText(repoRoot, ["symbolic-ref", "--short", "-q", "HEAD"]);
+      finalHead = optionalGitText(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+      finalStatus = statusOf(repoRoot);
+      finalRefs = unrelatedBranchRefs(repoRoot, request.expectedLocalBranch);
+      finalMetadata = repositoryMetadata(repoRoot);
+      try { fs.lstatSync(indexLockPath); }
+      catch (error) { if (error?.code === "ENOENT") finalLockAbsent = true; }
+    } catch (error) {
+      try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+      failure("refreshFailed", `Integration completed, but its result could not be verified: ${error.message}`, true);
+    }
+    const invariantFailure = finalBranch !== request.expectedLocalBranch || !finalStatus || finalStatus.error
+      || hasChanges(finalStatus.porcelain) || operationOf(repoRoot) != null || !finalLockAbsent
+      || JSON.stringify(finalRefs) !== JSON.stringify(reviewedOtherRefs)
+      || finalMetadata.upstreamRemote !== request.expectedUpstreamRemote
+      || finalMetadata.upstreamBranch !== request.expectedUpstreamBranch
+      || finalMetadata.upstreamOid !== request.expectedUpstreamOid
+      || finalMetadata.mergeBaseOid !== request.expectedUpstreamOid;
+    if (invariantFailure) {
+      try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+      failure("refreshFailed", "Integration completed, but the reviewed repository invariants could not be verified.", true);
+    }
+    try {
+      if (request.operation === "integrateMerge") {
+        const parents = optionalGitText(repoRoot, ["rev-list", "--parents", "-n", "1", finalHead])?.split(/\s+/) ?? [];
+        const finalMessage = optionalGitText(repoRoot, ["log", "-1", "--format=%B", finalHead]);
+        if (parents.length !== 3 || parents[0] !== finalHead || parents[1] !== request.expectedHeadOid
+            || parents[2] !== request.expectedUpstreamOid || finalMessage !== mergeMessage) {
+          throw new Error("The merge result does not preserve the exact reviewed parent graph and message.");
+        }
+      } else {
+        const rebasedCount = revisionCount(repoRoot, request.expectedUpstreamOid, finalHead);
+        if (rebasedCount !== localCommitCount || localRangeHasMerge(repoRoot, request.expectedUpstreamOid, finalHead)) {
+          throw new Error("The rebase result did not preserve the reviewed linear commit range.");
+        }
+      }
+      if (!isAncestor(repoRoot, request.expectedUpstreamOid, finalHead)) {
+        throw new Error("The reviewed upstream is not an ancestor of the integration result.");
+      }
+    } catch (error) {
+      try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+      failure("refreshFailed", error.message, true);
+    }
+    try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+    refreshedReply(repoRoot, true);
+  }
+
+  const phase3Operations = ["stagedDiff", "fetch", "push", "createBranch", "switchBranch"];
+  if (phase3Operations.includes(request.operation)) {
+    if (typeof request.generation !== "string" || request.generation.length === 0
+        || request.path != null || request.diffKind != null || request.originalPath != null || request.message != null) {
+      failure("invalidRequest", "Phase 3 repository payload is invalid.");
+    }
+    const before = statusOf(repoRoot);
+    if (before.error) failure(before.error.startsWith("unsafeRepositoryConfiguration:") ?
+      "unsafeRepositoryConfiguration" : "gitUnavailable", before.error);
+    let beforeFingerprint;
+    let metadata;
+    try { beforeFingerprint = worktreeFingerprint(repoRoot, before.porcelain); metadata = repositoryMetadata(repoRoot); }
+    catch (error) { failure(error.message.startsWith("unsafeRepositoryConfiguration:") ?
+      "unsafeRepositoryConfiguration" : "gitUnavailable", error.message); }
+    if (generationOf(repoRoot, before.repositoryOperation, before.porcelain, beforeFingerprint) !== request.generation) {
+      failure("staleGeneration", "Repository files or index changed; refresh and review before writing.");
+    }
+
+    if (request.operation === "stagedDiff") {
+      if (request.remote != null || request.expectedHeadOid != null || request.expectedUpstreamOid != null || request.branchName != null) {
+        failure("invalidRequest", "Staged diff payload has extra fields.");
+      }
+      const result = git(repoRoot, ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "--"], MAX_STAGED_DRAFT_BYTES + 1);
+      const overflow = result.error?.code === "ENOBUFS" || (result.stdout?.length ?? 0) > MAX_STAGED_DRAFT_BYTES;
+      if ((result.error && !overflow) || (result.status !== 0 && !overflow)) failure("gitUnavailable", detailOf(result));
+      if (overflow) failure("stagedDiffTooLarge", "The staged diff is too large for AI commit drafting.");
+      if (!result.stdout?.length) failure("nothingStaged", "No staged diff is available for a commit draft.");
+      reply({ ok: true, text: result.stdout.toString("utf8"), applied: false });
+    }
+
+    if (before.porcelain.split("\0").some((record) => record.startsWith("u "))) {
+      failure("conflictsPresent", "Resolve repository conflicts before syncing or switching branches.");
+    }
+    if (before.repositoryOperation) failure("operationInProgress", "Finish the current Git operation before syncing or switching branches.");
+
+    if (request.operation === "fetch") {
+      if (typeof request.remote !== "string" || request.remote.length === 0 || request.remote.length > 255
+          || request.remote.startsWith("-") || /[\u0000-\u001f\u007f]/.test(request.remote)
+          || request.expectedHeadOid != null || request.expectedUpstreamOid != null || request.branchName != null
+          || !metadata.remotes.includes(request.remote)) {
+        failure("invalidRequest", "Fetch requires one displayed repository remote.");
+      }
+      if (!validRemoteRefName(repoRoot, request.remote)) {
+        failure("unsafeRepositoryConfiguration", "The selected remote name cannot form a tracking ref.");
+      }
+      let syncConfig;
+      try { syncConfig = safeSyncConfig(repoRoot, request.remote); }
+      catch (error) { failure("gitUnavailable", error.message); }
+      if (typeof syncConfig === "string") {
+        const reason = syncConfig.startsWith("unsafeRepositoryConfiguration:")
+          ? "unsafeRepositoryConfiguration"
+          : syncConfig.startsWith("gitUnavailable:") ? "gitUnavailable" : "remoteUnavailable";
+        failure(reason, syncConfig);
+      }
+      let transport;
+      try {
+        transport = trustedHttpTransport(
+          repoRoot, syncConfig.fetchUrl, syncConfig.gitExecutable,
+        );
+      }
+      catch (error) { trustedHttpTransportFailure(error); }
+      const destination = `+refs/heads/*:refs/remotes/${request.remote}/*`;
+      let hooksDir;
+      try { hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-desktop-hooks-")); }
+      catch (error) { failure("gitUnavailable", error.message); }
+      let result;
+      try {
+        const args = ["-c", `core.hooksPath=${hooksDir}`, "fetch", "--no-tags", "--atomic",
+          "--no-write-fetch-head", "--recurse-submodules=no", "--refmap=", "--",
+          syncConfig.fetchUrl, destination];
+        result = transport
+          ? gitWithHttpTransport(repoRoot, args, MAX_REPOSITORY_STATUS_BYTES, transport)
+          : git(repoRoot, args, MAX_REPOSITORY_STATUS_BYTES);
+      } finally { try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ } }
+      if (result.error || result.status !== 0) {
+        const detail = detailOf(result);
+        if (transport?.helperExecutable && remoteAuthenticationFailed(detail)) {
+          failure("remoteAuthenticationUnavailable", "Git credentials for this HTTPS remote are unavailable.");
+        }
+        if (transport?.httpProxy) {
+          failure("remoteUnavailable", "Git could not reach the selected remote through the configured trusted proxy.");
+        }
+        failure("remoteUnavailable", "Git could not reach the selected remote.");
+      }
+      refreshedReply(repoRoot, true);
+    }
+
+    if (request.operation === "push") {
+      const oid = (value) => typeof value === "string" && (value.length === 40 || value.length === 64) && /^[0-9a-f]+$/i.test(value);
+      const destination = (value) => typeof value === "string" && value.length > 0 && value.length <= 255
+        && value.trim() === value && !value.startsWith("-") && !/[\u0000-\u001f\u007f]/.test(value);
+      if (!oid(request.expectedHeadOid) || (request.expectedUpstreamOid != null && !oid(request.expectedUpstreamOid))
+          || !destination(request.expectedUpstreamRemote) || !destination(request.expectedUpstreamBranch)
+          || request.remote != null || request.branchName != null) {
+        failure("invalidRequest", "Push requires the reviewed HEAD, upstream commit, and destination.");
+      }
+      let branch;
+      let head;
+      let latest;
+      try {
+        branch = optionalGitText(repoRoot, ["symbolic-ref", "--short", "-q", "HEAD"]);
+        head = optionalGitText(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+        latest = repositoryMetadata(repoRoot);
+      } catch (error) { failure(error.message.startsWith("unsafeRepositoryConfiguration:") ?
+        "unsafeRepositoryConfiguration" : "gitUnavailable", error.message); }
+      if (!branch || !head) failure("detachedHead", "Pushing is unavailable from detached HEAD.");
+      if (head !== request.expectedHeadOid) failure("staleGeneration", "HEAD changed; refresh before pushing.");
+      if (!latest.upstreamRemote || !latest.upstreamBranch) failure("noUpstream", "The current branch has no configured upstream.");
+      if (!validRemoteRefName(repoRoot, latest.upstreamRemote) || !validLocalBranchName(repoRoot, latest.upstreamBranch)) {
+        failure("unsafeRepositoryConfiguration", "The configured upstream cannot form the reviewed push refspec.");
+      }
+      if (latest.upstreamRemote !== request.expectedUpstreamRemote || latest.upstreamBranch !== request.expectedUpstreamBranch) {
+        failure("staleGeneration", "The push destination changed; refresh before pushing.");
+      }
+      if ((latest.upstreamOid ?? null) !== (request.expectedUpstreamOid ?? null)) {
+        failure("staleGeneration", "The upstream ref changed; fetch and review before pushing.");
+      }
+      if (latest.upstreamOid === head) failure("nothingToPush", "The current branch has no commits to push.");
+      if (latest.upstreamOid && !isAncestor(repoRoot, latest.upstreamOid, head)) {
+        failure("nonFastForward", "The reviewed upstream is not an ancestor of the reviewed HEAD.");
+      }
+      let syncConfig;
+      try { syncConfig = safeSyncConfig(repoRoot, latest.upstreamRemote); }
+      catch (error) { failure("gitUnavailable", error.message); }
+      if (typeof syncConfig === "string") {
+        const reason = syncConfig.startsWith("unsafeRepositoryConfiguration:")
+          ? "unsafeRepositoryConfiguration"
+          : syncConfig.startsWith("gitUnavailable:") ? "gitUnavailable" : "remoteUnavailable";
+        failure(reason, syncConfig);
+      }
+      let transport;
+      try {
+        transport = trustedHttpTransport(
+          repoRoot, syncConfig.pushUrl, syncConfig.gitExecutable,
+        );
+      }
+      catch (error) { trustedHttpTransportFailure(error); }
+      let hooksDir;
+      try { hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-desktop-hooks-")); }
+      catch (error) { failure("gitUnavailable", error.message); }
+      // Pin the source to the reviewed commit so a concurrent local ref move
+      // cannot cause an unreviewed commit to be pushed.
+      const destinationRef = `refs/heads/${latest.upstreamBranch}`;
+      const refspec = `${head}:${destinationRef}`;
+      const lease = `--force-with-lease=${destinationRef}:${latest.upstreamOid ?? ""}`;
+      let result;
+      let trackingUpdate;
+      try {
+        const args = ["-c", `core.hooksPath=${hooksDir}`, "push", "--porcelain",
+          "--no-force", lease, "--no-follow-tags", "--recurse-submodules=no", "--",
+          syncConfig.pushUrl, refspec];
+        result = transport
+          ? gitWithHttpTransport(repoRoot, args, MAX_REPOSITORY_STATUS_BYTES, transport)
+          : git(repoRoot, args, MAX_REPOSITORY_STATUS_BYTES);
+        if (!result.error && result.status === 0) {
+          const trackingRef = `refs/remotes/${latest.upstreamRemote}/${latest.upstreamBranch}`;
+          trackingUpdate = git(repoRoot, ["-c", `core.hooksPath=${hooksDir}`, "update-ref", "--no-deref",
+            trackingRef, head, latest.upstreamOid ?? ""], MAX_REPOSITORY_STATUS_BYTES);
+        }
+      } finally { try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ } }
+      if (result.error || result.status !== 0) {
+        const detail = mutationFailureDetailOf(result);
+        if (transport?.helperExecutable && remoteAuthenticationFailed(detail)) {
+          failure("remoteAuthenticationUnavailable", "Git credentials for this HTTPS remote are unavailable.");
+        }
+        if (/non-fast-forward|fetch first|stale info/i.test(detail)) {
+          failure("nonFastForward", "The remote rejected the reviewed update because its branch moved.");
+        }
+        if (transport?.httpProxy) {
+          failure("remoteUnavailable", "Git could not reach the selected remote through the configured trusted proxy.");
+        }
+        failure("remoteUnavailable", "Git could not reach the selected remote.");
+      }
+      if (trackingUpdate?.error || trackingUpdate?.status !== 0) {
+        failure("refreshFailed", `Push succeeded, but the local upstream ref could not be refreshed: ${detailOf(trackingUpdate)}`, true);
+      }
+      refreshedReply(repoRoot, true);
+    }
+
+    if (request.operation === "createBranch" || request.operation === "switchBranch") {
+      const oid = (value) => typeof value === "string" && (value.length === 40 || value.length === 64) && /^[0-9a-f]+$/i.test(value);
+      if (typeof request.branchName !== "string" || request.branchName.length === 0 || request.branchName.length > 255
+          || request.branchName.trim() !== request.branchName || request.branchName.startsWith("-")
+          || /[\u0000-\u001f\u007f]/.test(request.branchName) || request.remote != null
+          || request.expectedUpstreamOid != null
+          || (request.operation === "createBranch" && !oid(request.expectedHeadOid))
+          || (request.operation === "switchBranch" && request.expectedHeadOid != null)) {
+        failure("invalidRequest", "Branch operation requires one local branch name and, when creating, the reviewed HEAD.");
+      }
+      if (!validLocalBranchName(repoRoot, request.branchName)) failure("invalidRequest", "Local branch name is invalid.");
+      const exists = metadata.branches.some((branch) => branch.name === request.branchName);
+      if (request.operation === "createBranch") {
+        if (exists) failure("branchExists", "A local branch with this name already exists.");
+        const reviewedHead = optionalGitText(repoRoot, ["rev-parse", "--verify", "HEAD"]);
+        if (!reviewedHead) failure("detachedHead", "HEAD has no commit.");
+        if (reviewedHead !== request.expectedHeadOid) failure("staleGeneration", "HEAD changed; refresh before creating the branch.");
+        let hooksDir;
+        try { hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-desktop-hooks-")); }
+        catch (error) { failure("gitUnavailable", error.message); }
+        let result;
+        try { result = git(repoRoot, ["-c", `core.hooksPath=${hooksDir}`, "branch", "--no-track", request.branchName, reviewedHead]); }
+        finally { try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ } }
+        if (result.error || result.status !== 0) failure("gitUnavailable", detailOf(result));
+      } else {
+        if (!exists) failure("branchNotFound", "The selected local branch no longer exists.");
+        let hooksDir;
+        try { hooksDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-desktop-hooks-")); }
+        catch (error) { failure("gitUnavailable", error.message); }
+        let result;
+        try {
+          result = git(repoRoot, ["-c", `core.hooksPath=${hooksDir}`, "switch", "--no-guess", "--no-recurse-submodules", request.branchName], MAX_REPOSITORY_STATUS_BYTES);
+        } finally { try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ } }
+        if (result.error || result.status !== 0) {
+          const detail = detailOf(result);
+          failure(/would be overwritten|local changes/i.test(detail) ? "checkoutConflict" : "gitUnavailable", detail);
+        }
+      }
+      refreshedReply(repoRoot, true);
+    }
+  }
+
+  if (typeof request.generation !== "string" || request.generation.length === 0 ||
+      !["stage", "unstage", "stageBatch", "unstageBatch", "commit"].includes(request.operation)) {
+    failure("invalidRequest", "Repository mutation payload is invalid.");
+  }
+  const batchMutation = ["stageBatch", "unstageBatch"].includes(request.operation);
+  if (["stage", "unstage"].includes(request.operation)) {
+    if (!relative(request.path) || (request.originalPath != null && !relative(request.originalPath)) ||
+        request.files != null || request.diffKind != null || request.message != null || request.remote != null
+        || request.expectedHeadOid != null || request.expectedUpstreamOid != null || request.branchName != null) {
+      failure("invalidRequest", "Stage or unstage payload is invalid.");
+    }
+  } else if (batchMutation) {
+    const reviewed = request.files;
+    if (!Array.isArray(reviewed) || reviewed.length === 0 || reviewed.length > MUTATION_BATCH_MAX_FILES ||
+        request.path != null || request.originalPath != null || request.diffKind != null || request.message != null ||
+        request.remote != null || request.expectedHeadOid != null || request.expectedUpstreamOid != null || request.branchName != null) {
+      failure("invalidRequest", "Batch stage or unstage payload is invalid.");
+    }
+    const seen = new Set();
+    let totalPathBytes = 0;
+    for (const file of reviewed) {
+      if (!isObject(file) || Object.keys(file).some((key) => !["path", "originalPath"].includes(key)) ||
+          !relative(file.path) || (file.originalPath != null && !relative(file.originalPath)) || seen.has(file.path)) {
+        failure("invalidRequest", "Repository mutation batch files are invalid.");
+      }
+      totalPathBytes += Buffer.byteLength(file.path) + (file.originalPath == null ? 0 : Buffer.byteLength(file.originalPath));
+      if (totalPathBytes > MUTATION_BATCH_MAX_PATH_BYTES) failure("invalidRequest", "Repository mutation batch paths exceed the safety limit.");
+      seen.add(file.path);
+    }
+  } else if (request.path != null || request.originalPath != null || request.files != null || request.diffKind != null ||
+      typeof request.message !== "string" || request.message.trim().length === 0 ||
+      Buffer.byteLength(request.message) > 4096 || request.message.includes("\0")
+      || request.remote != null || request.expectedHeadOid != null
+      || request.expectedUpstreamOid != null || request.branchName != null) {
+    failure(request.message?.trim?.().length === 0 ? "emptyMessage" : "invalidRequest", "Commit message is invalid.");
+  }
   const before = statusOf(repoRoot);
   if (before.error) failure(before.error.startsWith("unsafeRepositoryConfiguration:") ?
     "unsafeRepositoryConfiguration" : "gitUnavailable", before.error);
@@ -1468,8 +2615,9 @@ function runRepositoryMode() {
   }
   if (before.repositoryOperation) failure("operationInProgress", "Finish the current Git operation before staging or committing.");
 
-  const mutationPaths = request.operation === "commit" ? null :
-    validatedMutationPaths(before.porcelain, request.operation, request.path, request.originalPath);
+  const mutationPaths = request.operation === "commit" ? null : batchMutation
+    ? validatedMutationBatchPaths(before.porcelain, request.operation, request.files)
+    : validatedMutationPaths(before.porcelain, request.operation, request.path, request.originalPath);
   if (request.operation !== "commit" && !mutationPaths) {
     failure("invalidRequest", "Repository path did not identify exactly one reviewed file.");
   }
@@ -1500,20 +2648,40 @@ function runRepositoryMode() {
 
   let expectedCommitTree = null;
   let result;
-  if (request.operation === "stage") {
-    result = git(repoRoot, ["--literal-pathspecs", "add", "--all", "--", ...mutationPaths],
-      64 * 1024, temporary.temporaryIndex);
-  } else if (request.operation === "unstage") {
+  if (request.operation === "stage" || request.operation === "stageBatch") {
+    if (batchMutation) {
+      const pathspecInput = Buffer.concat(mutationPaths.map((value) => Buffer.concat([Buffer.from(value), Buffer.from([0])])));
+      result = git(repoRoot, ["--literal-pathspecs", "add", "--all", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        64 * 1024, temporary.temporaryIndex, pathspecInput);
+    } else {
+      result = git(repoRoot, ["--literal-pathspecs", "add", "--all", "--", ...mutationPaths],
+        64 * 1024, temporary.temporaryIndex);
+    }
+  } else if (request.operation === "unstage" || request.operation === "unstageBatch") {
     const head = git(repoRoot, ["rev-parse", "--verify", "HEAD"]);
-    const args = head.status === 0
-      ? ["--literal-pathspecs", "reset", "-q", "HEAD", "--", ...mutationPaths]
-      : ["--literal-pathspecs", "rm", "--cached", "-q", "--ignore-unmatch", "--", ...mutationPaths];
-    result = git(repoRoot, args, 64 * 1024, temporary.temporaryIndex);
+    if (batchMutation) {
+      const pathspecInput = Buffer.concat(mutationPaths.map((value) => Buffer.concat([Buffer.from(value), Buffer.from([0])])));
+      const args = head.status === 0
+        ? ["--literal-pathspecs", "reset", "-q", "HEAD", "--pathspec-from-file=-", "--pathspec-file-nul"]
+        : ["--literal-pathspecs", "rm", "--cached", "-q", "--ignore-unmatch", "--pathspec-from-file=-", "--pathspec-file-nul"];
+      result = git(repoRoot, args, 64 * 1024, temporary.temporaryIndex, pathspecInput);
+    } else {
+      const args = head.status === 0
+        ? ["--literal-pathspecs", "reset", "-q", "HEAD", "--", ...mutationPaths]
+        : ["--literal-pathspecs", "rm", "--cached", "-q", "--ignore-unmatch", "--", ...mutationPaths];
+      result = git(repoRoot, args, 64 * 1024, temporary.temporaryIndex);
+    }
   } else {
     const staged = git(repoRoot, ["diff", "--cached", "--quiet", "--exit-code"],
       64 * 1024, temporary.temporaryIndex);
     if (staged.status === 0) lockedFailure("nothingStaged", "There are no explicitly staged changes to commit.");
     if (staged.status !== 1) lockedFailure("gitUnavailable", detailOf(staged));
+    const resolvedIdentity = effectiveIdentityOf(repoRoot);
+    if (resolvedIdentity.error) {
+      lockedFailure(resolvedIdentity.error.startsWith("gitUnavailable:") ? "gitUnavailable" : "identityUnavailable",
+        resolvedIdentity.error.replace(/^[A-Za-z]+:\s*/, ""));
+    }
+    const identity = resolvedIdentity.identity;
     const tree = git(repoRoot, ["write-tree"], 64 * 1024, temporary.temporaryIndex);
     if (tree.error || tree.status !== 0) lockedFailure("gitUnavailable", detailOf(tree));
     expectedCommitTree = tree.stdout.toString("utf8").trim();
@@ -1527,8 +2695,11 @@ function runRepositoryMode() {
     if (oldHead) commitArgs.push("-p", oldHead);
     commitArgs.push("-m", request.message);
     let commitTree;
-    try { commitTree = git(repoRoot, commitArgs, 64 * 1024, temporary.temporaryIndex); }
-    finally { try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ } }
+    try {
+      commitTree = gitWithIdentity(repoRoot, commitArgs, 64 * 1024, temporary.temporaryIndex, identity, true);
+    } finally {
+      try { fs.rmdirSync(hooksDir); } catch { /* cleanup */ }
+    }
     if (commitTree.error || commitTree.status !== 0) lockedFailure("gitUnavailable", detailOf(commitTree));
     const commitOid = commitTree.stdout.toString("utf8").trim();
     const symbolic = git(repoRoot, ["symbolic-ref", "-q", "HEAD"]);
@@ -1540,11 +2711,32 @@ function runRepositoryMode() {
   }
   if (result.error || result.status !== 0) {
     const detail = detailOf(result);
+    if (batchMutation) {
+      lockedFailure("gitUnavailable", detail);
+    }
     lockedFailure(/index\.lock|indexLocked:|Unable to create/.test(detail) ? "indexLocked" : "gitUnavailable", detail);
   }
-  if (request.operation === "stage" || request.operation === "unstage") {
+  if (["stage", "unstage", "stageBatch", "unstageBatch"].includes(request.operation)) {
+    const prepared = statusOf(repoRoot);
+    if (prepared.error) {
+      lockedFailure(prepared.error.startsWith("unsafeRepositoryConfiguration:")
+        ? "unsafeRepositoryConfiguration" : "gitUnavailable", prepared.error);
+    }
+    let preparedFingerprint;
+    try { preparedFingerprint = worktreeFingerprint(repoRoot, prepared.porcelain); }
+    catch (error) { lockedFailure("gitUnavailable", error.message); }
+    if (prepared.repositoryOperation !== locked.repositoryOperation ||
+        generationOf(repoRoot, prepared.repositoryOperation, prepared.porcelain, preparedFingerprint) !== request.generation) {
+      lockedFailure("staleGeneration",
+        "Repository files changed while the reviewed index update was being prepared.");
+    }
+  }
+  if (["stage", "unstage", "stageBatch", "unstageBatch"].includes(request.operation)) {
     try { installIndex(indexLock, temporary.temporaryIndex); }
-    catch (error) { lockedFailure("gitUnavailable", `Could not install repository index: ${error.message}`); }
+    catch (error) {
+      lockedFailure(batchMutation ? "refreshFailed" : "gitUnavailable",
+        `Could not install repository index: ${error.message}`, batchMutation);
+    }
   }
   cleanupMutation();
   if (expectedCommitTree !== null) {
@@ -1565,10 +2757,13 @@ function runRepositoryMode() {
     const oid = git(repoRoot, ["rev-parse", "HEAD"]);
     if (!oid.error && oid.status === 0) commitOid = oid.stdout.toString("utf8").trim();
   }
+  let metadata;
+  try { metadata = repositoryMetadata(repoRoot); }
+  catch (error) { failure("refreshFailed", error.message, true); }
   reply({
     ok: true, repoRoot, porcelain: after.porcelain,
     generation: generationOf(repoRoot, after.repositoryOperation, after.porcelain, afterFingerprint),
-    repositoryOperation: after.repositoryOperation, commitOid, applied: true,
+    repositoryOperation: after.repositoryOperation, commitOid, ...metadata, applied: true,
   });
 }
 

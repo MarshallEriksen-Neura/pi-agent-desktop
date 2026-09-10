@@ -255,12 +255,39 @@
 .pi-native-select {
   color: var(--text-primary);
   background-color: var(--input-bg);
-  color-scheme: light dark;
+  color-scheme: light;
 }
-
+:root[data-theme="dark"] .pi-native-select {
+  color-scheme: dark;
+}
 .pi-native-select option {
   color: var(--text-primary);
   background-color: var(--bg-elevated);
+}
+
+/* Repository Inspector controls keep enabled actions distinct from muted state. */
+.repository-action-button:not(.repository-primary-action):not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--separator));
+  background: color-mix(in srgb, var(--accent-muted) 50%, var(--bg-elevated));
+}
+.repository-primary-action:not(:disabled):hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+.repository-action-button:disabled,
+.repository-control:disabled {
+  cursor: default;
+  color: var(--text-tertiary);
+  opacity: 0.58;
+}
+.repository-disclosure:hover {
+  color: var(--accent);
+}
+.repository-disclosure:focus-visible,
+.repository-action-button:focus-visible,
+.repository-control:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
 /* ── Appica UI bridge ─────────────────────────────────────────────────────

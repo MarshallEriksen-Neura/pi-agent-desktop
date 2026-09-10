@@ -68,6 +68,7 @@ function fakePorts(label = "fake"): BackendPorts {
       restoreTrash: async () => undefined,
       purgeTrash: async () => undefined,
       generateTitle: async () => label,
+      generateCommitMessage: async () => label,
     },
     workspaceFs: workspaceFs(label),
     repository: unreachablePort<RepositoryPort>("repository"),

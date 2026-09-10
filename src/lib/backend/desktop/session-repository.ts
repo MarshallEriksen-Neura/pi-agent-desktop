@@ -1,4 +1,5 @@
 import type {
+  GenerateCommitMessageInput,
   GenerateTitleInput,
   SessionRepositoryPort,
   SessionSaveInput,
@@ -67,5 +68,12 @@ export const desktopSessionRepositoryPort: SessionRepositoryPort = {
       provider: input.provider,
       modelId: input.modelId,
       cwd: input.cwd,
+    }),
+
+  generateCommitMessage: (input: GenerateCommitMessageInput) =>
+    desktopInvoke<string>("pi_generate_commit_message", {
+      stagedDiff: input.stagedDiff,
+      provider: input.provider,
+      modelId: input.modelId,
     }),
 };

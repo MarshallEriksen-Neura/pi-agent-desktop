@@ -19,7 +19,8 @@
       // importer under src/lib/backend uses `import type`, so nothing survives
       // into the emit and no runtime require is created.
       "@pi/remote-control-contracts": ["../../packages/remote-control-contracts/src/index.ts"],
-      "@pi/remote-control-contracts/*": ["../../packages/remote-control-contracts/src/*"]
+      "@pi/remote-control-contracts/*": ["../../packages/remote-control-contracts/src/*"],
+      "@appica/ui-react/button": ["../../node_modules/@appica/ui-react/dist/components/button/index.d.ts"]
     }
   },
   "include": [

@@ -171,8 +171,16 @@ export type LauncherCapability =
   | "pi-skills-mutate-v1"
   /** Read-only repository status and staged/unstaged diffs. */
   | "repository-read-v1"
-  /** Generation-checked stage, unstage, and staged-only commit. */
-  | "repository-write-v1";
+  /** Generation-checked single-file stage/unstage and staged-only commit. */
+  | "repository-write-v1"
+  /** Generation-checked batch stage/unstage with one authoritative refresh. */
+  | "repository-batch-write-v1"
+  /** Fetch/push, safe local branches, and generation-checked staged-diff drafts. */
+  | "repository-phase3-v1"
+  /** Reviewed, generation-bound, local-only fast-forward integration. */
+  | "repository-integration-v1"
+  /** Reviewed, generation-bound merge-commit and linear-rebase integration. */
+  | "repository-integration-v2";
 
 /**
  * What a host's launcher reports it can do.
