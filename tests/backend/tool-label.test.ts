@@ -2,15 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { EDIT_TOOL, toolKind } from "../../src/lib/pi/tool-label";
+import { EDIT_TOOL, toolKind, toolTitle } from "../../src/lib/pi/tool-label";
 
 /**
- * The three mutating tools `pi-hashline-edit-pro` registers. `replace` was
- * classified from the start; `insert` and `undo_last_change` were not, so their
- * calls drew the generic wrench and — the part that actually mattered — never
- * entered agent-bridge's edit branch: no pre-edit snapshot, no read-back, no
- * recorded FileDiff. The turn panel then reported no file changes for an edit
- * `git diff` could see.
+ * The three mutating tools `pi-hashline-edit-pro` registers. Calls that miss
+ * this classification never reach agent-bridge's result handling, so their
+ * metrics and unified patches cannot produce a badge, recorded FileDiff, or
+ * recent-change row. `insert` and `replace` are pathless at call time in 4.x;
+ * the bridge recovers their target from the result patch instead.
  */
 const HASHLINE_MUTATORS = ["replace", "insert", "undo_last_change"];
 
@@ -79,6 +78,13 @@ test("names are matched whole, and case- and separator-insensitively", () => {
   assert.equal(EDIT_TOOL.test("db_insert"), false);
 });
 
+test("edit titles can use the path recovered from a result patch", () => {
+  assert.equal(
+    toolTitle("insert", { anchor: "abcd", direction: "after" }, "README.md"),
+    "Insert README.md",
+  );
+});
+
 test("nothing that only reads or searches is admitted as a write", () => {
   for (const name of NON_EDITING) {
     assert.notEqual(toolKind(name), "write", `${name} must not classify as an edit tool`);
@@ -105,7 +111,7 @@ test("the bridge admits an edit to the diff pipeline only through EDIT_TOOL", ()
      `kind === "edit"` that this gate is the sole writer of. Classification is
      therefore the entire admission test: an unlisted name loses the diff, not
      just the icon, which is why the lists above are asserted name by name. */
-  const editEnd = source.indexOf('if (rec.kind === "edit" && rec.path && !e.isError)');
+  const editEnd = source.indexOf('if (rec.kind === "edit" && !e.isError)');
   const recordDiff = source.indexOf("useFileDiffs.getState().record(", editEnd + 1);
   assert.ok(editEnd >= 0, "the end handler must stay gated on the edit kind");
   assert.ok(recordDiff > editEnd, "the FileDiff must be recorded inside that branch");
@@ -113,5 +119,21 @@ test("the bridge admits an edit to the diff pipeline only through EDIT_TOOL", ()
     source.indexOf('rec.kind = "edit"'),
     source.lastIndexOf('rec.kind = "edit"'),
     "only the EDIT_TOOL gate may mark a call as an edit",
+  );
+});
+
+test("pathless edit rows open the diff recovered from their result", () => {
+  const source = readFileSync(
+    resolve(process.cwd(), "src/components/MessageBubble.tsx"),
+    "utf8",
+  );
+  const rowStart = source.indexOf("function EditToolRow(");
+  const rowEnd = source.indexOf("const previewButtonStyle", rowStart);
+  const row = source.slice(rowStart, rowEnd);
+
+  assert.ok(row.includes("useFileDiff(tool.id)"), "the row must observe its recorded diff");
+  assert.ok(
+    row.includes('useFileRow(tool, "edit", remoteMode, recordedDiff?.path)'),
+    "the recorded result path must make a pathless edit row openable",
   );
 });

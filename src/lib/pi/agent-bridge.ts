@@ -25,7 +25,7 @@ import { editorBus } from "@/lib/editor-bus";
 import { destroyPetBridge, initPetBridge } from "@/lib/pet/bridge";
 import { useTerminalBlocks } from "@/lib/terminal-blocks";
 import { diffStatFromArgs, diffStatFromResult, useDiffStats } from "./diff-stat";
-import { buildDiff, diffBodyFromResult, useFileDiffs } from "./file-diffs";
+import { buildDiff, diffBodyFromResult, filePathFromResult, useFileDiffs } from "./file-diffs";
 import { isPlanTool, usePlan } from "./plan";
 import { useTurn } from "./turn";
 import { isFollowingAgent, useFileInspector } from "@/lib/file-inspector";
@@ -226,11 +226,14 @@ function bindAgentBridge(taskId: string) {
         recs.set(e.toolCallId, rec);
         return;
       }
+      // Anchor-based editors resolve the file internally, so `insert` and
+      // `replace` may have no path until their result patch arrives. Classify
+      // them as edits now so end-event metrics and patches are not discarded.
+      rec.kind = "edit";
+      rec.args = args;
       const raw = argPath(args);
       if (raw) {
-        rec.kind = "edit";
         rec.path = normPath(raw);
-        rec.args = args;
         const path = rec.path;
         const ws = useWorkspace.getState();
         const cached = ws.docs[path];
@@ -349,8 +352,7 @@ function bindAgentBridge(taskId: string) {
       return;
     }
 
-    if (rec.kind === "edit" && rec.path && !e.isError) {
-      const path = rec.path;
+    if (rec.kind === "edit" && !e.isError) {
       const toolCallId = e.toolCallId;
       // Extension editors such as pi-hashline-edit-pro already return both their
       // operation metrics and a standard patch. Publish both before any workspace
@@ -362,10 +364,16 @@ function bindAgentBridge(taskId: string) {
         useDiffStats.getState().record(toolCallId, reportedStat);
       }
       const reportedBody = diffBodyFromResult(e.result);
-      if (reportedBody) {
+      const reportedPath = filePathFromResult(e.result);
+      const path = rec.path ?? (reportedPath ? normPath(reportedPath) : undefined);
+      if (reportedBody && path) {
         useFileDiffs.getState().record(toolCallId, path, reportedBody, taskId);
         useFileInspector.getState().noteAgentEdit(path, toolCallId);
       }
+      // Metrics do not need a file path, so the transcript badge can still be
+      // truthful for an editor whose result omits one. Disk refresh, inspector
+      // navigation, and recent changes do require an identified file.
+      if (!path) return;
       void (async () => {
         await rec.snapshot; // only disk fallback/highlighting waits for the pre-edit read
         // a file pi created has no previous content, which is a diff against

@@ -103,13 +103,31 @@ test("keeps native edit arguments and disk text as fallback sources", () => {
   assert.deepEqual(diffStat("a\nb\n", "a\nc\nd\n"), { added: 2, removed: 1 });
 });
 
+test("keeps pathless hash-line calls in the edit pipeline", () => {
+  const source = readFileSync(
+    resolve(process.cwd(), "src/lib/pi/agent-bridge.ts"),
+    "utf8",
+  );
+  const editStart = source.indexOf("if (EDIT_TOOL.test(e.toolName))");
+  const bashStart = source.indexOf("else if (BASH_TOOL.test(e.toolName))", editStart);
+  const branch = source.slice(editStart, bashStart);
+  const classifyAt = branch.indexOf('rec.kind = "edit"');
+  const pathAt = branch.indexOf("const raw = argPath(args)");
+
+  assert.ok(editStart >= 0 && bashStart > editStart, "edit start branch must exist");
+  assert.ok(
+    classifyAt >= 0 && pathAt > classifyAt,
+    "edit classification must not depend on a path argument",
+  );
+});
+
 test("publishes result metrics and patches before workspace snapshot work", () => {
   const source = readFileSync(
     resolve(process.cwd(), "src/lib/pi/agent-bridge.ts"),
     "utf8",
   );
   const branchStart = source.indexOf(
-    'if (rec.kind === "edit" && rec.path && !e.isError)',
+    'if (rec.kind === "edit" && !e.isError)',
   );
   const branchEnd = source.indexOf('if (rec.kind === "bash")', branchStart + 1);
   const branch = source.slice(
@@ -120,6 +138,7 @@ test("publishes result metrics and patches before workspace snapshot work", () =
   const statParseAt = branch.indexOf("diffStatFromResult(e.result)");
   const statRecordAt = branch.indexOf("useDiffStats.getState().record");
   const bodyParseAt = branch.indexOf("diffBodyFromResult(e.result)");
+  const pathParseAt = branch.indexOf("filePathFromResult(e.result)");
   const bodyRecordAt = branch.indexOf("useFileDiffs.getState().record");
   const snapshotAt = branch.indexOf("await rec.snapshot");
   assert.ok(branchStart >= 0, "edit success branch must remain error-gated");
@@ -130,6 +149,10 @@ test("publishes result metrics and patches before workspace snapshot work", () =
   assert.ok(
     bodyParseAt >= 0 && bodyRecordAt > bodyParseAt,
     "result patches must be recorded",
+  );
+  assert.ok(
+    pathParseAt >= 0 && bodyRecordAt > pathParseAt,
+    "result patch path must be recovered before the turn diff is recorded",
   );
   assert.ok(statRecordAt < snapshotAt, "badge metrics must not wait for workspace IPC");
   assert.ok(bodyRecordAt < snapshotAt, "turn diffs must not wait for workspace IPC");

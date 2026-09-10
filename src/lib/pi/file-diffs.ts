@@ -256,6 +256,45 @@ function budget(a: string[], b: string[], regions: Region[]): {
 }
 
 /**
+ * File targeted by an edit result.
+ *
+ * Hash-line `insert`/`replace` calls intentionally carry only anchors: the
+ * extension resolves their file internally, so the start event has no path. Its
+ * result patch does carry the resolved workspace-relative path in the standard
+ * `+++`/`---` headers. Recovering it here lets those calls join the same diff and
+ * recent-changes pipeline as path-bearing editors.
+ */
+export function filePathFromResult(result: unknown): string | undefined {
+  const root =
+    typeof result === "object" && result !== null
+      ? (result as Record<string, unknown>)
+      : undefined;
+  const details =
+    typeof root?.details === "object" && root.details !== null
+      ? (root.details as Record<string, unknown>)
+      : undefined;
+  const direct = details?.path;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+
+  const patch = typeof details?.patch === "string" ? details.patch : undefined;
+  if (!patch) return undefined;
+
+  let oldPath: string | undefined;
+  for (const line of patch.replace(/\r\n/g, "\n").split("\n")) {
+    // Only patch prelude headers identify the file. A changed source line can
+    // itself begin with `+++ `, so stop before the first hunk body.
+    if (line.startsWith("@@ ")) break;
+    const match = /^(---|\+\+\+) (.+)$/.exec(line);
+    if (!match) continue;
+    const path = match[2].split("\t", 1)[0];
+    if (!path || path === "/dev/null") continue;
+    if (match[1] === "+++") return path;
+    oldPath = path;
+  }
+  return oldPath;
+}
+
+/**
  * Recover a renderable diff from an edit tool's standard unified patch.
  *
  * This is the fallback for the unavoidable start-event race: when a file was not

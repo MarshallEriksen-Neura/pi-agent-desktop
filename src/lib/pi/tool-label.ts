@@ -29,9 +29,9 @@ import { useWorkspace } from "@/lib/workspace";
  * Re-read both when upgrading pi *or its extensions*: like BASH_TOOL, a name
  * missing here fails silently rather than loudly.
  *
- * Breadth is safe here because classification alone does not open the diff
- * pipeline — agent-bridge also requires a path argument, so a same-named tool that
- * edits nothing on disk still degrades to a generic row.
+ * Breadth is kept to known editor names. Some hash-line calls do not carry a
+ * path at start; agent-bridge records their result metrics immediately and uses
+ * the standard result-patch headers to recover the file for diff attribution.
  */
 export const EDIT_TOOL =
   /^(edit|write|multi[_-]?edit|replace|insert|undo[_-]?last[_-]?(?:change|replace|edit)|str[_-]?replace(?:[_-]?editor)?|create[_-]?file|apply[_-]?patch)$/i;
@@ -131,7 +131,7 @@ export function shellPrompt(toolName: string): string {
 }
 
 /** headline for a tool call: `$ pnpm build`, `Read src/lib/pi/chat.ts`, `Grep` */
-export function toolTitle(toolName: string, rawArgs: unknown): string {
+export function toolTitle(toolName: string, rawArgs: unknown, fallbackPath?: string): string {
   const args = asRecord(rawArgs);
   if (isMcpTool(toolName)) {
     const action = typeof args.action === "string" ? args.action : undefined;
@@ -149,7 +149,7 @@ export function toolTitle(toolName: string, rawArgs: unknown): string {
     const cmd = argCommand(args) ?? "";
     return `${shellPrompt(toolName)} ${cmd}`.trim();
   }
-  const p = argPath(args);
+  const p = argPath(args) ?? fallbackPath;
   const name = toolName.charAt(0).toUpperCase() + toolName.slice(1);
   return p ? `${name} ${relPath(normPath(p))}` : name;
 }

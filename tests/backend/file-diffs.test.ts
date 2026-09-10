@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { diffStat } from "../../src/lib/pi/diff-stat";
-import { buildDiff, diffBodyFromResult, useFileDiffs } from "../../src/lib/pi/file-diffs";
+import { buildDiff, diffBodyFromResult, filePathFromResult, useFileDiffs } from "../../src/lib/pi/file-diffs";
 
 /** compact rendering of a hunk, for readable assertions */
 function render(lines: { kind: string; text: string }[]): string[] {
@@ -31,6 +31,31 @@ test("builds one hunk with both line numbers for a single replacement", () => {
   const added = hunk.lines.find((l) => l.kind === "+");
   assert.deepEqual([removed?.oldLine, removed?.newLine], [4, undefined]);
   assert.deepEqual([added?.oldLine, added?.newLine], [undefined, 4]);
+});
+
+test("recovers the edited path from a hash-line result patch", () => {
+  assert.equal(
+    filePathFromResult({
+      details: {
+        patch: "--- src/old name.ts\n+++ src/new name.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      },
+    }),
+    "src/new name.ts",
+  );
+  assert.equal(
+    filePathFromResult({
+      details: { path: "direct.ts", patch: "--- ignored.ts\n+++ ignored.ts\n" },
+    }),
+    "direct.ts",
+  );
+  assert.equal(
+    filePathFromResult({
+      details: {
+        patch: "--- README.md\n+++ README.md\n@@ -1 +1,2 @@\n keep\n++++ not-a-header\n",
+      },
+    }),
+    "README.md",
+  );
 });
 
 test("recovers an insert diff from its result patch when the before snapshot races", () => {

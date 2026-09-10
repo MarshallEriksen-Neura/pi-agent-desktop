@@ -34,6 +34,7 @@ import {
 import { htmlEditTarget } from "@/lib/pi/html-preview";
 import { isSubagentTool, useSubagents } from "@/lib/pi/subagents";
 import { useToolDiffStat } from "@/lib/pi/diff-stat";
+import { useFileDiff } from "@/lib/pi/file-diffs";
 import { isPlanTool, summarizePlanCall, type PlanCallSummary } from "@/lib/pi/plan";
 import { useFileInspector } from "@/lib/file-inspector";
 import { useSubagentRow } from "./Subagents";
@@ -730,23 +731,25 @@ function ToolRow({ tool, animateIn }: { tool: ChatToolCall; animateIn: boolean }
  *
  * Opening a file also drops the subagent inspector's focus: the two panels dock
  * in the same column, so the row clicked last is the one that gets it. Returns
- * nothing openable when the call carries no path — a dead control that looks
- * live is worse than a plain row.
+ * nothing openable when neither the call nor its recorded result carries a
+ * path — a dead control that looks live is worse than a plain row.
  */
 function useFileRow(
   tool: ChatToolCall,
   kind: "read" | "edit",
   disabled = false,
+  fallbackPath?: string,
 ) {
   const t = useT();
   const path = useMemo(() => {
-    const raw = argPath(
-      typeof tool.args === "object" && tool.args !== null
-        ? (tool.args as Record<string, unknown>)
-        : {},
-    );
+    const raw =
+      argPath(
+        typeof tool.args === "object" && tool.args !== null
+          ? (tool.args as Record<string, unknown>)
+          : {},
+      ) ?? fallbackPath;
     return raw ? normPath(raw) : undefined;
-  }, [tool.args]);
+  }, [tool.args, fallbackPath]);
 
   const active = useFileInspector(
     (s) => s.open && path !== undefined && s.activePath === path,
@@ -814,7 +817,8 @@ function EditToolRow({
 }) {
   const t = useT();
   const stat = useToolDiffStat(tool.id);
-  const row = useFileRow(tool, "edit", remoteMode);
+  const recordedDiff = useFileDiff(tool.id);
+  const row = useFileRow(tool, "edit", remoteMode, recordedDiff?.path);
   const changed = stat && (stat.added > 0 || stat.removed > 0);
   // the preview opens the file as it is on disk now, so it only shows once the
   // write has landed — not while the call is still running
@@ -824,7 +828,7 @@ function EditToolRow({
     <ActivityLine
       status={tool.status}
       toolName={tool.name}
-      title={toolTitle(tool.name, tool.args)}
+      title={toolTitle(tool.name, tool.args, recordedDiff?.path)}
       detail={toolDetail(tool.args)}
       animateIn={animateIn}
       onClick={row?.open}
