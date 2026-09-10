@@ -4,7 +4,7 @@ import type {
   SessionSaveInput,
 } from "../ports";
 import type { ChatMessage } from "../../pi/chat";
-import type { ChatSessionMeta } from "../../pi/sessions";
+import type { ChatSessionMeta, TrashedSessionMeta } from "../../pi/sessions";
 import { decodeSessionMessages } from "../session-cache";
 import { desktopInvoke } from "./invoke";
 
@@ -18,6 +18,14 @@ export const desktopSessionRepositoryPort: SessionRepositoryPort = {
     const json = await desktopInvoke<string | null>("chat_session_load", { ...scope, id });
     if (!json) return [];
     return decodeSessionMessages(json);
+  },
+
+  readNativeTranscript: async (scope, path) => {
+    if (!path.trim() || scope.targetKey !== "local") return null;
+    return desktopInvoke<string>("pi_session_read", {
+      path,
+      projectRoot: scope.projectRoot,
+    });
   },
 
   save: (scope, session: SessionSaveInput) =>
@@ -34,6 +42,7 @@ export const desktopSessionRepositoryPort: SessionRepositoryPort = {
         source: session.source ?? "cache",
         messages: JSON.stringify(session.messages),
         createdAt: session.createdAt,
+        preserveUpdatedAt: session.preserveUpdatedAt ?? false,
       },
     }),
 
@@ -42,8 +51,15 @@ export const desktopSessionRepositoryPort: SessionRepositoryPort = {
 
   delete: (scope, id) => desktopInvoke<void>("chat_session_delete", { ...scope, id }),
 
-  trashSessionFile: (scope, path) =>
-    desktopInvoke<void>("pi_session_trash", { path, projectRoot: scope.projectRoot }),
+  listTrash: (scope) =>
+    desktopInvoke<TrashedSessionMeta[]>("chat_session_trash_list", { ...scope }),
+
+  restoreTrash: (scope, tombstoneId) =>
+    desktopInvoke<void>("chat_session_trash_restore", { ...scope, tombstoneId }),
+
+  purgeTrash: (scope, tombstoneId) =>
+    desktopInvoke<void>("chat_session_trash_purge", { ...scope, tombstoneId }),
+
 
   generateTitle: (input: GenerateTitleInput) =>
     desktopInvoke<string>("pi_generate_title", {

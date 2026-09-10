@@ -5,6 +5,7 @@
 
 use crate::remote_profiles::ExecutionBinding;
 use pi_backend_core::chat_store::{configure_and_migrate, validate_session_payload};
+use pi_backend_core::session_files::{SessionRestoreOutcome, SessionTrashOutcome};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -84,6 +85,36 @@ pub struct ChatSessionMeta {
     pub updated_at: i64,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedSessionMeta {
+    pub tombstone_id: i64,
+    pub session_id: String,
+    pub name: String,
+    pub session_path: String,
+    pub preview: String,
+    pub project_root: String,
+    pub execution_binding: ExecutionBinding,
+    pub target_key: String,
+    pub authority_session_id: Option<String>,
+    pub source: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub deleted_at: i64,
+    pub trash_file: Option<String>,
+    pub trash_directory: Option<String>,
+}
+
+#[derive(Clone)]
+struct RecycleRecord {
+    meta: TrashedSessionMeta,
+    messages: String,
+}
+
+fn decode_binding(value: String) -> ExecutionBinding {
+    serde_json::from_str(&value).unwrap_or_else(|_| local_execution_binding())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSessionSave {
@@ -104,6 +135,8 @@ pub struct ChatSessionSave {
     /// serialized ChatMessage[] — opaque to Rust
     pub messages: String,
     pub created_at: i64,
+    #[serde(default)]
+    pub preserve_updated_at: bool,
 }
 
 fn merge_native_sessions(
@@ -164,15 +197,25 @@ fn merge_native_sessions(
                        authority_session_id = ?2,
                        session_path = ?3,
                        project_root = ?4,
+                       name = CASE
+                         WHEN TRIM(name) = '' AND TRIM(?5) <> '' THEN ?5
+                         ELSE name
+                       END,
+                       preview = CASE
+                         WHEN TRIM(preview) = '' AND TRIM(?6) <> '' THEN ?6
+                         ELSE preview
+                       END,
                        source = 'native',
-                       created_at = MIN(created_at, ?5),
-                       updated_at = MAX(updated_at, ?6)
-                     WHERE id = ?1 AND target_key = ?7",
+                       created_at = MIN(created_at, ?7),
+                       updated_at = ?8
+                     WHERE id = ?1 AND target_key = ?9",
                     params![
                         id,
                         session.authority_session_id,
                         session.session_path,
                         project_root,
+                        session.name,
+                        session.preview,
                         session.created_at,
                         session.updated_at,
                         target_key
@@ -187,11 +230,12 @@ fn merge_native_sessions(
                        id, name, session_path, preview, messages, project_root,
                        execution_binding, target_key, authority_session_id, source,
                        created_at, updated_at
-                     ) VALUES (?1, ?2, ?3, '', '[]', ?4, ?5, ?6, ?7, 'native', ?8, ?9)",
+                     ) VALUES (?1, ?2, ?3, ?4, '[]', ?5, ?6, ?7, ?8, 'native', ?9, ?10)",
                     params![
                         id,
                         session.name,
                         session.session_path,
+                        session.preview,
                         project_root,
                         local_binding,
                         target_key,
@@ -308,7 +352,7 @@ pub fn chat_session_save(
                    execution_binding = excluded.execution_binding,
                    authority_session_id = COALESCE(excluded.authority_session_id, chat_sessions.authority_session_id),
                    source = CASE WHEN chat_sessions.source = 'native' THEN 'native' ELSE excluded.source END,
-                   updated_at = excluded.updated_at
+                   updated_at = CASE WHEN ?13 THEN chat_sessions.updated_at ELSE excluded.updated_at END
                  WHERE chat_sessions.target_key = excluded.target_key",
                 params![
                     session.id,
@@ -322,7 +366,8 @@ pub fn chat_session_save(
                     session.authority_session_id,
                     source,
                     session.created_at,
-                    now_ms()
+                    now_ms(),
+                    session.preserve_updated_at
                 ],
             )
             .map_err(|error| error.to_string())?;
@@ -353,6 +398,57 @@ pub fn chat_session_rename(
     })
 }
 
+fn save_recycled_locations(
+    conn: &Connection,
+    tombstone_id: i64,
+    outcome: &SessionTrashOutcome,
+) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE chat_session_tombstones
+             SET trash_file = ?2, trash_directory = ?3
+             WHERE tombstone_id = ?1",
+            params![
+                tombstone_id,
+                outcome.file.as_deref(),
+                outcome.directory.as_deref(),
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed != 1 {
+        return Err("recycle-bin record disappeared while saving moved files".into());
+    }
+    Ok(())
+}
+
+fn verify_recycle_rollback(
+    recycled: &SessionTrashOutcome,
+    restored: &SessionRestoreOutcome,
+) -> Result<(), String> {
+    if recycled.file.is_some() && !restored.file_restored {
+        return Err("recycled transcript was not restored to its original path".into());
+    }
+    if recycled.directory.is_some() && !restored.directory_restored {
+        return Err("recycled subagent runs were not restored to their original path".into());
+    }
+    Ok(())
+}
+
+fn finish_recycle_location_update(
+    database_result: Result<(), String>,
+    rollback: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let Err(database_error) = database_result else {
+        return Ok(());
+    };
+    match rollback() {
+        Ok(()) => Ok(()),
+        Err(rollback_error) => Err(format!(
+            "could not save recycled file locations: {database_error}; rollback also failed: {rollback_error}"
+        )),
+    }
+}
+
 #[tauri::command]
 pub fn chat_session_delete(
     db: State<'_, ChatDb>,
@@ -361,45 +457,88 @@ pub fn chat_session_delete(
     id: String,
 ) -> Result<(), String> {
     let key = crate::projects::project_key(&project_root);
-    with_db(&db, |conn| {
+    let recycled = with_db(&db, |conn| {
         let transaction = conn.transaction().map_err(|error| error.to_string())?;
-        let identity = transaction
+        let row = transaction
             .query_row(
-                "SELECT authority_session_id, NULLIF(session_path, '')
+                "SELECT name, session_path, preview, execution_binding,
+                        authority_session_id, source, messages, created_at, updated_at
                  FROM chat_sessions
                  WHERE id = ?1 AND project_root = ?2 AND target_key = ?3",
                 params![id, key, target_key],
                 |row| {
                     Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
                     ))
                 },
             )
             .optional()
             .map_err(|error| error.to_string())?;
-        let Some((authority_session_id, session_path)) = identity else {
-            return Ok(());
+        let Some((
+            name,
+            session_path,
+            preview,
+            execution_binding,
+            authority_session_id,
+            source,
+            messages,
+            created_at,
+            updated_at,
+        )) = row
+        else {
+            return Ok(None);
         };
-        if let Some(authority_session_id) = authority_session_id {
+
+        // A conversation that never materialized a Pi identity has no native
+        // transcript to recover. It can still be deleted from the Desktop index,
+        // but there is no meaningful recycle-bin file entry to create.
+        let recyclable = authority_session_id.is_some() || !session_path.trim().is_empty();
+        let mut tombstone_id = None;
+        if recyclable {
             transaction
                 .execute(
-                    "INSERT OR IGNORE INTO chat_session_tombstones
-                     (target_key, authority_session_id, session_path, deleted_at)
-                     VALUES (?1, ?2, NULL, ?3)",
-                    params![target_key, authority_session_id, now_ms()],
+                    "DELETE FROM chat_session_tombstones
+                     WHERE target_key = ?1 AND (
+                       (?2 IS NOT NULL AND authority_session_id = ?2)
+                       OR (?3 <> '' AND session_path = ?3)
+                     )",
+                    params![target_key, authority_session_id, session_path],
                 )
                 .map_err(|error| error.to_string())?;
-        }
-        if let Some(session_path) = session_path {
+            let deleted_at = now_ms();
             transaction
                 .execute(
-                    "INSERT OR IGNORE INTO chat_session_tombstones
-                     (target_key, authority_session_id, session_path, deleted_at)
-                     VALUES (?1, NULL, ?2, ?3)",
-                    params![target_key, session_path, now_ms()],
+                    "INSERT INTO chat_session_tombstones (
+                       target_key, authority_session_id, session_path,
+                       session_id, name, preview, messages, project_root,
+                       execution_binding, source, created_at, updated_at, deleted_at
+                     ) VALUES (?1, ?2, NULLIF(?3, ''), ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    params![
+                        target_key,
+                        authority_session_id,
+                        session_path,
+                        id,
+                        name,
+                        preview,
+                        messages,
+                        key,
+                        execution_binding,
+                        source,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                    ],
                 )
                 .map_err(|error| error.to_string())?;
+            tombstone_id = Some(transaction.last_insert_rowid());
         }
         transaction
             .execute(
@@ -408,6 +547,459 @@ pub fn chat_session_delete(
                 params![id, key, target_key],
             )
             .map_err(|error| error.to_string())?;
-        transaction.commit().map_err(|error| error.to_string())
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(tombstone_id.map(|tombstone_id| (tombstone_id, session_path)))
+    })?;
+
+    // Row/tombstone first, file move second. A failed move leaves the original
+    // transcript hidden by the tombstone, which is recoverable and safe; the
+    // opposite order could strand a live DB row pointing at a missing file.
+    if target_key == "local" {
+        if let Some((tombstone_id, session_path)) = recycled {
+            if !session_path.trim().is_empty() {
+                if let Ok(outcome) =
+                    crate::pi_sessions::recycle_local_transcript(&key, &session_path)
+                {
+                    if outcome.file.is_some() || outcome.directory.is_some() {
+                        let persisted = with_db(&db, |conn| {
+                            save_recycled_locations(conn, tombstone_id, &outcome)
+                        });
+                        // The tombstone still points at the original path when the
+                        // location update fails. Put the files back so that fallback
+                        // remains truthful and retryable.
+                        finish_recycle_location_update(persisted, || {
+                            let restored = crate::pi_sessions::restore_local_transcript(
+                                &key,
+                                &session_path,
+                                outcome.file.as_deref(),
+                                outcome.directory.as_deref(),
+                            )?;
+                            verify_recycle_rollback(&outcome, &restored)
+                        })?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn recycle_record(
+    conn: &Connection,
+    project_root: &str,
+    target_key: &str,
+    tombstone_id: i64,
+) -> Result<Option<RecycleRecord>, String> {
+    conn.query_row(
+        "SELECT tombstone_id, session_id, name, COALESCE(session_path, ''), preview,
+                project_root, execution_binding, target_key, authority_session_id,
+                source, messages, created_at, updated_at, deleted_at,
+                trash_file, trash_directory
+         FROM chat_session_tombstones
+         WHERE tombstone_id = ?1 AND project_root = ?2 AND target_key = ?3
+           AND session_id IS NOT NULL",
+        params![tombstone_id, project_root, target_key],
+        |row| {
+            let binding: String = row.get(6)?;
+            Ok(RecycleRecord {
+                meta: TrashedSessionMeta {
+                    tombstone_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    name: row.get(2)?,
+                    session_path: row.get(3)?,
+                    preview: row.get(4)?,
+                    project_root: row.get(5)?,
+                    execution_binding: decode_binding(binding),
+                    target_key: row.get(7)?,
+                    authority_session_id: row.get(8)?,
+                    source: row.get(9)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
+                    deleted_at: row.get(13)?,
+                    trash_file: row.get(14)?,
+                    trash_directory: row.get(15)?,
+                },
+                messages: row.get(10)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+fn restore_recycle_record_in_db(
+    conn: &mut Connection,
+    record: &RecycleRecord,
+    execution_binding: &str,
+) -> Result<(), String> {
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO chat_sessions (
+               id, name, session_path, preview, messages, project_root,
+               execution_binding, target_key, authority_session_id, source,
+               created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                record.meta.session_id,
+                record.meta.name,
+                record.meta.session_path,
+                record.meta.preview,
+                record.messages,
+                record.meta.project_root,
+                execution_binding,
+                record.meta.target_key,
+                record.meta.authority_session_id,
+                record.meta.source,
+                record.meta.created_at,
+                record.meta.updated_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM chat_session_tombstones
+             WHERE target_key = ?1 AND (
+                tombstone_id = ?2
+                OR (?3 IS NOT NULL AND authority_session_id = ?3)
+                OR (?4 <> '' AND session_path = ?4)
+             )",
+            params![
+                record.meta.target_key,
+                record.meta.tombstone_id,
+                record.meta.authority_session_id,
+                record.meta.session_path,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+fn finish_restore_database(
+    database_result: Result<(), String>,
+    restored_files: Option<&SessionRestoreOutcome>,
+    rollback: impl FnOnce(&SessionRestoreOutcome) -> Result<(), String>,
+) -> Result<(), String> {
+    let Err(database_error) = database_result else {
+        return Ok(());
+    };
+    if let Some(restored_files) = restored_files {
+        if let Err(rollback_error) = rollback(restored_files) {
+            return Err(format!(
+                "could not restore recycle-bin database record: {database_error}; file rollback also failed: {rollback_error}"
+            ));
+        }
+    }
+    Err(format!(
+        "could not restore recycle-bin database record: {database_error}"
+    ))
+}
+
+#[tauri::command]
+pub fn chat_session_trash_list(
+    db: State<'_, ChatDb>,
+    project_root: String,
+    target_key: String,
+) -> Result<Vec<TrashedSessionMeta>, String> {
+    let key = crate::projects::project_key(&project_root);
+    with_db(&db, |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT tombstone_id, session_id, name, COALESCE(session_path, ''), preview,
+                        project_root, execution_binding, target_key, authority_session_id,
+                        source, created_at, updated_at, deleted_at, trash_file, trash_directory
+                 FROM chat_session_tombstones
+                 WHERE project_root = ?1 AND target_key = ?2 AND session_id IS NOT NULL
+                 ORDER BY deleted_at DESC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map(params![key, target_key], |row| {
+                let binding: String = row.get(6)?;
+                Ok(TrashedSessionMeta {
+                    tombstone_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    name: row.get(2)?,
+                    session_path: row.get(3)?,
+                    preview: row.get(4)?,
+                    project_root: row.get(5)?,
+                    execution_binding: decode_binding(binding),
+                    target_key: row.get(7)?,
+                    authority_session_id: row.get(8)?,
+                    source: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    deleted_at: row.get(12)?,
+                    trash_file: row.get(13)?,
+                    trash_directory: row.get(14)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
     })
+}
+
+#[tauri::command]
+pub fn chat_session_trash_restore(
+    db: State<'_, ChatDb>,
+    project_root: String,
+    target_key: String,
+    tombstone_id: i64,
+) -> Result<(), String> {
+    let key = crate::projects::project_key(&project_root);
+    let record = with_db(&db, |conn| {
+        recycle_record(conn, &key, &target_key, tombstone_id)
+    })?;
+    let Some(record) = record else {
+        return Ok(());
+    };
+
+    // Serialize before moving files so every remaining failure can be compensated.
+    let execution_binding = serde_json::to_string(&record.meta.execution_binding)
+        .map_err(|error| format!("serialize execution binding: {error}"))?;
+    let restored_files = if target_key == "local" {
+        Some(crate::pi_sessions::restore_local_transcript(
+            &key,
+            &record.meta.session_path,
+            record.meta.trash_file.as_deref(),
+            record.meta.trash_directory.as_deref(),
+        )?)
+    } else {
+        None
+    };
+
+    let database_result = with_db(&db, |conn| {
+        restore_recycle_record_in_db(conn, &record, &execution_binding)
+    });
+    finish_restore_database(database_result, restored_files.as_ref(), |restored_files| {
+        crate::pi_sessions::rollback_local_transcript_restore(
+            &key,
+            &record.meta.session_path,
+            record.meta.trash_file.as_deref(),
+            record.meta.trash_directory.as_deref(),
+            restored_files,
+        )
+    })?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn chat_session_trash_purge(
+    db: State<'_, ChatDb>,
+    project_root: String,
+    target_key: String,
+    tombstone_id: i64,
+) -> Result<(), String> {
+    let key = crate::projects::project_key(&project_root);
+    let record = with_db(&db, |conn| {
+        recycle_record(conn, &key, &target_key, tombstone_id)
+    })?;
+    let Some(record) = record else {
+        return Ok(());
+    };
+    if target_key == "local" {
+        crate::pi_sessions::purge_local_transcript(
+            &key,
+            &record.meta.session_path,
+            record.meta.trash_file.as_deref(),
+            record.meta.trash_directory.as_deref(),
+        )?;
+    }
+    with_db(&db, |conn| {
+        conn.execute(
+            "DELETE FROM chat_session_tombstones WHERE tombstone_id = ?1 AND project_root = ?2 AND target_key = ?3",
+            params![record.meta.tombstone_id, key, target_key],
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn restore_fixture() -> (Connection, RecycleRecord) {
+        let mut conn = Connection::open_in_memory().expect("in-memory database");
+        configure_and_migrate(&mut conn, None).expect("schema");
+        let record = RecycleRecord {
+            meta: TrashedSessionMeta {
+                tombstone_id: 1,
+                session_id: "session-1".into(),
+                name: "Recovered".into(),
+                session_path: "/sessions/session-1.jsonl".into(),
+                preview: "preview".into(),
+                project_root: "/project".into(),
+                execution_binding: local_execution_binding(),
+                target_key: "local".into(),
+                authority_session_id: Some("authority-1".into()),
+                source: "native".into(),
+                created_at: 10,
+                updated_at: 20,
+                deleted_at: 30,
+                trash_file: Some("/trash/session-1.jsonl".into()),
+                trash_directory: None,
+            },
+            messages: "[]".into(),
+        };
+        conn.execute(
+            "INSERT INTO chat_session_tombstones (
+               tombstone_id, target_key, authority_session_id, session_path,
+               session_id, name, preview, messages, project_root, execution_binding,
+               source, created_at, updated_at, trash_file, deleted_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                record.meta.tombstone_id,
+                record.meta.target_key,
+                record.meta.authority_session_id,
+                record.meta.session_path,
+                record.meta.session_id,
+                record.meta.name,
+                record.meta.preview,
+                record.messages,
+                record.meta.project_root,
+                serde_json::to_string(&record.meta.execution_binding).unwrap(),
+                record.meta.source,
+                record.meta.created_at,
+                record.meta.updated_at,
+                record.meta.trash_file,
+                record.meta.deleted_at,
+            ],
+        )
+        .expect("tombstone");
+        (conn, record)
+    }
+
+    fn row_count(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn restore_insert_failure_runs_file_compensation_and_keeps_tombstone() {
+        let (mut conn, record) = restore_fixture();
+        conn.execute(
+            "INSERT INTO chat_sessions (id, created_at, updated_at) VALUES (?1, 1, 1)",
+            [&record.meta.session_id],
+        )
+        .expect("conflicting live row");
+
+        let database_result = restore_recycle_record_in_db(
+            &mut conn,
+            &record,
+            &serde_json::to_string(&record.meta.execution_binding).unwrap(),
+        );
+        assert!(database_result.is_err());
+
+        let receipt = SessionRestoreOutcome {
+            file_restored: true,
+            directory_restored: false,
+        };
+        let mut rolled_back = false;
+        let error = finish_restore_database(database_result, Some(&receipt), |_| {
+            rolled_back = true;
+            Ok(())
+        })
+        .expect_err("restore must report the database failure");
+        assert!(rolled_back);
+        assert!(error.contains("could not restore recycle-bin database record"));
+
+        let combined =
+            finish_restore_database(Err("insert blocked".into()), Some(&receipt), |_| {
+                Err("trash path occupied".into())
+            })
+            .expect_err("restore compensation failure must be included");
+        assert!(combined.contains("insert blocked"));
+        assert!(combined.contains("file rollback also failed: trash path occupied"));
+        assert_eq!(row_count(&conn, "chat_session_tombstones"), 1);
+        assert_eq!(row_count(&conn, "chat_sessions"), 1);
+    }
+
+    #[test]
+    fn restore_delete_failure_rolls_back_insert() {
+        let (mut conn, record) = restore_fixture();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_tombstone_delete
+             BEFORE DELETE ON chat_session_tombstones
+             BEGIN SELECT RAISE(ABORT, 'delete blocked'); END;",
+        )
+        .unwrap();
+
+        let error = restore_recycle_record_in_db(
+            &mut conn,
+            &record,
+            &serde_json::to_string(&record.meta.execution_binding).unwrap(),
+        )
+        .expect_err("delete trigger must abort restore");
+        assert!(error.contains("delete blocked"));
+        assert_eq!(row_count(&conn, "chat_sessions"), 0);
+        assert_eq!(row_count(&conn, "chat_session_tombstones"), 1);
+    }
+
+    #[test]
+    fn restore_commit_failure_rolls_back_insert_and_delete() {
+        let (mut conn, record) = restore_fixture();
+        conn.execute_batch(
+            "CREATE TABLE restore_commit_parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE restore_commit_child (
+               parent_id INTEGER REFERENCES restore_commit_parent(id)
+                 DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER fail_restore_commit
+             AFTER INSERT ON chat_sessions
+             BEGIN INSERT INTO restore_commit_child(parent_id) VALUES (99); END;",
+        )
+        .unwrap();
+
+        let error = restore_recycle_record_in_db(
+            &mut conn,
+            &record,
+            &serde_json::to_string(&record.meta.execution_binding).unwrap(),
+        )
+        .expect_err("deferred foreign key must fail commit");
+        assert!(error.to_ascii_lowercase().contains("foreign key"));
+        assert_eq!(row_count(&conn, "chat_sessions"), 0);
+        assert_eq!(row_count(&conn, "chat_session_tombstones"), 1);
+    }
+
+    #[test]
+    fn recycle_location_update_failure_restores_files_or_reports_both_errors() {
+        let (conn, _) = restore_fixture();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_location_update
+             BEFORE UPDATE OF trash_file, trash_directory ON chat_session_tombstones
+             BEGIN SELECT RAISE(ABORT, 'update blocked'); END;",
+        )
+        .unwrap();
+        let outcome = SessionTrashOutcome {
+            file: Some("/trash/session-1.jsonl".into()),
+            directory: None,
+            skipped: None,
+        };
+        let database_result = save_recycled_locations(&conn, 1, &outcome);
+        assert!(database_result.is_err());
+
+        let mut rolled_back = false;
+        finish_recycle_location_update(database_result, || {
+            rolled_back = true;
+            Ok(())
+        })
+        .expect("successful file rollback leaves a consistent tombstone fallback");
+        assert!(rolled_back);
+
+        let missing_receipt = SessionRestoreOutcome::default();
+        let verification_error = verify_recycle_rollback(&outcome, &missing_receipt)
+            .expect_err("a missing expected move cannot count as compensated");
+        assert!(verification_error.contains("transcript was not restored"));
+
+        let error = finish_recycle_location_update(Err("update blocked".into()), || {
+            Err("file occupied".into())
+        })
+        .expect_err("dual failure must not be hidden");
+        assert!(error.contains("update blocked"));
+        assert!(error.contains("rollback also failed: file occupied"));
+    }
 }

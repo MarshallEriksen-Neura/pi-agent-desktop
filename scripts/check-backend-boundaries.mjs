@@ -9,19 +9,16 @@ const DESKTOP_DIR = "src/lib/backend/desktop/";
 const EXPECTED_COMMAND_NAMES = [
   "app_quit",
   "chat_session_delete", "chat_session_load", "chat_session_rename",
-  "chat_session_save", "chat_sessions_list", "fs_create_dir", "fs_create_file",
+  "chat_session_save", "chat_session_trash_list", "chat_session_trash_purge",
+  "chat_session_trash_restore", "chat_sessions_list", "fs_create_dir", "fs_create_file",
   "fs_delete", "fs_index_files", "fs_list_dir", "fs_read_file", "fs_read_file_base64", "fs_rename",
   "fs_write_file", "list_custom_pets", "open_external", "open_html_preview",
   "pet_window_hide",
   "pet_window_prewarm",
   "pet_window_set_position", "pet_window_show", "pet_window_toggle", "pi_cli",
-  "pi_cli_update_check", "pi_fetch_models", "pi_generate_title", "pi_send",
+  "pi_cli_update_check", "pi_fetch_models", "pi_generate_title", "pi_send", "pi_session_read",
   "pi_settings_read", "pi_settings_write", "pi_start", "pi_stop", "project_open", "project_open_remote",
-  // Moving pi's own transcript into `~/.pi/agent/session-trash/` is a separate
-  // command from `chat_session_delete` because the index row and the file fail
-  // differently — see `pi_sessions.rs`.
   "repository_diff", "repository_mutate", "repository_status",
-  "pi_session_trash",
   "mcp_adapter_check", "mcp_config_discover", "mcp_config_open_dir", "mcp_config_read", "mcp_config_write",
   "project_resolve",
   "project_pick", "project_remove_recent", "projects_recent",

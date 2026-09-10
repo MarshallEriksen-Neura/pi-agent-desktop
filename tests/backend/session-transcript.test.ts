@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   activeSessionBranch,
+  nativeSnapshotFromJsonl,
   SessionTranscriptError,
   sessionEntriesToChatMessages,
   type PiEntriesSnapshot,
@@ -121,5 +122,39 @@ test("rejects a broken active branch instead of presenting an empty conversation
     () => activeSessionBranch({ entries: [], leafId: "missing" }),
     (error: unknown) =>
       error instanceof SessionTranscriptError && /missing entry missing/.test(error.message)
+  );
+});
+
+test("native JSONL fast path mirrors Pi leaf selection for v3 sessions", () => {
+  const snapshot = nativeSnapshotFromJsonl(
+    [
+      JSON.stringify({ type: "session", version: 3, id: "session-id", cwd: "C:/project" }),
+      JSON.stringify(entry("u1", null, { role: "user", content: "hello" })),
+      JSON.stringify({
+        type: "model_change",
+        id: "m1",
+        parentId: "u1",
+        timestamp: "2026-01-02T03:04:06.000Z",
+        provider: "openai",
+        modelId: "test",
+      }),
+    ].join("\n")
+  );
+
+  assert.equal(snapshot.leafId, "m1");
+  assert.deepEqual(snapshot.entries.map((value) => value.type), ["message", "model_change"]);
+});
+
+test("native JSONL fast path defers unknown session versions to Pi RPC", () => {
+  assert.throws(
+    () =>
+      nativeSnapshotFromJsonl(
+        [
+          JSON.stringify({ type: "session", version: 4, id: "future-session", cwd: "C:/project" }),
+          JSON.stringify(entry("u1", null, { role: "user", content: "future" })),
+        ].join("\n")
+      ),
+    (error: unknown) =>
+      error instanceof SessionTranscriptError && /Unsupported native Pi session version 4/.test(error.message)
   );
 });

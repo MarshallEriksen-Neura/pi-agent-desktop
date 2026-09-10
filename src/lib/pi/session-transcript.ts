@@ -20,6 +20,49 @@ export interface PiEntriesSnapshot {
   leafId: string | null;
 }
 
+const SUPPORTED_NATIVE_SESSION_VERSION = 3;
+
+/**
+ * Build the same structural snapshot returned by Pi's `get_entries` directly
+ * from a persisted native JSONL file. The fast path is deliberately limited to
+ * the session format version we have audited; older/newer formats fall back to
+ * Pi RPC so Pi remains the compatibility authority.
+ */
+export function nativeSnapshotFromJsonl(raw: string): PiEntriesSnapshot {
+  const entries: PiSessionEntry[] = [];
+  let leafId: string | null = null;
+  let sawHeader = false;
+
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const entry = JSON.parse(line) as PiSessionEntry;
+    if (!entry || typeof entry !== "object" || typeof entry.type !== "string") continue;
+    if (entry.type === "session") {
+      const version = record(entry)?.version;
+      if (version !== SUPPORTED_NATIVE_SESSION_VERSION) {
+        throw new SessionTranscriptError(
+          `Unsupported native Pi session version ${String(version)}; falling back to Pi RPC`
+        );
+      }
+      sawHeader = true;
+      continue;
+    }
+    entries.push(entry);
+    if (typeof entry.id === "string" && entry.id.length > 0) {
+      // Mirrors SessionManager._buildIndex(): the latest non-session entry in
+      // append order is the current leaf, regardless of entry kind.
+      leafId = entry.id;
+    }
+  }
+
+  if (!sawHeader) {
+    throw new SessionTranscriptError("Native Pi session has no valid session header");
+  }
+
+  return { entries, leafId };
+}
+
 export class SessionTranscriptError extends Error {
   constructor(message: string) {
     super(message);

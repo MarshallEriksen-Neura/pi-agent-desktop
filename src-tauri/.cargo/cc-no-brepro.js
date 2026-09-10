@@ -37,6 +37,30 @@ try {
     { encoding: 'utf8' }
   ).trim();
 } catch (e) { vs = ''; }
+
+// Some Build Tools installs are perfectly usable but are not returned by
+// vswhere's component query (observed on machines where VsDevCmd/vcvarsall and
+// cl.exe are present). Fall back to the environment and the standard VS 2022
+// install locations before declaring the toolchain missing.
+if (!vs) {
+  const fromVcDir = process.env.VCINSTALLDIR
+    ? path.resolve(process.env.VCINSTALLDIR, '..')
+    : '';
+  const candidates = [
+    process.env.VSINSTALLDIR,
+    fromVcDir,
+    path.join(pf, 'Microsoft Visual Studio', '2022', 'BuildTools'),
+    path.join(pf, 'Microsoft Visual Studio', '2022', 'Community'),
+    path.join(pf, 'Microsoft Visual Studio', '2022', 'Professional'),
+    path.join(pf, 'Microsoft Visual Studio', '2022', 'Enterprise'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Microsoft Visual Studio', '2022', 'Community'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Microsoft Visual Studio', '2022', 'Professional'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Microsoft Visual Studio', '2022', 'Enterprise'),
+  ].filter(Boolean);
+  vs = candidates.find((candidate) =>
+    fs.existsSync(path.join(candidate, 'VC', 'Auxiliary', 'Build', 'vcvarsall.bat'))
+  ) || '';
+}
 if (!vs) {
   process.stderr.write('[cc-no-brepro] Could not locate a Visual Studio install with the VC tools.\n');
   process.exit(1);

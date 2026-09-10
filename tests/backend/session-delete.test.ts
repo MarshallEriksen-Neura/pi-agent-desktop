@@ -4,24 +4,14 @@ import test from "node:test";
 import type { SessionRepositoryPort } from "../../src/lib/backend/ports";
 import type { ExecutionBinding } from "../../src/lib/backend/ports/execution-target";
 import type { ChatSessionMeta } from "../../src/lib/pi/sessions";
-import {
-  configureSessionDependenciesForTests,
-  trashableTranscript,
-  useSessions,
-} from "../../src/lib/pi/sessions";
+import { configureSessionDependenciesForTests, useSessions } from "../../src/lib/pi/sessions";
 
 /**
- * Deleting a conversation has to reach two stores: the SQLite index row and pi's
- * own transcript. Before this, only the row went — Desktop reported the
- * conversation deleted while the CLI still listed it, and the orphan transcripts
- * accumulated indefinitely.
- *
- * What is worth locking here is the *order* and the *failure asymmetry*, because
- * both are easy to "simplify" into a bug: moving the file first turns a delete
- * whose row write failed into silent data loss, and letting a failed file move
- * abort the delete puts the row back after the user was told it was gone.
+ * The Tauri repository owns the complete SQLite/transcript recycle transaction.
+ * The frontend must make one repository call and only remove local state after it
+ * succeeds; splitting the operation here would duplicate file moves and bypass
+ * the backend's compensation protocol.
  */
-
 const SSH_BINDING: ExecutionBinding = {
   kind: "ssh",
   profileId: "profile-1",
@@ -49,7 +39,7 @@ interface Harness {
   restore: () => void;
 }
 
-function harness(failures: { delete?: boolean; trash?: boolean } = {}): Harness {
+function harness(failures: { delete?: boolean } = {}): Harness {
   const order: string[] = [];
   const repository = {
     list: async () => [],
@@ -60,10 +50,9 @@ function harness(failures: { delete?: boolean; trash?: boolean } = {}): Harness 
       order.push(`delete:${id}`);
       if (failures.delete) throw new Error("index write failed");
     },
-    trashSessionFile: async (_scope: unknown, path: string) => {
-      order.push(`trash:${path}`);
-      if (failures.trash) throw new Error("rename failed");
-    },
+    listTrash: async () => [],
+    restoreTrash: async () => {},
+    purgeTrash: async () => {},
     generateTitle: async () => "",
   } as unknown as SessionRepositoryPort;
 
@@ -95,40 +84,17 @@ function seed(doomed: ChatSessionMeta): string {
   return doomed.id;
 }
 
-test("deleting a conversation removes the index row, then pi's transcript", async () => {
+test("deleting a conversation delegates the complete recycle operation to the repository", async () => {
   const { order, restore } = harness();
   try {
     const id = seed(meta({ id: "doomed", sessionPath: "D:/sessions/doomed.jsonl" }));
 
     await useSessions.getState().deleteSession(id);
 
-    assert.deepEqual(
-      order,
-      ["delete:doomed", "trash:D:/sessions/doomed.jsonl"],
-      "the row must go first: a transcript moved out from under a surviving row " +
-        "would be recreated empty by the next --session resume",
-    );
+    assert.deepEqual(order, ["delete:doomed"]);
     assert.deepEqual(
       useSessions.getState().sessions.map((session) => session.id),
       ["keeper"],
-    );
-  } finally {
-    restore();
-  }
-});
-
-test("a failed transcript move still leaves the conversation deleted", async () => {
-  const { order, restore } = harness({ trash: true });
-  try {
-    const id = seed(meta({ id: "doomed", sessionPath: "D:/sessions/doomed.jsonl" }));
-
-    await useSessions.getState().deleteSession(id);
-
-    assert.deepEqual(order, ["delete:doomed", "trash:D:/sessions/doomed.jsonl"]);
-    assert.deepEqual(
-      useSessions.getState().sessions.map((session) => session.id),
-      ["keeper"],
-      "an orphan transcript is the pre-existing state, not a reason to restore the row",
     );
   } finally {
     restore();
@@ -182,22 +148,4 @@ test("a conversation that never ran has no transcript to move", async () => {
   } finally {
     restore();
   }
-});
-
-test("trashableTranscript states the policy on its own", () => {
-  assert.equal(trashableTranscript(undefined), null);
-  assert.equal(trashableTranscript(meta({ id: "a", sessionPath: "  " })), null);
-  assert.equal(
-    trashableTranscript(meta({ id: "b", sessionPath: "D:/s/a.jsonl", executionBinding: SSH_BINDING })),
-    null,
-  );
-  assert.equal(
-    trashableTranscript(meta({ id: "c", sessionPath: " D:/s/a.jsonl " })),
-    "D:/s/a.jsonl",
-  );
-  assert.equal(
-    trashableTranscript({ ...meta({ id: "d", sessionPath: "D:/s/a.jsonl" }), executionBinding: undefined }),
-    "D:/s/a.jsonl",
-    "rows written before executionBinding existed default to local",
-  );
 });

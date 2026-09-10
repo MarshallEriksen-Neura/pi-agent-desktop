@@ -588,6 +588,12 @@ export function clearPiStores(): void {
   piStores.clear();
 }
 
+/** Drop one task's process-state store after its idle Pi process is reclaimed. */
+export function clearPiStore(taskId: string): void {
+  const key = taskId.trim() || DEFAULT_TASK_ID;
+  piStores.delete(key);
+}
+
 function activePiStore(): PiStoreApi {
   return getPiStore(getActiveTaskId());
 }
