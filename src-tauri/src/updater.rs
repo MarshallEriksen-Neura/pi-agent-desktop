@@ -8,6 +8,8 @@
 use serde::Serialize;
 use std::process::{Command, Stdio};
 
+use pi_backend_core::process_command::configure_headless;
+
 /// Release repository queried for version tags.
 const UPDATE_REPO_URL: &str = "https://github.com/MarshallEriksen-Neura/pi-agent-desktop.git";
 
@@ -61,12 +63,7 @@ fn latest_remote_tag(repo: &str) -> Result<Option<(String, String)>, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    configure_headless(&mut cmd);
     let out = cmd
         .output()
         .map_err(|e| format!("failed to run git: {e}"))?;
@@ -160,12 +157,6 @@ fn pi_installed_version() -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
     let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;

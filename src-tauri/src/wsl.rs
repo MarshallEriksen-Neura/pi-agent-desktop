@@ -13,6 +13,8 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use pi_backend_core::process_command::configure_headless;
+
 static LEGACY_WSL_MIGRATION: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
@@ -100,16 +102,6 @@ fn append_context_args(cmd: &mut Command, context: &WslContext) {
         cmd.args(["--cd", cwd]);
     }
 }
-
-#[cfg(windows)]
-fn hide_window(cmd: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    cmd.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_window(_cmd: &mut Command) {}
 
 fn actionable_wsl_diagnostic(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
@@ -339,7 +331,7 @@ pub fn run_shell_bridge_if_requested() -> Option<i32> {
         .args(["--exec", "bash", "-lc"])
         .arg(command)
         .stderr(Stdio::piped());
-    hide_window(&mut child);
+    configure_headless(&mut child);
     let mut child = match child.spawn() {
         Ok(child) => child,
         Err(error) => {

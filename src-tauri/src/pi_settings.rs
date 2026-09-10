@@ -114,13 +114,6 @@ pub async fn pi_cli(args: Vec<String>, cwd: Option<String>) -> Result<CliResult,
             cmd.current_dir(dir);
         }
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
         let out = cmd.output().map_err(|e| format!("failed to run pi: {e}"))?;
         Ok(CliResult {
             code: out.status.code().unwrap_or(-1),

@@ -25,6 +25,8 @@ extern "C" {}
 use pi_backend_core::backend_health::{BackendHealthSnapshot, ComponentStatus};
 use pi_backend_core::backend_lifecycle::{ShutdownCoordinator, ShutdownStage};
 use pi_backend_core::pi_process::ProcessPhase;
+#[cfg(windows)]
+use pi_backend_core::process_command::configure_headless;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{
@@ -194,9 +196,12 @@ pub fn run_shell_bridge_if_requested() -> Option<i32> {
 /// call failed on "only http(s) urls allowed" before it ever reached the shell.
 fn spawn_url_opener(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    let r = std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", url])
-        .spawn();
+    let r = {
+        let mut command = std::process::Command::new("rundll32");
+        command.args(["url.dll,FileProtocolHandler", url]);
+        configure_headless(&mut command);
+        command.spawn()
+    };
     #[cfg(target_os = "macos")]
     let r = std::process::Command::new("open").arg(url).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]

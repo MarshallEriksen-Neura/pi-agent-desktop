@@ -6,6 +6,7 @@
 
 use crate::remote_profiles::{self, RemotePiProfile};
 use pi_backend_core::pi_process::LaunchSpec;
+use pi_backend_core::process_command::configure_headless_if;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -696,13 +697,7 @@ fn execute_launcher(profile: &RemotePiProfile, request: &[u8]) -> Result<Launche
             command.env(name, value);
         }
     }
-    #[cfg(windows)]
-    if create_no_window {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    #[cfg(not(windows))]
-    let _ = create_no_window;
+    configure_headless_if(&mut command, create_no_window);
 
     let mut child = command.spawn().map_err(|_| code("ssh_spawn_failed"))?;
     let mut stdin = child

@@ -10,6 +10,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+#[cfg(windows)]
+use crate::process_command::configure_headless_if;
+
 const DEFAULT_MAX_INPUT_BYTES: usize = 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_LINE_BYTES: usize = 1024 * 1024;
 const DEFAULT_COMMAND_CAPACITY: usize = 64;
@@ -792,11 +795,7 @@ fn emit_decoded_line(
 
 #[cfg(windows)]
 fn configure_platform_command(command: &mut Command, create_no_window: bool) {
-    if create_no_window {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    configure_headless_if(command, create_no_window);
 }
 
 #[cfg(not(windows))]

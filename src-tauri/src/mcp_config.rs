@@ -17,6 +17,9 @@ use std::sync::{
     Mutex,
 };
 
+#[cfg(windows)]
+use pi_backend_core::process_command::configure_headless;
+
 static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -124,7 +127,12 @@ pub async fn mcp_config_open_dir(scope: String, root: Option<String>) -> Result<
         })?;
 
         #[cfg(target_os = "windows")]
-        let result = Command::new("explorer.exe").arg(&directory).spawn();
+        let result = {
+            let mut command = Command::new("explorer.exe");
+            command.arg(&directory);
+            configure_headless(&mut command);
+            command.spawn()
+        };
         #[cfg(target_os = "macos")]
         let result = Command::new("open").arg(&directory).spawn();
         #[cfg(all(unix, not(target_os = "macos")))]

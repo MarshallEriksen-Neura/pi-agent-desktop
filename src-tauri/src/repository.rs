@@ -10,6 +10,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::State;
 
+use pi_backend_core::process_command::configure_headless;
+
 const METADATA_MAX_BYTES: usize = 64 * 1024;
 const STATUS_MAX_BYTES: usize = 8 * 1024 * 1024;
 const DIFF_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -338,6 +340,7 @@ fn run_git_with_options(
             .env("GIT_COMMITTER_NAME", &identity.name)
             .env("GIT_COMMITTER_EMAIL", &identity.email);
     }
+    configure_headless(&mut command);
     let mut child = command.spawn().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             "gitUnavailable: Git executable was not found".to_owned()

@@ -6,6 +6,7 @@
 use crate::conversation_protocol::REMOTE_CONVERSATION_MAX_MESSAGE_TEXT_BYTES;
 use crate::protocol::MAX_PROMPT_BYTES;
 use pi_backend_core::pi_process::{LaunchSpec, PiProcess, ProcessEvent, ProcessLimits};
+use pi_backend_core::process_command::configure_headless;
 use serde::Deserialize;
 use serde_json::Value;
 use std::ffi::OsString;
@@ -685,6 +686,7 @@ fn probe_version(config: &PiSessionConfig) -> Result<String, PiSessionError> {
     command.args(&config.prefix_args);
     command.arg("--version");
     command.stdout(Stdio::piped()).stderr(Stdio::null());
+    configure_headless(&mut command);
     let mut child = command
         .spawn()
         .map_err(|_| err(PiSessionErrorCode::ProbeUnavailable))?;

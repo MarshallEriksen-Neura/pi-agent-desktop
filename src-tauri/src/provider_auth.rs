@@ -23,6 +23,8 @@ use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use pi_backend_core::process_command::configure_headless;
+
 /// The sidecar is embedded so it cannot drift from this file or go missing from
 /// an installed bundle.
 const SIDECAR_SOURCE: &str = include_str!("provider_auth_sidecar.mjs");
@@ -74,16 +76,6 @@ impl Drop for SidecarChild {
     }
 }
 
-#[cfg(windows)]
-fn no_console_window(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn no_console_window(_command: &mut Command) {}
-
 /// Build the sidecar invocation from one coherent Pi runtime.
 fn sidecar_command(script: &SidecarScript, args: &[&str]) -> Result<Command, String> {
     let runtime = crate::pi_command::PiRuntime::discover(None)?;
@@ -97,7 +89,7 @@ fn sidecar_command(script: &SidecarScript, args: &[&str]) -> Result<Command, Str
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    no_console_window(&mut command);
+    configure_headless(&mut command);
     Ok(command)
 }
 

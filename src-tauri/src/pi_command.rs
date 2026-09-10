@@ -5,6 +5,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use pi_backend_core::process_command::configure_headless;
+
 const PI_PACKAGE_PARTS: [&str; 2] = ["@earendil-works", "pi-coding-agent"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +94,7 @@ impl PiRuntime {
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.pi_executable);
         self.configure_command(&mut command);
+        configure_headless(&mut command);
         command
     }
 }
@@ -318,11 +321,7 @@ fn npm_global_package(pi: &Path, context: &DiscoveryContext) -> Option<PathBuf> 
     let mut command = Command::new(npm);
     command.args(["root", "-g"]);
     command.env("PATH", &context.path);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
+    configure_headless(&mut command);
     let output = command.output().ok()?;
     if !output.status.success() {
         return None;

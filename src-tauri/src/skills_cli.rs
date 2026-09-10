@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use pi_backend_core::process_command::configure_headless;
+
 use crate::pi_settings::CliResult;
 
 /// Anonymous catalogue search — the endpoint the Skills CLI's own `find` command
@@ -67,12 +69,7 @@ pub async fn skills_cli(args: Vec<String>, cwd: Option<String>) -> Result<CliRes
             cmd.current_dir(dir);
         }
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        configure_headless(&mut cmd);
 
         let out = cmd
             .output()

@@ -28,6 +28,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::process_command::configure_headless;
+
 /// Directories that never belong in a coding-agent file index.
 ///
 /// The single source of truth for both this walk and the file tree's listing
@@ -104,13 +106,8 @@ pub fn index_from_git(root: &Path, limit: usize) -> Option<FileIndex> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    #[cfg(windows)]
-    {
-        // Without this every `@` would flash a console window over the app.
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    // Without this every `@` would flash a console window over the app.
+    configure_headless(&mut command);
 
     let output = command.output().ok()?;
     if !output.status.success() {

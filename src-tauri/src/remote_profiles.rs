@@ -3,6 +3,7 @@
 use crate::pi_bridge::PiProc;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use pi_backend_core::pi_process::LaunchSpec;
+use pi_backend_core::process_command::configure_headless_if;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -3633,14 +3634,7 @@ fn run_bounded_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // Without this, each short-lived SSH call flashes a console window over the GUI.
-    #[cfg(windows)]
-    if spec.create_no_window {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(windows))]
-    let _ = spec.create_no_window;
+    configure_headless_if(&mut command, spec.create_no_window);
 
     let mut child = command
         .spawn()

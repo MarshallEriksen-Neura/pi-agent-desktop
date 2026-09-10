@@ -15,6 +15,7 @@ All notable changes to Pi Desktop will be documented in this file.
 - 切换会话时会回收已经空闲的 Pi 客户端，真正仍在运行的后台任务继续保留，避免浏览大量历史会话后累积一批无用 RPC 进程。
 
 ### Fixed
+- **修复 Windows 桌面端启动及后台刷新时反复闪现控制台窗口的问题**。仓库状态轮询此前会直接启动可见的 `git.exe`，现在所有非交互式子进程统一通过共享的 `CREATE_NO_WINDOW` 策略启动；Pi、Git、更新器、Skills、认证、SSH、文件索引等后台命令均受同一策略保护，`portable-pty` 交互终端保持不变。
 - **修复 Windows 原生会话目录编码错误**。`fs::canonicalize()` 返回的 `\\?\` / verbatim UNC 路径现在会先规范化，再按 Pi CLI 的目录规则编码，Desktop 能正确发现 `~/.pi/agent/sessions/--C--...--` 下的 CLI 会话。
 - 修复原生会话初次导入只有空 `name` / `preview` / `messages`，导致侧边栏出现大量“新会话”、正文延迟出现或保持空白的问题。
 - 修复只读打开历史会话也会保存并刷新 `updated_at`，导致旧会话排序不断跳动的问题。
