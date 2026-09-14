@@ -132,7 +132,7 @@ async function renderInspector(options: {
 
   const view = render(React.createElement(componentModule.RepositoryInspector));
   await waitFor(() => {
-    assert.ok(view.getByRole("button", { name: "Push" }));
+    assert.ok(view.getByRole("button", { name: /^Push\b/ }));
     assert.equal(repositoryModule.useRepository.getState().loading, false);
     assert.equal(repositoryModule.useRepository.getState().result?.kind, "repository");
     assert.ok(view.getByRole("button", { name: "Fetch" }));
@@ -175,6 +175,25 @@ describe("Repository Inspector reviewed Git workflows", () => {
     await GlobalRegistrator.unregister();
   });
 
+test("Repository Inspector shows pending commit count on the push button", async () => {
+  const pending = await renderInspector({ initial: snapshot({ ahead: 3 }) });
+  try {
+    const pushButton = pending.getByRole("button", { name: "Push 3 unpushed commits" });
+    assert.match(pushButton.textContent ?? "", /Push\s*3/);
+  } finally {
+    pending.dispose();
+  }
+
+  const synced = await renderInspector({ initial: snapshot({ ahead: 0 }) });
+  try {
+    const pushButton = synced.getByRole("button", { name: "Push" });
+    assert.equal(pushButton.textContent?.trim(), "Push");
+    await synced.act(async () => new Promise((resolve) => setTimeout(resolve, 500)));
+  } finally {
+    synced.dispose();
+  }
+});
+
 test("Repository Inspector confirms the exact reviewed push destination before pushing", async () => {
   const ui = await renderInspector({ initial: snapshot({ remotes: ["origin", "fork"] }) });
   try {
@@ -183,14 +202,16 @@ test("Repository Inspector confirms the exact reviewed push destination before p
     assert.match(fetchRemote.className, /repository-control/);
     ui.fireEvent.change(fetchRemote, { target: { value: "fork" } });
     assert.equal(fetchRemote.value, "fork");
-    assert.equal((ui.getByRole("button", { name: "Push" }) as HTMLButtonElement).disabled, false);
+    const pushButton = ui.getByRole("button", { name: "Push 1 unpushed commit" }) as HTMLButtonElement;
+    assert.equal(pushButton.disabled, false);
+    assert.match(pushButton.textContent ?? "", /Push\s*1/);
     assert.equal(ui.queryByRole("button", { name: "Fast-forward" }), null);
     assert.equal(ui.queryByRole("button", { name: "Review integration" }), null);
     assert.equal(ui.queryByLabelText("Integration strategy"), null);
-    ui.fireEvent.click(ui.getByRole("button", { name: "Push" }));
+    ui.fireEvent.click(pushButton);
     assert.equal(ui.actionCalls.length, 0);
 
-    const dialog = ui.getByRole("dialog", { name: "Push this branch?" });
+    const dialog = ui.getByRole("alertdialog", { name: "Push this branch?" });
     assert.match(dialog.textContent ?? "", /main → origin\/main/);
     ui.fireEvent.click(ui.getByRole("button", { name: "Push current branch" }));
 
@@ -222,7 +243,7 @@ test("Repository Inspector confirms the exact reviewed fast-forward direction be
     ui.fireEvent.click(ui.getByRole("button", { name: "Fast-forward" }));
     assert.equal(ui.actionCalls.length, 0);
 
-    const dialog = ui.getByRole("dialog", { name: "Fast-forward this branch?" });
+    const dialog = ui.getByRole("alertdialog", { name: "Fast-forward this branch?" });
     assert.match(dialog.textContent ?? "", /main ← origin\/main/);
     assert.match(dialog.textContent ?? "", /no network request/i);
     ui.fireEvent.click(ui.getByRole("button", { name: "Fast-forward local branch" }));
@@ -252,7 +273,7 @@ test("Repository Inspector refuses a reviewed integration after generation chang
   const ui = await renderInspector({ initial: snapshot({ ahead: 0, behind: 1, files: [] }) });
   try {
     ui.fireEvent.click(ui.getByRole("button", { name: "Fast-forward" }));
-    assert.ok(ui.getByRole("dialog", { name: "Fast-forward this branch?" }));
+    assert.ok(ui.getByRole("alertdialog", { name: "Fast-forward this branch?" }));
     await ui.act(async () => {
       ui.stores.repository.setState((state) => ({
         result: state.result?.kind === "repository"
@@ -435,7 +456,7 @@ test("Repository Inspector drives bounded branch actions and disables writes whi
     });
     await ui.waitFor(() => {
       assert.equal((ui.getByRole("button", { name: "Fetch" }) as HTMLButtonElement).disabled, true);
-      assert.equal((ui.getByRole("button", { name: "Push" }) as HTMLButtonElement).disabled, true);
+      assert.equal((ui.getByRole("button", { name: /^Push\b/ }) as HTMLButtonElement).disabled, true);
       assert.equal(ui.queryByRole("button", { name: "Fast-forward" }), null);
       assert.equal((ui.getByRole("button", { name: "Switch" }) as HTMLButtonElement).disabled, true);
       assert.equal((ui.getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled, true);
@@ -473,7 +494,7 @@ test("Repository Inspector keeps AI output editable and never commits it automat
     ui.fireEvent.change(textarea, { target: { value: "feat: human-reviewed draft" } });
     assert.equal(textarea.value, "feat: human-reviewed draft");
     ui.fireEvent.click(ui.getByRole("button", { name: "Commit 1 staged" }));
-    assert.ok(ui.getByRole("dialog", { name: "Create this commit?" }));
+    assert.ok(ui.getByRole("alertdialog", { name: "Create this commit?" }));
     assert.equal(ui.actionCalls.length, 0);
   } finally {
     ui.dispose();
@@ -684,7 +705,9 @@ test("Repository Inspector freezes and dispatches the exact reviewed merge inten
   });
   const ui = await renderInspector({ initial });
   try {
-    assert.equal((ui.getByRole("button", { name: "Push" }) as HTMLButtonElement).disabled, true);
+    const blockedPush = ui.getByRole("button", { name: "Push 2 unpushed commits" }) as HTMLButtonElement;
+    assert.equal(blockedPush.disabled, true);
+    assert.match(blockedPush.textContent ?? "", /Push\s*2/);
     assert.equal(ui.queryByRole("button", { name: "Fast-forward" }), null);
     assert.match(ui.container.textContent ?? "", /Diverged · 2 local \/ 3 upstream/);
     const strategy = ui.getByLabelText("Integration strategy") as HTMLSelectElement;
@@ -698,7 +721,7 @@ test("Repository Inspector freezes and dispatches the exact reviewed merge inten
     });
     ui.fireEvent.click(ui.getByRole("button", { name: "Review integration" }));
     ui.fireEvent.change(mergeMessageInput, { target: { value: "Unreviewed replacement" } });
-    const dialog = ui.getByRole("dialog", { name: "Merge these reviewed histories?" });
+    const dialog = ui.getByRole("alertdialog", { name: "Merge these reviewed histories?" });
     assert.match(dialog.textContent ?? "", /topic ← origin\/main/);
     assert.match(dialog.textContent ?? "", /Merge commit/);
     assert.match(dialog.textContent ?? "", /no network request/i);
@@ -733,7 +756,7 @@ test("Repository Inspector does not dispatch a reviewed merge while refresh is p
     ui.fireEvent.change(ui.getByLabelText("Integration strategy"), { target: { value: "mergeCommit" } });
     ui.fireEvent.change(ui.getByLabelText("Merge commit message"), { target: { value: "Reviewed merge" } });
     ui.fireEvent.click(ui.getByRole("button", { name: "Review integration" }));
-    assert.ok(ui.getByRole("dialog", { name: "Merge these reviewed histories?" }));
+    assert.ok(ui.getByRole("alertdialog", { name: "Merge these reviewed histories?" }));
     await ui.act(async () => new Promise((resolve) => setTimeout(resolve, 500)));
     await ui.act(async () => {
       ui.stores.repository.setState({ loading: true });
@@ -762,7 +785,7 @@ test("Repository Inspector dispatches reviewed linear rebase without a message f
   try {
     ui.fireEvent.change(ui.getByLabelText("Integration strategy"), { target: { value: "rebaseLinear" } });
     ui.fireEvent.click(ui.getByRole("button", { name: "Review integration" }));
-    const dialog = ui.getByRole("dialog", { name: "Rebase this reviewed local history?" });
+    const dialog = ui.getByRole("alertdialog", { name: "Rebase this reviewed local history?" });
     assert.match(dialog.textContent ?? "", /topic ← origin\/main/);
     assert.match(dialog.textContent ?? "", /Linear rebase/);
     assert.match(dialog.textContent ?? "", /not Pull/);
@@ -968,7 +991,7 @@ test("Repository Inspector visibly explains conflict-blocked batch staging", asy
       assert.equal(batch.getAttribute("aria-describedby"), guidance.id);
     }
     assert.equal((ui.getByRole("button", { name: "Fetch" }) as HTMLButtonElement).disabled, true);
-    assert.equal((ui.getByRole("button", { name: "Push" }) as HTMLButtonElement).disabled, true);
+    assert.equal((ui.getByRole("button", { name: /^Push\b/ }) as HTMLButtonElement).disabled, true);
     assert.equal((ui.getByLabelText("Commit message") as HTMLTextAreaElement).disabled, true);
     await ui.act(async () => new Promise((resolve) => setTimeout(resolve, 500)));
   } finally {

@@ -506,6 +506,11 @@ export function RepositoryInspector() {
   };
   const currentBranch = result.head.kind === "branch" ? result.head.name : null;
   const currentHeadOid = result.head.kind === "unborn" ? null : result.head.oid;
+  const pushLabel = ahead === 1
+    ? t("repository.pushOnePending")
+    : ahead > 1
+      ? t("repository.pushManyPending", { count: ahead })
+      : t("repository.push");
   const pushReady = !writeDisabled && Boolean(
     currentBranch
     && result.upstreamRemote
@@ -700,6 +705,7 @@ export function RepositoryInspector() {
                 type="button" className="pi-button repository-action-button" style={compactButtonStyle}
                 disabled={!pushReady}
                 title={pushDisabledReason}
+                aria-label={pushLabel}
                 onClick={() => {
                   if (!currentBranch || !currentHeadOid || !result.upstreamRemote || !result.upstreamBranch) return;
                   setConfirmPush({
@@ -713,7 +719,8 @@ export function RepositoryInspector() {
                 }}
               >
                 <Upload size={13} />
-                {t("repository.push")}
+                <span>{t("repository.push")}</span>
+                {ahead > 0 && <span aria-hidden="true" style={pushCountBadgeStyle}>{ahead}</span>}
               </button>
             </div>
           </div>
@@ -1190,6 +1197,7 @@ const operationRowStyle: React.CSSProperties = { minWidth: 0, display: "flex", a
 const compactFieldStyle: React.CSSProperties = { minWidth: 0, minHeight: 32, flex: 1, padding: "0 8px", border: "1px solid var(--separator)", borderRadius: 7, background: "var(--bg-elevated)", color: "var(--text-primary)", fontFamily: "var(--font-ui)", fontSize: 12, outline: "none" };
 const technicalFieldStyle: React.CSSProperties = { fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" };
 const compactButtonStyle: React.CSSProperties = { minHeight: 32, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "0 9px", border: "1px solid var(--separator)", borderRadius: 7, background: "var(--bg-elevated)", color: "var(--text-primary)", fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 550, whiteSpace: "nowrap" };
+const pushCountBadgeStyle: React.CSSProperties = { minWidth: 17, height: 17, display: "inline-grid", placeItems: "center", padding: "0 4px", borderRadius: 999, background: "var(--accent-muted)", color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700, fontVariantNumeric: "tabular-nums", lineHeight: 1 };
 const upstreamValueStyle: React.CSSProperties = { minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-primary)" };
 const integrationCardStyle: React.CSSProperties = { display: "grid", gap: 8, padding: 9, border: "1px solid var(--separator)", borderRadius: 9, background: "var(--bg-elevated)" };
 const integrationHeaderStyle: React.CSSProperties = { minWidth: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "3px 8px" };

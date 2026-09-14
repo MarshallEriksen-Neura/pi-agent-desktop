@@ -157,3 +157,29 @@ test("publishes result metrics and patches before workspace snapshot work", () =
   assert.ok(statRecordAt < snapshotAt, "badge metrics must not wait for workspace IPC");
   assert.ok(bodyRecordAt < snapshotAt, "turn diffs must not wait for workspace IPC");
 });
+
+test("keeps exact edit metrics subscribed across task switches", () => {
+  const source = readFileSync(
+    resolve(process.cwd(), "src/lib/pi/agent-bridge.ts"),
+    "utf8",
+  );
+  const initStart = source.indexOf("export function initAgentBridge()");
+  const destroyStart = source.indexOf("export function destroyAgentBridge()", initStart);
+  const init = source.slice(initStart, destroyStart);
+
+  assert.ok(initStart >= 0 && destroyStart > initStart, "bridge lifecycle must exist");
+  assert.match(init, /onAnyTaskEvent\(\s*["']tool_execution_end["']/);
+  assert.match(init, /EDIT_TOOL\.test\(e\.toolName/);
+  assert.match(init, /diffStatFromResult\(e\.result\)/);
+  assert.match(init, /useDiffStats\.getState\(\)\.record\(e\.toolCallId/);
+});
+
+test("edit rows fall back to metrics preserved on restored tool calls", () => {
+  const source = readFileSync(
+    resolve(process.cwd(), "src/components/MessageBubble.tsx"),
+    "utf8",
+  );
+
+  assert.match(source, /const liveStat = useToolDiffStat\(tool\.id\)/);
+  assert.match(source, /const stat = liveStat \?\? tool\.diffStat/);
+});

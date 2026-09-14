@@ -3150,8 +3150,9 @@ fn check_readiness(
     finish_report(report)
 }
 
-/// Fills unreached rows and derives `ok`. The pi-auth warning does not block:
-/// a config file is weak evidence and a false negative must not stop a switch.
+/// Fills unreached rows and derives `ok`. Pi credential discovery is weak
+/// evidence, and omitting the optional browse start directory is intentional.
+/// Other skipped rows still mean a prerequisite was not observed and must block.
 fn finish_report(mut report: RemoteReadinessReport) -> RemoteReadinessReport {
     for id in CHECK_ORDER {
         if !report.checks.iter().any(|check| check.id == id) {
@@ -3166,6 +3167,11 @@ fn finish_report(mut report: RemoteReadinessReport) -> RemoteReadinessReport {
     });
     report.ok = report.checks.iter().all(|check| match check.id {
         CHECK_PI_AUTH => check.status != "failed",
+        // `remote_cwd == ""` is the report contract for an omitted optional
+        // browse directory. Only that intentional skip is non-blocking.
+        CHECK_WORKSPACE if report.remote_cwd.is_empty() => {
+            check.status == "ok" || check.status == "skipped"
+        }
         _ => check.status == "ok",
     });
     report
@@ -3700,14 +3706,15 @@ fn run_bounded_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_launcher_failure, classify_transport_failure, decide_upgrade,
+        classify_launcher_failure, classify_transport_failure, decide_upgrade, finish_report,
         parse_remote_repository_reply, shell_quote, ssh_capabilities_spec, ssh_launch_spec,
         ssh_provider_sync_spec, ssh_repository_spec, ssh_reuse_options, ssh_start_detached_spec,
         ssh_task_spec, ssh_terminal_spec, validate_binding, validate_profile_fields,
         validate_profile_id, validate_remote_task_id, CapabilitiesReply, ConnectionReuse,
-        ExecutionBinding, RemotePiProfile, RemoteRepositoryMutationFile, RemoteTaskMode,
-        UpgradeDecision, CHECK_LAUNCHER, CHECK_NODE, CHECK_PI, CHECK_SSH, CHECK_WORKSPACE,
-        LAUNCHER_INSTALLER, LAUNCHER_REVISION, LAUNCHER_SOURCE, LAUNCHER_STATUS_VERSION,
+        ExecutionBinding, RemotePiProfile, RemoteReadinessCheck, RemoteReadinessReport,
+        RemoteRepositoryMutationFile, RemoteTaskMode, UpgradeDecision, CHECK_LAUNCHER, CHECK_NODE,
+        CHECK_PI, CHECK_PI_AUTH, CHECK_SSH, CHECK_WORKSPACE, LAUNCHER_INSTALLER, LAUNCHER_REVISION,
+        LAUNCHER_SOURCE, LAUNCHER_STATUS_VERSION,
     };
     use super::{ssh_attach_spec, ssh_management_spec, ssh_workspace_spec, LaunchSpec, STANDARD};
     use base64::Engine as _;
@@ -3724,6 +3731,84 @@ mod tests {
             launcher_protocol_version: 1,
             lifecycle: "attached".into(),
         }
+    }
+
+    fn readiness_report(
+        remote_cwd: &str,
+        checks: Vec<RemoteReadinessCheck>,
+    ) -> RemoteReadinessReport {
+        RemoteReadinessReport {
+            ok: false,
+            profile_id: None,
+            host: "prod".into(),
+            remote_cwd: remote_cwd.into(),
+            launcher_path: "/opt/pi-desktop-launcher".into(),
+            pi_version: Some("pi 1.0.0".into()),
+            home: Some("/home/test".into()),
+            checks,
+        }
+    }
+
+    fn successful_readiness_checks(workspace: RemoteReadinessCheck) -> Vec<RemoteReadinessCheck> {
+        vec![
+            RemoteReadinessCheck::ok(CHECK_SSH, Some("prod".into())),
+            RemoteReadinessCheck::ok(CHECK_LAUNCHER, None),
+            RemoteReadinessCheck::ok(CHECK_NODE, Some("v20.0.0".into())),
+            workspace,
+            RemoteReadinessCheck::ok(CHECK_PI, Some("pi 1.0.0".into())),
+            RemoteReadinessCheck::warning(
+                CHECK_PI_AUTH,
+                "pi_auth_missing",
+                "no saved credentials detected".into(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn readiness_only_allows_intentional_optional_skips() {
+        let optional_workspace = finish_report(readiness_report(
+            "",
+            successful_readiness_checks(RemoteReadinessCheck::skipped(CHECK_WORKSPACE)),
+        ));
+        assert!(
+            optional_workspace.ok,
+            "an omitted browse directory and auth warning must not block saving"
+        );
+
+        let configured_workspace = finish_report(readiness_report(
+            "/srv/project",
+            successful_readiness_checks(RemoteReadinessCheck::ok(
+                CHECK_WORKSPACE,
+                Some("/srv/project".into()),
+            )),
+        ));
+        assert!(configured_workspace.ok);
+
+        let unexpected_workspace_skip = finish_report(readiness_report(
+            "/srv/project",
+            successful_readiness_checks(RemoteReadinessCheck::skipped(CHECK_WORKSPACE)),
+        ));
+        assert!(!unexpected_workspace_skip.ok);
+
+        let upstream_failure = finish_report(readiness_report(
+            "",
+            vec![RemoteReadinessCheck::failed(
+                CHECK_SSH,
+                "ssh_unreachable",
+                "unreachable".into(),
+            )],
+        ));
+        assert!(!upstream_failure.ok);
+
+        let workspace_failure = finish_report(readiness_report(
+            "",
+            successful_readiness_checks(RemoteReadinessCheck::failed(
+                CHECK_WORKSPACE,
+                "workspace_unavailable",
+                "unavailable".into(),
+            )),
+        ));
+        assert!(!workspace_failure.ok);
     }
 
     fn batch_repository_spec(files: &[RemoteRepositoryMutationFile]) -> Result<LaunchSpec, String> {

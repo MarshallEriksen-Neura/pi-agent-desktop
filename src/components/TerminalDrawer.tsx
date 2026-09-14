@@ -3,12 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import "@xterm/xterm/css/xterm.css";
+import { useUI } from "@/lib/store";
 import {
-  APP_MIN_HEIGHT_BESIDE_TERMINAL,
-  TERMINAL_HEIGHT_MAX,
-  TERMINAL_HEIGHT_MIN,
-  useUI,
-} from "@/lib/store";
+  availableTerminalHeight,
+  terminalHeightBounds,
+} from "@/lib/terminal-layout";
 import { isMacPlatform } from "@/lib/shortcuts";
 import { ansi, termBus } from "@/lib/terminal-bus";
 import { useT } from "@/lib/i18n";
@@ -308,27 +307,33 @@ export function TerminalDrawer() {
     setEditingTabId(null);
   }, [editingName, editingTabId]);
 
-  const [viewportHeight, setViewportHeight] = useState(0);
+  const [availableHeight, setAvailableHeight] = useState(0);
   useEffect(() => {
-    if (!terminalOpen) return;
+    if (!terminalOpen || !hasOpened) return;
     const onResize = () => {
-      setViewportHeight(window.innerHeight);
+      const drawer = dropZoneRef.current;
+      const appShell = drawer?.parentElement;
+      const workspace = drawer?.previousElementSibling;
+      if (drawer && appShell && workspace instanceof HTMLElement) {
+        const nextHeight = availableTerminalHeight(
+          appShell.getBoundingClientRect().bottom,
+          workspace.getBoundingClientRect().top,
+        );
+        setAvailableHeight((current) =>
+          current === nextHeight ? current : nextHeight,
+        );
+      }
       activeController()?.fit();
     };
     onResize();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [activeController, terminalOpen]);
+  }, [activeController, hasOpened, terminalOpen]);
 
-  const terminalBounds = useCallback(() => {
-    const room = viewportHeight
-      ? viewportHeight - APP_MIN_HEIGHT_BESIDE_TERMINAL
-      : TERMINAL_HEIGHT_MAX;
-    return {
-      min: TERMINAL_HEIGHT_MIN,
-      max: Math.max(TERMINAL_HEIGHT_MIN, Math.min(TERMINAL_HEIGHT_MAX, room)),
-    };
-  }, [viewportHeight]);
+  const terminalBounds = useCallback(
+    () => terminalHeightBounds(availableHeight),
+    [availableHeight],
+  );
 
   const effectiveHeight = Math.min(terminalHeight, terminalBounds().max);
 

@@ -20,6 +20,10 @@ import {
   persistTerminalShellProfile,
   type LocalTerminalShellProfile,
 } from "./terminal-shell-profile";
+import {
+  TERMINAL_HEIGHT_DEFAULT,
+  clampTerminalHeightPreference,
+} from "./terminal-layout";
 export type Theme = "light" | "dark";
 export type TaskStatus = "done" | "running" | "queued" | "error";
 
@@ -86,25 +90,6 @@ export const INSPECTOR_PANEL_WIDTH_DEFAULT = 480;
 export const INSPECTOR_PANEL_WIDTH_MIN = 360;
 export const INSPECTOR_PANEL_WIDTH_MAX = 860;
 
-/**
- * Terminal drawer height, in px — the one panel measured on the vertical axis.
- *
- * The ceiling is not a constant here the way the column ceilings are: the drawer
- * shares the window's height with the chat and the editor, so how tall it may
- * grow depends on the viewport. The drawer caps itself against that at drag
- * time; these bounds are the absolute floor and the sanity ceiling.
- */
-export const TERMINAL_HEIGHT_DEFAULT = 240;
-/** Header plus a couple of rows — below this the shell stops being usable. */
-export const TERMINAL_HEIGHT_MIN = 120;
-export const TERMINAL_HEIGHT_MAX = 900;
-/**
- * How much of the window the drawer must leave to everything above it: the top
- * bar, a few transcript rows, and the composer. Past that the drawer has taken
- * over a window it only shares.
- */
-export const APP_MIN_HEIGHT_BESIDE_TERMINAL = 260;
-
 // what happens when the user closes the main window
 export type CloseBehavior = "ask" | "minimize" | "quit";
 
@@ -147,9 +132,6 @@ const clampInspectorPanelWidth = (px: number) =>
   Math.round(
     Math.min(INSPECTOR_PANEL_WIDTH_MAX, Math.max(INSPECTOR_PANEL_WIDTH_MIN, px)),
   );
-
-const clampTerminalHeight = (px: number) =>
-  Math.round(Math.min(TERMINAL_HEIGHT_MAX, Math.max(TERMINAL_HEIGHT_MIN, px)));
 
 export interface NotificationSettings {
   enabled: boolean;
@@ -577,7 +559,7 @@ export const useUI = create<UIState>((set) => ({
   /* terminal drawer height — the column contract, on the vertical axis */
   setTerminalHeight: (px) =>
     set((s) => {
-      const height = clampTerminalHeight(px);
+      const height = clampTerminalHeightPreference(px);
       return height === s.terminalHeight ? {} : { terminalHeight: height };
     }),
   persistTerminalHeight: () => {
@@ -610,7 +592,7 @@ export const useUI = create<UIState>((set) => ({
       }
       const px = saved === null ? NaN : Number(saved);
       if (!Number.isFinite(px)) return {};
-      return { terminalHeight: clampTerminalHeight(px) };
+      return { terminalHeight: clampTerminalHeightPreference(px) };
     }),
 
   setTerminalShellProfile: (profile) =>

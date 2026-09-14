@@ -14,7 +14,7 @@
  * the real counterpart driving the same surfaces.
  */
 
-import { getPiClient } from "./client";
+import { getPiClient, onAnyTaskEvent } from "./client";
 import { useSessions } from "./sessions";
 import { getActiveTaskId, useTaskContext } from "./task-context";
 import { useUI } from "@/lib/store";
@@ -161,6 +161,7 @@ let bridged = false;
 let bridgeUnlisteners: Array<() => void> = [];
 let recs = new Map<string, ToolRec>();
 let taskSwitchUnlisten: (() => void) | null = null;
+let allTaskEditUnlisten: (() => void) | null = null;
 
 /** Subscribe the agent surfaces to a specific task's pi event stream. */
 function bindAgentBridge(taskId: string) {
@@ -434,6 +435,24 @@ export function initAgentBridge() {
   if (bridged) return;
   bridged = true;
 
+  // Exact editor metrics are task-independent transcript data. Keep this listener
+  // across focus changes so an edit that finishes in a background conversation —
+  // or after its foreground snapshot record was cleared — does not lose its badge.
+  allTaskEditUnlisten = onAnyTaskEvent("tool_execution_end", (_taskId, e) => {
+    if (
+      e.type !== "tool_execution_end" ||
+      e.isError ||
+      !e.toolName ||
+      !EDIT_TOOL.test(e.toolName) ||
+      useDiffStats.getState().stats[e.toolCallId]
+    ) {
+      return;
+    }
+    const stat = diffStatFromResult(e.result);
+    if (stat && (stat.added > 0 || stat.removed > 0)) {
+      useDiffStats.getState().record(e.toolCallId, stat);
+    }
+  });
   // Initialize pet bridge alongside agent bridge
   initPetBridge(getActiveTaskId());
 
@@ -450,6 +469,8 @@ export function initAgentBridge() {
 
 export function destroyAgentBridge() {
   if (!bridged) return;
+  allTaskEditUnlisten?.();
+  allTaskEditUnlisten = null;
   taskSwitchUnlisten?.();
   taskSwitchUnlisten = null;
   while (bridgeUnlisteners.length > 0) bridgeUnlisteners.pop()?.();

@@ -95,6 +95,28 @@ test("installing the launcher records an absolute path and clears the launcher c
   assert.equal(workspace?.errorCode, "workspace_missing");
 });
 
+
+test("optional browse directory and missing saved credentials do not block readiness", async () => {
+  const port = createMockRemotePiProfilePort({ piAuthConfigured: false });
+  const installed = await port.installLauncher(INPUT.sshHost);
+  const report = await port.checkDraft({
+    ...INPUT,
+    remoteCwd: "   ",
+    launcherPath: installed.launcherPath,
+  });
+
+  assert.equal(report.ok, true);
+  assert.equal(report.remoteCwd, "");
+  assert.deepEqual(
+    report.checks
+      .filter((check) => check.id === "workspace" || check.id === "piAuth")
+      .map((check) => [check.id, check.status, check.errorCode]),
+    [
+      ["workspace", "skipped", undefined],
+      ["piAuth", "warning", "pi_auth_missing"],
+    ],
+  );
+});
 test("launcher install is scoped to a host and path pair", async () => {
   const port = createMockRemotePiProfilePort();
   const installed = await port.installLauncher(INPUT.sshHost, "/opt/pi-desktop-launcher");

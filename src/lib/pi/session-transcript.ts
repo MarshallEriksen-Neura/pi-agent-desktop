@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatToolCall } from "./chat";
 import { mcpAuthUrl } from "./tool-label";
+import { diffStatFromResult } from "./diff-stat";
 
 /**
  * Structural subset of Pi 0.84's exported SessionEntry types used at the RPC
@@ -244,6 +245,11 @@ export function sessionEntriesToChatMessages(snapshot: PiEntriesSnapshot): ChatM
       }
       pending.call.status = message.isError === true ? "error" : "done";
       pending.call.authUrl = mcpAuthUrl(pending.call.name, message, pending.args);
+      const stat = diffStatFromResult(message);
+      if (stat) {
+        // Restored rows are already settled; zero prevents replaying the arrival animation.
+        pending.call.diffStat = { ...stat, at: 0 };
+      }
       continue;
     }
 

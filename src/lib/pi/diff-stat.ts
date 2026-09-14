@@ -102,8 +102,8 @@ export function diffStat(oldText: string, newText: string): DiffStat {
 interface DiffStatStore {
   /**
    * Keyed by pi's toolCallId, which is unique across tasks, so one store serves
-   * every conversation. In-memory only: a transcript restored from history has
-   * no snapshot to diff against, and those rows simply render without a badge.
+   * every live conversation. Persisted result metrics travel on ChatToolCall
+   * instead; this store remains the arrival-time source for count-up animation.
    *
    * Deliberately uncapped. An entry is two numbers and a timestamp, and evicting
    * old ones would silently strip badges off rows the user can still scroll to.

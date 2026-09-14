@@ -275,10 +275,9 @@ function PaletteBody() {
       },
     }));
     // work-only cannot leave the chat column, so the toggle is not offered
-    const hiddenBaseCommands = new Set<string>([
-      ...(layoutMode === "work-only" ? ["work"] : []),
-      ...(remoteMode ? ["work", "zen"] : []),
-    ]);
+    const hiddenBaseCommands = new Set<string>(
+      layoutMode === "work-only" ? ["work"] : [],
+    );
     const visibleBase = base.filter((command) => !hiddenBaseCommands.has(command.id));
     return [...visibleBase, ...fromProjects, ...fromPi];
   }, [setCommandPalette, toggleZen, toggleWork, toggleTheme, toggleTerminal, layoutMode, cycleModel, refresh, piCommands, toggleLocale, wsMock, wsRoot, wsTargetId, recents, remoteMode, t, shortcutOverrides, mac]);

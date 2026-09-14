@@ -17,6 +17,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import { useAppearance } from "@/lib/appearance";
 import { useT } from "@/lib/i18n";
 import {
   type McpScope,
@@ -41,6 +42,10 @@ function editorContent(file: { raw: string; data: unknown; migrationWarning: boo
   return file.raw || (file.data ? JSON.stringify(file.data, null, 2) + "\n" : EMPTY_MCP_JSON);
 }
 
+function paperSurface(color: string, hasImage: boolean, opacity = 78): string {
+  return hasImage ? `color-mix(in srgb, ${color} ${opacity}%, transparent)` : color;
+}
+
 /** inset grouped paper card — hairline border, no shadows. */
 function PaperCard({
   header,
@@ -49,6 +54,7 @@ function PaperCard({
   header?: string;
   children: React.ReactNode;
 }) {
+  const { bgImage } = useAppearance();
   return (
     <section style={{ marginTop: 20 }}>
       {header && (
@@ -68,7 +74,7 @@ function PaperCard({
       )}
       <div
         style={{
-          background: PAPER.elevated,
+          background: paperSurface(PAPER.elevated, Boolean(bgImage)),
           borderRadius: 16,
           border: `1px solid ${HAIRLINE}`,
           overflow: "hidden",
@@ -98,6 +104,7 @@ function McpImportPanel({
   onImport: (sourceId: string, mode: McpImportConflictMode, selectedNames: string[]) => Promise<void>;
 }) {
   const t = useT();
+  const { bgImage } = useAppearance();
   const [mode, setMode] = useState<McpImportConflictMode>("skip");
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const currentNamesKey = currentNames.join("\u0000");
@@ -189,7 +196,7 @@ function McpImportPanel({
                   border: `1px solid ${HAIRLINE}`,
                   borderRadius: 99,
                   padding: "6px 16px",
-                  background: busy ? PAPER.sunken : PAPER.elevated,
+                  background: paperSurface(busy ? PAPER.sunken : PAPER.elevated, Boolean(bgImage)),
                   color: busy || Boolean(preview.error) || importableCount === 0 ? INK.ink300 : INK.ink700,
                   fontFamily: SANS,
                   fontSize: 12.5,
@@ -209,6 +216,7 @@ function McpImportPanel({
 
 export function McpPage() {
   const t = useT();
+  const { bgImage } = useAppearance();
   const mcp = useMcp();
   const [scope, setScope] = useState<McpScope>("global");
   const [editing, setEditing] = useState<ServerForm | null>(null);
@@ -286,7 +294,7 @@ export function McpPage() {
             gap: 10,
             padding: "11px 14px",
             borderRadius: 12,
-            background: PAPER.sunken,
+            background: paperSurface(PAPER.sunken, Boolean(bgImage)),
           }}
         >
           <ShieldAlert size={16} style={{ flexShrink: 0, color: SEAL.red }} />
@@ -366,7 +374,7 @@ export function McpPage() {
                     width: 30,
                     height: 30,
                     borderRadius: 8,
-                    background: PAPER.sunken,
+                    background: paperSurface(PAPER.sunken, Boolean(bgImage)),
                     color: INK.ink700,
                     flexShrink: 0,
                   }}
@@ -554,7 +562,7 @@ export function McpPage() {
             marginTop: 14,
             borderRadius: 16,
             border: `1px solid ${HAIRLINE}`,
-            background: PAPER.elevated,
+            background: paperSurface(PAPER.elevated, Boolean(bgImage)),
             overflow: "hidden",
           }}
         >
@@ -568,7 +576,7 @@ export function McpPage() {
               boxSizing: "border-box",
               border: "none",
               outline: "none",
-              background: PAPER.sunken,
+              background: paperSurface(PAPER.sunken, Boolean(bgImage)),
               color: INK.ink900,
               fontFamily: "var(--font-mono, ui-monospace, monospace)",
               fontSize: 12,

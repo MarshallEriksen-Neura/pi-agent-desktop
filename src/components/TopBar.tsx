@@ -21,7 +21,6 @@ import { useUI } from "@/lib/store";
 import { bindingLabel, isMacPlatform } from "@/lib/shortcuts";
 import { useUpdate } from "@/lib/update";
 import { useT } from "@/lib/i18n";
-import { useSessions } from "@/lib/pi/sessions";
 import { IconButton, Kbd } from "./primitives";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { WindowControls } from "./WindowControls";
@@ -61,7 +60,6 @@ export function TopBar() {
   const updateDismissed = useUpdate((s) => s.dismissed);
   const dismissUpdate = useUpdate((s) => s.dismiss);
   const t = useT();
-  const remoteMode = useSessions((state) => state.executionBinding.kind === "ssh");
   const router = useRouter();
 
   // one silent check on launch so the reminder can surface without visiting settings
@@ -72,7 +70,7 @@ export function TopBar() {
 
   const showUpdate = updatePhase === "available" && !updateDismissed;
   /* work-only is a one-layout world: the toggle would have nothing to toggle. */
-  const showWorkToggle = layoutMode !== "work-only" && !remoteMode;
+  const showWorkToggle = layoutMode !== "work-only";
 
   return (
     <header
@@ -90,9 +88,8 @@ export function TopBar() {
         zIndex: 20,
       }}
     >
-      {/* mirrors showSidebar in page.tsx — a toggle for a panel that cannot
-          appear in this layout would be a dead button. `remoteMode` is no longer part of
-          that condition: a remote target has a browsable tree as of V2.3. */}
+      {/* Mirrors showSidebar in page.tsx. Layout controls are target-independent:
+          local and SSH workspaces both have a browsable tree. */}
       {!zenMode && (!workMode || layoutMode === "work-only") && (
         <IconButton label={t("topbar.toggleSidebar")} onClick={toggleSidebar}>
           <PanelLeft size={16} />
@@ -100,21 +97,10 @@ export function TopBar() {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
-        {/* The first line differs because a remote target has no open file to name; the
-            second does not. `ProjectSwitcher` belongs on both paths — it is how a project
-            gets chosen, and remote targets have projects too as of V2.3. It used to be
-            suppressed here, back when remote pi was deliberately not editor-first, which
-            left remote mode with no way to pick a workspace at all. */}
-        {remoteMode ? (
+        {layoutMode !== "work-only" && (
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-            {t("remoteAgent.mode")}
+            {fileName}
           </span>
-        ) : (
-          layoutMode !== "work-only" && (
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-              {fileName}
-            </span>
-          )
         )}
         <ProjectSwitcher />
       </div>
@@ -175,10 +161,7 @@ export function TopBar() {
 
       {/* command palette pill — the chord comes from the registry, so it keeps
           matching after a rebind in settings */}
-      {remoteMode ? (
-        <div style={{ flex: 1 }} />
-      ) : (
-        <button
+      <button
         onClick={() => setCommandPalette(true)}
         style={{
           marginLeft: showUpdate ? 0 : "auto",
@@ -207,7 +190,6 @@ export function TopBar() {
           )}
         </Kbd>
       </button>
-      )}
 
       <IconButton label={t("topbar.toggleTerminal")} onClick={toggleTerminal} active={terminalOpen}>
         <SquareTerminal size={16} />
@@ -231,17 +213,15 @@ export function TopBar() {
           <Sun size={16} />
         )}
       </IconButton>
-      {!remoteMode && (
-        <IconButton label={t("topbar.zenMode")} onClick={toggleZen} active={zenMode}>
-          <Focus size={16} />
-        </IconButton>
-      )}
+      <IconButton label={t("topbar.zenMode")} onClick={toggleZen} active={zenMode}>
+        <Focus size={16} />
+      </IconButton>
       {showWorkToggle && (
         <IconButton label={t("topbar.workMode")} onClick={toggleWork} active={workMode}>
           <MessagesSquare size={16} />
         </IconButton>
       )}
-      {!remoteMode && !zenMode && !workMode && (
+      {!zenMode && !workMode && (
         <IconButton label={t("topbar.toggleAgentPanel")} onClick={toggleAgentPanel}>
           <Sparkles size={16} />
         </IconButton>

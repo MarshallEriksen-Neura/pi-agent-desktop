@@ -44,6 +44,11 @@ import { GroupRow, InsetGroup } from "./settings-ui";
  * per prerequisite so a failure points at the thing that fixes it.
  */
 
+type Notice = {
+  tone: "success" | "warning" | "danger";
+  text: string;
+};
+
 const EMPTY_DRAFT: RemotePiProfileInput = { name: "", sshHost: "" };
 
 /** Display order — mirrors CHECK_ORDER in `src-tauri/src/remote_profiles.rs`. */
@@ -129,7 +134,7 @@ export function RemoteAgentSettings() {
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [report, setReport] = useState<RemoteReadinessReport | null>(null);
-  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   /** Whether the user took over the name field from the host-derived default. */
   const nameTouched = useRef(false);
 
@@ -138,7 +143,7 @@ export function RemoteAgentSettings() {
   }, [profilesPort]);
 
   useEffect(() => {
-    void reload().catch((error) => setNotice({ ok: false, text: String(error) }));
+    void reload().catch((error) => setNotice({ tone: "danger", text: String(error) }));
     void profilesPort
       .sshConfigHosts()
       .then(setConfigHosts)
@@ -156,6 +161,11 @@ export function RemoteAgentSettings() {
   const reportMatchesDraft =
     report !== null && report.host === host && report.remoteCwd === browseDirectory;
   const canSave = canCheck && Boolean(effectiveName) && reportMatchesDraft && report.ok;
+  const saveDisabledReason = !canSave
+    ? reportMatchesDraft && report && !report.ok
+      ? t("settings.remoteAgent.saveBlocked")
+      : t("settings.remoteAgent.checkFirst")
+    : undefined;
   const editingProfile = draft.id
     ? profiles.find((profile) => profile.id === draft.id)
     : undefined;
@@ -163,6 +173,7 @@ export function RemoteAgentSettings() {
   const update = (field: keyof RemotePiProfileInput, value: string) => {
     if (field === "name") nameTouched.current = value.trim().length > 0;
     setDraft((current) => ({ ...current, [field]: value }));
+    if (field !== "name" && field !== "lifecycle") setReport(null);
     setNotice(null);
   };
 
@@ -173,6 +184,7 @@ export function RemoteAgentSettings() {
       // Keep the name in step with the host until the user takes it over.
       name: nameTouched.current ? current.name : "",
     }));
+    setReport(null);
     setNotice(null);
   };
 
@@ -208,16 +220,19 @@ export function RemoteAgentSettings() {
       // A check is the cheapest place to learn the remote `$HOME`: it already paid for
       // the round trip, and the folder browser needs somewhere to open.
       if (input.id) rememberRemoteHome(input.id, next.home);
+      const hasWarnings = next.checks.some((check) => check.status === "warning");
       setNotice({
-        ok: next.ok,
+        tone: next.ok ? (hasWarnings ? "warning" : "success") : "danger",
         text: next.ok
-          ? t("settings.remoteAgent.ready", { host: next.host })
+          ? hasWarnings
+            ? t("settings.remoteAgent.readyWithWarnings", { host: next.host })
+            : t("settings.remoteAgent.ready", { host: next.host })
           : t("settings.remoteAgent.notReady", { host: next.host }),
       });
       return next;
     } catch (error) {
       setReport(null);
-      setNotice({ ok: false, text: String(error) });
+      setNotice({ tone: "danger", text: String(error) });
       return null;
     } finally {
       setBusy(null);
@@ -233,14 +248,14 @@ export function RemoteAgentSettings() {
       const next = { ...draft, launcherPath: result.launcherPath };
       setDraft(next);
       setNotice({
-        ok: true,
+        tone: "success",
         text: t("settings.remoteAgent.installed", { path: result.launcherPath }),
       });
       setBusy(null);
       await runCheck(next);
     } catch (error) {
       setNotice({
-        ok: false,
+        tone: "danger",
         text: t("settings.remoteAgent.installFailed", {
           error: error instanceof Error ? error.message : String(error),
         }),
@@ -256,9 +271,9 @@ export function RemoteAgentSettings() {
       const saved = await profilesPort.save({ ...draft, name: effectiveName });
       await reload();
       resetDraft();
-      setNotice({ ok: true, text: t("settings.remoteAgent.saved", { name: saved.name }) });
+      setNotice({ tone: "success", text: t("settings.remoteAgent.saved", { name: saved.name }) });
     } catch (error) {
-      setNotice({ ok: false, text: String(error) });
+      setNotice({ tone: "danger", text: String(error) });
     } finally {
       setBusy(null);
     }
@@ -273,7 +288,7 @@ export function RemoteAgentSettings() {
       if (draft.id === profile.id) resetDraft();
       await reload();
     } catch (error) {
-      setNotice({ ok: false, text: String(error) });
+      setNotice({ tone: "danger", text: String(error) });
     } finally {
       setBusy(null);
     }
@@ -282,7 +297,7 @@ export function RemoteAgentSettings() {
   const copyCommand = async (command: string) => {
     try {
       await navigator.clipboard.writeText(command);
-      setNotice({ ok: true, text: t("settings.remoteAgent.commandCopied") });
+      setNotice({ tone: "success", text: t("settings.remoteAgent.commandCopied") });
     } catch {
       /* clipboard unavailable — the command stays visible and selectable */
     }
@@ -419,6 +434,7 @@ export function RemoteAgentSettings() {
                 key={id}
                 id={id}
                 check={check}
+                intentionalWorkspaceSkip={id === "workspace" && report?.remoteCwd === ""}
                 host={host}
                 busy={busy}
                 onInstall={() => void installLauncher()}
@@ -435,8 +451,16 @@ export function RemoteAgentSettings() {
 
           {notice && (
             <Callout
-              icon={notice.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
-              tone={notice.ok ? "var(--success)" : "var(--danger)"}
+              icon={notice.tone === "success"
+                ? <CheckCircle2 size={15} />
+                : notice.tone === "warning"
+                  ? <AlertTriangle size={15} />
+                  : <XCircle size={15} />}
+              tone={notice.tone === "success"
+                ? "var(--success)"
+                : notice.tone === "warning"
+                  ? "var(--warning)"
+                  : "var(--danger)"}
             >
               {notice.text}
             </Callout>
@@ -461,7 +485,7 @@ export function RemoteAgentSettings() {
               size="sm"
               onClick={() => void save()}
               disabled={!canSave || busy !== null}
-              title={canSave ? undefined : t("settings.remoteAgent.checkFirst")}
+              title={saveDisabledReason}
             >
               {busy === "save" && <LoaderCircle size={15} className="animate-spin" />}
               {t("settings.remoteAgent.saveAndUse")}
@@ -479,6 +503,7 @@ export function RemoteAgentSettings() {
 function CheckRow({
   id,
   check,
+  intentionalWorkspaceSkip,
   host,
   busy,
   onInstall,
@@ -486,6 +511,7 @@ function CheckRow({
 }: {
   id: RemoteReadinessCheckId;
   check: RemoteReadinessCheck | undefined;
+  intentionalWorkspaceSkip: boolean;
   host: string;
   busy: string | null;
   onInstall: () => void;
@@ -512,11 +538,15 @@ function CheckRow({
   );
   const code = check?.errorCode;
   const command = code && host ? diagnosticCommand(code, host) : undefined;
-  const detail = status === "skipped"
-    ? t("settings.remoteAgent.check.skipped")
-    : status === "pending"
-      ? t("settings.remoteAgent.check.pending")
-      : check?.detail ?? check?.error;
+  const detail = code === "pi_auth_missing"
+    ? t("settings.remoteAgent.check.piAuthMissing")
+    : status === "skipped"
+      ? intentionalWorkspaceSkip
+        ? t("settings.remoteAgent.check.workspaceOptional")
+        : t("settings.remoteAgent.check.skipped")
+      : status === "pending"
+        ? t("settings.remoteAgent.check.pending")
+        : check?.detail ?? check?.error;
 
   return (
     <div style={{ display: "grid", gap: 4, padding: "5px 0" }}>

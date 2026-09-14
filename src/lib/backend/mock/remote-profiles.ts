@@ -17,10 +17,16 @@ const DEFAULT_LAUNCHER_PATH = "/usr/local/bin/pi-desktop-launcher";
  */
 const PREVIEW_LAUNCHER_REVISION = 1;
 
-export function createMockRemotePiProfilePort(): RemotePiProfilePort {
+type MockRemotePiProfileOptions = {
+  piAuthConfigured?: boolean;
+};
+
+export function createMockRemotePiProfilePort(
+  options: MockRemotePiProfileOptions = {},
+): RemotePiProfilePort {
   const profiles: RemotePiProfile[] = [];
   const installed = new Set<string>();
-
+  const piAuthConfigured = options.piAuthConfigured ?? true;
   function nextProfileId(): string {
     const base = `remote-${Date.now()}`;
     let candidate = base;
@@ -88,9 +94,23 @@ export function createMockRemotePiProfilePort(): RemotePiProfilePort {
       checks.push({ id: "workspace", status: "ok", detail: browseDirectory });
     }
     checks.push({ id: "pi", status: "ok", detail: "pi 0.0.0-mock" });
-    checks.push({ id: "piAuth", status: "ok" });
+    checks.push(piAuthConfigured
+      ? { id: "piAuth", status: "ok" }
+      : {
+          id: "piAuth",
+          status: "warning",
+          errorCode: "pi_auth_missing",
+          error: "No saved Pi credentials were detected",
+        });
+    const ok = checks.every((check) => {
+      if (check.id === "piAuth") return check.status !== "failed";
+      if (check.id === "workspace" && browseDirectory.length === 0) {
+        return check.status === "ok" || check.status === "skipped";
+      }
+      return check.status === "ok";
+    });
     return {
-      ok: true,
+      ok,
       profileId,
       host,
       remoteCwd: browseDirectory,

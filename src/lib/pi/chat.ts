@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import type { StoreApi, UseBoundStore } from "zustand";
+import type { RecordedDiffStat } from "./diff-stat";
 import { getPiClient, PiRequestError } from "./client";
 import { piRequestErrorText } from "./request-error";
 import type {
@@ -33,6 +34,8 @@ export interface ChatToolCall {
   status: "running" | "done" | "error";
   /** OAuth authorization URL surfaced by an MCP auth-start result. */
   authUrl?: string;
+  /** Exact +/- metrics preserved with restored Pi tool results. */
+  diffStat?: RecordedDiffStat;
   /**
    * When the call started. The file inspector needs it to tell whether the file
    * on disk today is still what a `Read` actually read — absent on transcripts

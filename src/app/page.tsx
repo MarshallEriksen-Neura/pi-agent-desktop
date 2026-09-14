@@ -100,12 +100,8 @@ export default function Home() {
       commandPalette: () => setCommandPalette(!useUI.getState().commandPaletteOpen),
       toggleTerminal: () => useUI.getState().toggleTerminal(),
       openRepository: () => useFileInspector.getState().openRepository(),
-      ...(!remoteMode
-        ? {
-            zenMode: () => toggleZen(),
-            workMode: () => toggleWork(), // no-op in work-only — no other layout to reach
-          }
-        : {}),
+      zenMode: () => toggleZen(),
+      workMode: () => toggleWork(), // no-op in work-only — no other layout to reach
     };
     const onKey = (e: KeyboardEvent) => {
       const mac = isMacPlatform();
@@ -126,20 +122,12 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [remoteMode, setCommandPalette, toggleWork, toggleZen]);
-
-  useEffect(() => {
-    if (!remoteMode) return;
-    // Persisted local layout state must not expose local-only layout modes when
-    // the restored conversation is SSH-bound. The terminal itself is remote-capable.
-    useUI.setState({ zenMode: false });
-  }, [remoteMode]);
+  }, [setCommandPalette, toggleWork, toggleZen]);
 
   /* Nothing mounts until the saved layout is known, so a work-mode launch never
      builds the editor just to tear it down. The boot screen covers the gap. */
   // work-only has no way back to the IDE, so the session list has to stay
   // reachable from the chat column — it would otherwise have no entry point.
-  const effectiveWorkMode = workMode || remoteMode;
   /* `remoteMode` used to force work mode here — no sidebar, no editor — from back when
      remote pi was deliberately not editor-first. That is no longer true: a remote target
      has a browsable filesystem (V2.3) and hash-checked writes (V2.4), so the tree and the
@@ -151,7 +139,7 @@ export default function Home() {
      correctness one. */
   const showSidebar =
     layoutReady && sidebarOpen && !zenMode && (!workMode || layoutMode === "work-only");
-  const showAgent = layoutReady && !zenMode && (remoteMode || workMode || agentPanelOpen);
+  const showAgent = layoutReady && !zenMode && (workMode || agentPanelOpen);
   const showEditor = layoutReady && !zenMode && !workMode;
   /* The inspector follows the chat: it belongs to a conversation, so it appears
      wherever that conversation is and is meaningless without it. Zen mode shows
@@ -418,7 +406,7 @@ export default function Home() {
         </AnimatePresence>
 
         {showAgent &&
-          (effectiveWorkMode ? (
+          (workMode ? (
             <motion.div
               key="agent-work"
               initial={{ opacity: 0 }}

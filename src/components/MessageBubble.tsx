@@ -799,9 +799,9 @@ function ReadToolRow({
 
 /**
  * An edit row, which grows a `+12 −3` badge the moment the write lands. The stat
- * arrives from the agent bridge (keyed by tool call), so a row restored from
- * history — where there was no pre-edit snapshot to diff — stays a plain row.
- *
+ * arrives from the agent bridge (keyed by tool call). Restored Pi transcripts
+ * carry the editor's persisted result metrics, so their rows keep the same badge
+ * without pretending the edit just landed.
  * An edit that wrote an HTML page also grows an "open in browser" affordance:
  * the whole point of having the agent write a page is to look at it, and the
  * browser resolves the page's relative assets against the file itself.
@@ -816,7 +816,8 @@ function EditToolRow({
   remoteMode: boolean;
 }) {
   const t = useT();
-  const stat = useToolDiffStat(tool.id);
+  const liveStat = useToolDiffStat(tool.id);
+  const stat = liveStat ?? tool.diffStat;
   const recordedDiff = useFileDiff(tool.id);
   const row = useFileRow(tool, "edit", remoteMode, recordedDiff?.path);
   const changed = stat && (stat.added > 0 || stat.removed > 0);

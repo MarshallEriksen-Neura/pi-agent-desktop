@@ -7,6 +7,7 @@ import { McpPage } from "@/components/mcp/McpPage";
 import { useMcp } from "@/lib/pi/mcp";
 import { useT } from "@/lib/i18n";
 import { INK, PAPER, SERIF, SANS } from "@/components/mcp/mcp-tokens";
+import { useAppearance } from "@/lib/appearance";
 
 /**
  * MCP servers — standalone Shuimò (水墨) ink-wash page.
@@ -19,6 +20,7 @@ export default function McpSettingsPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const mcp = useMcp();
 
+  const { bgImage } = useAppearance();
   useEffect(() => {
     if (!mcp.loaded) void mcp.load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -30,7 +32,11 @@ export default function McpSettingsPage() {
       style={{
         height: "100%",
         overflowY: "auto",
-        background: `linear-gradient(180deg, ${PAPER.top} 0%, ${PAPER.bottom} 100%)`,
+        background: bgImage
+          ? `linear-gradient(180deg, color-mix(in srgb, ${PAPER.top} 76%, transparent) 0%, color-mix(in srgb, ${PAPER.bottom} 76%, transparent) 100%)`
+          : `linear-gradient(180deg, ${PAPER.top} 0%, ${PAPER.bottom} 100%)`,
+        backdropFilter: bgImage ? "blur(18px) saturate(120%)" : undefined,
+        WebkitBackdropFilter: bgImage ? "blur(18px) saturate(120%)" : undefined,
       }}
     >
       {/* spin keyframes for the refresh affordance */}

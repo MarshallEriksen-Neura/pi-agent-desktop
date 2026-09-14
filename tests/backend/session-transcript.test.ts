@@ -83,7 +83,7 @@ test("maps text, images, thinking and completed/error tool activity", () => {
         content: [
           { type: "thinking", thinking: "reason" },
           { type: "text", text: "working" },
-          { type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.ts" } },
+          { type: "toolCall", id: "call-1", name: "replace", arguments: { path: "a.ts" } },
           { type: "toolCall", id: "call-2", name: "bash", arguments: { command: "false" } },
         ],
         timestamp: 11,
@@ -91,8 +91,11 @@ test("maps text, images, thinking and completed/error tool activity", () => {
       entry("r1", "a1", {
         role: "toolResult",
         toolCallId: "call-1",
-        toolName: "read",
+        toolName: "replace",
         content: [{ type: "text", text: "ok" }],
+        details: {
+          metrics: { classification: "applied", added_lines: 7, removed_lines: 2 },
+        },
         isError: false,
         timestamp: 12,
       }),
@@ -112,9 +115,10 @@ test("maps text, images, thinking and completed/error tool activity", () => {
   assert.deepEqual(converted[0]?.images, ["data:image/png;base64,abc"]);
   assert.equal(converted[1]?.thinking, "reason");
   assert.deepEqual(converted[1]?.tools?.map(({ id, name, args, status }) => ({ id, name, args, status })), [
-    { id: "call-1", name: "read", args: { path: "a.ts" }, status: "done" },
+    { id: "call-1", name: "replace", args: { path: "a.ts" }, status: "done" },
     { id: "call-2", name: "bash", args: { command: "false" }, status: "error" },
   ]);
+  assert.deepEqual(converted[1]?.tools?.[0]?.diffStat, { added: 7, removed: 2, at: 0 });
 });
 
 test("rejects a broken active branch instead of presenting an empty conversation", () => {
