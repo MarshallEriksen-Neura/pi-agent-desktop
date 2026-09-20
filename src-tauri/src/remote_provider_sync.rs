@@ -817,6 +817,14 @@ fn valid_provider_id(value: &str) -> bool {
         && !matches!(value, "__proto__" | "prototype" | "constructor")
 }
 
+fn outgoing_credential(credential: Option<Value>, preserves_remote: bool) -> Option<Value> {
+    if preserves_remote {
+        None
+    } else {
+        credential
+    }
+}
+
 fn plan_key(profile_id: &str, provider_ids: &[String]) -> String {
     format!("{}\u{1f}{}", profile_id, provider_ids.join("\u{1e}"))
 }
@@ -948,6 +956,9 @@ fn prepare_plan(
         } else {
             provider.proposed_credential_action
         };
+        // Never put a local credential in a plan that is expected to preserve the
+        // remote one. This also closes the inspect/apply race for automatic sync.
+        let credential = outgoing_credential(provider.credential, preserves_remote);
         preview_providers.push(PreparedProviderSyncProvider {
             provider_id: provider.id.clone(),
             model_count: provider.model_count,
@@ -958,7 +969,7 @@ fn prepare_plan(
         apply_providers.push(json!({
             "providerId": provider.id,
             "definition": provider.definition,
-            "credential": provider.credential,
+            "credential": credential,
         }));
     }
     let request = serde_json::to_vec(&json!({
@@ -1016,6 +1027,36 @@ pub async fn remote_provider_sync_apply(
     })
     .await
     .map_err(|error| format!("provider sync apply task failed: {error}"))?
+}
+
+fn requires_api_key_approval(preview: &PreparedProviderSync) -> bool {
+    preview
+        .providers
+        .iter()
+        .any(|provider| provider.credential_action == "willInstallApiKey")
+}
+
+/// Automatic sync is deliberately stricter than the manual two-phase flow: it
+/// may refresh an already-approved provider, but it can never install a literal API key.
+#[tauri::command]
+pub async fn remote_provider_sync_apply_automatic(
+    app: tauri::AppHandle,
+    profile_id: String,
+    provider_ids: Vec<String>,
+) -> Result<ProviderSyncResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<RemoteProviderSyncState>();
+        let canonical_ids = canonical_provider_ids(provider_ids.clone())?;
+        let key = plan_key(&profile_id, &canonical_ids);
+        let preview = prepare_plan(&state, profile_id.clone(), provider_ids.clone())?;
+        if requires_api_key_approval(&preview) {
+            lock_plans(&state)?.remove(&key);
+            return Err(code("syncApprovalRequired"));
+        }
+        apply_plan(&state, profile_id, provider_ids)
+    })
+    .await
+    .map_err(|error| format!("automatic provider sync task failed: {error}"))?
 }
 
 fn apply_plan(
@@ -1248,6 +1289,9 @@ mod tests {
         assert!(key_and_env
             .warnings
             .contains(&"providerEnvironmentNotTransferred"));
+        let literal = Some(json!({ "type": "api_key", "key": "API_SECRET" }));
+        assert_eq!(outgoing_credential(literal.clone(), true), None);
+        assert_eq!(outgoing_credential(literal.clone(), false), literal);
     }
 
     #[test]
@@ -1311,6 +1355,15 @@ mod tests {
             }],
             expires_at: 1,
         };
+        assert!(requires_api_key_approval(&preview));
+        let safe_preview = PreparedProviderSync {
+            providers: vec![PreparedProviderSyncProvider {
+                credential_action: "remoteCredentialPreserved",
+                ..preview.providers[0].clone()
+            }],
+            ..preview.clone()
+        };
+        assert!(!requires_api_key_approval(&safe_preview));
         let value = serde_json::to_string(&preview).unwrap();
         assert!(!value.contains("definition"));
         assert!(!value.contains("credential\""));

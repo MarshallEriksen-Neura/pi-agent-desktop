@@ -17,6 +17,7 @@ import "./remote-workspace-guard.test";
 import "./remote-pi-management.test";
 import "./pi-management.test";
 import "./launcher-capabilities.test";
+import "./cli-update-target.test";
 import "./remote-attach.test";
 import "./remote-workspace-fs.test";
 import "./remote-project-picker.test";

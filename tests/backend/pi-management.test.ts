@@ -21,6 +21,7 @@ function configuration(runPiCli: PiConfigurationPort["runPiCli"]): PiConfigurati
     runSkillsCli: async () => ({ code: 0, stdout: "", stderr: "" }),
     searchSkills: async () => [],
     checkPiCliUpdate: async () => ({ installed: null, latest: null, updateAvailable: false }),
+    applyPiCliUpdate: async () => ({ output: null }),
     readSkillFile: async () => {
       throw new Error("missing");
     },

@@ -4,6 +4,29 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ## [Unreleased]
 
+---
+
+## [0.17.0] — 2026-09-20
+
+### Added
+- **Pi CLI 更新现在支持本机与 SSH 执行目标**。检查、提醒、跳过版本、更新和重启都绑定当前 `ExecutionBinding`；远程更新在 launcher 中只允许固定的版本读取与 `pi update` 操作，不向界面暴露任意命令、参数、环境变量或远程路径。
+- **远程 Provider 可在首次手动审阅后自动同步后续本地配置变更**。自动同步只保存非敏感的 profile/provider 关联，保留远程现有凭据；若需要安装明文 API Key，会暂停并要求再次手动确认。
+
+### Changed
+- SSH Pi CLI 更新确认后立即关闭模态框，更新在后台继续并通过非阻塞状态展示进度；attached 会话重启成功后自动清除完成提示，detached 任务则明确提示新会话才会使用新版本。
+- 远程 launcher 升级到 revision 18，新增独立的 `pi-cli-read-v1` 与 `pi-cli-update-v1` capability，同时保持 revision 17 的 package/skill management envelope 兼容。
+- 终端补全显式 ANSI 与 bright ANSI 调色板，提升深色主题下命令输出、选区和高亮文本的一致性与可读性。
+
+### Fixed
+- 修复异步 Pi CLI 检查或更新结果在执行目标切换后污染当前界面，以及不同本机/SSH 目标错误共享跳过版本的问题。
+- 修复 Provider 自动同步在检查与应用之间远程凭据变化时可能发送本地凭据的问题；自动路径始终重新构建计划并拒绝未经确认的密钥安装。
+- 修复回收空闲或删除会话时遗留 Chat store 全局订阅的问题；存在未保存消息的任务不会被提前回收。
+
+### Internal
+- 补充目标感知 CLI 更新、自动 Provider 同步、launcher management、安全边界和会话生命周期回归测试，并更新远程同步契约与 launcher 文档。
+
+---
+
 ## [0.16.0] — 2026-09-14
 
 ### Added

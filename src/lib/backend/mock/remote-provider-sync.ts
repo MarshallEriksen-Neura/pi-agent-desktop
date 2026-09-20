@@ -14,4 +14,7 @@ export const mockRemoteProviderSyncPort: RemoteProviderSyncPort = {
   apply: async (_profileId: string, _providerIds: string[]): Promise<ProviderSyncResult> => {
     throw new Error("Remote provider synchronization is available in the desktop app only.");
   },
+  applyAutomatic: async (_profileId: string, _providerIds: string[]): Promise<ProviderSyncResult> => {
+    throw new Error("Remote provider synchronization is available in the desktop app only.");
+  },
 };

@@ -1,15 +1,11 @@
-"use client";
-
-/**
- * pi CLI update state — the desktop app is a GUI over the `pi` binary, which
- * updates itself with `pi update`. Checking wraps the Rust
- * `pi_cli_update_check` command (git tag query against pi-mono); applying
- * reuses the existing `pi_cli` command. Outside Tauri (browser preview)
- * there is no pi binary to reach, so checks are skipped instead of mocked.
- */
-
 import { create } from "zustand";
-import { getBackendKind, getPort } from "../backend/composition/container";
+import { getBackendKind, getPort } from "@/lib/backend/composition/container";
+import type { ExecutionBinding } from "@/lib/backend/ports/execution-target";
+import { t } from "@/lib/i18n";
+import { useSessions } from "./sessions";
+
+const LEGACY_SKIP_KEY = "pi-cli-skip-version";
+const SKIP_KEY_PREFIX = "pi-cli-skip-version:";
 
 export interface PiCliUpdateInfo {
   installed: string | null;
@@ -17,132 +13,127 @@ export interface PiCliUpdateInfo {
   updateAvailable: boolean;
 }
 
-export type CliUpdatePhase =
-  | "idle"
-  | "checking"
-  | "notFound" // pi binary missing from PATH
-  | "upToDate"
-  | "available"
-  | "updating"
-  | "updated" // pi update succeeded — restart pi to load it
-  | "error";
+type Phase = "idle" | "checking" | "upToDate" | "available" | "updating" | "updated" | "notFound" | "error";
 
-/** localStorage key holding a version the user chose to skip. */
-const SKIP_KEY = "pi-cli-skip-version";
+export function cliUpdateTargetKey(binding: ExecutionBinding): string {
+  return binding.kind === "local" ? "local" : `ssh:${binding.profileId}`;
+}
+
+export function cliUpdateTargetStamp(binding: ExecutionBinding): string {
+  return binding.kind === "local"
+    ? "local"
+    : `ssh:${binding.profileId}@${binding.profileRevision}`;
+}
+
+function skippedVersion(binding: ExecutionBinding): string | null {
+  if (typeof localStorage === "undefined") return null;
+  return localStorage.getItem(`${SKIP_KEY_PREFIX}${cliUpdateTargetKey(binding)}`)
+    ?? (binding.kind === "local" ? localStorage.getItem(LEGACY_SKIP_KEY) : null);
+}
 
 interface CliUpdateState {
-  phase: CliUpdatePhase;
+  phase: Phase;
   info: PiCliUpdateInfo | null;
   error: string | null;
-  /** Trailing `pi update` output, for the failure state. */
-  output: string | null;
-  /** Launch reminder visibility (toast). */
-  promptVisible: boolean;
-  /** Silent startup check — pops the toast when an unskipped update exists. */
-  checkOnLaunch: () => Promise<void>;
-  /** Manual check from the update page — surfaces errors. */
-  check: () => Promise<void>;
-  /** Run `pi update` through the existing pi_cli Tauri command. */
-  apply: () => Promise<void>;
-  /** Close the toast for this session only. */
-  later: () => void;
-  /** Never remind again for the currently offered version. */
-  skip: () => void;
+  targetStamp: string | null;
+  targetKind: ExecutionBinding["kind"] | null;
+  targetHost: string | null;
+  targetDetached: boolean;
+  generation: number;
+  checkOnLaunch: (binding: ExecutionBinding) => Promise<void>;
+  check: (binding: ExecutionBinding) => Promise<void>;
+  apply: (binding: ExecutionBinding) => Promise<void>;
+  skip: (binding: ExecutionBinding) => void;
+  dismiss: (binding: ExecutionBinding) => void;
 }
 
-function skippedVersion(): string | null {
-  try {
-    return localStorage.getItem(SKIP_KEY);
-  } catch {
-    return null;
+async function checkFor(binding: ExecutionBinding, silent: boolean): Promise<void> {
+  const store = useCliUpdate;
+  const generation = store.getState().generation + 1;
+  const stamp = cliUpdateTargetStamp(binding);
+  store.setState({
+    generation,
+    targetStamp: stamp,
+    targetKind: binding.kind,
+    targetHost: binding.kind === "ssh" ? binding.hostAlias : null,
+    targetDetached: binding.kind === "ssh" && Boolean(binding.remoteTaskId || binding.remoteTaskPending),
+    phase: "checking",
+    info: null,
+    error: null,
+  });
+
+  if (getBackendKind() === "browser-preview") {
+    if (store.getState().generation === generation) store.setState({ phase: "idle" });
+    return;
   }
-}
 
-function phaseFor(info: PiCliUpdateInfo): CliUpdatePhase {
-  if (!info.installed) return "notFound";
-  return info.updateAvailable ? "available" : "upToDate";
+  try {
+    const info = await getPort("piConfiguration").checkPiCliUpdate(binding);
+    const current = store.getState();
+    if (current.generation !== generation || current.targetStamp !== stamp) return;
+    if (!info.installed) {
+      store.setState({ phase: "notFound", info });
+    } else if (!info.updateAvailable || !info.latest || skippedVersion(binding) === info.latest) {
+      store.setState({ phase: "upToDate", info });
+    } else {
+      store.setState({ phase: "available", info });
+    }
+  } catch (error) {
+    const current = store.getState();
+    if (current.generation !== generation || current.targetStamp !== stamp) return;
+    store.setState(silent
+      ? { phase: "idle", info: null, error: null }
+      : { phase: "error", error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 export const useCliUpdate = create<CliUpdateState>((set, get) => ({
   phase: "idle",
   info: null,
   error: null,
-  output: null,
-  promptVisible: false,
+  targetStamp: null,
+  targetKind: null,
+  targetHost: null,
+  targetDetached: false,
+  generation: 0,
 
-  checkOnLaunch: async () => {
-    if (getBackendKind() !== "desktop-tauri") return; // browser preview — no pi binary, no reminder
-    // React strict-mode double effect / AppShell remount guard
-    if (get().phase !== "idle") return;
-    set({ phase: "checking" });
-    try {
-      const info = await getPort("piConfiguration").checkPiCliUpdate();
-      const phase = phaseFor(info);
-      set({
-        info,
-        phase,
-        promptVisible:
-          phase === "available" && info.latest !== skippedVersion(),
-      });
-    } catch {
-      // Startup check is best-effort (offline, git missing…) — stay quiet.
-      set({ phase: "idle" });
-    }
-  },
+  checkOnLaunch: (binding) => checkFor(binding, true),
+  check: (binding) => checkFor(binding, false),
 
-  check: async () => {
-    const { phase } = get();
-    if (phase === "checking" || phase === "updating") return;
-    if (getBackendKind() !== "desktop-tauri") {
-      set({
-        info: { installed: null, latest: null, updateAvailable: false },
-        phase: "notFound",
-        error: null,
-      });
-      return;
+  apply: async (binding) => {
+    const stamp = cliUpdateTargetStamp(binding);
+    if (get().targetStamp !== stamp || cliUpdateTargetStamp(useSessions.getState().executionBinding) !== stamp) {
+      throw new Error(t("cliUpdate.targetChanged"));
     }
-    set({ phase: "checking", error: null });
+    const generation = get().generation + 1;
+    set({ phase: "updating", error: null, generation });
     try {
-      const info = await getPort("piConfiguration").checkPiCliUpdate();
-      set({ info, phase: phaseFor(info) });
-    } catch (e) {
-      set({ phase: "error", error: String(e) });
-    }
-  },
-
-  apply: async () => {
-    const { phase } = get();
-    if (phase !== "available" && phase !== "error") return;
-    set({ phase: "updating", error: null, output: null });
-    try {
-      const r = await getPort("piConfiguration").runPiCli(["update"], null);
-      if (r.code !== 0) {
-        throw new Error(
-          (r.stderr || r.stdout || `pi update exited with ${r.code}`)
-            .trim()
-            .slice(-500)
-        );
+      await getPort("piConfiguration").applyPiCliUpdate(binding);
+      const current = get();
+      if (current.generation === generation && current.targetStamp === stamp) {
+        set({ phase: "updated" });
       }
-      set({ phase: "updated", output: r.stdout.trim().slice(-500) || null });
-    } catch (e) {
-      set({
-        phase: "error",
-        error: e instanceof Error ? e.message : String(e),
-      });
+    } catch (error) {
+      if (get().generation === generation && get().targetStamp === stamp) {
+        set({ phase: "error", error: error instanceof Error ? error.message : String(error) });
+      }
     }
   },
 
-  later: () => set({ promptVisible: false }),
-
-  skip: () => {
+  skip: (binding) => {
+    const stamp = cliUpdateTargetStamp(binding);
+    if (get().targetStamp !== stamp || cliUpdateTargetStamp(useSessions.getState().executionBinding) !== stamp) return;
     const latest = get().info?.latest;
-    if (latest) {
-      try {
-        localStorage.setItem(SKIP_KEY, latest);
-      } catch {
-        // private mode etc. — session-only dismissal still applies
-      }
+    if (latest && typeof localStorage !== "undefined") {
+      localStorage.setItem(`${SKIP_KEY_PREFIX}${cliUpdateTargetKey(binding)}`, latest);
+      if (binding.kind === "local") localStorage.setItem(LEGACY_SKIP_KEY, latest);
     }
-    set({ promptVisible: false });
+    set({ phase: "upToDate" });
+  },
+  dismiss: (binding) => {
+    const stamp = cliUpdateTargetStamp(binding);
+    if (get().targetStamp === stamp && cliUpdateTargetStamp(useSessions.getState().executionBinding) === stamp) {
+      set({ phase: "upToDate" });
+    }
   },
 }));

@@ -13,4 +13,9 @@ export const desktopRemoteProviderSyncPort: RemoteProviderSyncPort = {
     desktopInvoke<PreparedProviderSync>("remote_provider_sync_prepare", { profileId, providerIds }),
   apply: (profileId, providerIds) =>
     desktopInvoke<ProviderSyncResult>("remote_provider_sync_apply", { profileId, providerIds }),
+  applyAutomatic: (profileId, providerIds) =>
+    desktopInvoke<ProviderSyncResult>("remote_provider_sync_apply_automatic", {
+      profileId,
+      providerIds,
+    }),
 };

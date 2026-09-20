@@ -67,8 +67,9 @@ test("locks the strict desktop adapter boundary and command inventory", () => {
   // Phase 4B adds a separate reviewed merge/rebase command. SSH writes continue
   // through the capability-gated bridge. The v0.15 lifecycle folds transcript
   // recycling into chat_session_delete, adds pi_session_read, and adds recycle-bin
-  // list / purge / restore, bringing the combined inventory to 97.
-  assert.equal(result.inventory.commandUniqueCount, 97);
+  // list / purge / restore, bringing the combined inventory to 97. The automatic
+  // provider sync command and target-aware Pi CLI apply command bring it to 99.
+  assert.equal(result.inventory.commandUniqueCount, 99);
 });
 
 test("locks the desktop command names and Pi process event names", () => {
@@ -112,6 +113,7 @@ test("locks the desktop command names and Pi process event names", () => {
     "pet_window_show",
     "pet_window_toggle",
     "pi_cli",
+    "pi_cli_update_apply",
     "pi_cli_update_check",
     "pi_fetch_models",
     "pi_generate_commit_message",
@@ -162,6 +164,7 @@ test("locks the desktop command names and Pi process event names", () => {
     // provider sync — identifiers in, redacted previews out; provider JSON and
     // credentials never cross the port
     "remote_provider_sync_apply",
+    "remote_provider_sync_apply_automatic",
     "remote_provider_sync_candidates",
     "remote_provider_sync_prepare",
     // capability-gated, bounded read-only Git status and diff over SSH

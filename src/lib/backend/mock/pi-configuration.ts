@@ -255,6 +255,7 @@ export function createMockPiConfigurationPort(
       latest: null,
       updateAvailable: false,
     }),
+    applyPiCliUpdate: async () => ({ output: null }),
 
     readSkillFile: async (path: string) => {
       const content = skillFiles.get(path);

@@ -16,7 +16,7 @@ const EXPECTED_COMMAND_NAMES = [
   "pet_window_hide",
   "pet_window_prewarm",
   "pet_window_set_position", "pet_window_show", "pet_window_toggle", "pi_cli",
-  "pi_cli_update_check", "pi_fetch_models", "pi_generate_commit_message", "pi_generate_title", "pi_send", "pi_session_read",
+  "pi_cli_update_apply", "pi_cli_update_check", "pi_fetch_models", "pi_generate_commit_message", "pi_generate_title", "pi_send", "pi_session_read",
   "pi_settings_read", "pi_settings_write", "pi_start", "pi_stop", "project_open", "project_open_remote",
   "repository_diff", "repository_phase3", "repository_phase4", "repository_phase4b", "repository_mutate", "repository_status",
   "mcp_adapter_check", "mcp_config_discover", "mcp_config_open_dir", "mcp_config_read", "mcp_config_write",
@@ -39,9 +39,9 @@ const EXPECTED_COMMAND_NAMES = [
   "remote_terminal_resize", "remote_terminal_start", "remote_terminal_stop",
   "remote_terminal_write",
   // Remote provider sync: identifiers in, redacted previews out. Provider JSON
-  // and credentials stay behind these three commands.
-  "remote_provider_sync_apply", "remote_provider_sync_candidates",
-  "remote_provider_sync_prepare", "remote_task_ensure",
+  // and credentials stay behind these four commands.
+  "remote_provider_sync_apply", "remote_provider_sync_apply_automatic",
+  "remote_provider_sync_candidates", "remote_provider_sync_prepare", "remote_task_ensure",
   "remote_task_status", "remote_task_stop", "remote_task_reap",
   // Read-only remote workspace browsing (V2.3).
   "remote_workspace_request",

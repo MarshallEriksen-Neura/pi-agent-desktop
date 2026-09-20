@@ -46,6 +46,12 @@ function toLauncherPath(value) {
   return posix ? value : value.replace(/^[A-Za-z]:/, "").replaceAll("\\", "/");
 }
 
+function toShellPath(value) {
+  if (posix) return value;
+  const match = /^([A-Za-z]):[\\/](.*)$/.exec(value);
+  return match ? `/${match[1].toLowerCase()}/${match[2].replaceAll("\\", "/")}` : value.replaceAll("\\", "/");
+}
+
 function manage(home, project, request, { path = null, envelopeExtra = null } = {}) {
   const envelope = {
     protocolVersion: 1,
@@ -103,13 +109,38 @@ test("capabilities advertise independently gated read and mutation support", () 
     });
     assert.equal(result.status, 0, result.stderr);
     const reply = JSON.parse(result.stdout.trim());
-    assert.equal(reply.launcherRevision, 16);
+    assert.equal(reply.launcherRevision, 18);
     for (const capability of [
       "pi-packages-read-v1",
       "pi-packages-mutate-v1",
       "pi-skills-read-v1",
       "pi-skills-mutate-v1",
+      "pi-cli-read-v1",
+      "pi-cli-update-v1",
     ]) assert.ok(reply.capabilities.includes(capability), capability);
+  });
+});
+
+test("Pi CLI management uses the fixed executable and arguments from the envelope", () => {
+  withScratch(({ home, project, bin }) => {
+    const pi = join(bin, "pi");
+    writeExecutable(pi, [
+      'printf \'%s\\n\' "$@" > "$HOME/pi-cli-argv.txt"',
+      'if [ "${1:-}" = "--version" ]; then printf \'0.99.0\\n\'; else printf \'updated\\n\'; fi',
+    ].join("\n"));
+    const options = { envelopeExtra: { remoteCwd: null, piExecutable: toShellPath(pi) } };
+    const inspected = manage(home, project, { operation: "inspectPiCli" }, options);
+    assert.deepEqual(inspected, { ok: true, operation: "inspectPiCli", result: { version: "0.99.0" } });
+    assert.equal(readFileSync(join(home, "pi-cli-argv.txt"), "utf8").trim(), "--version");
+
+    const updated = manage(home, project, { operation: "updatePiCli" }, options);
+    assert.equal(updated.ok, true, JSON.stringify(updated));
+    assert.equal(updated.result.code, 0);
+    assert.equal(readFileSync(join(home, "pi-cli-argv.txt"), "utf8").trim(), "update");
+
+    const injected = manage(home, project, { operation: "updatePiCli", args: ["remove"] }, options);
+    assert.equal(injected.ok, false);
+    assert.equal(injected.errorCode, "unsupportedOperation");
   });
 });
 
@@ -234,6 +265,15 @@ test("management envelopes and operation objects require exact keys", () => {
       assert.equal(reply.ok, false, JSON.stringify(request));
       assert.ok(["unsupportedOperation", "invalidMutation"].includes(reply.errorCode), reply.errorCode);
     }
+    const workspacePi = manage(home, project, { operation: "inspectPiCli" });
+    assert.equal(workspacePi.ok, false);
+    assert.equal(workspacePi.errorCode, "invalidRequest");
+
+    const hostInspect = manage(home, project, { operation: "inspect" }, {
+      envelopeExtra: { remoteCwd: null },
+    });
+    assert.equal(hostInspect.ok, false);
+    assert.equal(hostInspect.errorCode, "invalidRequest");
   });
 });
 

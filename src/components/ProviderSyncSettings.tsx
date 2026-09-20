@@ -21,6 +21,10 @@ import type {
   ProviderSyncWarningCode,
 } from "@/lib/backend/ports/remote-provider-sync";
 import { t } from "@/lib/i18n";
+import {
+  getAutomaticProviderSyncProviderIds,
+  setAutomaticProviderSync,
+} from "@/lib/pi/remote-provider-auto-sync";
 import { GroupRow, InsetGroup } from "./settings-ui";
 
 const PROVIDER_SYNC_ERROR_CODES = new Set([
@@ -44,6 +48,7 @@ const PROVIDER_SYNC_ERROR_CODES = new Set([
   "syncPayloadTooLarge",
   "syncBusy",
   "syncPlanMissing",
+  "syncApprovalRequired",
   "syncPlanExpired",
   "syncPlanStale",
   "configLockTimeout",
@@ -92,6 +97,8 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
   const [preview, setPreview] = useState<PreparedProviderSync | null>(null);
   const [result, setResult] = useState<ProviderSyncResult | null>(null);
   const [apiKeyConfirmed, setApiKeyConfirmed] = useState(false);
+  const [autoSyncAfterApply, setAutoSyncAfterApply] = useState(true);
+  const [automaticProviderIds, setAutomaticProviderIds] = useState<string[]>([]);
   const [syncBusy, setSyncBusy] = useState<"load" | "prepare" | "apply" | null>(null);
   const [syncNotice, setSyncNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -128,6 +135,10 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
       : profiles[0].id);
     void loadCandidates();
   }, [loadCandidates, profiles]);
+  useEffect(() => {
+    setAutomaticProviderIds(getAutomaticProviderSyncProviderIds(profileId));
+  }, [profileId]);
+
 
   const invalidatePreparedPlan = () => {
     setPreview(null);
@@ -171,6 +182,8 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
     setSyncNotice(null);
     try {
       const next = await syncPort.apply(preview.profileId, providerIds);
+      setAutomaticProviderSync(preview.profileId, providerIds, autoSyncAfterApply);
+      setAutomaticProviderIds(getAutomaticProviderSyncProviderIds(preview.profileId));
       setResult(next);
       setPreview(null);
       setSelectedIds([]);
@@ -184,6 +197,11 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
     } finally {
       setSyncBusy(null);
     }
+  };
+
+  const disableAutomaticSync = (providerId: string) => {
+    setAutomaticProviderSync(profileId, [providerId], false);
+    setAutomaticProviderIds((current) => current.filter((id) => id !== providerId));
   };
 
   const requiresApiKeyConfirmation = preview?.providers.some(
@@ -303,6 +321,22 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
             })}
           </fieldset>
 
+          {automaticProviderIds.length > 0 ? (
+            <div style={{ display: "grid", gap: 6, padding: "10px 12px", border: "1px solid var(--separator)", borderRadius: 8 }}>
+              <span style={{ color: "var(--text-secondary)", fontSize: 11.5 }}>
+                {t("settings.remoteAgent.providerSync.autoEnabled")}
+              </span>
+              {automaticProviderIds.map((providerId) => (
+                <div key={providerId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <code style={{ color: "var(--text-primary)", fontSize: 11.5 }}>{providerId}</code>
+                  <Button variant="ghost" size="sm" onClick={() => disableAutomaticSync(providerId)}>
+                    {t("settings.remoteAgent.providerSync.autoDisable")}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           {preview ? (
             <div style={{ display: "grid", gap: 10, paddingTop: 2 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -347,6 +381,15 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
                   <span>{t("settings.remoteAgent.providerSync.confirmApiKeys")}</span>
                 </label>
               ) : null}
+              <label style={{ display: "grid", gridTemplateColumns: "18px minmax(0, 1fr)", gap: 8, color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.5, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={autoSyncAfterApply}
+                  onChange={(event) => setAutoSyncAfterApply(event.target.checked)}
+                  style={{ width: 15, height: 15, margin: "2px 0 0", accentColor: "var(--accent)" }}
+                />
+                <span>{t("settings.remoteAgent.providerSync.autoAfterApply")}</span>
+              </label>
             </div>
           ) : null}
 

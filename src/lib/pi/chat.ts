@@ -106,6 +106,8 @@ interface ChatStore {
   activeRetries: Map<string, RetryState>;
 
   init: () => void;
+  /** Release global subscriptions when the owning Pi client is discarded. */
+  dispose: () => void;
   send: (text: string, images?: string[]) => Promise<void>;
   /** inject into the running turn — pi picks it up without finishing first */
   steer: (text: string, images?: string[]) => Promise<void>;
@@ -312,6 +314,7 @@ function dropLoadingRetries(
  */
 export function createChatStore(taskId: string) {
   const client = getPiClient(taskId);
+  let unsubscribeExtUi: (() => void) | undefined;
   let seq = 0;
   const nid = () => `msg-${++seq}`;
   let qseq = 0;
@@ -557,6 +560,11 @@ export function createChatStore(taskId: string) {
       waiting: false,
       queue: [],
       activeRetries: new Map(),
+
+      dispose: () => {
+        unsubscribeExtUi?.();
+        unsubscribeExtUi = undefined;
+      },
 
       init: () => {
         if (get().initialized) return;
@@ -891,7 +899,7 @@ export function createChatStore(taskId: string) {
            clear this flag could never fire and the amber state only ever went
            away when the turn ended. The queue is the real lifecycle — the entry
            is removed exactly when pi has been answered. */
-        useExtUi.subscribe((s) => {
+        unsubscribeExtUi = useExtUi.subscribe((s) => {
           const pending = s.queue.some(
             (q) => q.taskId === taskId && MODAL_METHODS.has(q.method)
           );
@@ -1211,8 +1219,16 @@ export function getChatStore(taskId: string): ChatStoreApi {
   return store;
 }
 
+/** Drop one per-task chat store when its Pi client is reclaimed. */
+export function clearChatStore(taskId: string): void {
+  const key = taskId.trim() || DEFAULT_TASK_ID;
+  chatStores.get(key)?.getState().dispose();
+  chatStores.delete(key);
+}
+
 /** Drop every per-task chat store (used when switching projects). */
 export function clearChatStores(): void {
+  for (const store of chatStores.values()) store.getState().dispose();
   chatStores.clear();
 }
 

@@ -122,7 +122,7 @@ test("the capability handshake advertises read-only workspace browsing", () => {
     assert.ok(reply.capabilities.includes("repository-phase3-v1"));
     assert.ok(reply.capabilities.includes("repository-integration-v1"));
     assert.ok(reply.capabilities.includes("repository-integration-v2"));
-    assert.equal(reply.launcherRevision, 16);
+    assert.equal(reply.launcherRevision, 18);
     // Gated by name, never inferred: the payload protocol did not move for this.
     assert.equal(reply.launcherProtocolVersion, 1);
   });

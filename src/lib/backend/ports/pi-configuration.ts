@@ -1,6 +1,7 @@
 import type { CustomModelDef, ModelsJson, ProviderConfig } from "../../pi/models";
 import type { PackageEntry, PiSettings, SettingsScope } from "../../pi/settings";
 import type { PiCliUpdateInfo } from "../../pi/cli-update";
+import type { ExecutionBinding } from "./execution-target";
 
 export interface SettingsScopeFileDto {
   path: string;
@@ -61,7 +62,8 @@ export interface PiConfigurationPort {
    * sends no CORS headers, so the webview is not allowed to read the response.
    */
   searchSkills(query: string, limit: number): Promise<SkillCatalogHitDto[]>;
-  checkPiCliUpdate(): Promise<PiCliUpdateInfo>;
+  checkPiCliUpdate(binding: ExecutionBinding): Promise<PiCliUpdateInfo>;
+  applyPiCliUpdate(binding: ExecutionBinding): Promise<{ output: string | null }>;
   readSkillFile(path: string): Promise<string>;
   listSkillDirectory(path: string): Promise<PiSkillDirectoryEntryDto[]>;
   /**

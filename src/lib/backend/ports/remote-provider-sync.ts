@@ -100,4 +100,10 @@ export interface RemoteProviderSyncPort {
    * plan is rejected and requires a new prepare/confirmation cycle.
    */
   apply(profileId: string, providerIds: string[]): Promise<ProviderSyncResult>;
+
+  /**
+   * Rebuilds and applies a plan only when doing so cannot install a literal API
+   * key. Used for provider/profile pairs approved by a prior manual sync.
+   */
+  applyAutomatic(profileId: string, providerIds: string[]): Promise<ProviderSyncResult>;
 }

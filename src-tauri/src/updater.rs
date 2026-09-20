@@ -137,9 +137,8 @@ pub async fn update_check(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
 }
 
 /* ── pi CLI update check ─────────────────────────────────────────────────
-The desktop app is a GUI over the `pi` CLI; the CLI updates itself with
-`pi update` (invoked from the frontend through the existing `pi_cli`
-command). This check only answers "is a newer pi available?". */
+The desktop app is a GUI over the `pi` CLI. Version inspection and explicit
+updates are bound to the selected local or SSH execution target. */
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -148,6 +147,12 @@ pub struct PiCliUpdateInfo {
     installed: Option<String>,
     latest: Option<String>,
     update_available: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiCliUpdateApplyResult {
+    output: Option<String>,
 }
 
 /// `pi --version` → "0.81.1"; None when pi is missing or errors.
@@ -165,11 +170,43 @@ fn pi_installed_version() -> Option<String> {
     (!v.is_empty()).then_some(v)
 }
 
+fn remote_pi_version(binding: &crate::remote_profiles::ExecutionBinding) -> Result<String, String> {
+    let reply = crate::remote_profiles::remote_pi_cli_request(binding, "inspectPiCli")?;
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        let code = reply
+            .get("errorCode")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("remotePiCliFailed");
+        let detail = reply
+            .get("detail")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("remote Pi CLI check failed");
+        return Err(format!("{code}: {detail}"));
+    }
+    reply
+        .pointer("/result/version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "remote Pi CLI check returned no version".into())
+}
+
 #[tauri::command]
-pub async fn pi_cli_update_check() -> Result<PiCliUpdateInfo, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let installed = pi_installed_version();
-        // No pi → nothing to compare; skip the remote query entirely.
+pub async fn pi_cli_update_check(
+    binding: crate::remote_profiles::ExecutionBinding,
+) -> Result<PiCliUpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let installed = match &binding {
+            crate::remote_profiles::ExecutionBinding::Local { target_id } => {
+                if target_id != "local" {
+                    return Err("invalid local execution binding".into());
+                }
+                pi_installed_version()
+            }
+            crate::remote_profiles::ExecutionBinding::Ssh { .. } => {
+                Some(remote_pi_version(&binding)?)
+            }
+        };
         if installed.is_none() {
             return Ok(PiCliUpdateInfo {
                 installed: None,
@@ -189,6 +226,101 @@ pub async fn pi_cli_update_check() -> Result<PiCliUpdateInfo, String> {
             installed,
             latest,
             update_available,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn pi_cli_update_apply(
+    binding: crate::remote_profiles::ExecutionBinding,
+) -> Result<PiCliUpdateApplyResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (code, stdout, stderr) = match &binding {
+            crate::remote_profiles::ExecutionBinding::Local { target_id } => {
+                if target_id != "local" {
+                    return Err("invalid local execution binding".into());
+                }
+                let mut cmd = crate::pi_command::command(None)?;
+                cmd.arg("update")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let output = cmd
+                    .output()
+                    .map_err(|error| format!("failed to run pi update: {error}"))?;
+                (
+                    output.status.code().unwrap_or(1),
+                    String::from_utf8_lossy(&output.stdout).into_owned(),
+                    String::from_utf8_lossy(&output.stderr).into_owned(),
+                )
+            }
+            crate::remote_profiles::ExecutionBinding::Ssh { .. } => {
+                let reply = crate::remote_profiles::remote_pi_cli_request(&binding, "updatePiCli")?;
+                if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+                    let code = reply
+                        .get("errorCode")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("remotePiCliFailed");
+                    let detail = reply
+                        .get("detail")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("remote pi update failed");
+                    return Err(format!("{code}: {detail}"));
+                }
+                let result = reply
+                    .get("result")
+                    .ok_or("remote pi update returned no result")?;
+                (
+                    result
+                        .get("code")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(1) as i32,
+                    result
+                        .get("stdout")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    result
+                        .get("stderr")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            }
+        };
+        if code != 0 {
+            let detail = if stderr.trim().is_empty() {
+                stdout.trim()
+            } else {
+                stderr.trim()
+            };
+            return Err(if detail.is_empty() {
+                format!("pi update exited with {code}")
+            } else {
+                detail
+                    .chars()
+                    .rev()
+                    .take(500)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect()
+            });
+        }
+        let output = stdout.trim();
+        Ok(PiCliUpdateApplyResult {
+            output: (!output.is_empty()).then(|| {
+                output
+                    .chars()
+                    .rev()
+                    .take(500)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect()
+            }),
         })
     })
     .await

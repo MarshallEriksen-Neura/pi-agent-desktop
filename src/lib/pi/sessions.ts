@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { getChatStore, clearChatStores, type ChatMessage } from "./chat";
+import { getChatStore, clearChatStore, clearChatStores, type ChatMessage } from "./chat";
 import { getPiStore, clearPiStore, clearPiStores } from "./store";
 import { getPiClient, disposeAllPiClients, disposePiClient } from "./client";
 import { prepareRemoteBinding } from "./remote-task-binding";
@@ -832,10 +832,14 @@ async function ensureTaskStarted(
 function releaseIdleTask(taskId: string | null | undefined): void {
   if (!taskId || !liveTasks.has(taskId)) return;
   if (sessionPathSyncing.has(taskId)) return;
+  // A failed flush must not discard the only copy of unsaved messages.
+  if (dirtyTasks.has(taskId)) return;
   const status = getPiStore(taskId).getState().status;
   if (status === "running" || status === "connecting") return;
 
   disposePiClient(taskId);
+  clearChatStore(taskId);
+  autosaved.delete(taskId);
   clearPiStore(taskId);
   liveTasks.delete(taskId);
   syncListenerHooked.delete(taskId);
@@ -1125,6 +1129,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
 
     // The deleted conversation's process is no longer needed.
     disposePiClient(id);
+    clearChatStore(id);
     clearPiStore(id);
     liveTasks.delete(id);
     autosaved.delete(id);

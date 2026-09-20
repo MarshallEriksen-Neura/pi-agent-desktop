@@ -286,7 +286,7 @@ struct CapabilitiesReply {
 
 /// This build's embedded launcher revision. Must equal `launcherRevision` in
 /// `remote-launcher/pi-desktop-launcher`; a test pins the two together.
-const LAUNCHER_REVISION: u32 = 17;
+const LAUNCHER_REVISION: u32 = 18;
 /// The task-state version this build's launcher reads and writes.
 const LAUNCHER_STATUS_VERSION: u32 = 1;
 
@@ -2613,6 +2613,95 @@ pub async fn remote_repository_request(
     .map_err(|error| format!("remote repository task failed: {error}"))?
 }
 
+fn run_remote_management(
+    profile: &RemotePiProfile,
+    remote_cwd: Option<&str>,
+    request: serde_json::Value,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let mut envelope = serde_json::json!({
+        "protocolVersion": LAUNCHER_PROTOCOL_VERSION,
+        "remoteCwd": remote_cwd,
+        "request": request,
+    });
+    if remote_cwd.is_none() {
+        envelope["piExecutable"] =
+            serde_json::Value::String(profile.pi_executable.clone().unwrap_or_else(|| "pi".into()));
+    }
+    let body = serde_json::to_string(&envelope)
+        .map_err(|error| format!("cannot encode remote management request: {error}"))?;
+    if body.len() > MANAGEMENT_REQUEST_MAX_BYTES {
+        return Err("remote management request exceeded its size limit".into());
+    }
+    let spec = ssh_management_spec(profile);
+    ensure_control_master(&profile.ssh_host);
+    let output = run_bounded_command(&spec, timeout, Some(&body), MANAGEMENT_OUTPUT_MAX_BYTES)?;
+    if output.timed_out {
+        return Err(format!(
+            "remote management request timed out after {}s",
+            timeout.as_secs()
+        ));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if output.status.code() != Some(0) {
+        let (_, error_code, message) =
+            classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
+        return Err(format!("{error_code}: {message}"));
+    }
+    if output.stdout.len() > MANAGEMENT_OUTPUT_MAX_BYTES {
+        return Err("remote management reply exceeded its size limit".into());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .ok_or("remote management request returned no reply")?;
+    serde_json::from_str(line.trim())
+        .map_err(|error| format!("invalid remote management reply: {error}"))
+}
+
+/// Executes one fixed Pi CLI operation for a validated execution target.
+pub fn remote_pi_cli_request(
+    binding: &ExecutionBinding,
+    operation: &str,
+) -> Result<serde_json::Value, String> {
+    let ExecutionBinding::Ssh { profile_id, .. } = binding else {
+        return Err("remote Pi CLI request requires an SSH execution binding".into());
+    };
+    let profile = load_profile(profile_id)?;
+    validate_binding(&profile, binding)?;
+    let required_capability = match operation {
+        "inspectPiCli" => "pi-cli-read-v1",
+        "updatePiCli" => "pi-cli-update-v1",
+        _ => return Err("unsupported remote Pi CLI operation".into()),
+    };
+    let capabilities = probe_launcher_capabilities(&profile.ssh_host, &profile.launcher_path)?;
+    if let Some(error) = capabilities.error {
+        return Err(error);
+    }
+    if !capabilities
+        .capabilities
+        .iter()
+        .any(|item| item == required_capability)
+    {
+        return Err(format!(
+            "launcher-upgrade-required: remote launcher does not support {required_capability}"
+        ));
+    }
+    let timeout = if operation == "inspectPiCli" {
+        MANAGEMENT_INSPECT_TIMEOUT
+    } else {
+        MANAGEMENT_MUTATION_TIMEOUT
+    };
+    run_remote_management(
+        &profile,
+        None,
+        serde_json::json!({ "operation": operation }),
+        timeout,
+    )
+}
+
 /// Executes one bounded, semantic package/skill management request on the target host.
 /// SSH details and launcher arguments remain backend-owned; the JSON request is validated
 /// again by the launcher and cannot contain a command, argv, environment, HOME, or path.
@@ -2646,45 +2735,7 @@ pub async fn remote_pi_management_request(
                 ))
             }
         };
-        let envelope = serde_json::json!({
-            "protocolVersion": LAUNCHER_PROTOCOL_VERSION,
-            "remoteCwd": remote_cwd,
-            "request": request,
-        });
-        let body = serde_json::to_string(&envelope)
-            .map_err(|error| format!("cannot encode remote management request: {error}"))?;
-        if body.len() > MANAGEMENT_REQUEST_MAX_BYTES {
-            return Err("remote management request exceeded its size limit".into());
-        }
-        let spec = ssh_management_spec(&profile);
-        // A skills or package mutation is followed by more of them, and each one carries a
-        // fresh snapshot back. Sharing one connection is what keeps a list of installs
-        // from being a list of handshakes.
-        ensure_control_master(&profile.ssh_host);
-        let output = run_bounded_command(&spec, timeout, Some(&body), MANAGEMENT_OUTPUT_MAX_BYTES)?;
-        if output.timed_out {
-            return Err(format!(
-                "remote management request timed out after {}s",
-                timeout.as_secs()
-            ));
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        if output.status.code() != Some(0) {
-            let (_, error_code, message) =
-                classify_transport_failure(output.status.code(), &stderr, &profile.launcher_path);
-            return Err(format!("{error_code}: {message}"));
-        }
-        if output.stdout.len() > MANAGEMENT_OUTPUT_MAX_BYTES {
-            return Err("remote management reply exceeded its size limit".into());
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let line = stdout
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .ok_or("remote management request returned no reply")?;
-        serde_json::from_str(line.trim())
-            .map_err(|error| format!("invalid remote management reply: {error}"))
+        run_remote_management(&profile, Some(&remote_cwd), request, timeout)
     })
     .await
     .map_err(|error| format!("remote management task failed: {error}"))?

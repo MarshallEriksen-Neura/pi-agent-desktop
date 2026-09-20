@@ -31,18 +31,33 @@ interface TerminalXtermPaneProps {
 
 function buildXtermTheme() {
   const css = getComputedStyle(document.documentElement);
-  const value = (name: string) => css.getPropertyValue(name).trim();
+  const value = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
   return {
-    background: value("--bg-sunken") || "#0a0a0a",
-    foreground: value("--text-primary") || "#eee",
-    cursor: value("--accent") || "#0a84ff",
-    cursorAccent: value("--bg-sunken") || "#0a0a0a",
-    selectionBackground: value("--accent-muted") || "rgba(10,132,255,0.18)",
-    green: value("--success") || "#34c759",
-    red: value("--danger") || "#ff3b30",
-    blue: value("--accent") || "#0a84ff",
-    magenta: value("--agent-thinking") || "#bf5af2",
-    yellow: value("--warning") || "#ff9500",
+    background: value("--bg-sunken", "#0a0a0a"),
+    foreground: value("--text-primary", "#eee"),
+    cursor: value("--accent", "#0a84ff"),
+    cursorAccent: value("--bg-sunken", "#0a0a0a"),
+    selectionBackground: value("--accent-muted", "rgba(10,132,255,0.28)"),
+    selectionForeground: value("--ansi-bright-white", "#ffffff"),
+    // Keep the full ANSI palette explicit. Otherwise xterm.js falls back to
+    // its default palette, which is noticeably dimmer/inconsistent on the
+    // near-black dark terminal surface.
+    black: value("--ansi-black", "#2d2d2d"),
+    red: value("--ansi-red", "#ff6961"),
+    green: value("--ansi-green", "#5ac777"),
+    yellow: value("--ansi-yellow", "#ffb340"),
+    blue: value("--ansi-blue", "#409cff"),
+    magenta: value("--ansi-magenta", "#bf66ff"),
+    cyan: value("--ansi-cyan", "#5dc1e0"),
+    white: value("--text-primary", "#eee"),
+    brightBlack: value("--ansi-bright-black", "#636366"),
+    brightRed: value("--ansi-bright-red", "#ff8a80"),
+    brightGreen: value("--ansi-bright-green", "#72d687"),
+    brightYellow: value("--ansi-bright-yellow", "#ffc570"),
+    brightBlue: value("--ansi-bright-blue", "#60acff"),
+    brightMagenta: value("--ansi-bright-magenta", "#cf88ff"),
+    brightCyan: value("--ansi-bright-cyan", "#7dd4f0"),
+    brightWhite: value("--text-primary", "#fff"),
   };
 }
 

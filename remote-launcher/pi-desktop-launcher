@@ -36,7 +36,7 @@ if [ "$mode" = "--capabilities" ]; then
     printf '%s\n' 'capabilities_invalid_arguments' >&2
     exit 64
   fi
-  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":17,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","repository-batch-write-v1","repository-phase3-v1","repository-integration-v1","repository-integration-v2","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1"]}'
+  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":18,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","repository-batch-write-v1","repository-phase3-v1","repository-integration-v1","repository-integration-v2","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1","pi-cli-read-v1","pi-cli-update-v1"]}'
   exit 0
 fi
 
@@ -656,14 +656,15 @@ function runManagement() {
     errorCode,
     detail: detail === undefined ? null : cleanDiagnostic(detail),
   });
+  const control = /[\u0000-\u001f\u007f]/;
   let input = Buffer.alloc(0);
   try { input = fs.readFileSync(0); } catch (error) { fail("requestReadFailed", error?.message); }
   if (input.length === 0 || input.length > REQUEST_MAX) fail("requestTooLarge");
   let envelope;
   try { envelope = JSON.parse(input.toString("utf8")); } catch { fail("invalidRequestJson"); }
-  if (!onlyKeys(envelope, ["protocolVersion", "remoteCwd", "request"]) ||
-      envelope.protocolVersion !== 1 || typeof envelope.remoteCwd !== "string" ||
-      !path.isAbsolute(envelope.remoteCwd) || !isObject(envelope.request)) fail("invalidRequest");
+  if (!isObject(envelope) || envelope.protocolVersion !== 1 || !isObject(envelope.request)) {
+    fail("invalidRequest");
+  }
   const request = envelope.request;
   const operation = request.operation;
   const allowedRequestKeys = {
@@ -672,16 +673,58 @@ function runManagement() {
     browseSkillSource: ["operation", "source"],
     mutatePackage: ["operation", "mutation"],
     mutateSkill: ["operation", "mutation"],
+    inspectPiCli: ["operation"],
+    updatePiCli: ["operation"],
   };
   if (!Object.hasOwn(allowedRequestKeys, operation) || !onlyKeys(request, allowedRequestKeys[operation])) {
     fail("unsupportedOperation");
   }
+  const piCliOperation = operation === "inspectPiCli" || operation === "updatePiCli";
+  const envelopeKeys = piCliOperation
+    ? ["protocolVersion", "remoteCwd", "piExecutable", "request"]
+    : ["protocolVersion", "remoteCwd", "request"];
+  if (!onlyKeys(envelope, envelopeKeys)) fail("invalidRequest");
+  if (piCliOperation) {
+    if (envelope.remoteCwd !== null || typeof envelope.piExecutable !== "string" ||
+        envelope.piExecutable.length === 0 || envelope.piExecutable.length > 4096 ||
+        envelope.piExecutable.trim() !== envelope.piExecutable || envelope.piExecutable.startsWith("-") ||
+        control.test(envelope.piExecutable)) fail("invalidRequest");
+  } else if (typeof envelope.remoteCwd !== "string" || !path.isAbsolute(envelope.remoteCwd)) {
+    fail("invalidRequest");
+  }
   const home = os.homedir();
+  const spawnBounded = (command, args, timeout, maxBuffer, cwd) => spawnSync("sh", ["-c", [
+    "if command -v setsid >/dev/null 2>&1; then setsid \"$@\" & grouped=1; else \"$@\" & grouped=0; fi",
+    "child=$!",
+    "terminate() {",
+    "  if [ \"$grouped\" = 1 ]; then kill -TERM -\"$child\" 2>/dev/null || true; else kill -TERM \"$child\" 2>/dev/null || true; fi",
+    "  sleep 1",
+    "  if [ \"$grouped\" = 1 ]; then kill -KILL -\"$child\" 2>/dev/null || true; else kill -KILL \"$child\" 2>/dev/null || true; fi",
+    "  exit 124",
+    "}",
+    "trap terminate TERM INT HUP",
+    "wait \"$child\"",
+    "exit $?",
+  ].join("\n"), "pi-desktop-management", command, ...args], {
+    cwd, encoding: "utf8", timeout, maxBuffer, killSignal: "SIGTERM",
+  });
+  if (operation === "inspectPiCli" || operation === "updatePiCli") {
+    const args = operation === "inspectPiCli" ? ["--version"] : ["update"];
+    const result = spawnBounded(envelope.piExecutable, args, operation === "inspectPiCli" ? 30000 : 290000, SOURCE_OUTPUT_MAX, home);
+    if (result.error) fail(result.error.code === "ETIMEDOUT" ? "piCliTimeout" : "piCliFailed", result.error.message);
+    const output = {
+      code: Number.isInteger(result.status) ? result.status : 1,
+      stdout: cleanDiagnostic(result.stdout),
+      stderr: cleanDiagnostic(result.stderr),
+    };
+    if (operation === "inspectPiCli" && output.code !== 0) fail("piCliUnavailable", output.stderr || output.stdout);
+    respond({ ok: true, operation, result: operation === "inspectPiCli"
+      ? { version: output.stdout.trim() } : output });
+  }
   const agentRoot = path.join(home, ".pi", "agent");
   let projectRoot;
   try { projectRoot = fs.realpathSync(envelope.remoteCwd); } catch { fail("projectRootUnavailable"); }
   const projectPiRoot = path.join(projectRoot, ".pi");
-  const control = /[\u0000-\u001f\u007f]/;
   const safeValue = (value, max = 2048) => typeof value === "string" && value.length > 0 &&
     value.length <= max && value.trim() === value && !value.startsWith("-") && !control.test(value);
   const readBounded = (file, max, optional = true) => {
@@ -856,21 +899,6 @@ function runManagement() {
     if (!file) fail("sourceRefNotFound");
     respond({ ok: true, operation, result: readBounded(file, SKILL_MAX, false) });
   }
-  const spawnBounded = (command, args, timeout, maxBuffer) => spawnSync("sh", ["-c", [
-    "if command -v setsid >/dev/null 2>&1; then setsid \"$@\" & grouped=1; else \"$@\" & grouped=0; fi",
-    "child=$!",
-    "terminate() {",
-    "  if [ \"$grouped\" = 1 ]; then kill -TERM -\"$child\" 2>/dev/null || true; else kill -TERM \"$child\" 2>/dev/null || true; fi",
-    "  sleep 1",
-    "  if [ \"$grouped\" = 1 ]; then kill -KILL -\"$child\" 2>/dev/null || true; else kill -KILL \"$child\" 2>/dev/null || true; fi",
-    "  exit 124",
-    "}",
-    "trap terminate TERM INT HUP",
-    "wait \"$child\"",
-    "exit $?",
-  ].join("\n"), "pi-desktop-management", command, ...args], {
-    cwd: projectRoot, encoding: "utf8", timeout, maxBuffer, killSignal: "SIGTERM",
-  });
   if (operation === "browseSkillSource") {
     if (!safeValue(request.source)) fail("invalidSkillSource");
     const executable = (() => {
@@ -884,7 +912,7 @@ function runManagement() {
     })();
     if (!executable) fail("skillsCliUnavailable");
     const result = spawnBounded(executable.command,
-      [...executable.prefix, "add", request.source, "--list"], 120000, SOURCE_OUTPUT_MAX);
+      [...executable.prefix, "add", request.source, "--list"], 120000, SOURCE_OUTPUT_MAX, projectRoot);
     if (result.error) fail(result.error.code === "ETIMEDOUT" ? "skillsCliTimeout" : "skillsCliFailed", result.error.message);
     if (result.status !== 0) fail("skillsCliFailed", String(result.stderr || result.stdout).slice(0, SOURCE_OUTPUT_MAX));
     const lines = String(result.stdout).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").split(/\r?\n/);
@@ -938,7 +966,7 @@ function runManagement() {
     return found.status === 0 && !candidate.includes("\n") && path.isAbsolute(candidate) ? candidate : null;
   };
   const runCli = (command, args) => {
-    const result = spawnBounded(command, args, 290000, SOURCE_OUTPUT_MAX);
+    const result = spawnBounded(command, args, 290000, SOURCE_OUTPUT_MAX, projectRoot);
     if (result.error) {
       return {
         code: result.error.code === "ETIMEDOUT" ? 124 : 1,

@@ -10,6 +10,7 @@ import type {
 import type { ProviderConfig } from "../../pi/models";
 import type { SettingsScope } from "../../pi/settings";
 import type { PiCliUpdateInfo } from "../../pi/cli-update";
+import type { ExecutionBinding } from "../ports/execution-target";
 import { desktopInvoke } from "./invoke";
 
 export const desktopPiConfigurationPort: PiConfigurationPort = {
@@ -73,7 +74,10 @@ export const desktopPiConfigurationPort: PiConfigurationPort = {
   searchSkills: (query: string, limit: number) =>
     desktopInvoke<SkillCatalogHitDto[]>("skills_search", { query, limit }),
 
-  checkPiCliUpdate: () => desktopInvoke<PiCliUpdateInfo>("pi_cli_update_check"),
+  checkPiCliUpdate: (binding: ExecutionBinding) =>
+    desktopInvoke<PiCliUpdateInfo>("pi_cli_update_check", { binding }),
+  applyPiCliUpdate: (binding: ExecutionBinding) =>
+    desktopInvoke<{ output: string | null }>("pi_cli_update_apply", { binding }),
 
   readSkillFile: (path: string) => desktopInvoke<string>("fs_read_file", { path }),
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { Button } from "@appica/ui-react/button";
 import {
@@ -16,12 +16,13 @@ import {
   MOCK_APPLY_ERROR,
   type UpdatePhase,
 } from "@/lib/update";
-import { useCliUpdate } from "@/lib/pi/cli-update";
+import { cliUpdateTargetStamp, useCliUpdate } from "@/lib/pi/cli-update";
 import { usePi } from "@/lib/pi/store";
-import { useWorkspace } from "@/lib/workspace";
+import { useSessions } from "@/lib/pi/sessions";
 import { useI18n, useT } from "@/lib/i18n";
 import { PiMark } from "@/components/PiMark";
 import { SettingsPage, InsetGroup, GroupRow } from "@/components/settings-ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 const RING = 132;
 const R = 62;
@@ -101,15 +102,27 @@ const mono: React.CSSProperties = {
 export default function UpdatePage() {
   const u = useUpdate();
   const cli = useCliUpdate();
+  const binding = useSessions((state) => state.executionBinding);
   const t = useT();
   const { locale } = useI18n();
-
+  const [confirmRemote, setConfirmRemote] = useState(false);
+  const bindingStamp = cliUpdateTargetStamp(binding);
+  const sameCliTarget = cli.targetStamp === bindingStamp;
+  const remote = binding.kind === "ssh";
+  const startCliUpdate = () => {
+    void cli.apply(binding).catch(() => undefined);
+  };
+  const confirmCliUpdate = () => {
+    setConfirmRemote(false);
+    startCliUpdate();
+  };
   // Auto-check when the page opens, like iOS Software Update.
   useEffect(() => {
     u.check();
-    cli.check();
+    cli.check(binding);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => setConfirmRemote(false), [bindingStamp]);
 
   const phase = u.phase;
   const version = u.info?.currentVersion ?? APP_VERSION;
@@ -366,6 +379,15 @@ export default function UpdatePage() {
       <InsetGroup header={t("cliUpdate.sectionTitle")} footer={t("cliUpdate.sectionFooter")}>
         <GroupRow
           first
+          title={t("cliUpdate.target")}
+          detail={remote ? t("cliUpdate.remoteTarget", { host: binding.hostAlias }) : t("cliUpdate.localTarget")}
+          trailing={
+            <span style={{ ...mono, fontSize: 13, color: "var(--text-secondary)" }}>
+              {remote ? binding.hostAlias : t("cliUpdate.localTarget")}
+            </span>
+          }
+        />
+        <GroupRow
           icon={<SquareTerminal size={15} />}
           title={t("cliUpdate.installed")}
           detail={
@@ -385,7 +407,7 @@ export default function UpdatePage() {
               : cli.phase === "available" || cli.phase === "updating"
                 ? t("update.availableStatus", { version: cli.info?.latest ?? "?" })
                 : cli.phase === "updated"
-                  ? t("cliUpdate.updated")
+                  ? cli.targetDetached ? t("cliUpdate.detachedUpdated") : t("cliUpdate.updated")
                   : cli.phase === "error"
                     ? cli.error ?? t("update.checkFailed")
                     : undefined
@@ -409,19 +431,18 @@ export default function UpdatePage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => cli.check()}
+            onClick={() => cli.check(binding)}
             disabled={cli.phase === "checking" || cli.phase === "updating"}
             style={{ borderRadius: 10, flex: 1, fontWeight: 600 }}
           >
             {cli.phase === "checking" ? t("update.checking") : t("update.check")}
           </Button>
           {(cli.phase === "available" ||
-            cli.phase === "updating" ||
-            cli.phase === "error") && (
+            cli.phase === "updating") && (
             <Button
               variant="primary"
               size="sm"
-              onClick={() => void cli.apply()}
+              onClick={() => remote ? setConfirmRemote(true) : startCliUpdate()}
               disabled={cli.phase === "updating"}
               style={{
                 borderRadius: 10,
@@ -435,15 +456,16 @@ export default function UpdatePage() {
                 : t("cliUpdate.updateNow")}
             </Button>
           )}
-          {cli.phase === "updated" && (
+          {cli.phase === "updated" && !cli.targetDetached && (
             <Button
               variant="primary"
               size="sm"
-              onClick={() =>
-                void usePi
-                  .getState()
-                  .restart(useWorkspace.getState().root ?? undefined)
-              }
+              onClick={() => {
+                if (!sameCliTarget) return;
+                void usePi.getState().restart()
+                  .then(() => cli.dismiss(binding))
+                  .catch(() => undefined);
+              }}
               style={{ borderRadius: 10, flex: 1, fontWeight: 600 }}
             >
               {t("cliUpdate.restartPi")}
@@ -493,6 +515,17 @@ export default function UpdatePage() {
           })}
         </p>
       )}
+      <ConfirmDialog
+        open={confirmRemote && remote && sameCliTarget}
+        title={t("cliUpdate.confirmRemoteTitle")}
+        message={t("cliUpdate.confirmRemoteMessage", { host: binding.kind === "ssh" ? binding.hostAlias : "" })}
+        detail={t("cliUpdate.versionLine", { current: cli.info?.installed ?? "?", latest: cli.info?.latest ?? "?" })}
+        confirmLabel={t("cliUpdate.updateNow")}
+        danger={false}
+        confirmDisabled={cli.phase === "updating" || !sameCliTarget}
+        onConfirm={confirmCliUpdate}
+        onCancel={() => setConfirmRemote(false)}
+      />
     </SettingsPage>
   );
 }

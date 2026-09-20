@@ -112,6 +112,7 @@ function fakePorts(label = "fake"): BackendPorts {
         latest: null,
         updateAvailable: false,
       }),
+      applyPiCliUpdate: async () => ({ output: null }),
       readSkillFile: async () => "",
       listSkillDirectory: async () => [],
       readPackageLock: async () => null,

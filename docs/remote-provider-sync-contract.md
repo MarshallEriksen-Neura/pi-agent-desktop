@@ -23,6 +23,13 @@ API-key synchronization requires an exact two-phase operation:
 
 A prepared plan is keyed by `profileId + canonical sorted providerIds`, expires after 120 seconds, is single-use, is never persisted, and is replaced only through a new prepare after the old plan expires or is consumed. Apply fails if the profile changed or was deleted.
 
+### Previously approved automatic refresh
+
+After a successful manual apply, the UI may persist only the approved `profileId + providerId` relationship as a non-secret preference, and exposes each relationship so the user can turn it off without another sync. A later successful local `models.json` write may submit those identifiers to `applyAutomatic`. Rust rebuilds a fresh plan from authoritative local and remote state and applies it only when no selected provider has `credentialAction: willInstallApiKey`.
+Local write notifications are coalesced briefly and remote applies are serialized. Failures do not roll back the already-successful local write; they surface a warning and a later local edit retries through a freshly built plan.
+
+If a literal API key would need to be installed (for example, because the remote credential was removed), automatic apply consumes and discards the temporary plan and returns `syncApprovalRequired`; the user must repeat the redacted manual review and confirmation. Automatic refresh never reuses a prior secret-bearing plan, never persists credentials, and keeps the same fixed SSH-stdin transport. Deleting a local provider removes its automatic relationship but does not delete the remote counterpart. Renaming is likewise non-destructive; destructive mirroring remains outside this contract.
+
 No redacted DTO may contain API keys, auth objects, header names/values, raw provider definitions, complete endpoint URLs with userinfo/query data, local/remote file paths, SSH/launcher arguments, or credential hashes.
 
 ## Selection validation

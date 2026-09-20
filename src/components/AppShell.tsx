@@ -7,7 +7,7 @@ import { NavRail } from "./NavRail";
 import { ExtensionSheet } from "./ExtensionSheet";
 import { CliUpdateToast } from "./CliUpdateToast";
 import { RestartPiToast } from "./RestartPiToast";
-import { useCliUpdate } from "@/lib/pi/cli-update";
+import { cliUpdateTargetStamp, useCliUpdate } from "@/lib/pi/cli-update";
 import { usePi } from "@/lib/pi/store";
 import {
   configureSessionProjectRootResolver,
@@ -74,6 +74,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     pathname?.startsWith("/plugins") ||
     pathname?.startsWith("/skills");
   useEffect(() => {
+    let disposed = false;
+    let stopUpdateTargetWatch: (() => void) | undefined;
     // restore the saved UI language (or detect from the system) before first paint settles
     useI18n.getState().initLocale();
     // restore the saved light/dark theme before the appearance overrides land
@@ -131,8 +133,19 @@ function MainShell({ children }: { children: React.ReactNode }) {
       // --session path, so every task runs in its own process (parallel tasks)
       .then(() => useSessions.getState().init(useWorkspace.getState().root ?? ""))
 
-      // background pi CLI version check — pops the update toast when newer
-      .then(() => useCliUpdate.getState().checkOnLaunch())
+      // Check the final restored target, then only re-check when host identity or
+      // profile revision changes. A remote workspace change is not a host change.
+      .then(() => {
+        if (disposed) return;
+        let stamp = cliUpdateTargetStamp(useSessions.getState().executionBinding);
+        stopUpdateTargetWatch = useSessions.subscribe((state) => {
+          const nextStamp = cliUpdateTargetStamp(state.executionBinding);
+          if (nextStamp === stamp) return;
+          stamp = nextStamp;
+          void useCliUpdate.getState().checkOnLaunch(state.executionBinding);
+        });
+        void useCliUpdate.getState().checkOnLaunch(useSessions.getState().executionBinding);
+      })
       .catch((cause) => {
         const error = cause instanceof Error ? cause : new Error(String(cause));
         usePi.setState({ status: "disconnected", lastError: error.message });
@@ -166,6 +179,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
     }
 
     return () => {
+      disposed = true;
+      stopUpdateTargetWatch?.();
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("contextmenu", preventDefaultCtx);
       destroyAgentBridge();

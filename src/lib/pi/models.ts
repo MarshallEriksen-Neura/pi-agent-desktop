@@ -24,6 +24,10 @@
 import { create } from "zustand";
 import { getBackendKind, getPort } from "../backend/composition/container";
 import { usePiSettings } from "./settings";
+import {
+  queueAutomaticProviderSync,
+  removeAutomaticProviderSyncProviders,
+} from "./remote-provider-auto-sync";
 
 import type { ThinkingLevel } from "./protocol";
 
@@ -451,6 +455,12 @@ async function save(
     );
     usePiSettings.setState({ dirtyRestart: true });
     set({ lastError: null });
+    const changedProviderIds = Object.keys(next.providers).filter(
+      (id) => JSON.stringify(prev.providers[id]) !== JSON.stringify(next.providers[id]),
+    );
+    const deletedProviderIds = Object.keys(prev.providers).filter((id) => !(id in next.providers));
+    removeAutomaticProviderSyncProviders(deletedProviderIds);
+    queueAutomaticProviderSync(changedProviderIds);
   } catch (e) {
     set({ data: prev, lastError: e instanceof Error ? e.message : String(e) });
   }
