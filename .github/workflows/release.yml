@@ -150,10 +150,9 @@ jobs:
           java-version: 21
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          api-level: 36
-
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
