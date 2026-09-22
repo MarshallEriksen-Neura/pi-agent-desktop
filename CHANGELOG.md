@@ -6,6 +6,23 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ---
 
+## [0.17.1] — 2026-09-22
+
+### Added
+- **插件发现支持可选的语义重排**。输入仍然即时使用本地子串筛选，查询停止后可通过 TypeSafe System One 对前 40 个候选进行重排；未配置密钥、网络失败或服务异常时自动回退到原顺序。
+
+### Changed
+- Pi CLI 更新提醒恢复为顶部居中的轻量横幅，按本地/SSH 执行目标显示状态，并支持减少动画偏好。
+- pnpm workspace 在当前 Windows 环境使用注入式 workspace 包布局，避免目录重解析点导致依赖安装失败。
+
+### Fixed
+- **修复 Windows 桌面端开启宠物后进程卡死的问题**。宠物 WebView2 创建现在移出同步 IPC 回调，并通过单飞锁避免预热与显示并发创建窗口；窗口恢复拖动和关闭，不再触发 `AppHangB1`。
+
+### Internal
+- 增加宠物窗口异步创建与单飞保护的回归契约测试。
+
+---
+
 ## [0.17.0] — 2026-09-20
 
 ### Added

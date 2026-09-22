@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 const appShellPath = path.join(process.cwd(), "src/components/AppShell.tsx");
+const petWindowPath = path.join(process.cwd(), "src-tauri/src/pet_window.rs");
 
 function appShellSource(): string {
   return fs.readFileSync(appShellPath, "utf8");
@@ -99,6 +100,32 @@ test("locks desktop pet autolaunch behavior after main bootstrap effect", () => 
     "usePet.getState().loadPet(pet)",
     ".emitConfigUpdate({ petId }",
     "void showPetWindow()",
+  ]);
+});
+
+test("creates the pet webview outside synchronous IPC with a single-flight guard", () => {
+  const source = fs.readFileSync(petWindowPath, "utf8");
+
+  for (const command of ["pet_window_prewarm", "pet_window_show", "pet_window_toggle"]) {
+    assert.match(
+      source,
+      new RegExp(`#\\[tauri::command\\]\\s+pub async fn ${command}\\b`),
+      `${command} must be async so Tauri does not create WebView2 inside the invoking IPC callback`,
+    );
+  }
+
+  assert.ok(
+    source.includes("static PET_WINDOW_CREATION_LOCK: Mutex<()> = Mutex::new(())"),
+  );
+  assert.match(source, /fn create_pet_window\([\s\S]*?WebviewWindowBuilder::new/);
+
+  const ensureStart = source.indexOf("fn ensure_pet_window(");
+  const ensureEnd = source.indexOf("\n}\n\n/// Load the pet window", ensureStart);
+  assert.notEqual(ensureStart, -1, "missing ensure_pet_window helper");
+  assert.notEqual(ensureEnd, -1, "missing end of ensure_pet_window helper");
+  assertInOrder(source.slice(ensureStart, ensureEnd), [
+    "PET_WINDOW_CREATION_LOCK",
+    "create_pet_window(app)",
   ]);
 });
 

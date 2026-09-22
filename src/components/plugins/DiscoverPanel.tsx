@@ -14,7 +14,7 @@
  * sets of translations for the same two words.
  */
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Button } from "@appica/ui-react/button";
 import { Badge } from "@appica/ui-react/badge";
@@ -28,6 +28,7 @@ import {
 import { getPort } from "@/lib/backend/composition/container";
 import { normalizePackageSource } from "@/lib/pi/package-install";
 import type { PackageManager, RegistryPkg } from "@/lib/pi/package-manager";
+import { rerankCandidates } from "@/lib/typesafe/rerank";
 import { useT } from "@/lib/i18n";
 import { InsetGroup, GroupRow, Segmented } from "@/components/settings-ui";
 import { Skeleton } from "@/components/primitives";
@@ -46,10 +47,16 @@ const fieldStyle: React.CSSProperties = {
   outline: "none",
 };
 
+function matches(pkg: RegistryPkg, term: string): boolean {
+  return pkg.name.toLowerCase().includes(term) || (pkg.description ?? "").toLowerCase().includes(term);
+}
+
 export function DiscoverPanel({ pm, canMutate = true }: { pm: PackageManager; canMutate?: boolean }) {
   const t = useT();
   const [query, setQuery] = useState("");
   const [source, setSource] = useState("");
+  const [reranked, setReranked] = useState<RegistryPkg[] | null>(null);
+  const rerankReq = useRef(0);
 
   // the registry is a network round-trip, so it waits until this panel is
   // actually looked at rather than firing on every visit to plugin management
@@ -57,15 +64,49 @@ export function DiscoverPanel({ pm, canMutate = true }: { pm: PackageManager; ca
 
   const all = pm.registry;
   const q = query.trim().toLowerCase();
-  const visible = !all
-    ? []
-    : !q
-      ? all
-      : all.filter(
-          (p) =>
-            p.name.toLowerCase().includes(q) ||
-            (p.description ?? "").toLowerCase().includes(q)
-        );
+
+  // instant substring shortlist — updates on every keystroke
+  const shortlist = useMemo(
+    () => (!all ? [] : !q ? all : all.filter((p) => matches(p, q))),
+    [all, q],
+  );
+
+  // debounce the semantic rerank trigger so fast typing = one TypeSafe call,
+  // not one per keystroke. The substring shortlist above stays instant.
+  const [debouncedQ, setDebouncedQ] = useState(q);
+  useEffect(() => {
+    const h = setTimeout(() => setDebouncedQ(q), 300);
+    return () => clearTimeout(h);
+  }, [q]);
+
+  // semantic rerank of the settled shortlist — one call, top 40. Disabled
+  // (cached) when no key; any failure falls back to the substring shortlist.
+  // `reranked` is cleared on each settle so the shortlist shows while in-flight.
+  useEffect(() => {
+    if (!debouncedQ || !all) {
+      setReranked(null);
+      return;
+    }
+    const pool = all.filter((p) => matches(p, debouncedQ)).slice(0, 40);
+    if (pool.length <= 1) {
+      setReranked(null);
+      return;
+    }
+    const id = ++rerankReq.current;
+    setReranked(null);
+    void rerankCandidates(
+      debouncedQ,
+      pool.map((p) => ({ id: p.name, text: `${p.name}: ${p.description ?? ""}` })),
+    ).then((sorted) => {
+      if (id !== rerankReq.current) return; // a newer settle already won
+      const byName = new Map(pool.map((p) => [p.name, p]));
+      setReranked(sorted.map((c) => byName.get(c.id)).filter(Boolean) as RegistryPkg[]);
+    });
+  }, [debouncedQ, all]);
+
+  // show the reranked order only once the query has settled (q === debouncedQ);
+  // while typing, the instant substring shortlist keeps the list responsive.
+  const visible = reranked && q === debouncedQ ? reranked : shortlist;
 
   const submitSource = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

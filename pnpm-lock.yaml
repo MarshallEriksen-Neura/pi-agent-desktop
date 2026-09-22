@@ -3,6 +3,7 @@ lockfileVersion: '9.0'
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
+  injectWorkspacePackages: true
 
 importers:
 
@@ -40,7 +41,7 @@ importers:
         version: 1.2.3
       '@pi/remote-control-contracts':
         specifier: workspace:*
-        version: link:packages/remote-control-contracts
+        version: file:packages/remote-control-contracts
       '@shikijs/langs':
         specifier: ^3.19.0
         version: 3.23.0
@@ -176,10 +177,10 @@ importers:
         version: 8.3.0(@capacitor/core@8.5.0)
       '@pi/remote-control-contracts':
         specifier: workspace:*
-        version: link:../../packages/remote-control-contracts
+        version: file:packages/remote-control-contracts
       '@pi/secure-net-plugin':
         specifier: workspace:*
-        version: link:../../packages/secure-net-plugin
+        version: file:packages/secure-net-plugin
       motion:
         specifier: ^12.0.0
         version: 12.42.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1173,6 +1174,12 @@ packages:
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [win32]
+
+  '@pi/remote-control-contracts@file:packages/remote-control-contracts':
+    resolution: {directory: packages/remote-control-contracts, type: directory}
+
+  '@pi/secure-net-plugin@file:packages/secure-net-plugin':
+    resolution: {directory: packages/secure-net-plugin, type: directory}
 
   '@remix-run/router@1.23.3':
     resolution: {integrity: sha512-4An71tdz9X8+3sI4Qqqd2LWd9vS39J7sqd9EU4Scw7TJE/qB10Flv/UuqbPVgfQV9XoK8Np6jNquZitnZq5i+Q==}
@@ -4404,6 +4411,12 @@ snapshots:
 
   '@next/swc-win32-x64-msvc@15.5.21':
     optional: true
+
+  '@pi/remote-control-contracts@file:packages/remote-control-contracts': {}
+
+  '@pi/secure-net-plugin@file:packages/secure-net-plugin':
+    dependencies:
+      '@capacitor/core': 8.5.0
 
   '@remix-run/router@1.23.3': {}
 

@@ -3,5 +3,14 @@ packages:
   - 'packages/*'
   - 'apps/*'
 
+# 这台机器无法穿越目录 junction/重解析点（ERROR_UNTRUSTED_MOUNT_POINT），
+# 因此不使用 isolated 布局与 workspace 软链接：
+#   nodeLinker=hoisted           → 普通依赖落成真实目录
+#   injectWorkspacePackages      → workspace 依赖用硬链接注入而非软链接
+#   dedupeInjectedDeps=false     → 否则 pnpm 仍会优先用软链接去重
+nodeLinker: hoisted
+injectWorkspacePackages: true
+dedupeInjectedDeps: false
+
 allowBuilds:
   sharp: true

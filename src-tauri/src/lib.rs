@@ -15,6 +15,7 @@ mod remote_provider_sync;
 mod remote_terminal;
 mod repository;
 mod skills_cli;
+mod typesafe;
 mod updater;
 mod wsl;
 
@@ -456,6 +457,7 @@ pub fn run() {
             remote_control::remote_conversation_cancel,
             remote_control::remote_conversation_archive,
             remote_control::remote_control_set_model_admin,
+            typesafe::typesafe_eval,
             app_quit
         ])
         .setup(|app| {

@@ -1,9 +1,12 @@
+use std::sync::Mutex;
+
 use serde::Serialize;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 const PET_WINDOW_LABEL: &str = "pet";
 const PET_WINDOW_WIDTH: f64 = 200.0;
 const PET_WINDOW_HEIGHT: f64 = 250.0;
+static PET_WINDOW_CREATION_LOCK: Mutex<()> = Mutex::new(());
 
 /// Create the pet window (hidden) so a later `show` is instant. Using a
 /// *relative* `WebviewUrl::App("pet")` (no trailing slash) lets Tauri resolve it
@@ -19,11 +22,13 @@ const PET_WINDOW_HEIGHT: f64 = 250.0;
 /// every user, including the majority who never enable a pet. The main window
 /// now calls `pet_window_prewarm` once it has painted and gone idle, and only
 /// when a pet is actually enabled (see `AppShell`).
-pub fn create_pet_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+fn create_pet_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     if app.get_webview_window(PET_WINDOW_LABEL).is_some() {
-        return Ok(());
+        return app
+            .get_webview_window(PET_WINDOW_LABEL)
+            .ok_or_else(|| "pet window disappeared during creation".to_string());
     }
-    let _window = WebviewWindowBuilder::new(app, PET_WINDOW_LABEL, WebviewUrl::App("pet".into()))
+    let window = WebviewWindowBuilder::new(app, PET_WINDOW_LABEL, WebviewUrl::App("pet".into()))
         .title("Pi Pet")
         .inner_size(PET_WINDOW_WIDTH, PET_WINDOW_HEIGHT)
         .decorations(false)
@@ -40,7 +45,8 @@ pub fn create_pet_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Erro
                 payload.url()
             );
         })
-        .build()?;
+        .build()
+        .map_err(|e| e.to_string())?;
 
     // Dev diagnostics are opt-in: auto-opening devtools spins up yet another
     // webview during startup, which is exactly the cost this window is trying
@@ -51,11 +57,29 @@ pub fn create_pet_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Erro
             .map(|value| value == "1" || value == "true")
             .unwrap_or(false);
         if want_devtools {
-            _window.open_devtools();
+            window.open_devtools();
         }
     }
 
-    Ok(())
+    Ok(window)
+}
+
+fn ensure_pet_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    let _creation_guard = PET_WINDOW_CREATION_LOCK
+        .lock()
+        .map_err(|_| "pet window creation lock poisoned".to_string())?;
+
+    // A prewarm and an explicit show can arrive together. Check again after
+    // taking the lock so only one command ever queues WebView2 creation.
+    if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    create_pet_window(app)
 }
 
 /// Load the pet window in the background without showing it.
@@ -66,26 +90,21 @@ pub fn create_pet_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Erro
 /// `pet-window-ready` event), which keeps the silent load invisible instead of
 /// flashing the prerendered "No pet selected" placeholder.
 #[tauri::command]
-pub fn pet_window_prewarm(app: AppHandle) -> Result<(), String> {
-    if app.get_webview_window(PET_WINDOW_LABEL).is_some() {
-        return Ok(());
-    }
-    create_pet_window(&app).map_err(|e| e.to_string())
+pub async fn pet_window_prewarm(app: AppHandle) -> Result<(), String> {
+    // Async commands are executed by Tauri's async runtime. This keeps
+    // WebviewWindowBuilder::build out of the invoking WebView2 IPC callback;
+    // tauri-runtime-wry can otherwise handle CreateWindow inline on the UI thread.
+    ensure_pet_window(&app).map(|_| ())
 }
 
 #[tauri::command]
-pub fn pet_window_show(app: AppHandle) -> Result<(), String> {
+pub async fn pet_window_show(app: AppHandle) -> Result<(), String> {
     let existing = app.get_webview_window(PET_WINDOW_LABEL).is_some();
     eprintln!(
         "[pet-window] pet_window_show called; existing_window={}",
         existing
     );
-    if app.get_webview_window(PET_WINDOW_LABEL).is_none() {
-        create_pet_window(&app).map_err(|e| e.to_string())?;
-    }
-    let window = app
-        .get_webview_window(PET_WINDOW_LABEL)
-        .ok_or_else(|| "pet window missing after create".to_string())?;
+    let window = ensure_pet_window(&app)?;
     // No set_focus(): the pet is a 200x250 always-on-top overlay, so focusing it
     // only steals the caret from whatever the user was typing in — and on the
     // startup auto-launch path it stole focus from the main window itself.
@@ -103,19 +122,15 @@ pub fn pet_window_hide(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn pet_window_toggle(app: AppHandle) -> Result<bool, String> {
-    if let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) {
-        let visible = window.is_visible().map_err(|e| e.to_string())?;
-        if visible {
-            window.hide().map_err(|e| e.to_string())?;
-            Ok(false)
-        } else {
-            // See pet_window_show: revealing the overlay must not take focus.
-            window.show().map_err(|e| e.to_string())?;
-            Ok(true)
-        }
+pub async fn pet_window_toggle(app: AppHandle) -> Result<bool, String> {
+    let window = ensure_pet_window(&app)?;
+    let visible = window.is_visible().map_err(|e| e.to_string())?;
+    if visible {
+        window.hide().map_err(|e| e.to_string())?;
+        Ok(false)
     } else {
-        pet_window_show(app)?;
+        // See pet_window_show: revealing the overlay must not take focus.
+        window.show().map_err(|e| e.to_string())?;
         Ok(true)
     }
 }
