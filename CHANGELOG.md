@@ -6,6 +6,13 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ---
 
+## [0.17.3] — 2026-09-22
+
+### Fixed
+- 修复发布 workflow 普通冻结安装不会重新注入已构建 workspace 包的问题；现在强制刷新注入副本，确保桌面与 Android 构建能解析生成后的 `@pi/remote-control-contracts`。
+
+---
+
 ## [0.17.2] — 2026-09-22
 
 ### Fixed
