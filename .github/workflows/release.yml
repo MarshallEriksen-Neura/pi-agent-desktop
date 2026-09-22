@@ -79,6 +79,11 @@ jobs:
         # packages before the desktop/mobile apps can resolve them.
         run: pnpm -r --filter "./packages/**" build
 
+      - name: Refresh injected workspace packages
+        # injectWorkspacePackages uses hard-linked snapshots in node_modules;
+        # refresh them after the package build so consumers see the new dist/.
+        run: pnpm install --frozen-lockfile --offline
+
       - name: Import Apple certificate
         if: matrix.platform == 'macos-latest' && env.APPLE_CERTIFICATE != ''
         env:
@@ -160,6 +165,9 @@ jobs:
         # @pi/remote-control-contracts ships via dist/ — build it (and any
         # sibling packages) before the app so TS/vite can resolve them.
         run: pnpm -r --filter "./packages/**" build
+
+      - name: Refresh injected workspace packages
+        run: pnpm install --frozen-lockfile --offline
 
       - name: Build web assets
         run: pnpm --filter mobile build

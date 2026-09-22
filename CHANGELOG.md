@@ -6,6 +6,13 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ---
 
+## [0.17.2] — 2026-09-22
+
+### Fixed
+- 修复启用注入式 pnpm workspace 布局后，发布 workflow 在构建 workspace 包之后仍读取旧注入副本，导致桌面与 Android 构建找不到 `@pi/remote-control-contracts` 的问题。
+
+---
+
 ## [0.17.1] — 2026-09-22
 
 ### Added
