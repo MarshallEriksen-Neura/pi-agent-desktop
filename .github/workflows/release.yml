@@ -72,17 +72,14 @@ jobs:
         run: rustup target add ${{ contains(matrix.args, 'aarch64') && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # CI runners do not need the Windows junction workaround. Use normal
+        # workspace links so packages built later resolve their generated dist/.
+        run: pnpm install --no-frozen-lockfile --config.inject-workspace-packages=false
 
       - name: Build workspace packages
         # @pi/remote-control-contracts ships via dist/ — build workspace
         # packages before the desktop/mobile apps can resolve them.
         run: pnpm -r --filter "./packages/**" build
-
-      - name: Refresh injected workspace packages
-        # injectWorkspacePackages uses hard-linked snapshots in node_modules;
-        # refresh them after the package build so consumers see the new dist/.
-        run: pnpm install --force --frozen-lockfile --offline
 
       - name: Import Apple certificate
         if: matrix.platform == 'macos-latest' && env.APPLE_CERTIFICATE != ''
@@ -159,15 +156,12 @@ jobs:
         with:
           packages: "platform-tools platforms;android-36 build-tools;36.0.0"
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile --config.inject-workspace-packages=false
 
       - name: Build workspace packages
         # @pi/remote-control-contracts ships via dist/ — build it (and any
         # sibling packages) before the app so TS/vite can resolve them.
         run: pnpm -r --filter "./packages/**" build
-
-      - name: Refresh injected workspace packages
-        run: pnpm install --force --frozen-lockfile --offline
 
       - name: Build web assets
         run: pnpm --filter mobile build

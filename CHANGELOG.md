@@ -6,6 +6,13 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ---
 
+## [0.17.4] — 2026-09-22
+
+### Fixed
+- 修复发布 workflow 在注入式 workspace 配置下无法解析构建后 workspace 包的问题；CI 现在使用普通 workspace 链接并允许按 CI 配置更新锁文件，本机 Windows 的注入式布局保持不变。
+
+---
+
 ## [0.17.3] — 2026-09-22
 
 ### Fixed
