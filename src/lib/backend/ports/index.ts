@@ -79,6 +79,7 @@ export type {
   McpAdapterStatusDto,
   McpDiscoverySourceDto,
 } from "./pi-configuration";
+export type { McpConfigurationPort, McpConfigurationPortFactory } from "./mcp-configuration";
 export type {
   PiProcessExit,
   PiProcessEvent,

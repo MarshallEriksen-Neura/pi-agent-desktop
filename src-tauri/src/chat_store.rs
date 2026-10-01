@@ -347,7 +347,11 @@ pub fn chat_session_save(
                    name = excluded.name,
                    session_path = excluded.session_path,
                    preview = excluded.preview,
-                   messages = excluded.messages,
+                   messages = CASE
+                       -- An empty restore must not erase a real cached transcript.
+                       WHEN TRIM(excluded.messages) = '[]' AND TRIM(chat_sessions.messages) <> '[]' THEN chat_sessions.messages
+                       ELSE excluded.messages
+                   END,
                    project_root = excluded.project_root,
                    execution_binding = excluded.execution_binding,
                    authority_session_id = COALESCE(excluded.authority_session_id, chat_sessions.authority_session_id),

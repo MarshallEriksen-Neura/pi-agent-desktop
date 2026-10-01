@@ -6,6 +6,30 @@ All notable changes to Pi Desktop will be documented in this file.
 
 ---
 
+## [0.18.0] — 2026-10-01
+
+### Added
+- **SSH 执行目标支持自定义模型配置**。复用模型页面编辑远程 Provider、模型及启用列表，支持远程全局与项目作用域，并在远端获取上游模型列表。
+- **SSH 执行目标支持自定义 MCP 配置**。复用现有 MCP 页面、Server 编辑器、原始 JSON 和导入界面，支持新增、编辑、改名、删除与启停；同时展示适配器登记、包文件和标准配置来源的检测证据。
+
+### Changed
+- **远程 Provider 同步不再传输本机 API Key、OAuth token 或 Provider 环境凭据**。仅同步选定的 Provider 定义，保留远端已有凭据；远端缺少认证时需在远端独立配置。
+- Provider 手动与自动同步新增全局/项目作用域；已有自动同步关联按全局作用域兼容迁移。支持没有 `models` 数组的凭据型和 `modelOverrides` 型 Provider。
+- 项目模型配置写入 `<remoteCwd>/.pi/agent/models.json`，远程 Pi 使用对应隔离 agent 目录，模型、认证、会话和设置与远端全局目录隔离。
+- 内嵌远程 launcher 升级到 **revision 26**，增加独立的模型配置与 MCP 检测、读取、写入能力。已有 SSH 主机需从新版桌面安装/更新 launcher；配置保存后需显式重启对应远程 Pi，文件检测不代表扩展已加载或 MCP 已连接。
+
+### Fixed
+- 修复远程插件与 Skills 安装的自检查请求漏传已配置 Pi 可执行路径，导致 `postInspectFailed: invalidRequest` 的问题；安装不再依赖非交互 shell 能找到裸 `pi` 命令。
+- 修复切换本机/SSH 目标或配置作用域后旧异步结果污染当前模型/MCP 页面的问题；MCP 保存使用与所显示路径及内容绑定的状态令牌，遇到并发修改时拒绝覆盖，成功保存仅标记原目标需重启。
+- 修复 MCP Server 名称与对象继承属性冲突的问题，保留自定义字段并支持异常 JSON 的显式修复。远程读写拒绝符号链接、非普通文件和超限内容，使用受限路径、私密临时文件与原子替换保存。
+- 修复新建 SSH 会话误用历史任务 journal 的问题；新会话创建自己的远程任务，不更改历史会话绑定。
+- 修复包含 `system` 消息的远程 transcript 恢复失败、空恢复覆盖已有聊天缓存，以及点击当前空会话无法再次恢复的问题。
+
+### Internal
+- 补充远程模型/MCP 配置、Provider 同步、项目 agent 隔离、安装自检查及会话生命周期回归测试，并更新 launcher 与远程同步契约文档。
+
+---
+
 ## [0.17.4] — 2026-09-22
 
 ### Fixed

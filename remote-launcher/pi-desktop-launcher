@@ -36,7 +36,7 @@ if [ "$mode" = "--capabilities" ]; then
     printf '%s\n' 'capabilities_invalid_arguments' >&2
     exit 64
   fi
-  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":18,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","repository-batch-write-v1","repository-phase3-v1","repository-integration-v1","repository-integration-v2","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1","pi-cli-read-v1","pi-cli-update-v1"]}'
+  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":26,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","repository-batch-write-v1","repository-phase3-v1","repository-integration-v1","repository-integration-v2","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1","pi-cli-read-v1","pi-cli-update-v1","pi-models-read-v1","pi-models-mutate-v1","pi-mcp-inspect-v1","pi-mcp-config-read-v1","pi-mcp-config-write-v1"]}'
   exit 0
 fi
 
@@ -158,6 +158,23 @@ const MAX_PROVIDER_SYNC_DEPTH = 16;
 const MAX_PROVIDER_SYNC_NODES = 50_000;
 const MAX_PROVIDER_SYNC_STRING_BYTES = 64 * 1024;
 
+
+// Pi has no project models.json; project sync opts into an isolated agent directory.
+function projectAgentEnvironment(cwd) {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const piDir = path.join(cwd, ".pi");
+  const agentDir = path.join(piDir, "agent");
+  const modelsPath = path.join(agentDir, "models.json");
+  try {
+    const directories = [piDir, agentDir].map((entry) => fs.lstatSync(entry));
+    const stat = fs.lstatSync(modelsPath);
+    if (directories.some((entry) => entry.isSymbolicLink()) || !stat.isFile() || stat.isSymbolicLink()) return process.env;
+    return { ...process.env, PI_CODING_AGENT_DIR: agentDir };
+  } catch {
+    return process.env;
+  }
+}
 function providerSyncFail(errorCode) {
   process.stderr.write("provider_sync_failed\n");
   process.stdout.write(`${JSON.stringify({ ok: false, errorCode })}\n`);
@@ -168,13 +185,7 @@ function runProviderSync() {
   const fs = require("node:fs");
   const path = require("node:path");
   const os = require("node:os");
-  const piDir = path.join(os.homedir(), ".pi");
-  const agentDir = path.join(piDir, "agent");
-  const modelsPath = path.join(agentDir, "models.json");
-  const authPath = path.join(agentDir, "auth.json");
-  const lockPath = path.join(agentDir, ".provider-sync.lock");
-  const lockOwnerPath = path.join(lockPath, "owner.json");
-  const journalPath = path.join(agentDir, ".provider-sync.journal.json");
+  const globalPiDir = path.join(os.homedir(), ".pi");
   const waitArray = new Int32Array(new SharedArrayBuffer(4));
   const noFollow = fs.constants.O_NOFOLLOW ?? 0;
   const sleep = (milliseconds) => Atomics.wait(waitArray, 0, 0, milliseconds);
@@ -184,8 +195,6 @@ function runProviderSync() {
     Buffer.byteLength(value) <= 128 && !/[\u0000-\u001f\u007f]/.test(value) &&
     !["__proto__", "prototype", "constructor"].includes(value);
   const isEnvName = (value) => typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,255}$/.test(value);
-  const isEnv = (value) => typeof value === "string" &&
-    (/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(value) || /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value));
   const assertNotSymlink = (target) => {
     try {
       if (fs.lstatSync(target).isSymbolicLink()) providerSyncFail("remoteConfigSymlinkRejected");
@@ -429,7 +438,14 @@ function runProviderSync() {
     const overrideKeys = ["name", "reasoning", "thinkingLevelMap", "input", "cost", "contextWindow",
       "maxTokens", "samplingParams", "headers", "compat"];
     if (!hasOnlyKeys(definition, providerKeys) || !boundedJson(definition) ||
-        !Array.isArray(definition.models) || definition.models.length > MAX_PROVIDER_SYNC_MODELS) providerSyncFail("syncPayloadInvalid");
+        (definition.models !== undefined &&
+          (!Array.isArray(definition.models) || definition.models.length > MAX_PROVIDER_SYNC_MODELS))) providerSyncFail("syncPayloadInvalid");
+    const models = definition.models ?? [];
+    const modelIds = new Set();
+    for (const model of models) {
+      if (!hasOnlyKeys(model, modelKeys) || !validId(model.id) || modelIds.has(model.id) || !validateModel(model, false)) providerSyncFail("syncPayloadInvalid");
+      modelIds.add(model.id);
+    }
     if (!optional(definition, "name", (value) => typeof value === "string") ||
         !optional(definition, "baseUrl", (value) => typeof value === "string") ||
         !optional(definition, "api", (value) => typeof value === "string") ||
@@ -437,11 +453,6 @@ function runProviderSync() {
         !optional(definition, "oauth", (value) => value === "radius") ||
         !optional(definition, "compat", validateCompat)) providerSyncFail("syncPayloadInvalid");
     inspectHeaders(definition.headers);
-    const modelIds = new Set();
-    for (const model of definition.models) {
-      if (!hasOnlyKeys(model, modelKeys) || !validId(model.id) || modelIds.has(model.id) || !validateModel(model, false)) providerSyncFail("syncPayloadInvalid");
-      modelIds.add(model.id);
-    }
     if (definition.modelOverrides !== undefined) {
       if (!isObject(definition.modelOverrides) || Object.keys(definition.modelOverrides).length > MAX_PROVIDER_SYNC_MODELS) providerSyncFail("syncPayloadInvalid");
       for (const [modelId, model] of Object.entries(definition.modelOverrides)) {
@@ -449,22 +460,31 @@ function runProviderSync() {
       }
     }
   };
-  const validateCredential = (credential) => {
-    if (credential === null || credential === undefined) return;
-    if (!hasOnlyKeys(credential, ["type", "key"]) || credential.type !== "api_key" ||
-        typeof credential.key !== "string") providerSyncFail("syncPayloadInvalid");
-    if (credential.key.startsWith("!")) providerSyncFail("commandCredentialUnsupported");
-  };
 
   let request;
   try { request = JSON.parse(readStdin().toString("utf8")); } catch { providerSyncFail("syncPayloadInvalid"); }
+  if (isObject(request)) {
+    if (request.scope === undefined) request.scope = "global";
+    if (request.remoteCwd === undefined) request.remoteCwd = null;
+  }
   if (!isObject(request) || request.providerSyncProtocolVersion !== 1 ||
       !["inspect", "apply"].includes(request.action)) providerSyncFail("syncProtocolUnsupported");
   const requestKeys = request.action === "inspect"
-    ? ["providerSyncProtocolVersion", "action", "providerIds"]
-    : ["providerSyncProtocolVersion", "action", "providers"];
-  if (!hasOnlyKeys(request, requestKeys)) providerSyncFail("syncPayloadInvalid");
-  for (const target of [piDir, agentDir]) assertNotSymlink(target);
+    ? ["providerSyncProtocolVersion", "action", "scope", "remoteCwd", "providerIds"]
+    : ["providerSyncProtocolVersion", "action", "scope", "remoteCwd", "providers"];
+  if (!hasOnlyKeys(request, requestKeys) || !["global", "project"].includes(request.scope)) providerSyncFail("syncPayloadInvalid");
+  if (request.remoteCwd !== null && request.remoteCwd !== undefined &&
+      (typeof request.remoteCwd !== "string" || !path.isAbsolute(request.remoteCwd) || request.remoteCwd.includes("\u0000"))) {
+    providerSyncFail("syncPayloadInvalid");
+  }
+  if (request.scope === "project" && typeof request.remoteCwd !== "string") providerSyncFail("remoteWorkspaceMissing");
+  const piDir = request.scope === "project" ? path.resolve(request.remoteCwd, ".pi") : globalPiDir;
+  const agentDir = path.join(piDir, "agent");
+  const modelsPath = path.join(agentDir, "models.json");
+  const authPath = path.join(agentDir, "auth.json");
+  const lockPath = path.join(agentDir, ".provider-sync.lock");
+  const lockOwnerPath = path.join(lockPath, "owner.json");
+  const journalPath = path.join(agentDir, ".provider-sync.journal.json");
   try {
     fs.mkdirSync(piDir, { recursive: true, mode: 0o700 });
     assertNotSymlink(piDir);
@@ -567,9 +587,9 @@ function runProviderSync() {
     const seen = new Set();
     const results = [];
     for (const item of request.providers) {
-      if (!hasOnlyKeys(item, ["providerId", "definition", "credential"]) ||
+      if (!hasOnlyKeys(item, ["providerId", "definition"]) ||
           !validId(item.providerId) || seen.has(item.providerId)) providerSyncFail("syncPayloadInvalid");
-      seen.add(item.providerId); validateDefinition(item.definition); validateCredential(item.credential);
+      seen.add(item.providerId); validateDefinition(item.definition);
       const existing = modelsRoot.providers[item.providerId];
       if (existing !== undefined && !isObject(existing)) providerSyncFail("remoteModelsInvalid");
       validateExistingCredential(authRoot, item.providerId, existing);
@@ -583,9 +603,6 @@ function runProviderSync() {
       if (hasAuth || hasEmbedded) {
         credentialAction = "remoteCredentialPreserved";
         warnings.push("remoteCredentialPreserved");
-      } else if (item.credential) {
-        authRoot[item.providerId] = item.credential;
-        credentialAction = isEnv(item.credential.key) ? "willInstallEnvironmentReference" : "willInstallApiKey";
       }
       warnings.push("remoteReloadRequired");
       results.push({ providerId: item.providerId, configUpdated: true, credentialAction, warnings });
@@ -623,13 +640,13 @@ function runProviderSync() {
 }
 
 // --- target-scoped PI package/skill management ------------------------------
-function runManagement() {
+async function runManagement() {
   const fs = require("node:fs");
   const path = require("node:path");
   const os = require("node:os");
   const crypto = require("node:crypto");
   const { spawnSync } = require("node:child_process");
-  const REQUEST_MAX = 64 * 1024;
+  const REQUEST_MAX = 2 * 1024 * 1024;
   const RESPONSE_MAX = 2 * 1024 * 1024;
   const SETTINGS_MAX = 512 * 1024;
   const LOCK_MAX = 512 * 1024;
@@ -667,6 +684,7 @@ function runManagement() {
   }
   const request = envelope.request;
   const operation = request.operation;
+  if (operation !== "writeMcpConfig" && input.length > 64 * 1024) fail("requestTooLarge");
   const allowedRequestKeys = {
     inspect: ["operation"],
     readSkillSource: ["operation", "sourceRef"],
@@ -675,20 +693,28 @@ function runManagement() {
     mutateSkill: ["operation", "mutation"],
     inspectPiCli: ["operation"],
     updatePiCli: ["operation"],
+    inspectMcp: ["operation"],
+    readMcpConfig: ["operation", "scope"],
+    writeMcpConfig: ["operation", "scope", "expectedState", "content"],
+    discoverMcpSources: ["operation"],
+    inspectModels: ["operation", "scope"],
+    mutateModels: ["operation", "scope", "expectedState", "changes"],
+    setEnabledModels: ["operation", "scope", "expectedState", "enabledModels"],
+    fetchProviderModels: ["operation", "scope", "providerId"],
   };
   if (!Object.hasOwn(allowedRequestKeys, operation) || !onlyKeys(request, allowedRequestKeys[operation])) {
     fail("unsupportedOperation");
   }
   const piCliOperation = operation === "inspectPiCli" || operation === "updatePiCli";
-  const envelopeKeys = piCliOperation
-    ? ["protocolVersion", "remoteCwd", "piExecutable", "request"]
-    : ["protocolVersion", "remoteCwd", "request"];
+  const envelopeKeys = ["protocolVersion", "remoteCwd", "piExecutable", "request"];
   if (!onlyKeys(envelope, envelopeKeys)) fail("invalidRequest");
+  if (typeof envelope.piExecutable !== "string" || envelope.piExecutable.length === 0 ||
+      envelope.piExecutable.length > 4096 || envelope.piExecutable.trim() !== envelope.piExecutable ||
+      envelope.piExecutable.startsWith("-") || control.test(envelope.piExecutable)) {
+    fail("invalidRequest");
+  }
   if (piCliOperation) {
-    if (envelope.remoteCwd !== null || typeof envelope.piExecutable !== "string" ||
-        envelope.piExecutable.length === 0 || envelope.piExecutable.length > 4096 ||
-        envelope.piExecutable.trim() !== envelope.piExecutable || envelope.piExecutable.startsWith("-") ||
-        control.test(envelope.piExecutable)) fail("invalidRequest");
+    if (envelope.remoteCwd !== null) fail("invalidRequest");
   } else if (typeof envelope.remoteCwd !== "string" || !path.isAbsolute(envelope.remoteCwd)) {
     fail("invalidRequest");
   }
@@ -725,6 +751,375 @@ function runManagement() {
   let projectRoot;
   try { projectRoot = fs.realpathSync(envelope.remoteCwd); } catch { fail("projectRootUnavailable"); }
   const projectPiRoot = path.join(projectRoot, ".pi");
+  const mcpEnvironment = projectAgentEnvironment(projectRoot);
+  const configuredMcpRoot = mcpEnvironment.PI_CODING_AGENT_DIR?.trim();
+  const effectiveAgentRoot = configuredMcpRoot
+    ? path.resolve(projectRoot, configuredMcpRoot === "~" ? home : configuredMcpRoot.startsWith("~/") ? path.join(home, configuredMcpRoot.slice(2)) : configuredMcpRoot)
+    : agentRoot;
+  const mcpPaths = [...new Set(mcpEnvironment.PI_MCP_CONFIG_MODE?.trim().toLowerCase() === "exclusive"
+    ? [path.join(effectiveAgentRoot, "mcp.json")]
+    : [path.join(home, ".config", "mcp", "mcp.json"), path.join(home, ".agents", "mcp.json"),
+       path.join(home, ".agents", "mcp", "mcp.json"), path.join(effectiveAgentRoot, "mcp.json"),
+       path.join(projectRoot, ".mcp.json"), path.join(projectPiRoot, "mcp.json")])];
+  const assertMcpDirectory = (directory) => {
+    for (let dir = directory; dir !== path.dirname(dir); dir = path.dirname(dir)) {
+      try { if (fs.lstatSync(dir).isSymbolicLink()) throw new Error("symlinkRejected"); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+  };
+  const readMcpFile = (file) => {
+    let fd;
+    try {
+      assertMcpDirectory(path.dirname(file));
+      const entry = fs.lstatSync(file);
+      if (entry.isSymbolicLink() || !entry.isFile() || entry.size > SETTINGS_MAX) return { error: "unreadable" };
+      fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.size > SETTINGS_MAX || stat.dev !== entry.dev || stat.ino !== entry.ino) return { error: "unreadable" };
+      const buffer = Buffer.alloc(SETTINGS_MAX + 1);
+      const size = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      if (size > SETTINGS_MAX) return { error: "unreadable" };
+      const content = buffer.subarray(0, size).toString("utf8");
+      if (!Buffer.from(content, "utf8").equals(buffer.subarray(0, size))) return { error: "unreadable" };
+      try {
+        const value = JSON.parse(content);
+        return isObject(value) ? { value, content } : { error: "unsupported", content };
+      } catch { return { error: "unsupported", content }; }
+    } catch (error) {
+      return error.code === "ENOENT" ? { missing: true, content: "" } : { error: "unreadable" };
+    } finally { if (fd !== undefined) fs.closeSync(fd); }
+  };
+  if (operation === "inspectMcp") {
+    // Metadata only: never load extensions, execute server commands, or return raw JSON.
+    const read = readMcpFile;
+    const settings = [read(path.join(effectiveAgentRoot, "settings.json")), read(path.join(projectPiRoot, "settings.json"))];
+    const registered = settings.some(({ value }) => Array.isArray(value?.packages) && value.packages.some((entry) => {
+      const source = typeof entry === "string" ? entry : entry?.source;
+      return typeof source === "string" && /^npm:pi-mcp-adapter(?:@[^\s]+)?$/.test(source);
+    }));
+    const packages = [effectiveAgentRoot, projectPiRoot].map((root) => read(path.join(root, "npm", "node_modules", "pi-mcp-adapter", "package.json")));
+    const present = packages.some(({ value }) => value?.name === "pi-mcp-adapter");
+    // ponytail: inspect explicit standard JSON sources, not adapter imports/plugins/JSONC.
+    // Per-file entries are intentionally not claimed to be the effective runtime config.
+    const sources = mcpPaths.map((file) => {
+      const loaded = read(file);
+      const servers = [];
+      let error = loaded.error ?? null;
+      if (loaded.value && loaded.value.mcpServers !== undefined) {
+        if (!isObject(loaded.value.mcpServers) || Object.keys(loaded.value.mcpServers).length > 1024) error = "unsupported";
+        else for (const [name, entry] of Object.entries(loaded.value.mcpServers)) {
+          if (!name || name.length > 256 || control.test(name) || !isObject(entry) ||
+              (entry.disabled !== undefined && typeof entry.disabled !== "boolean") ||
+              !((typeof entry.command === "string" && entry.command.trim()) || (typeof entry.url === "string" && entry.url.trim()))) {
+            error = "unsupported"; continue;
+          }
+          servers.push({ name, enabled: entry.disabled !== true });
+        }
+      }
+      return { path: file, exists: !loaded.missing, error, servers };
+    });
+    respond({ ok: true, operation, result: {
+      agentDirectory: effectiveAgentRoot,
+      adapterRegistered: registered ? true : settings.some((entry) => entry.error) ? null : false,
+      adapterPackagePresent: present ? true : packages.some((entry) => entry.error) ? null : false,
+      sources,
+      runtimeStatus: "unverified",
+    } });
+  }
+  if (["readMcpConfig", "writeMcpConfig", "discoverMcpSources"].includes(operation)) {
+    const invalid = (code = "invalidMcpRequest") => { throw new Error(code); };
+    const snapshot = (file) => {
+      const loaded = readMcpFile(file);
+      if (loaded.error === "unreadable") invalid("mcpConfigUnreadable");
+      const exists = !loaded.missing;
+      const content = loaded.content;
+      const stateToken = crypto.createHash("sha256").update(JSON.stringify([file, exists, content])).digest("hex");
+      return { path: file, exists, content, stateToken };
+    };
+    let lock;
+    let temp;
+    let result;
+    let errorCode;
+    try {
+      if (operation === "discoverMcpSources") {
+        result = mcpPaths.map((file, index) => {
+          const loaded = readMcpFile(file);
+          if (loaded.missing) return null;
+          return { id: `remote-mcp-${index}`, label: file, path: file,
+            scope: file.startsWith(`${projectRoot}${path.sep}`) ? "project" : "global", format: "json",
+            supported: !loaded.error, content: loaded.content ?? "", reason: loaded.error ?? null };
+        }).filter(Boolean);
+      } else {
+        if (!["global", "project"].includes(request.scope)) invalid();
+        // Only adapter-owned override paths; the renderer never supplies a filename.
+        const file = path.join(request.scope === "global" ? effectiveAgentRoot : projectPiRoot, "mcp.json");
+        if (operation === "readMcpConfig") result = snapshot(file);
+        else {
+          if (request.scope === "project" && mcpEnvironment.PI_MCP_CONFIG_MODE?.trim().toLowerCase() === "exclusive") invalid("mcpProjectIgnored");
+          if (typeof request.expectedState !== "string" || !/^[a-f0-9]{64}$/.test(request.expectedState) ||
+              typeof request.content !== "string") invalid();
+          if (Buffer.byteLength(request.content) > SETTINGS_MAX) invalid("mcpConfigTooLarge");
+          let value;
+          try { value = JSON.parse(request.content); } catch { invalid("invalidMcpConfiguration"); }
+          if (!isObject(value) || (value.mcpServers !== undefined && (!isObject(value.mcpServers) ||
+              Object.keys(value.mcpServers).length > 1024 || Object.entries(value.mcpServers).some(([name, entry]) =>
+                !name || name.length > 256 || control.test(name) || !isObject(entry) ||
+                (entry.disabled !== undefined && typeof entry.disabled !== "boolean"))))) invalid("invalidMcpConfiguration");
+          const directory = path.dirname(file);
+          assertMcpDirectory(directory);
+          fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+          // ponytail: fail closed on an abandoned lock; remove it remotely after confirming no writer is active.
+          const candidate = path.join(directory, ".pi-desktop-mcp.lock");
+          try { fs.mkdirSync(candidate, { mode: 0o700 }); }
+          catch (error) { if (error.code === "EEXIST") invalid("configurationBusy"); throw error; }
+          lock = candidate;
+          if (snapshot(file).stateToken !== request.expectedState) invalid("configurationChanged");
+          temp = path.join(directory, `.mcp-edit-${crypto.randomBytes(12).toString("hex")}.tmp`);
+          const fd = fs.openSync(temp, "wx", 0o600);
+          try { fs.writeFileSync(fd, request.content); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+          assertMcpDirectory(directory);
+          if (snapshot(file).stateToken !== request.expectedState) invalid("configurationChanged");
+          fs.renameSync(temp, file);
+          temp = undefined;
+          result = { path: file, exists: true, content: request.content,
+            stateToken: crypto.createHash("sha256").update(JSON.stringify([file, true, request.content])).digest("hex") };
+        }
+      }
+    } catch (error) {
+      const codes = ["invalidMcpRequest", "invalidMcpConfiguration", "mcpConfigUnreadable", "mcpConfigTooLarge",
+        "mcpProjectIgnored", "symlinkRejected", "configurationBusy", "configurationChanged"];
+      errorCode = codes.includes(error.message) ? error.message : "remoteMcpOperationFailed";
+    } finally {
+      if (temp) { try { fs.unlinkSync(temp); } catch {} }
+      if (lock) { try { fs.rmdirSync(lock); } catch {} }
+    }
+    if (errorCode) fail(errorCode);
+    respond({ ok: true, operation, result });
+  }
+  if (["inspectModels", "mutateModels", "setEnabledModels", "fetchProviderModels"].includes(operation)) {
+    const invalid = (code = "invalidModelRequest") => { throw new Error(code); };
+    const modelKeys = ["name", "reasoning", "thinkingLevelMap", "input", "contextWindow", "maxTokens"];
+    const capabilityKeys = ["reasoning", "thinkingLevelMap"];
+    const id = (value) => typeof value === "string" && value.length > 0 && value.length <= 512 &&
+      value.trim() === value && !control.test(value) && !["__proto__", "prototype", "constructor"].includes(value);
+    const endpoint = (value) => {
+      if (typeof value !== "string" || value.length > 4096) return false;
+      try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) &&
+        !url.username && !url.password && !url.search && !url.hash; } catch { return false; }
+    };
+    const fieldsValid = (fields, keys) => isObject(fields) && Object.keys(fields).every((key) => {
+      const value = fields[key];
+      if (!keys.includes(key)) return false;
+      if (value === null) return true;
+      if (key === "name") return id(value);
+      if (key === "reasoning") return typeof value === "boolean";
+      if (key === "input") return Array.isArray(value) && value.length > 0 && value.length <= 2 &&
+        value.every((item) => ["text", "image"].includes(item));
+      if (["contextWindow", "maxTokens"].includes(key)) return Number.isSafeInteger(value) && value > 0;
+      if (key === "thinkingLevelMap") return isObject(value) && Object.entries(value).every(([level, mapped]) =>
+        ["off", "minimal", "low", "medium", "high", "xhigh"].includes(level) && (mapped === null || id(mapped)));
+      return false;
+    });
+    const projectAgent = path.join(projectPiRoot, "agent");
+    const modelRoot = request.scope === "global" ? agentRoot : projectAgent;
+    const modelsPath = path.join(modelRoot, "models.json");
+    const globalSettingsPath = path.join(agentRoot, "settings.json");
+    const projectSettingsPath = path.join(projectPiRoot, "settings.json");
+    const locks = [];
+    const assertDirectory = (directory) => {
+      for (let current = directory; current !== path.dirname(current); current = path.dirname(current)) {
+        try { if (fs.lstatSync(current).isSymbolicLink()) invalid("symlinkRejected"); }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+      }
+    };
+    const read = (file) => {
+      assertDirectory(path.dirname(file));
+      let text = "";
+      try {
+        const stat = fs.lstatSync(file);
+        if (stat.isSymbolicLink() || !stat.isFile()) invalid("symlinkRejected");
+        if (stat.size > SETTINGS_MAX) invalid("fileTooLarge");
+        text = fs.readFileSync(file, "utf8");
+      } catch (error) { if (error.code !== "ENOENT") throw error; }
+      let value;
+      try { value = text.trim() ? JSON.parse(text) : {}; } catch { invalid("invalidModelConfiguration"); }
+      if (!isObject(value)) invalid("invalidModelConfiguration");
+      return { text, value };
+    };
+    const enabled = (value) => {
+      if (value.enabledModels === undefined) return null;
+      if (!Array.isArray(value.enabledModels) || value.enabledModels.length > 4096 || !value.enabledModels.every(id)) {
+        invalid("invalidModelConfiguration");
+      }
+      return value.enabledModels;
+    };
+    const readState = () => {
+      const global = read(globalSettingsPath);
+      const project = read(projectSettingsPath);
+      const models = read(modelsPath);
+      if (models.value.providers === undefined) models.value.providers = {};
+      if (!isObject(models.value.providers)) invalid("invalidModelConfiguration");
+      for (const provider of Object.values(models.value.providers)) {
+        if (!isObject(provider) || (provider.models !== undefined && (!Array.isArray(provider.models) ||
+          provider.models.some((model) => !isObject(model) || !id(model.id)))) ||
+          (provider.modelOverrides !== undefined && !isObject(provider.modelOverrides))) invalid("invalidModelConfiguration");
+      }
+      const stateToken = crypto.createHash("sha256").update(JSON.stringify([models.text, global.text, project.text])).digest("hex");
+      return { models: models.value, global: global.value, project: project.value, stateToken };
+    };
+    const publicSnapshot = (state) => {
+      const providers = Object.create(null);
+      const projectFields = (model, keys) => Object.fromEntries(keys.filter((key) =>
+        model[key] !== undefined && fieldsValid({ [key]: model[key] }, keys)).map((key) => [key, model[key]]));
+      for (const [providerId, provider] of Object.entries(state.models.providers)) {
+        if (!id(providerId)) invalid("invalidModelConfiguration");
+        providers[providerId] = { remoteManaged: true,
+          ...(endpoint(provider.baseUrl) ? { baseUrl: provider.baseUrl } : {}),
+          ...(typeof provider.api === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(provider.api) ? { api: provider.api } : {}),
+          models: (provider.models ?? []).map((model) => ({ id: model.id, ...projectFields(model, modelKeys) })),
+          modelOverrides: Object.fromEntries(Object.entries(provider.modelOverrides ?? {}).map(([modelId, fields]) => {
+            if (!id(modelId) || !isObject(fields)) invalid("invalidModelConfiguration");
+            return [modelId, projectFields(fields, capabilityKeys)];
+          })),
+        };
+      }
+      return { scope: request.scope, stateToken: state.stateToken, data: { providers },
+        enabledModels: { global: enabled(state.global), project: enabled(state.project) } };
+    };
+    const acquire = (root, name) => {
+      assertDirectory(root);
+      fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+      const lock = path.join(root, name);
+      try { fs.mkdirSync(lock, { mode: 0o700 }); }
+      catch (error) { if (error.code === "EEXIST") invalid("configurationBusy"); throw error; }
+      locks.push(lock);
+      fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+        { mode: 0o600, flag: "wx" });
+    };
+    const atomicWrite = (file, value) => {
+      const bytes = `${JSON.stringify(value, null, 2)}\n`;
+      if (Buffer.byteLength(bytes) > SETTINGS_MAX) invalid("fileTooLarge");
+      const temp = path.join(path.dirname(file), `.models-edit-${crypto.randomBytes(12).toString("hex")}.tmp`);
+      try {
+        const fd = fs.openSync(temp, "wx", 0o600);
+        try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        fs.renameSync(temp, file);
+      } finally { try { fs.unlinkSync(temp); } catch (error) { if (error.code !== "ENOENT") throw error; } }
+    };
+    let result;
+    let errorCode;
+    try {
+      if (!["global", "project"].includes(request.scope)) invalid();
+      const mutating = ["mutateModels", "setEnabledModels"].includes(operation);
+      if (mutating) {
+        if (typeof request.expectedState !== "string" || !/^[a-f0-9]{64}$/.test(request.expectedState)) invalid();
+        acquire(agentRoot, ".pi-desktop-management.lock");
+      }
+      acquire(modelRoot, ".provider-sync.lock");
+      if (fs.existsSync(path.join(modelRoot, ".provider-sync.journal.json"))) invalid("remoteRecoveryRequired");
+      const state = readState();
+      if (mutating && state.stateToken !== request.expectedState) invalid("configurationChanged");
+      if (operation === "inspectModels") result = publicSnapshot(state);
+      if (operation === "mutateModels") {
+        if (!Array.isArray(request.changes) || request.changes.length > 4096) invalid();
+        for (const change of request.changes) {
+          if (!isObject(change) || !id(change.providerId)) invalid();
+          const shapes = { "provider.remove": ["kind", "providerId"], "provider.edit": ["kind", "providerId", "baseUrl", "api"],
+            "model.remove": ["kind", "providerId", "modelId"], "model.edit": ["kind", "providerId", "modelId", "fields"],
+            "model.capabilities": ["kind", "providerId", "modelId", "fields"] };
+          if (!Object.hasOwn(shapes, change.kind) || !onlyKeys(change, shapes[change.kind])) invalid();
+          if (change.kind === "provider.remove") { delete state.models.providers[change.providerId]; continue; }
+          const provider = state.models.providers[change.providerId] ?? {};
+          state.models.providers[change.providerId] = provider;
+          if (change.kind === "provider.edit") {
+            if (!(change.baseUrl === null || endpoint(change.baseUrl)) || !(change.api === null ||
+              (typeof change.api === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(change.api)))) invalid();
+            for (const key of ["baseUrl", "api"]) { if (change[key] === null) delete provider[key]; else provider[key] = change[key]; }
+          } else {
+            if (!id(change.modelId)) invalid();
+            if (change.kind === "model.remove") provider.models = (provider.models ?? []).filter((model) => model.id !== change.modelId);
+            else {
+              const capability = change.kind === "model.capabilities";
+              if (!fieldsValid(change.fields, capability ? capabilityKeys : modelKeys)) invalid();
+              let target;
+              if (capability) {
+                provider.modelOverrides ??= {};
+                target = provider.modelOverrides[change.modelId] ??= {};
+              } else {
+                provider.models ??= [];
+                target = provider.models.find((model) => model.id === change.modelId);
+                if (!target) { target = { id: change.modelId, name: change.modelId }; provider.models.push(target); }
+              }
+              for (const [key, value] of Object.entries(change.fields)) { if (value === null) delete target[key]; else target[key] = value; }
+              if (capability && Object.keys(target).length === 0) delete provider.modelOverrides[change.modelId];
+            }
+          }
+        }
+        // Validate the public shape before committing; credentials/unknown fields stay untouched.
+        publicSnapshot(state);
+        atomicWrite(modelsPath, state.models);
+        result = publicSnapshot(readState());
+      }
+      if (operation === "setEnabledModels") {
+        if (request.enabledModels !== null && (!Array.isArray(request.enabledModels) ||
+          request.enabledModels.length > 4096 || !request.enabledModels.every(id))) invalid();
+        const file = request.scope === "global" ? globalSettingsPath : projectSettingsPath;
+        const value = request.scope === "global" ? state.global : state.project;
+        if (request.enabledModels === null) delete value.enabledModels; else value.enabledModels = request.enabledModels;
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        atomicWrite(file, value);
+        result = publicSnapshot(readState());
+      }
+      if (operation === "fetchProviderModels") {
+        if (!id(request.providerId)) invalid();
+        const provider = state.models.providers[request.providerId];
+        if (!provider || !endpoint(provider.baseUrl)) invalid("providerEndpointUnavailable");
+        const url = new URL(`${provider.baseUrl.replace(/\/$/, "")}/models`);
+        const auth = read(path.join(modelRoot, "auth.json")).value[request.providerId];
+        let key = typeof provider.apiKey === "string" ? provider.apiKey : undefined;
+        if (!key && auth?.type === "api_key") {
+          key = typeof auth.key === "string" ? auth.key : undefined;
+          if (!key && isObject(auth.env)) {
+            const references = Object.values(auth.env).filter((value) => typeof value === "string");
+            const preferred = references.find((value) => /(?:KEY|TOKEN|SECRET)$/i.test(value));
+            key = (preferred ?? references[0]) ? process.env[preferred ?? references[0]] : undefined;
+          }
+        }
+        if (!key && auth?.type === "oauth") key = typeof auth.access === "string" ? auth.access : undefined;
+        // Resolve remote credentials here; the renderer never sends local secrets.
+        if (key?.startsWith("!")) invalid("remoteCredentialCommandUnsupported");
+        if (key && process.env[key]) key = process.env[key];
+        const headers = {};
+        if (isObject(provider.headers)) {
+          for (const [name, value] of Object.entries(provider.headers)) {
+            if (typeof value === "string" && value.length <= 4096) headers[name] = value;
+          }
+        }
+        if (provider.api === "google-generative-ai" && key) url.searchParams.set("key", key);
+        else if (key) headers.Authorization = `Bearer ${key}`;
+        const response = await fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(15000) });
+        if (!response.ok) invalid("providerFetchFailed");
+        const text = await response.text();
+        if (Buffer.byteLength(text) > RESPONSE_MAX) invalid("responseTooLarge");
+        const json = JSON.parse(text);
+        const models = Array.isArray(json.data) ? json.data.map((model) => model.id)
+          : Array.isArray(json.models) ? json.models.map((model) => model.name?.replace(/^models\//, "")) : [];
+        result = [...new Set(models.filter(id))];
+        if (!result.length) invalid("providerModelListEmpty");
+      }
+    } catch (error) {
+      const codes = ["invalidModelRequest", "invalidModelConfiguration", "symlinkRejected", "fileTooLarge", "configurationBusy",
+        "configurationChanged", "remoteRecoveryRequired", "providerEndpointUnavailable", "remoteCredentialCommandUnsupported",
+        "providerFetchFailed", "responseTooLarge", "providerModelListEmpty"];
+      errorCode = codes.includes(error.message) ? error.message : "remoteModelOperationFailed";
+    } finally {
+      for (const lock of locks.reverse()) {
+        try { fs.unlinkSync(path.join(lock, "owner.json")); fs.rmdirSync(lock); } catch { /* owner has exited */ }
+      }
+    }
+    if (errorCode) fail(errorCode);
+    respond({ ok: true, operation, result });
+  }
   const safeValue = (value, max = 2048) => typeof value === "string" && value.length > 0 &&
     value.length <= max && value.trim() === value && !value.startsWith("-") && !control.test(value);
   const readBounded = (file, max, optional = true) => {
@@ -950,7 +1345,7 @@ function runManagement() {
   if (!launcherPath || !path.isAbsolute(launcherPath)) fail("launcherPathUnavailable");
   const inspectFresh = () => {
     const child = spawnSync(launcherPath, ["--manage"], {
-      input: JSON.stringify({ protocolVersion: 1, remoteCwd: envelope.remoteCwd, request: { operation: "inspect" } }),
+      input: JSON.stringify({ protocolVersion: 1, remoteCwd: envelope.remoteCwd, piExecutable: envelope.piExecutable, request: { operation: "inspect" } }),
       encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024,
     });
     if (child.error || child.status !== 0) fail("postInspectFailed", child.error?.message ?? String(child.stderr));
@@ -960,8 +1355,8 @@ function runManagement() {
     if (reply?.ok !== true || !isObject(reply.result)) fail("postInspectFailed", reply?.errorCode);
     return reply.result;
   };
-  const findExecutable = (name) => {
-    const found = spawnSync("sh", ["-lc", `command -v ${name}`], { encoding: "utf8", timeout: 2000, maxBuffer: 8192 });
+  const findExecutable = (name, login = true) => {
+    const found = spawnSync("sh", [login ? "-lc" : "-c", `command -v ${name}`], { encoding: "utf8", timeout: 2000, maxBuffer: 8192 });
     const candidate = String(found.stdout ?? "").trim();
     return found.status === 0 && !candidate.includes("\n") && path.isAbsolute(candidate) ? candidate : null;
   };
@@ -1054,7 +1449,7 @@ function runManagement() {
   let result;
   let halfDone = false;
   if (operation === "mutatePackage") {
-    const pi = findExecutable("pi");
+    const pi = envelope.piExecutable === "pi" ? findExecutable("pi", false) : envelope.piExecutable;
     if (!pi) fail("piCliUnavailable");
     if ((mutationOperation === "install" || mutationOperation === "remove") &&
         (!validScope(mutation.scope) || !safeValue(mutation.source))) fail("invalidMutation");
@@ -1108,8 +1503,6 @@ function runManagement() {
   respond({ ok: true, operation, result: { ...result, snapshot: nextSnapshot, ...(halfDone ? { halfDone: true } : {}) } });
 }
 
-if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--manage") runManagement();
-if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--provider-sync") runProviderSync();
 
 // --- detached tasks (V2.1) -------------------------------------------------
 // Contract: docs/remote-agent-v2-supervisor-protocol.md. Every bound below comes
@@ -2807,7 +3200,9 @@ function taskFail(errorCode, detail) {
 
 // `--supervise` is the one mode that returns instead of exiting, because it has to
 // stay in the event loop. That makes this an either/or rather than a fall-through.
-if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--workspace") runWorkspaceMode();
+if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--manage") runManagement();
+else if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--provider-sync") runProviderSync();
+else if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--workspace") runWorkspaceMode();
 else if (process.env.PI_DESKTOP_LAUNCHER_MODE === "--repository") runRepositoryMode();
 else if (TASK_MODES.includes(process.env.PI_DESKTOP_LAUNCHER_MODE)) runTaskMode();
 else runLauncherMode();
@@ -2953,6 +3348,7 @@ function runLauncherMode() {
     const child = spawn(payload.piExecutable, args, {
       cwd: payload.cwd,
       stdio: "inherit",
+      env: projectAgentEnvironment(payload.cwd),
     });
     let stopping = false;
     const forward = (signal) => {
@@ -4294,7 +4690,11 @@ function runTaskMode() {
     }
     let child;
     try {
-      child = spawn(payload.piExecutable, args, { cwd: payload.cwd, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(payload.piExecutable, args, {
+        cwd: payload.cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: projectAgentEnvironment(payload.cwd),
+      });
     } catch (error) {
       abort("piStartFailed", error?.message);
     }

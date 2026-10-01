@@ -165,6 +165,7 @@ export type LauncherCapability =
    * offer browsing, with editing refused rather than attempted.
    */
   | "workspace-writes-v1"
+  | "pi-mcp-inspect-v1"
   | "pi-packages-read-v1"
   | "pi-packages-mutate-v1"
   | "pi-skills-read-v1"

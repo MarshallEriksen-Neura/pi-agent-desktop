@@ -51,6 +51,11 @@ import {
   toggleModelEnabled,
 } from "@/lib/pi/model-scope";
 
+import { ExecutionTargetPicker } from "@/components/ExecutionTargetPicker";
+import { useSessions } from "@/lib/pi/sessions";
+import { piManagementTargetKey } from "@/lib/backend/ports/pi-management";
+import type { ExecutionBinding } from "@/lib/backend/ports/execution-target";
+const EMPTY_PROVIDERS: Record<string, CustomProvider> = {};
 const spring = { type: "spring" as const, stiffness: 320, damping: 28 };
 
 /** First grouping letter of a model id — A–Z, everything else folds into "#". */
@@ -99,17 +104,32 @@ interface FetchDiff {
 }
 
 export default function ModelsPage() {
+  const binding = useSessions((state) => state.executionBinding);
+  const [scope, setScope] = useState<SettingsScope>("global");
+  const selectedScope = binding.kind === "ssh" ? scope : "global";
+  return <ModelsTargetPage key={`${piManagementTargetKey(binding, null)}:${selectedScope}`}
+    binding={binding} scope={selectedScope} onScopeChange={setScope} />;
+}
+
+function ModelsTargetPage({ binding, scope, onScopeChange }: {
+  binding: ExecutionBinding; scope: SettingsScope; onScopeChange: (scope: SettingsScope) => void;
+}) {
+  const remote = binding.kind === "ssh";
+  const targetKey = remote ? piManagementTargetKey(binding, null) : "local";
   const t = useT();
 
   const piStatus = usePi((s) => s.status);
   const piModels = usePi((s) => s.models);
 
   const piModelsStore = usePiModels();
-  const customProviders = piModelsStore.data.providers;
-  const customLoaded = piModelsStore.loaded;
+  const currentTarget = piModelsStore.targetKey === targetKey && piModelsStore.scope === scope;
+  const customProviders = currentTarget ? piModelsStore.data.providers : EMPTY_PROVIDERS;
+  const customLoaded = currentTarget && piModelsStore.loaded;
 
   const piSettings = usePiSettings();
-  const enabledModels = piSettings.effective().enabledModels ?? [];
+  const enabledModels = remote
+    ? (currentTarget ? piModelsStore.remoteSnapshot?.enabledModels[scope] ?? [] : [])
+    : piSettings.effective().enabledModels ?? [];
 
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -186,10 +206,9 @@ export default function ModelsPage() {
   );
 
   useEffect(() => {
-    piModelsStore.load();
-    piSettings.load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void usePiModels.getState().load(binding, scope);
+    if (!remote) void usePiSettings.getState().load();
+  }, [binding, scope, remote]);
 
   useEffect(() => {
     const ids = Object.keys(customProviders);
@@ -229,6 +248,10 @@ export default function ModelsPage() {
 
   const setEnabled = async (providerId: string, modelId: string) => {
     const next = toggleModelEnabled(enabledModels, providerId, modelId, scopeModels);
+    if (remote) {
+      await piModelsStore.setRemoteEnabledModels(scope, next.length > 0 ? next : null);
+      return;
+    }
     await piSettings.setKey(
       "global",
       "enabledModels",
@@ -245,15 +268,23 @@ export default function ModelsPage() {
    * result, not the snapshot this render closed over.
    */
   const pruneEnabled = async (removed: ModelRefLike[]) => {
-    if (removed.length === 0) return;
-    for (const scope of ["global", "project"] as SettingsScope[]) {
-      const current = usePiSettings.getState()[scope].data?.enabledModels;
+    const active = usePiModels.getState();
+    if (removed.length === 0 || active.targetKey !== targetKey || active.scope !== scope || active.lastError) return;
+    for (const enabledScope of (remote && scope === "project" ? ["project"] : ["global", "project"]) as SettingsScope[]) {
+      const current = remote
+        ? usePiModels.getState().remoteSnapshot?.enabledModels[enabledScope]
+        : usePiSettings.getState()[enabledScope].data?.enabledModels;
       if (!Array.isArray(current) || current.length === 0) continue;
       const next = pruneModelsFromScope(current, removed, scopeModels);
       if (next.length === current.length) continue; // nothing named here
+      if (remote) {
+        await usePiModels.getState().setRemoteEnabledModels(enabledScope, next.length > 0 ? next : null);
+        if (usePiModels.getState().lastError) return;
+        continue;
+      }
       await usePiSettings
         .getState()
-        .setKey(scope, "enabledModels", next.length > 0 ? next : undefined);
+        .setKey(enabledScope, "enabledModels", next.length > 0 ? next : undefined);
     }
   };
 
@@ -266,6 +297,7 @@ export default function ModelsPage() {
       api: provider.api ?? "",
       apiKey: provider.apiKey,
     });
+    if (usePiModels.getState().targetKey !== targetKey || usePiModels.getState().lastError) return;
     setAddingProvider(false);
     setEditingProvider(null);
   };
@@ -284,6 +316,7 @@ export default function ModelsPage() {
       await piModelsStore.removeModel(target.providerId, target.modelId);
       await pruneEnabled([{ provider: target.providerId, id: target.modelId }]);
     }
+    if (usePiModels.getState().targetKey !== targetKey || usePiModels.getState().lastError) return;
     setPendingRemoval(null);
   };
 
@@ -311,6 +344,7 @@ export default function ModelsPage() {
         apiKey: customProviders[providerId]?.apiKey,
       }, model);
     }
+    if (usePiModels.getState().targetKey !== targetKey || usePiModels.getState().lastError) return;
     setAddingModelProviderId(null);
     setEditingModel(null);
   };
@@ -332,7 +366,8 @@ export default function ModelsPage() {
       const list = await piModelsStore.fetchModels(
         provider.baseUrl,
         provider.api ?? API_TYPES[0],
-        provider.apiKey
+        remote ? undefined : provider.apiKey,
+        providerId
       );
       const upstream = new Set(list);
       const existing = new Set(own.map((m) => m.id));
@@ -376,6 +411,7 @@ export default function ModelsPage() {
       selectedRemove
     );
     await pruneEnabled(selectedRemove.map((id) => ({ provider: providerId, id })));
+    if (usePiModels.getState().targetKey !== targetKey || usePiModels.getState().lastError) return;
     setFetchResult(null);
   };
 
@@ -418,6 +454,23 @@ export default function ModelsPage() {
       maxWidth={1040}
       scrollRef={scrollerEl}
     >
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <ExecutionTargetPicker />
+        {remote && <label className="flex items-center gap-2 text-sm">
+          {t("settings.scope")}
+          <select value={scope} onChange={(event) => onScopeChange(event.target.value as SettingsScope)}
+            className="pi-native-select rounded-lg border px-3 py-2">
+            <option value="global">{t("settings.remoteAgent.providerSync.scopeGlobal")}</option>
+            <option value="project">{t("settings.remoteAgent.providerSync.scopeProject")}</option>
+          </select>
+        </label>}
+        <button type="button" onClick={() => void piModelsStore.load(binding, scope)} disabled={piModelsStore.busy}
+          className="rounded-lg border px-3 py-2 text-sm">{t("models.reload")}</button>
+      </div>
+      {remote && <p className="mb-4 text-sm" style={{ color: "var(--text-secondary)" }}>{t("models.remoteHelp")}</p>}
+      {currentTarget && piModelsStore.lastError && <p role="alert" className="mb-4 text-sm"
+        style={{ color: "var(--danger)" }}>{piModelsStore.lastError}</p>}
+      <fieldset disabled={!customLoaded || piModelsStore.busy} className="min-w-0 border-0 p-0">
       <div
         className="min-h-full"
         style={{
@@ -898,7 +951,7 @@ export default function ModelsPage() {
               color: "var(--text-tertiary)",
             }}
           >
-            {t("models.footer")}
+            {t(remote ? "models.remoteFooter" : "models.footer")}
           </div>
         </div>
         </div>
@@ -908,6 +961,7 @@ export default function ModelsPage() {
       <ProviderDialog
         open={addingProvider}
         onClose={() => setAddingProvider(false)}
+        remote={remote}
         onSave={handleSaveProvider}
       />
       {editingProvider && (
@@ -916,6 +970,7 @@ export default function ModelsPage() {
           providerId={editingProvider.id}
           provider={editingProvider.provider}
           onClose={() => setEditingProvider(null)}
+          remote={remote}
           onSave={handleSaveProvider}
         />
       )}
@@ -1015,6 +1070,7 @@ export default function ModelsPage() {
         onConfirm={confirmRemoval}
         onCancel={() => setPendingRemoval(null)}
       />
+      </fieldset>
     </SettingsPage>
   );
 }
@@ -1206,12 +1262,14 @@ function ProviderDialog({
   open,
   providerId,
   provider,
+  remote = false,
   onClose,
   onSave,
 }: {
   open: boolean;
   providerId?: string;
   provider?: CustomProvider;
+  remote?: boolean;
   onClose: () => void;
   onSave: (id: string, p: CustomProvider) => void;
 }) {
@@ -1236,7 +1294,7 @@ function ProviderDialog({
     onSave(id.trim(), {
       baseUrl: baseUrl.trim(),
       api,
-      apiKey: apiKey.trim() || undefined,
+      ...(!remote ? { apiKey: apiKey.trim() || undefined } : {}),
       models: provider?.models ?? [],
     });
   };
@@ -1289,6 +1347,7 @@ function ProviderDialog({
             style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
           />
         </Field>
+        {remote ? <p className="text-xs" style={{ color: "var(--text-secondary)" }}>{t("models.remoteCredentials")}</p> : (
         <Field label={t("models.apiKey")}>
           <input
             value={apiKey}
@@ -1298,6 +1357,7 @@ function ProviderDialog({
             style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
           />
         </Field>
+        )}
       </form>
     </Dialog>
   );

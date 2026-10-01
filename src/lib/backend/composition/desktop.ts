@@ -4,6 +4,9 @@ import { desktopFileDropPort } from "../desktop/file-drop";
 import { desktopNotificationPort } from "../desktop/notification";
 import { desktopPetWindowPort } from "../desktop/pet-window";
 import { createDesktopPiConfigurationPort } from "../desktop/pi-configuration";
+import { createDesktopRemoteModelConfiguration } from "../desktop/model-configuration";
+import { createDesktopRemoteMcpConfiguration } from "../desktop/mcp-configuration";
+import { localMcpConfiguration } from "../ports/mcp-configuration";
 import { createDesktopRepositoryPort } from "../desktop/repository";
 import { createDesktopPiManagementFactory } from "../desktop/pi-management";
 import { createDesktopRemotePiManagement } from "../desktop/remote-pi-management";
@@ -49,6 +52,12 @@ export function createDesktopBackendPorts(): BackendPorts {
     remoteProviderSync: desktopRemoteProviderSyncPort,
     remoteConversations: desktopRemoteConversationsPort,
     piConfiguration,
+    createMcpConfiguration: (binding, root) => binding.kind === "ssh"
+      ? createDesktopRemoteMcpConfiguration(binding)
+      : localMcpConfiguration(piConfiguration, root),
+    createModelConfiguration: (binding) => binding.kind === "ssh"
+      ? { kind: "ssh", port: createDesktopRemoteModelConfiguration(binding) }
+      : { kind: "local", port: piConfiguration },
     createPiManagement: createDesktopPiManagementFactory(
       piConfiguration,
       createDesktopRemotePiManagement,

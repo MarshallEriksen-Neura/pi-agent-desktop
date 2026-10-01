@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -98,12 +98,10 @@ test("provider-sync inspect and apply preserve remote state and redact output", 
         {
           providerId: "selected",
           definition: { baseUrl: "https://new", api: "openai-completions", models: [{ id: "new-model" }] },
-          credential: { type: "api_key", key: "LOCAL_SECRET_MUST_NOT_REPLACE" },
         },
         {
           providerId: "new-provider",
           definition: { baseUrl: "https://new-provider", api: "openai-completions", models: [] },
-          credential: { type: "api_key", key: "NEW_SECRET" },
         },
       ],
     });
@@ -119,7 +117,7 @@ test("provider-sync inspect and apply preserve remote state and redact output", 
         {
           providerId: "new-provider",
           configUpdated: true,
-          credentialAction: "willInstallApiKey",
+          credentialAction: "noCredential",
           warnings: ["remoteReloadRequired"],
         },
       ],
@@ -133,11 +131,60 @@ test("provider-sync inspect and apply preserve remote state and redact output", 
     assert.equal(models.providers.selected.apiKey, "REMOTE_EMBEDDED_SECRET");
     assert.equal(auth.selected.key, "REMOTE_AUTH_SECRET");
     assert.equal(auth.unrelated.key, "UNRELATED_SECRET");
-    assert.equal(auth["new-provider"].key, "NEW_SECRET");
+    assert.equal(auth["new-provider"], undefined);
     const serializedOutput = JSON.stringify(applied);
     assert.equal(serializedOutput.includes("SECRET"), false);
   });
 });
+test("provider-sync accepts credential-only and modelOverrides-only providers", () => {
+  withHome((home, agentDir) => {
+    const applied = runProviderSync(home, {
+      providerSyncProtocolVersion: 1,
+      action: "apply",
+      providers: [{
+        providerId: "override-only",
+        definition: {
+          api: "openai-completions",
+          modelOverrides: {
+            "gpt-custom": { reasoning: true, contextWindow: 128000 },
+          },
+        },
+      }],
+    });
+    assert.equal(applied.ok, true);
+    const models = JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8"));
+    assert.deepEqual(models.providers["override-only"], {
+      api: "openai-completions",
+      modelOverrides: {
+        "gpt-custom": { reasoning: true, contextWindow: 128000 },
+      },
+    });
+  });
+});
+test("provider-sync project scope writes the isolated agent directory", () => {
+  withHome((home, globalAgentDir) => {
+    const project = join(home, "project");
+    mkdirSync(project);
+    const applied = runProviderSync(home, {
+      providerSyncProtocolVersion: 1,
+      action: "apply",
+      scope: "project",
+      remoteCwd: project,
+      providers: [{
+        providerId: "project-provider",
+        definition: { api: "openai-completions", models: [{ id: "project-model" }] },
+      }],
+    });
+    assert.equal(applied.ok, true, JSON.stringify(applied));
+    const projectModels = join(project, ".pi", "agent", "models.json");
+    assert.deepEqual(JSON.parse(readFileSync(projectModels, "utf8")).providers["project-provider"], {
+      api: "openai-completions", models: [{ id: "project-model" }],
+    });
+    assert.equal(existsSync(join(globalAgentDir, "models.json")), false, "global config must stay untouched");
+  });
+});
+
+
 
 test("provider-sync rejects extra envelope fields without writing secrets", () => {
   withHome((home) => {
@@ -150,6 +197,21 @@ test("provider-sync rejects extra envelope fields without writing secrets", () =
     assert.equal(result.stdout.includes("DO_NOT_ECHO"), false);
     assert.equal(result.stderr.includes("DO_NOT_ECHO"), false);
     assert.deepEqual(JSON.parse(result.stdout), { ok: false, errorCode: "syncPayloadInvalid" });
+  });
+});
+
+test("provider-sync rejects credential-bearing provider envelopes", () => {
+  withHome((home) => {
+    const result = runProviderSync(home, {
+      providerSyncProtocolVersion: 1,
+      action: "apply",
+      providers: [{
+        providerId: "selected",
+        definition: { api: "openai-completions", models: [] },
+        credential: { type: "api_key", key: "LOCAL_SECRET" },
+      }],
+    });
+    assert.deepEqual(result, { ok: false, errorCode: "syncPayloadInvalid" });
   });
 });
 
@@ -180,7 +242,6 @@ if (process.platform !== "win32") {
         providers: [{
           providerId: "secure",
           definition: { baseUrl: "https://secure", api: "openai-completions", models: [] },
-          credential: { type: "api_key", key: "SECRET" },
         }],
       });
       const modelsMode = execFileSync("stat", ["-c", "%a", join(agentDir, "models.json")], { encoding: "utf8" }).trim();
@@ -229,7 +290,6 @@ test("provider-sync preserves a valid remote provider-scoped environment credent
       providers: [{
         providerId: "selected",
         definition: { api: "openai-completions", models: [] },
-        credential: { type: "api_key", key: "LOCAL_SECRET" },
       }],
     });
     assert.equal(applied.providers[0].credentialAction, "remoteCredentialPreserved");
@@ -272,7 +332,6 @@ test("provider-sync accepts bounded generic sampling parameters and rejects rese
           api: "openai-completions",
           models: [{ id: "model", samplingParams: { vendorOption: { nested: [true, 1, "value"] } } }],
         },
-        credential: null,
       }],
     });
     assert.equal(accepted.ok, true);
@@ -286,7 +345,6 @@ test("provider-sync accepts bounded generic sampling parameters and rejects rese
       providers: [{
         providerId: "selected",
         definition: { api: "openai-completions", models: [{ id: "model", samplingParams }] },
-        credential: null,
       }],
     });
     assert.deepEqual(result, { ok: false, errorCode: "syncPayloadInvalid" });
@@ -300,7 +358,6 @@ test("provider-sync enforces sampling parameter depth, node, and string bounds",
     providers: [{
       providerId: "selected",
       definition: { api: "openai-completions", models: [{ id: "model", samplingParams }] },
-      credential: null,
     }],
   });
 
@@ -344,7 +401,7 @@ test("provider-sync rejects executable headers at every model level", () => {
       const result = runProviderSync(home, {
         providerSyncProtocolVersion: 1,
         action: "apply",
-        providers: [{ providerId: "selected", definition, credential: null }],
+        providers: [{ providerId: "selected", definition }],
       });
       assert.deepEqual(result, { ok: false, errorCode: "commandHeaderUnsupported" });
     });

@@ -133,7 +133,7 @@ auth:     novol type=api_key keyPresent=true keyLen=67
 models.json 0600   auth.json 0600
 ```
 
-`apiKeyInDef=false` is the contract holding: the literal `models.json.apiKey` was stripped from the provider definition and installed as an auth credential instead. `inspect` first reported `configExists:false, authCredentialExists:false`, so nothing was overwritten, and `apply` returned `credentialAction: willInstallApiKey` with `remoteReloadRequired`. Preflight afterwards flipped to `piAuthConfigured: true`.
+`apiKeyInDef=false` remains the contract: the literal local `models.json.apiKey` is stripped before the provider definition is built, and no local credential is installed remotely. `inspect` and `apply` preserve any valid remote auth state; when none exists, the result reports `credentialAction: noCredential` (or a non-transferable classification) and requires a remote-side credential configuration.
 
 A real turn then ran end to end: `novol/gpt-5.6-sol` answered `SOL_OK` over the SSH channel in ~10s. That is what unblocked scenarios 8 and 13.
 

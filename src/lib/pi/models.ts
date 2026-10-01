@@ -29,6 +29,11 @@ import {
   removeAutomaticProviderSyncProviders,
 } from "./remote-provider-auto-sync";
 
+import type { ExecutionBinding } from "../backend/ports/execution-target";
+import { remoteModelChanges, type RemoteModelConfigurationPort, type RemoteModelSnapshot } from "../backend/ports/model-configuration";
+import { usePiManagement, type ManagementContext } from "./management";
+import { piManagementTargetKey } from "../backend/ports/pi-management";
+import type { SettingsScope } from "./settings";
 import type { ThinkingLevel } from "./protocol";
 
 export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
@@ -94,8 +99,16 @@ interface PiModelsStore {
   data: ModelsJson;
   parseError: string | null;
   lastError: string | null;
+  targetKey: string;
+  scope: SettingsScope;
+  generation: number;
+  busy: boolean;
+  remotePort: RemoteModelConfigurationPort | null;
+  remoteSnapshot: RemoteModelSnapshot | null;
+  managementContext: ManagementContext | null;
+  setRemoteEnabledModels: (scope: SettingsScope, models: string[] | null) => Promise<void>;
 
-  load: () => Promise<void>;
+  load: (binding?: ExecutionBinding, scope?: SettingsScope) => Promise<void>;
   /**
    * Add (or replace, same provider+id) a model. If the provider already
    * exists, non-empty cfg fields update it and other models are kept.
@@ -109,7 +122,7 @@ interface PiModelsStore {
    * Fetch the provider's model list over HTTP (OpenAI-compatible / Google).
    * In mock (non-Tauri) mode returns a static sample list so the UI is usable.
    */
-  fetchModels: (baseUrl: string, api: string, apiKey?: string) => Promise<string[]>;
+  fetchModels: (baseUrl: string, api: string, apiKey?: string, providerId?: string) => Promise<string[]>;
   /** Bulk-add many models to a provider in a single save. */
   addModels: (
     providerId: string,
@@ -203,38 +216,55 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
   data: structuredClone(EMPTY),
   parseError: null,
   lastError: null,
+  targetKey: "local",
+  scope: "global",
+  generation: 0,
+  busy: false,
+  remotePort: null,
+  remoteSnapshot: null,
+  managementContext: null,
 
-  load: async () => {
-    const isMock = getBackendKind() === "browser-preview";
+  load: async (binding, scope = "global") => {
+    const generation = get().generation + 1;
+    const remote = binding?.kind === "ssh";
+    const targetKey = remote ? piManagementTargetKey(binding, null) : "local";
+    set({ generation, targetKey, scope, loaded: false, busy: false, data: structuredClone(EMPTY),
+      path: "", parseError: null, lastError: null, remotePort: null, remoteSnapshot: null, managementContext: null });
     try {
-      const raw = await getPort("piConfiguration").readSettings("models");
-      if (!raw.exists || !raw.content.trim()) {
-        set({
-          mock: isMock,
-          loaded: true,
-          path: raw.path,
-          data: structuredClone(EMPTY),
-          parseError: null,
-        });
+      if (remote) {
+        const target = getPort("createModelConfiguration")(binding);
+        if (target.kind !== "ssh") throw new Error("remote-model-configuration-target-mismatch");
+        const managementContext: ManagementContext = { binding, projectRoot: null, targetKey,
+          port: getPort("createPiManagement")(binding, null) };
+        const snapshot = await target.port.read(scope);
+        if (get().generation !== generation) return;
+        set({ loaded: true, mock: false, data: snapshot.data, remoteSnapshot: snapshot,
+          remotePort: target.port, managementContext });
         return;
       }
-      try {
-        set({
-          mock: isMock,
-          loaded: true,
-          path: raw.path,
-          data: normalize(JSON.parse(raw.content)),
-          parseError: null,
-        });
-      } catch (e) {
-        set({
-          loaded: true,
-          path: raw.path,
-          parseError: e instanceof Error ? e.message : String(e),
-        });
-      }
-    } catch (e) {
-      set({ lastError: e instanceof Error ? e.message : String(e) });
+      const raw = await getPort("piConfiguration").readSettings("models");
+      if (get().generation !== generation) return;
+      const data = !raw.exists || !raw.content.trim() ? structuredClone(EMPTY) : normalize(JSON.parse(raw.content));
+      set({ loaded: true, mock: getBackendKind() === "browser-preview", path: raw.path, data });
+    } catch (error) {
+      if (get().generation === generation) set({ loaded: false, parseError: String(error), lastError: String(error) });
+    }
+  },
+
+  setRemoteEnabledModels: async (scope, models) => {
+    const state = get();
+    if (!state.loaded || state.busy || !state.remotePort || !state.remoteSnapshot) return;
+    set({ busy: true, lastError: null });
+    try {
+      const baseline = scope === state.scope ? state.remoteSnapshot : await state.remotePort.read(scope);
+      let snapshot = await state.remotePort.setEnabled(scope, baseline.stateToken, models);
+      usePiManagement.getState().markDirty(scope, state.managementContext!);
+      if (scope !== state.scope) snapshot = await state.remotePort.read(state.scope);
+      if (get().generation === state.generation) set({ data: snapshot.data, remoteSnapshot: snapshot });
+    } catch (error) {
+      if (get().generation === state.generation) set({ lastError: String(error) });
+    } finally {
+      if (get().generation === state.generation) set({ busy: false });
     }
   },
 
@@ -259,12 +289,13 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
     await save(data, set, get);
   },
 
-  fetchModels: async (baseUrl, api, apiKey) => {
-    return getPort("piConfiguration").fetchModels({
-      baseUrl,
-      api,
-      apiKey,
-    });
+  fetchModels: async (baseUrl, api, apiKey, providerId) => {
+    const state = get();
+    if (state.targetKey !== "local") {
+      if (!state.loaded || !state.remotePort || !providerId) throw new Error("remote-model-configuration-unavailable");
+      return state.remotePort.fetchModels(state.scope, providerId);
+    }
+    return getPort("piConfiguration").fetchModels({ baseUrl, api, apiKey });
   },
 
   addModels: async (providerId, cfg, models) => {
@@ -445,23 +476,37 @@ async function save(
   set: (partial: Partial<PiModelsStore>) => void,
   get: () => PiModelsStore
 ) {
-  const prev = get().data;
-  set({ data: next }); // optimistic
+  const state = get();
+  if (!state.loaded || state.busy || state.parseError) return;
+  const prev = state.data;
+  if (state.targetKey !== "local") {
+    if (!state.remotePort || !state.remoteSnapshot) return;
+    set({ busy: true, lastError: null });
+    try {
+      const snapshot = await state.remotePort.mutate(state.scope, state.remoteSnapshot.stateToken, remoteModelChanges(prev, next));
+      usePiManagement.getState().markDirty(state.scope, state.managementContext!);
+      if (get().generation === state.generation) set({ data: snapshot.data, remoteSnapshot: snapshot });
+    } catch (error) {
+      if (get().generation === state.generation) set({ lastError: String(error) });
+    } finally {
+      if (get().generation === state.generation) set({ busy: false });
+    }
+    return;
+  }
+  set({ data: next, busy: true });
   try {
-    await getPort("piConfiguration").writeSettings(
-      "models",
-      JSON.stringify(next, null, 2) + "\n",
-      null
-    );
+    await getPort("piConfiguration").writeSettings("models", JSON.stringify(next, null, 2) + "\n", null);
     usePiSettings.setState({ dirtyRestart: true });
-    set({ lastError: null });
     const changedProviderIds = Object.keys(next.providers).filter(
       (id) => JSON.stringify(prev.providers[id]) !== JSON.stringify(next.providers[id]),
     );
     const deletedProviderIds = Object.keys(prev.providers).filter((id) => !(id in next.providers));
     removeAutomaticProviderSyncProviders(deletedProviderIds);
     queueAutomaticProviderSync(changedProviderIds);
-  } catch (e) {
-    set({ data: prev, lastError: e instanceof Error ? e.message : String(e) });
+    if (get().generation === state.generation) set({ lastError: null });
+  } catch (error) {
+    if (get().generation === state.generation) set({ data: prev, lastError: String(error) });
+  } finally {
+    if (get().generation === state.generation) set({ busy: false });
   }
 }

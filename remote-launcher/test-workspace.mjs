@@ -122,7 +122,10 @@ test("the capability handshake advertises read-only workspace browsing", () => {
     assert.ok(reply.capabilities.includes("repository-phase3-v1"));
     assert.ok(reply.capabilities.includes("repository-integration-v1"));
     assert.ok(reply.capabilities.includes("repository-integration-v2"));
-    assert.equal(reply.launcherRevision, 18);
+    assert.ok(reply.capabilities.includes("pi-mcp-inspect-v1"));
+    assert.ok(reply.capabilities.includes("pi-mcp-config-read-v1"));
+    assert.ok(reply.capabilities.includes("pi-mcp-config-write-v1"));
+    assert.equal(reply.launcherRevision, 26);
     // Gated by name, never inferred: the payload protocol did not move for this.
     assert.equal(reply.launcherProtocolVersion, 1);
   });

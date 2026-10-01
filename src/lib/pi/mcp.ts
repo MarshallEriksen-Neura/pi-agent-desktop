@@ -8,8 +8,9 @@ import {
 import type {
   McpAdapterStatusDto,
   McpDiscoverySourceDto,
-  SettingsScopeFileDto,
 } from "../backend/ports/pi-configuration";
+import { localMcpConfiguration, type McpConfigurationPort, type McpConfigScopeDto } from "../backend/ports/mcp-configuration";
+import { t } from "../i18n";
 import { useWorkspace } from "../workspace";
 
 export type McpScope = "global" | "project";
@@ -47,6 +48,7 @@ export interface McpConfigFile {
 
 interface McpScopeFile {
   path: string;
+  stateToken?: string;
   exists: boolean;
   raw: string;
   data: McpConfigFile | null;
@@ -237,6 +239,7 @@ const EMPTY_SCOPE: McpScopeFile = {
 
 interface McpStore {
   mock: boolean;
+  remote: boolean;
   loaded: boolean;
   busy: boolean;
   dirtyRestart: boolean;
@@ -267,10 +270,11 @@ function projectRoot(): string | null {
   return useWorkspace.getState().root || null;
 }
 
-function parseScope(raw: SettingsScopeFileDto): McpScopeFile {
+function parseScope(raw: McpConfigScopeDto): McpScopeFile {
   if (!raw.exists || !raw.content.trim()) {
     return {
       path: raw.path,
+      stateToken: raw.stateToken,
       exists: raw.exists,
       raw: raw.content,
       data: raw.exists ? {} : null,
@@ -284,6 +288,9 @@ function parseScope(raw: SettingsScopeFileDto): McpScopeFile {
       throw new Error("MCP config must be a JSON object");
     }
     const object = value as Record<string, unknown>;
+    if (object.mcpServers !== undefined && (!isRecord(object.mcpServers) || Object.values(object.mcpServers).some((server) => !isRecord(server)))) {
+      throw new Error(t("mcp.invalidJson"));
+    }
     const flatServerMap =
       !Object.prototype.hasOwnProperty.call(object, "mcpServers") &&
       Object.keys(object).length > 0 &&
@@ -297,6 +304,7 @@ function parseScope(raw: SettingsScopeFileDto): McpScopeFile {
     return {
       path: raw.path,
       exists: true,
+      stateToken: raw.stateToken,
       raw: raw.content,
       data,
       parseError: null,
@@ -306,6 +314,7 @@ function parseScope(raw: SettingsScopeFileDto): McpScopeFile {
     return {
       path: raw.path,
       exists: true,
+      stateToken: raw.stateToken,
       raw: raw.content,
       data: null,
       parseError: error instanceof Error ? error.message : String(error),
@@ -340,10 +349,9 @@ export function parseMcpImportSource(source: McpDiscoverySourceDto): McpImportPr
     const object = value as Record<string, unknown>;
     const candidate = findImportServers(object);
     if (!candidate) throw new Error("No supported MCP server map was found in this source");
-    const servers: Record<string, McpServerConfig> = {};
-    for (const [name, config] of Object.entries(candidate)) {
-      servers[name] = normalizeImportedServer(config, name);
-    }
+    const servers = Object.fromEntries(
+      Object.entries(candidate).map(([name, config]) => [name, normalizeImportedServer(config, name)])
+    );
     return { source, servers, conflicts: [], error: null };
   } catch (error) {
     return {
@@ -355,30 +363,30 @@ export function parseMcpImportSource(source: McpDiscoverySourceDto): McpImportPr
   }
 }
 
-export const useMcp = create<McpStore>((set, get) => {
-  const writeScope = async (scope: McpScope, next: McpConfigFile) => {
+export function createMcpStore(boundPort?: McpConfigurationPort, onWrite?: (scope: McpScope) => void) {
+  return create<McpStore>((set, get) => {
+  const configuration = () => boundPort ?? localMcpConfiguration(getPort("piConfiguration"), projectRoot());
+  const write = async (scope: McpScope, content: string) => {
+    if (get().busy || !get().loaded) { set({ lastError: t("mcp.waitForLoad") }); return; }
     const current = get()[scope];
-    const content = JSON.stringify(next, null, 2) + "\n";
-    const parsed = parseScope({
-      path: current.path,
-      exists: true,
-      content,
-    });
-    set({ [scope]: parsed } as never);
+    set({ busy: true });
     try {
-      await getPort("piConfiguration").writeMcpConfig(
-        scope,
-        content,
-        scope === "project" ? projectRoot() : null
-      );
-      set({ dirtyRestart: true, lastError: null });
+      const result = await configuration().writeMcpConfig(scope, content, current.stateToken);
+      set({ [scope]: parseScope(result ?? { path: current.path, exists: true, content }),
+        dirtyRestart: true, lastError: null } as never);
+      onWrite?.(scope);
     } catch (error) {
-      set({ [scope]: current, lastError: error instanceof Error ? error.message : String(error) } as never);
-    }
+      set({ lastError: error instanceof Error ? error.message : String(error) });
+    } finally { set({ busy: false }); }
+  };
+  const writeScope = async (scope: McpScope, next: McpConfigFile) => {
+    if (get()[scope].parseError) { set({ lastError: t("mcp.invalidJson") }); return; }
+    await write(scope, JSON.stringify(next, null, 2) + "\n");
   };
 
   return {
     mock: false,
+    remote: Boolean(boundPort),
     loaded: false,
     busy: false,
     dirtyRestart: false,
@@ -389,16 +397,15 @@ export const useMcp = create<McpStore>((set, get) => {
     project: EMPTY_SCOPE,
 
     load: async () => {
+      if (get().busy) return;
       set({ busy: true });
       try {
-        const port = getPort("piConfiguration");
+        const port = configuration();
         const [global, project, adapter] = await Promise.all([
-          port.readMcpConfig("global"),
-          port.readMcpConfig("project", projectRoot()),
-          port.checkMcpAdapter(projectRoot()),
+          port.readMcpConfig("global"), port.readMcpConfig("project"), port.checkMcpAdapter(),
         ]);
         set({
-          mock: getBackendKind() === "browser-preview",
+          mock: !boundPort && getBackendKind() === "browser-preview",
           loaded: true,
           global: parseScope(global),
           project: parseScope(project),
@@ -406,7 +413,7 @@ export const useMcp = create<McpStore>((set, get) => {
           lastError: null,
         });
       } catch (error) {
-        set({ loaded: true, lastError: error instanceof Error ? error.message : String(error) });
+        set({ loaded: boundPort ? get().loaded : true, lastError: error instanceof Error ? error.message : String(error) });
       } finally {
         set({ busy: false });
       }
@@ -414,7 +421,7 @@ export const useMcp = create<McpStore>((set, get) => {
 
     refreshAdapter: async () => {
       try {
-        const adapter = await getPort("piConfiguration").checkMcpAdapter(projectRoot());
+        const adapter = await configuration().checkMcpAdapter();
         set({ adapter, lastError: null });
       } catch (error) {
         set({ lastError: error instanceof Error ? error.message : String(error) });
@@ -422,9 +429,10 @@ export const useMcp = create<McpStore>((set, get) => {
     },
 
     discoverSources: async () => {
+      if (get().busy) return;
       set({ busy: true, lastError: null });
       try {
-        const sources = await getPort("piConfiguration").discoverMcpSources(projectRoot());
+        const sources = await configuration().discoverMcpSources();
         set({ sources });
       } catch (error) {
         set({ lastError: error instanceof Error ? error.message : String(error) });
@@ -435,10 +443,7 @@ export const useMcp = create<McpStore>((set, get) => {
 
     openConfigDirectory: async (scope) => {
       try {
-        await getPort("piConfiguration").openMcpConfigDirectory(
-          scope,
-          scope === "project" ? projectRoot() : null
-        );
+        await configuration().openMcpConfigDirectory(scope);
         set({ lastError: null });
       } catch (error) {
         set({ lastError: error instanceof Error ? error.message : String(error) });
@@ -461,7 +466,7 @@ export const useMcp = create<McpStore>((set, get) => {
       const selected = selectedNames ? new Set(selectedNames) : null;
       const imported = Object.fromEntries(
         Object.entries(preview.servers).filter(([name]) =>
-          (!selected || selected.has(name)) && (mode === "replace" || !currentServers[name])
+          (!selected || selected.has(name)) && (mode === "replace" || !Object.hasOwn(currentServers, name))
         )
       );
       if (Object.keys(imported).length === 0) {
@@ -475,13 +480,7 @@ export const useMcp = create<McpStore>((set, get) => {
     installAdapter: async () => {
       set({ busy: true, lastError: null });
       try {
-        const result = await getPort("piConfiguration").runPiCli([
-          "install",
-          "npm:pi-mcp-adapter",
-        ], projectRoot());
-        if (result.code !== 0) {
-          throw new Error(result.stderr || result.stdout || "pi-mcp-adapter installation failed");
-        }
+        await configuration().installAdapter();
         await get().refreshAdapter();
         set({ dirtyRestart: true });
       } catch (error) {
@@ -499,7 +498,7 @@ export const useMcp = create<McpStore>((set, get) => {
       }
       const next = cloneConfig(get()[scope]);
       const servers = { ...serverMap(next) };
-      if (previousName !== normalized && servers[normalized]) {
+      if (previousName !== normalized && Object.hasOwn(servers, normalized)) {
         set({ lastError: `MCP server \"${normalized}\" already exists` });
         return;
       }
@@ -520,12 +519,12 @@ export const useMcp = create<McpStore>((set, get) => {
     setDisabled: async (scope, name, disabled) => {
       const current = serverMap(get()[scope].data ?? {});
       const server = current[name];
-      if (!server) return;
+      if (!Object.hasOwn(current, name)) return;
       const next = { ...server };
       if (disabled) next.disabled = true;
       else if (scope === "project") next.disabled = false;
       else delete next.disabled;
-      await get().upsertServer(scope, name, next);
+      await get().upsertServer(scope, name, next, name);
     },
 
     setRaw: async (scope, content) => {
@@ -539,19 +538,10 @@ export const useMcp = create<McpStore>((set, get) => {
       const contentToWrite = parsed.migrationWarning
         ? JSON.stringify(parsed.data, null, 2) + "\n"
         : normalizedContent;
-      const stored = parsed.migrationWarning
-        ? parseScope({ path: current.path, exists: true, content: contentToWrite })
-        : parsed;
-      try {
-        await getPort("piConfiguration").writeMcpConfig(
-          scope,
-          contentToWrite,
-          scope === "project" ? projectRoot() : null
-        );
-        set({ [scope]: stored, dirtyRestart: true, lastError: null } as never);
-      } catch (error) {
-        set({ lastError: error instanceof Error ? error.message : String(error) });
-      }
+      await write(scope, contentToWrite);
     },
   };
-});
+  });
+}
+
+export const useMcp = createMcpStore();

@@ -17,14 +17,11 @@ export type ProviderCredentialSource =
   | "none";
 
 export type ProviderCredentialAction =
-  | "willInstallApiKey"
-  | "willInstallEnvironmentReference"
   | "providerEnvironmentNotTransferred"
   | "remoteCredentialPreserved"
   | "oauthNotTransferable"
   | "unknownCredentialNotTransferable"
   | "noCredential";
-
 export type ProviderSyncWarningCode =
   | "environmentReferenceRequiresRemoteValue"
   | "loopbackEndpointRefersToRemoteHost"
@@ -66,6 +63,7 @@ export interface PreparedProviderSyncProvider {
 export interface PreparedProviderSync {
   profileId: string;
   profileRevision: number;
+  scope: RemoteProviderScope;
   destinationDisplayName: string;
   destinationHostAlias: string;
   providers: PreparedProviderSyncProvider[];
@@ -85,25 +83,15 @@ export interface ProviderSyncResult {
   reloadRequired: true;
 }
 
+export type RemoteProviderScope = "global" | "project";
+
 export interface RemoteProviderSyncPort {
   /** Lists custom providers from authoritative local models.json/auth.json. */
   listCandidates(): Promise<ProviderSyncCandidate[]>;
 
-  /**
-   * Builds an exact, secret-bearing plan in backend memory after inspecting the
-   * authoritative remote state. Returns only its redacted preview.
-   */
-  prepare(profileId: string, providerIds: string[]): Promise<PreparedProviderSync>;
+  prepare(profileId: string, providerIds: string[], scope?: RemoteProviderScope): Promise<PreparedProviderSync>;
 
-  /**
-   * Consumes the matching prepared plan. A missing, expired, used, or stale
-   * plan is rejected and requires a new prepare/confirmation cycle.
-   */
-  apply(profileId: string, providerIds: string[]): Promise<ProviderSyncResult>;
+  apply(profileId: string, providerIds: string[], scope?: RemoteProviderScope): Promise<ProviderSyncResult>;
 
-  /**
-   * Rebuilds and applies a plan only when doing so cannot install a literal API
-   * key. Used for provider/profile pairs approved by a prior manual sync.
-   */
-  applyAutomatic(profileId: string, providerIds: string[]): Promise<ProviderSyncResult>;
+  applyAutomatic(profileId: string, providerIds: string[], scope?: RemoteProviderScope): Promise<ProviderSyncResult>;
 }

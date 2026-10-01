@@ -35,6 +35,20 @@ test("follows leafId through the active branch instead of flattening siblings", 
   ]);
 });
 
+test("ignores Pi system messages when restoring the active branch", () => {
+  const snapshot: PiEntriesSnapshot = {
+    entries: [
+      entry("system", null, { role: "system", content: "runtime instructions" }),
+      entry("u1", "system", { role: "user", content: "hello" }),
+      entry("a1", "u1", { role: "assistant", content: "world" }),
+    ],
+    leafId: "a1",
+  };
+
+  assert.deepEqual(sessionEntriesToChatMessages(snapshot).map((value) => value.text), ["hello", "world"]);
+});
+
+
 test("keeps original branch messages across compaction and ignores summary metadata", () => {
   const snapshot: PiEntriesSnapshot = {
     entries: [

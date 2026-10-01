@@ -1,30 +1,47 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useRef, useState } from "react";
 import { motion } from "motion/react";
 import { WindowControls } from "@/components/WindowControls";
 import { McpPage } from "@/components/mcp/McpPage";
-import { useMcp } from "@/lib/pi/mcp";
+import { createMcpStore, useMcp } from "@/lib/pi/mcp";
 import { useT } from "@/lib/i18n";
 import { INK, PAPER, SERIF, SANS } from "@/components/mcp/mcp-tokens";
 import { useAppearance } from "@/lib/appearance";
 
+import { useSessions } from "@/lib/pi/sessions";
+import { piManagementTargetKey } from "@/lib/backend/ports/pi-management";
+import { getPort } from "@/lib/backend/composition/container";
+import type { ExecutionBinding } from "@/lib/backend/ports/execution-target";
+import { usePiManagement } from "@/lib/pi/management";
 /**
  * MCP servers — standalone Shuimò (水墨) ink-wash page.
  * Pi has no built-in MCP; servers come from the pi-mcp-adapter extension,
  * which reads standard MCP files. This page edits the Pi override files
- * (~/.pi/agent/mcp.json global / .pi/mcp.json project) and restarts pi.
+ * (effective agent mcp.json / project .pi/mcp.json). Restart is explicit.
  */
 export default function McpSettingsPage() {
+  const binding = useSessions((state) => state.executionBinding);
+  return binding.kind === "ssh"
+    ? <RemoteMcpSettingsPage key={piManagementTargetKey(binding, null)} binding={binding} />
+    : <McpSettingsContent />;
+}
+
+function RemoteMcpSettingsPage({ binding }: { binding: Extract<ExecutionBinding, { kind: "ssh" }> }) {
+  const [store] = useState(() => {
+    const context = { binding, projectRoot: null, targetKey: piManagementTargetKey(binding, null),
+      port: getPort("createPiManagement")(binding, null) };
+    return createMcpStore(getPort("createMcpConfiguration")(binding),
+      (scope) => usePiManagement.getState().markDirty(scope, context));
+  });
+  return <McpSettingsContent store={store} target={`${binding.hostAlias} · ${binding.remoteCwd}`} />;
+}
+
+function McpSettingsContent({ store = useMcp, target }: { store?: typeof useMcp; target?: string }) {
   const t = useT();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const mcp = useMcp();
 
   const { bgImage } = useAppearance();
-  useEffect(() => {
-    if (!mcp.loaded) void mcp.load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   return (
     <div
@@ -81,9 +98,9 @@ export default function McpSettingsPage() {
             fontFamily: SANS,
           }}
         >
-          {t("mcp.pageSubtitle")}
+          {target ? t("mcp.remoteEditSubtitle", { target }) : t("mcp.pageSubtitle")}
         </p>
-        <McpPage />
+        <McpPage store={store} />
       </div>
     </div>
   );

@@ -70,6 +70,8 @@ function MainShell({ children }: { children: React.ReactNode }) {
   const remoteRouteAllowed =
     pathname === "/" ||
     pathname?.startsWith("/settings") ||
+    pathname?.startsWith("/models") ||
+    pathname?.startsWith("/mcp") ||
     pathname?.startsWith("/update") ||
     pathname?.startsWith("/plugins") ||
     pathname?.startsWith("/skills");

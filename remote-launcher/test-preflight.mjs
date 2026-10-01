@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -81,6 +81,26 @@ test("a workspace is still checked when one is supplied", { skip: !posix }, () =
     assert.equal(notADirectory.errorCode, "workspace_missing");
   });
 });
+test("project models select an isolated Pi agent directory", { skip: !posix }, () => {
+  withHome((home) => {
+    const project = join(home, "project");
+    const agentDir = join(project, ".pi", "agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "models.json"), "{}\n");
+    const pi = join(home, "fake-pi");
+    writeFileSync(pi, "#!/bin/sh\nprintf '%s\\n' \"$PI_CODING_AGENT_DIR\" > \"$HOME/agent-dir.txt\"\n");
+    chmodSync(pi, 0o700);
+    const encoded = Buffer.from(JSON.stringify({
+      protocolVersion: 1, cwd: project, piExecutable: pi, resumePath: null,
+    })).toString("base64");
+    const result = spawnSync(shell, [launcher, "--run", encoded], {
+      encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home }, timeout: 30_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(home, "agent-dir.txt"), "utf8").trim(), agentDir);
+  });
+});
+
 
 test("cwd is optional only for preflight, never for a run", { skip: !posix }, () => {
   withHome((home) => {

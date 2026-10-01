@@ -46,6 +46,8 @@ export function NavRail() {
     ? ITEMS.filter((item) =>
         item.href === "/" ||
         item.href === "/settings/" ||
+        item.href === "/models/" ||
+        item.href === "/mcp/" ||
         item.href === "/plugins/" ||
         item.href === "/skills/"
       )

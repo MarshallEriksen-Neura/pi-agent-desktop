@@ -17,20 +17,19 @@ React may submit only a remote profile ID and one or more provider IDs. It never
 API-key synchronization requires an exact two-phase operation:
 
 1. `candidates` returns redacted local provider summaries.
-2. `prepare(profileId, providerIds)` reloads authoritative local state, validates the stored profile, inspects the remote destination through a fixed launcher operation, and stores an exact secret-bearing plan in Rust memory.
+2. `prepare(profileId, providerIds)` reloads authoritative local state, validates the stored profile, inspects the remote destination through a fixed launcher operation, and stores a credential-free plan in Rust memory.
 3. The UI displays the redacted destination, actions, and warnings and obtains explicit confirmation.
-4. `apply(profileId, providerIds)` consumes the matching plan, revalidates the complete remote profile snapshot, and sends the prepared payload through SSH stdin.
+4. `apply(profileId, providerIds)` consumes the matching plan, revalidates the complete remote profile snapshot, and sends only provider IDs and validated provider definitions through SSH stdin.
 
 A prepared plan is keyed by `profileId + canonical sorted providerIds`, expires after 120 seconds, is single-use, is never persisted, and is replaced only through a new prepare after the old plan expires or is consumed. Apply fails if the profile changed or was deleted.
 
 ### Previously approved automatic refresh
 
-After a successful manual apply, the UI may persist only the approved `profileId + providerId` relationship as a non-secret preference, and exposes each relationship so the user can turn it off without another sync. A later successful local `models.json` write may submit those identifiers to `applyAutomatic`. Rust rebuilds a fresh plan from authoritative local and remote state and applies it only when no selected provider has `credentialAction: willInstallApiKey`.
-Local write notifications are coalesced briefly and remote applies are serialized. Failures do not roll back the already-successful local write; they surface a warning and a later local edit retries through a freshly built plan.
-
-If a literal API key would need to be installed (for example, because the remote credential was removed), automatic apply consumes and discards the temporary plan and returns `syncApprovalRequired`; the user must repeat the redacted manual review and confirmation. Automatic refresh never reuses a prior secret-bearing plan, never persists credentials, and keeps the same fixed SSH-stdin transport. Deleting a local provider removes its automatic relationship but does not delete the remote counterpart. Renaming is likewise non-destructive; destructive mirroring remains outside this contract.
+After a successful manual apply, the UI may persist only the approved `profileId + providerId` relationship as a non-secret preference, and exposes each relationship so the user can turn it off without another sync. A later successful local `models.json` write may submit those identifiers to `applyAutomatic`. Rust rebuilds a fresh plan from authoritative local and remote state; because credentials are never sent, automatic refresh does not install local credentials.
+Local write notifications are coalesced briefly and remote applies are serialized. Failures do not roll back the already-successful local write; they surface a warning and a later local edit retries through a freshly built plan. Deleting a local provider removes its automatic relationship but does not delete the remote counterpart. Renaming is likewise non-destructive; destructive mirroring remains outside this contract.
 
 No redacted DTO may contain API keys, auth objects, header names/values, raw provider definitions, complete endpoint URLs with userinfo/query data, local/remote file paths, SSH/launcher arguments, or credential hashes.
+
 
 ## Selection validation
 
@@ -48,29 +47,20 @@ Any blocked selected provider fails the whole prepare before SSH. Synchronizatio
 
 ## Credential classification
 
-Credential precedence is:
-
-1. an existing local `auth.json` entry;
-2. `models.json.providers[id].apiKey` only when no auth entry exists.
-
-An OAuth or unknown auth entry prevents fallback to `models.json.apiKey`.
+Credential state is inspected only to determine whether the provider is syncable and whether an existing remote credential will be preserved. No local credential value is retained in a plan or included in the apply request.
 
 | Local source | V1.1 action |
 | --- | --- |
-| `auth.json` `{ type: "api_key", key: <literal> }` | Transfer the `key` after confirmation |
-| `auth.json` `{ type: "api_key", env: <ProviderEnv> }` without `key` | Validate but do not transfer provider-scoped environment values; warn that equivalent values must be configured remotely |
-| `auth.json` with both `key` and `env` | Transfer only the approved `key`; validate but omit `env` and warn |
-| `auth.json` `{ type: "api_key" }` with neither `key` nor `env` | Block as empty/ambiguous credential state |
-| literal `models.json.apiKey` with no auth entry | Remove from outgoing provider definition and transfer as an auth credential |
-| `$NAME` / `${NAME}` expression | Preserve unresolved and warn that the value must exist remotely |
+| `auth.json` API-key entry | Validate shape; never transfer the key or provider-scoped `env` |
+| `models.json.providers[id].apiKey` | Remove it from the outgoing provider definition; never transfer it |
+| `$NAME` / `${NAME}` expression | Validate as a reference; never transfer it |
 | `!command` credential | Block provider; never execute or copy |
-| OAuth credential | Copy provider configuration only; never transfer tokens |
-| unknown credential type | Copy provider configuration only; never transfer credential or fall back |
+| OAuth, unknown, empty, or malformed credential | Preserve remote configuration only or block when malformed; never transfer tokens |
 | no credential | Copy provider configuration only |
 
-Custom header values use Pi's same expression syntax. A command-valued header blocks the provider. Literal header values may be copied only as part of the explicitly approved selected provider and produce a redacted warning. Environment references remain unresolved and produce a warning. No header name or value enters a frontend DTO or diagnostic.
+Existing remote credentials are preserved by the launcher. If no remote credential exists, the result reports `noCredential`; the remote host must be configured independently through its own `auth.json`, environment, or OAuth flow.
 
-Canonical Pi `ApiKeyCredential` fields `key` and `env` are independently optional at the type level. V1.1 validates provider-scoped `env` objects (bounded environment names and non-empty string values) but deliberately does not copy them: these values may contain additional account identifiers or secrets and are not covered by the API-key confirmation. An `env`-only credential remains a syncable configuration-only provider; a `key + env` credential sends only the approved `key`. Empty credentials and malformed/empty `env` objects fail closed.
+Custom header values use Pi's same expression syntax. A command-valued header blocks the provider. Header values are validated but are not copied into a credential or frontend DTO. Environment references remain unresolved and produce a warning.
 
 Only fields supported by Pi's provider schema are treated as provider configuration. Arbitrary local extension code and runtime-only provider registrations are outside V1.1.
 
@@ -113,8 +103,11 @@ The launcher reads one bounded JSON request from stdin and requires EOF. Rust an
 Actions inside the stdin envelope are fixed to `inspect` and `apply`, both at `providerSyncProtocolVersion: 1`. The launcher rejects unknown versions/actions, duplicate or malformed IDs, unsupported credential forms, command expressions, oversized/truncated input, and trailing non-whitespace data.
 
 ## Remote merge and recovery
+## Project scope loading
 
-The launcher operates only on fixed paths under remote `~/.pi/agent` and, under a bounded lock:
+Pi does not discover project-local model definitions from `<remoteCwd>/.pi/models.json`. For `scope: "project"`, the launcher writes to `<remoteCwd>/.pi/agent/models.json` and starts Pi with `PI_CODING_AGENT_DIR=<remoteCwd>/.pi/agent` whenever that models file exists. This intentionally isolates the project's models, auth, sessions, and settings from the remote global agent directory; credentials are still configured independently on the remote host and are never copied from the desktop.
+
+The launcher operates only on fixed paths under remote `~/.pi/agent` for global scope or `<remoteCwd>/.pi/agent` for project scope, and, under a bounded lock:
 
 1. rejects symlinked target, lock, backup, temporary, or transaction paths;
 2. treats missing `models.json`/`auth.json` as empty objects;

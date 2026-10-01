@@ -63,6 +63,7 @@ test("provider-sync frontend DTOs remain redacted and identifier-only", () => {
   const preview: PreparedProviderSync = {
     profileId: "profile-id",
     profileRevision: 4,
+    scope: "global",
     destinationDisplayName: "Remote host",
     destinationHostAlias: "work-alias",
     providers: [{
@@ -99,7 +100,7 @@ test("provider-sync frontend DTOs remain redacted and identifier-only", () => {
   assertRedacted(result);
 });
 
-test("automatic provider sync targets only approved changed provider/profile pairs", async () => {
+test("automatic provider sync isolates approved changed provider/profile/scope pairs", async () => {
   const values = new Map<string, string>();
   const storage: AutoProviderSyncStorage = {
     getItem: (key) => values.get(key) ?? null,
@@ -107,35 +108,63 @@ test("automatic provider sync targets only approved changed provider/profile pai
     removeItem: (key) => { values.delete(key); },
   };
   setAutomaticProviderSync("profile-a", ["provider-a", "provider-b"], true, storage);
+  setAutomaticProviderSync("profile-a", ["provider-a"], true, storage, "project");
   setAutomaticProviderSync("profile-b", ["provider-b"], true, storage);
+  setAutomaticProviderSync("profile-b", ["provider-c"], true, storage, "project");
   setAutomaticProviderSync("profile-a", ["provider-b"], false, storage);
   assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-a", storage), ["provider-a"]);
+  assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-a", storage, "project"), ["provider-a"]);
+  assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-b", storage, "project"), ["provider-c"]);
 
-  const calls: Array<[string, string[]]> = [];
+  const calls: Array<[string, string[], string]> = [];
   const port = {
-    applyAutomatic: async (profileId: string, providerIds: string[]) => {
-      calls.push([profileId, providerIds]);
-      if (profileId === "profile-a") throw new Error("remoteProfileNotFound");
+    applyAutomatic: async (profileId: string, providerIds: string[], scope = "global") => {
+      calls.push([profileId, providerIds, scope]);
+      if (profileId === "profile-a" && scope === "global") throw new Error("remoteProfileNotFound");
       return { profileId, providers: [], reloadRequired: true as const };
     },
   } as unknown as RemoteProviderSyncPort;
   const outcomes = await runAutomaticProviderSync(
-    ["provider-a", "provider-b", "unapproved"],
+    ["provider-a", "provider-b", "provider-c", "unapproved"],
     port,
     storage,
   );
 
   assert.deepEqual(calls, [
-    ["profile-a", ["provider-a"]],
-    ["profile-b", ["provider-b"]],
+    ["profile-a", ["provider-a"], "global"],
+    ["profile-a", ["provider-a"], "project"],
+    ["profile-b", ["provider-b"], "global"],
+    ["profile-b", ["provider-c"], "project"],
   ]);
-  assert.deepEqual(outcomes.map(({ profileId, providerIds, ok }) => ({ profileId, providerIds, ok })), [
-    { profileId: "profile-a", providerIds: ["provider-a"], ok: false },
-    { profileId: "profile-b", providerIds: ["provider-b"], ok: true },
+  assert.deepEqual(outcomes.map(({ profileId, scope, providerIds, ok }) => ({ profileId, scope, providerIds, ok })), [
+    { profileId: "profile-a", scope: "global", providerIds: ["provider-a"], ok: false },
+    { profileId: "profile-a", scope: "project", providerIds: ["provider-a"], ok: true },
+    { profileId: "profile-b", scope: "global", providerIds: ["provider-b"], ok: true },
+    { profileId: "profile-b", scope: "project", providerIds: ["provider-c"], ok: true },
   ]);
   assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-a", storage), []);
+  assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-a", storage, "project"), ["provider-a"]);
   assert.equal(values.has(AUTO_PROVIDER_SYNC_STORAGE_KEY), true);
-  removeAutomaticProviderSyncProviders(["provider-b"], storage);
-  assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-b", storage), []);
+
+  removeAutomaticProviderSyncProviders(["provider-a"], storage);
+  assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-a", storage, "project"), []);
+  assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-b", storage, "project"), ["provider-c"]);
+  removeAutomaticProviderSyncProviders(["provider-b", "provider-c"], storage);
   assert.equal(values.has(AUTO_PROVIDER_SYNC_STORAGE_KEY), false);
+});
+
+test("automatic provider sync migrates legacy profile arrays to global scope", () => {
+  const values = new Map([[AUTO_PROVIDER_SYNC_STORAGE_KEY, JSON.stringify({ "profile-a": ["provider-a"] })]]);
+  const storage: AutoProviderSyncStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => { values.set(key, value); },
+    removeItem: (key) => { values.delete(key); },
+  };
+
+  assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-a", storage), ["provider-a"]);
+  assert.deepEqual(getAutomaticProviderSyncProviderIds("profile-a", storage, "project"), []);
+  setAutomaticProviderSync("profile-a", ["provider-b"], true, storage, "project");
+  assert.deepEqual(JSON.parse(values.get(AUTO_PROVIDER_SYNC_STORAGE_KEY) ?? "{}"), {
+    "profile-a": { global: ["provider-a"], project: ["provider-b"] },
+  });
 });

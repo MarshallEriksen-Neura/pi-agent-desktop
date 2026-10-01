@@ -197,6 +197,7 @@ export function sessionEntriesToChatMessages(snapshot: PiEntriesSnapshot): ChatM
     }
     const role = str(message.role);
 
+    if (role === "system") continue;
     if (role === "user") {
       const content = textAndImages(message);
       messages.push({

@@ -19,6 +19,7 @@ import type {
   ProviderSyncCandidate,
   ProviderSyncResult,
   ProviderSyncWarningCode,
+  RemoteProviderScope,
 } from "@/lib/backend/ports/remote-provider-sync";
 import { t } from "@/lib/i18n";
 import {
@@ -48,7 +49,6 @@ const PROVIDER_SYNC_ERROR_CODES = new Set([
   "syncPayloadTooLarge",
   "syncBusy",
   "syncPlanMissing",
-  "syncApprovalRequired",
   "syncPlanExpired",
   "syncPlanStale",
   "configLockTimeout",
@@ -93,10 +93,10 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
   const syncPort = getPort("remoteProviderSync");
   const [profileId, setProfileId] = useState("");
   const [candidates, setCandidates] = useState<ProviderSyncCandidate[]>([]);
+  const [scope, setScope] = useState<RemoteProviderScope>("global");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [preview, setPreview] = useState<PreparedProviderSync | null>(null);
   const [result, setResult] = useState<ProviderSyncResult | null>(null);
-  const [apiKeyConfirmed, setApiKeyConfirmed] = useState(false);
   const [autoSyncAfterApply, setAutoSyncAfterApply] = useState(true);
   const [automaticProviderIds, setAutomaticProviderIds] = useState<string[]>([]);
   const [syncBusy, setSyncBusy] = useState<"load" | "prepare" | "apply" | null>(null);
@@ -136,14 +136,13 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
     void loadCandidates();
   }, [loadCandidates, profiles]);
   useEffect(() => {
-    setAutomaticProviderIds(getAutomaticProviderSyncProviderIds(profileId));
-  }, [profileId]);
+    setAutomaticProviderIds(getAutomaticProviderSyncProviderIds(profileId, undefined, scope));
+  }, [profileId, scope]);
 
 
   const invalidatePreparedPlan = () => {
     setPreview(null);
     setResult(null);
-    setApiKeyConfirmed(false);
     setSyncNotice(null);
   };
 
@@ -160,9 +159,8 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
     setSyncNotice(null);
     setResult(null);
     try {
-      const next = await syncPort.prepare(profileId, selectedIds);
+      const next = await syncPort.prepare(profileId, selectedIds, scope);
       setPreview(next);
-      setApiKeyConfirmed(false);
     } catch (error) {
       setPreview(null);
       setSyncNotice({ ok: false, text: providerSyncErrorText(error) });
@@ -174,25 +172,19 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
   const applySync = async () => {
     if (!preview) return;
     const providerIds = preview.providers.map((provider) => provider.providerId);
-    const requiresApiKeyConfirmation = preview.providers.some(
-      (provider) => provider.credentialAction === "willInstallApiKey",
-    );
-    if (requiresApiKeyConfirmation && !apiKeyConfirmed) return;
     setSyncBusy("apply");
     setSyncNotice(null);
     try {
-      const next = await syncPort.apply(preview.profileId, providerIds);
-      setAutomaticProviderSync(preview.profileId, providerIds, autoSyncAfterApply);
-      setAutomaticProviderIds(getAutomaticProviderSyncProviderIds(preview.profileId));
+      const next = await syncPort.apply(preview.profileId, providerIds, preview.scope as RemoteProviderScope);
       setResult(next);
+      setAutomaticProviderSync(preview.profileId, providerIds, autoSyncAfterApply, undefined, preview.scope);
+      setAutomaticProviderIds(getAutomaticProviderSyncProviderIds(preview.profileId, undefined, preview.scope));
       setPreview(null);
       setSelectedIds([]);
-      setApiKeyConfirmed(false);
       setSyncNotice({ ok: true, text: t("settings.remoteAgent.providerSync.applied") });
       await loadCandidates();
     } catch (error) {
       setPreview(null);
-      setApiKeyConfirmed(false);
       setSyncNotice({ ok: false, text: providerSyncErrorText(error) });
     } finally {
       setSyncBusy(null);
@@ -200,13 +192,9 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
   };
 
   const disableAutomaticSync = (providerId: string) => {
-    setAutomaticProviderSync(profileId, [providerId], false);
+    setAutomaticProviderSync(profileId, [providerId], false, undefined, scope);
     setAutomaticProviderIds((current) => current.filter((id) => id !== providerId));
   };
-
-  const requiresApiKeyConfirmation = preview?.providers.some(
-    (provider) => provider.credentialAction === "willInstallApiKey",
-  ) ?? false;
   const selectedCount = selectedIds.length;
 
   return (
@@ -252,6 +240,33 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
                   {profile.name} · {profile.sshHost}
                 </option>
               ))}
+            </select>
+          </FieldShell>
+          <FieldShell
+            label={t("settings.remoteAgent.providerSync.scope")}
+            hint={t("settings.remoteAgent.providerSync.scopeHint")}
+          >
+            <select
+              value={scope}
+              disabled={syncBusy !== null || preview !== null}
+              onChange={(event) => {
+                setScope(event.target.value as RemoteProviderScope);
+                invalidatePreparedPlan();
+              }}
+              style={{
+                width: "100%",
+                height: 36,
+                padding: "0 10px",
+                color: "var(--text-primary)",
+                background: "var(--bg-primary)",
+                border: "1px solid var(--separator)",
+                borderRadius: 8,
+                font: "inherit",
+                fontSize: 13,
+              }}
+            >
+              <option value="global">{t("settings.remoteAgent.providerSync.scopeGlobal")}</option>
+              <option value="project">{t("settings.remoteAgent.providerSync.scopeProject")}</option>
             </select>
           </FieldShell>
 
@@ -370,17 +385,6 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
                   </div>
                 ))}
               </div>
-              {requiresApiKeyConfirmation ? (
-                <label style={{ display: "grid", gridTemplateColumns: "18px minmax(0, 1fr)", gap: 8, color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.5, cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={apiKeyConfirmed}
-                    onChange={(event) => setApiKeyConfirmed(event.target.checked)}
-                    style={{ width: 15, height: 15, margin: "2px 0 0", accentColor: "var(--accent)" }}
-                  />
-                  <span>{t("settings.remoteAgent.providerSync.confirmApiKeys")}</span>
-                </label>
-              ) : null}
               <label style={{ display: "grid", gridTemplateColumns: "18px minmax(0, 1fr)", gap: 8, color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.5, cursor: "pointer" }}>
                 <input
                   type="checkbox"
@@ -423,7 +427,7 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
                   variant="ghost"
                   size="sm"
                   disabled={syncBusy !== null}
-                  onClick={() => { setPreview(null); setApiKeyConfirmed(false); }}
+                  onClick={() => { setPreview(null); }}
                 >
                   {t("common.cancel")}
                 </Button>
@@ -431,7 +435,7 @@ export function ProviderSyncSettings({ profiles }: { profiles: RemotePiProfile[]
               {preview ? (
                 <Button
                   size="sm"
-                  disabled={syncBusy !== null || (requiresApiKeyConfirmation && !apiKeyConfirmed)}
+                  disabled={syncBusy !== null}
                   onClick={() => void applySync()}
                 >
                   {syncBusy === "apply" ? <LoaderCircle size={14} className="animate-spin" /> : <ShieldCheck size={14} />}

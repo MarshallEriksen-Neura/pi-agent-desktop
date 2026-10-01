@@ -286,7 +286,7 @@ struct CapabilitiesReply {
 
 /// This build's embedded launcher revision. Must equal `launcherRevision` in
 /// `remote-launcher/pi-desktop-launcher`; a test pins the two together.
-const LAUNCHER_REVISION: u32 = 18;
+const LAUNCHER_REVISION: u32 = 26;
 /// The task-state version this build's launcher reads and writes.
 const LAUNCHER_STATUS_VERSION: u32 = 1;
 
@@ -2619,18 +2619,20 @@ fn run_remote_management(
     request: serde_json::Value,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let mut envelope = serde_json::json!({
+    let envelope = serde_json::json!({
         "protocolVersion": LAUNCHER_PROTOCOL_VERSION,
         "remoteCwd": remote_cwd,
+        "piExecutable": profile.pi_executable.clone().unwrap_or_else(|| "pi".into()),
         "request": request,
     });
-    if remote_cwd.is_none() {
-        envelope["piExecutable"] =
-            serde_json::Value::String(profile.pi_executable.clone().unwrap_or_else(|| "pi".into()));
-    }
     let body = serde_json::to_string(&envelope)
         .map_err(|error| format!("cannot encode remote management request: {error}"))?;
-    if body.len() > MANAGEMENT_REQUEST_MAX_BYTES {
+    let request_limit = if request.get("operation").and_then(serde_json::Value::as_str) == Some("writeMcpConfig") {
+        2 * 1024 * 1024
+    } else {
+        MANAGEMENT_REQUEST_MAX_BYTES
+    };
+    if body.len() > request_limit {
         return Err("remote management request exceeded its size limit".into());
     }
     let spec = ssh_management_spec(profile);
@@ -2726,15 +2728,30 @@ pub async fn remote_pi_management_request(
             .and_then(serde_json::Value::as_str)
             .ok_or("remote management request has no operation")?;
         let timeout = match operation {
-            "inspect" | "readSkillSource" => MANAGEMENT_INSPECT_TIMEOUT,
+            "inspect" | "readSkillSource" | "inspectModels" | "fetchProviderModels" | "inspectMcp" | "readMcpConfig" | "discoverMcpSources" => MANAGEMENT_INSPECT_TIMEOUT,
             "browseSkillSource" => MANAGEMENT_BROWSE_TIMEOUT,
-            "mutatePackage" | "mutateSkill" => MANAGEMENT_MUTATION_TIMEOUT,
+            "mutatePackage" | "mutateSkill" | "mutateModels" | "setEnabledModels" | "writeMcpConfig" => MANAGEMENT_MUTATION_TIMEOUT,
             _ => {
                 return Err(format!(
                     "unsupported remote management operation `{operation}`"
                 ))
             }
         };
+        let required_capability = match operation {
+            "inspectMcp" => Some("pi-mcp-inspect-v1"),
+            "readMcpConfig" | "discoverMcpSources" => Some("pi-mcp-config-read-v1"),
+            "writeMcpConfig" => Some("pi-mcp-config-write-v1"),
+            "inspectModels" | "fetchProviderModels" => Some("pi-models-read-v1"),
+            "mutateModels" | "setEnabledModels" => Some("pi-models-mutate-v1"),
+            _ => None,
+        };
+        if let Some(required) = required_capability {
+            let probe = probe_launcher_capabilities(&profile.ssh_host, &profile.launcher_path)?;
+            if let Some(error) = probe.error { return Err(error); }
+            if !probe.capabilities.iter().any(|capability| capability == required) {
+                return Err(format!("launcher-upgrade-required: remote launcher does not support {required}"));
+            }
+        }
         run_remote_management(&profile, Some(&remote_cwd), request, timeout)
     })
     .await

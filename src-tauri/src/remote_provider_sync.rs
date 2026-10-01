@@ -1,8 +1,7 @@
-//! Secure, identifier-only provider synchronization to a stored SSH profile.
+//! Secure, credential-free provider synchronization to a stored SSH profile.
 //!
-//! Secrets are loaded from Pi's authoritative local files, retained only in a
-//! short-lived in-memory plan, and sent to the fixed launcher exclusively over
-//! SSH stdin. Public DTOs contain only stable classifications and identifiers.
+//! Local credentials are used only for validation/classification and never sent
+//! to the launcher. Public DTOs contain only stable classifications and identifiers.
 
 use crate::remote_profiles::{self, RemotePiProfile};
 use pi_backend_core::pi_process::LaunchSpec;
@@ -41,6 +40,7 @@ pub struct RemoteProviderSyncState {
 
 struct SyncPlan {
     profile: RemotePiProfile,
+    scope: String,
     provider_ids: Vec<String>,
     request: Zeroizing<Vec<u8>>,
     preview: PreparedProviderSync,
@@ -74,6 +74,7 @@ struct PreparedProviderSyncProvider {
 pub struct PreparedProviderSync {
     profile_id: String,
     profile_revision: u64,
+    scope: String,
     destination_display_name: String,
     destination_host_alias: String,
     providers: Vec<PreparedProviderSyncProvider>,
@@ -101,7 +102,6 @@ pub struct ProviderSyncResult {
 struct LocalProvider {
     id: String,
     definition: Value,
-    credential: Option<Value>,
     model_count: usize,
     syncable: bool,
     blocked_reason: Option<&'static str>,
@@ -139,6 +139,13 @@ fn lock_plans(
 
 fn code(value: &str) -> String {
     value.to_owned()
+}
+
+fn canonical_scope(scope: Option<String>) -> Result<String, String> {
+    match scope.as_deref().unwrap_or("global") {
+        "global" | "project" => Ok(scope.unwrap_or_else(|| "global".to_owned())),
+        _ => Err(code("providerScopeInvalid")),
+    }
 }
 
 fn now_millis() -> u64 {
@@ -381,10 +388,14 @@ fn validate_model_definitions(
         warnings,
     );
 
-    let Some(models) = definition.get("models").and_then(Value::as_array) else {
-        *syncable = false;
-        *blocked_reason = Some("invalidProviderDefinition");
-        return 0;
+    let models: &[Value] = match definition.get("models") {
+        None => &[],
+        Some(Value::Array(models)) => models,
+        Some(_) => {
+            *syncable = false;
+            *blocked_reason = Some("invalidProviderDefinition");
+            return 0;
+        }
     };
     if models.len() > MAX_MODELS_PER_PROVIDER {
         *syncable = false;
@@ -486,7 +497,6 @@ fn classify_provider_roots(
                 result.push(LocalProvider {
                     id,
                     definition: Value::Null,
-                    credential: None,
                     model_count: 0,
                     syncable: false,
                     blocked_reason: Some("invalidProviderDefinition"),
@@ -512,7 +522,6 @@ fn classify_provider_roots(
         );
         endpoint_warnings(&definition, &mut warnings);
 
-        let mut credential = None;
         let (credential_source, proposed_credential_action) = if let Some(auth) = auth_root.get(&id)
         {
             match auth
@@ -545,12 +554,10 @@ fn classify_provider_roots(
                         if env.is_some() {
                             push_warning(&mut warnings, "providerEnvironmentNotTransferred");
                         }
-                        credential = Some(json!({ "type": "api_key", "key": key_value }));
                         if is_env_reference(key_value) {
-                            push_warning(&mut warnings, "environmentReferenceRequiresRemoteValue");
-                            ("environmentReference", "willInstallEnvironmentReference")
+                            ("environmentReference", "noCredential")
                         } else {
-                            ("authApiKey", "willInstallApiKey")
+                            ("authApiKey", "noCredential")
                         }
                     } else {
                         push_warning(&mut warnings, "providerEnvironmentNotTransferred");
@@ -566,12 +573,10 @@ fn classify_provider_roots(
                 blocked_reason = Some("commandCredentialUnsupported");
                 ("modelsApiKey", "noCredential")
             } else {
-                credential = Some(json!({ "type": "api_key", "key": api_key }));
                 if is_env_reference(api_key) {
-                    push_warning(&mut warnings, "environmentReferenceRequiresRemoteValue");
-                    ("environmentReference", "willInstallEnvironmentReference")
+                    ("environmentReference", "noCredential")
                 } else {
-                    ("modelsApiKey", "willInstallApiKey")
+                    ("modelsApiKey", "noCredential")
                 }
             }
         } else if embedded_api_key.is_some() {
@@ -585,7 +590,6 @@ fn classify_provider_roots(
         result.push(LocalProvider {
             id,
             definition: Value::Object(definition),
-            credential,
             model_count,
             syncable,
             blocked_reason,
@@ -596,6 +600,9 @@ fn classify_provider_roots(
     }
     result.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(result)
+}
+fn provider_payload(provider: LocalProvider) -> Value {
+    json!({ "providerId": provider.id, "definition": provider.definition })
 }
 
 fn read_bounded<R: Read>(mut reader: R, limit: usize) -> io::Result<Vec<u8>> {
@@ -626,6 +633,8 @@ fn launcher_error_code(value: Option<String>) -> String {
         "remoteWriteFailed",
         "remoteRollbackFailed",
         "remoteRecoveryRequired",
+        "providerScopeInvalid",
+        "remoteWorkspaceMissing",
     ];
     value
         .filter(|code| ALLOWED.contains(&code.as_str()))
@@ -650,10 +659,10 @@ fn valid_warning(value: &str) -> bool {
 fn valid_credential_action(value: &str) -> bool {
     matches!(
         value,
-        "willInstallApiKey"
-            | "willInstallEnvironmentReference"
-            | "remoteCredentialPreserved"
+        "remoteCredentialPreserved"
             | "providerEnvironmentNotTransferred"
+            | "oauthNotTransferable"
+            | "unknownCredentialNotTransferable"
             | "noCredential"
     )
 }
@@ -817,16 +826,13 @@ fn valid_provider_id(value: &str) -> bool {
         && !matches!(value, "__proto__" | "prototype" | "constructor")
 }
 
-fn outgoing_credential(credential: Option<Value>, preserves_remote: bool) -> Option<Value> {
-    if preserves_remote {
-        None
-    } else {
-        credential
-    }
-}
-
-fn plan_key(profile_id: &str, provider_ids: &[String]) -> String {
-    format!("{}\u{1f}{}", profile_id, provider_ids.join("\u{1e}"))
+fn plan_key(profile_id: &str, scope: &str, provider_ids: &[String]) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        profile_id,
+        scope,
+        provider_ids.join("\u{1e}")
+    )
 }
 
 fn profile_same(left: &RemotePiProfile, right: &RemotePiProfile) -> bool {
@@ -871,10 +877,11 @@ pub async fn remote_provider_sync_prepare(
     app: tauri::AppHandle,
     profile_id: String,
     provider_ids: Vec<String>,
+    scope: Option<String>,
 ) -> Result<PreparedProviderSync, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<RemoteProviderSyncState>();
-        prepare_plan(&state, profile_id, provider_ids)
+        prepare_plan(&state, profile_id, provider_ids, scope)
     })
     .await
     .map_err(|error| format!("provider sync prepare task failed: {error}"))?
@@ -884,7 +891,9 @@ fn prepare_plan(
     state: &RemoteProviderSyncState,
     profile_id: String,
     provider_ids: Vec<String>,
+    scope: Option<String>,
 ) -> Result<PreparedProviderSync, String> {
+    let scope = canonical_scope(scope)?;
     let provider_ids = canonical_provider_ids(provider_ids)?;
     let profile =
         remote_profiles::load_profile(&profile_id).map_err(|_| code("remoteProfileNotFound"))?;
@@ -912,7 +921,9 @@ fn prepare_plan(
     let inspect_request = serde_json::to_vec(&json!({
         "providerSyncProtocolVersion": PROVIDER_SYNC_PROTOCOL_VERSION,
         "action": "inspect",
-        "providerIds": provider_ids,
+        "scope": scope.clone(),
+        "remoteCwd": profile.remote_cwd.clone(),
+        "providerIds": provider_ids.clone(),
     }))
     .map_err(|_| code("syncPayloadInvalid"))?;
     let inspected = execute_launcher(&profile, &inspect_request)?;
@@ -954,11 +965,14 @@ fn prepare_plan(
             push_warning(&mut warnings, "remoteCredentialPreserved");
             "remoteCredentialPreserved"
         } else {
-            provider.proposed_credential_action
+            match provider.proposed_credential_action {
+                "oauthNotTransferable"
+                | "unknownCredentialNotTransferable"
+                | "providerEnvironmentNotTransferred" => provider.proposed_credential_action,
+                _ => "noCredential",
+            }
         };
-        // Never put a local credential in a plan that is expected to preserve the
-        // remote one. This also closes the inspect/apply race for automatic sync.
-        let credential = outgoing_credential(provider.credential, preserves_remote);
+        // A local credential never enters the plan, even when inspect reports no remote credential.
         preview_providers.push(PreparedProviderSyncProvider {
             provider_id: provider.id.clone(),
             model_count: provider.model_count,
@@ -966,15 +980,13 @@ fn prepare_plan(
             credential_action,
             warnings,
         });
-        apply_providers.push(json!({
-            "providerId": provider.id,
-            "definition": provider.definition,
-            "credential": credential,
-        }));
+        apply_providers.push(provider_payload(provider));
     }
     let request = serde_json::to_vec(&json!({
         "providerSyncProtocolVersion": PROVIDER_SYNC_PROTOCOL_VERSION,
         "action": "apply",
+        "scope": scope.clone(),
+        "remoteCwd": profile.remote_cwd.clone(),
         "providers": apply_providers,
     }))
     .map_err(|_| code("syncPayloadInvalid"))?;
@@ -984,12 +996,13 @@ fn prepare_plan(
     let preview = PreparedProviderSync {
         profile_id: profile.id.clone(),
         profile_revision: profile.revision,
+        scope: scope.clone(),
         destination_display_name: profile.name.clone(),
         destination_host_alias: profile.ssh_host.clone(),
         providers: preview_providers,
         expires_at: now_millis().saturating_add(PLAN_TTL.as_millis() as u64),
     };
-    let key = plan_key(&profile.id, &provider_ids);
+    let key = plan_key(&profile.id, &scope, &provider_ids);
     let mut plans = lock_plans(state)?;
     plans.retain(|_, plan| plan.expires > Instant::now());
     if plans.contains_key(&key) {
@@ -1005,6 +1018,7 @@ fn prepare_plan(
         key,
         SyncPlan {
             profile,
+            scope,
             provider_ids,
             request: Zeroizing::new(request),
             preview: preview.clone(),
@@ -1020,40 +1034,33 @@ pub async fn remote_provider_sync_apply(
     app: tauri::AppHandle,
     profile_id: String,
     provider_ids: Vec<String>,
+    scope: Option<String>,
 ) -> Result<ProviderSyncResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<RemoteProviderSyncState>();
-        apply_plan(&state, profile_id, provider_ids)
+        apply_plan(&state, profile_id, provider_ids, scope)
     })
     .await
     .map_err(|error| format!("provider sync apply task failed: {error}"))?
 }
 
-fn requires_api_key_approval(preview: &PreparedProviderSync) -> bool {
-    preview
-        .providers
-        .iter()
-        .any(|provider| provider.credential_action == "willInstallApiKey")
-}
-
-/// Automatic sync is deliberately stricter than the manual two-phase flow: it
-/// may refresh an already-approved provider, but it can never install a literal API key.
+/// Applies the current local provider selection without transferring credentials.
 #[tauri::command]
 pub async fn remote_provider_sync_apply_automatic(
     app: tauri::AppHandle,
     profile_id: String,
     provider_ids: Vec<String>,
+    scope: Option<String>,
 ) -> Result<ProviderSyncResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<RemoteProviderSyncState>();
-        let canonical_ids = canonical_provider_ids(provider_ids.clone())?;
-        let key = plan_key(&profile_id, &canonical_ids);
-        let preview = prepare_plan(&state, profile_id.clone(), provider_ids.clone())?;
-        if requires_api_key_approval(&preview) {
-            lock_plans(&state)?.remove(&key);
-            return Err(code("syncApprovalRequired"));
-        }
-        apply_plan(&state, profile_id, provider_ids)
+        prepare_plan(
+            &state,
+            profile_id.clone(),
+            provider_ids.clone(),
+            scope.clone(),
+        )?;
+        apply_plan(&state, profile_id, provider_ids, scope)
     })
     .await
     .map_err(|error| format!("automatic provider sync task failed: {error}"))?
@@ -1063,9 +1070,11 @@ fn apply_plan(
     state: &RemoteProviderSyncState,
     profile_id: String,
     provider_ids: Vec<String>,
+    scope: Option<String>,
 ) -> Result<ProviderSyncResult, String> {
+    let scope = canonical_scope(scope)?;
     let provider_ids = canonical_provider_ids(provider_ids)?;
-    let key = plan_key(&profile_id, &provider_ids);
+    let key = plan_key(&profile_id, &scope, &provider_ids);
     // Removal happens before any remote access: every apply attempt is single-use.
     let plan = lock_plans(state)?
         .remove(&key)
@@ -1073,7 +1082,10 @@ fn apply_plan(
     if plan.expires <= Instant::now() {
         return Err(code("syncPlanExpired"));
     }
-    if plan.provider_ids != provider_ids || plan.preview.profile_id != profile_id {
+    if plan.provider_ids != provider_ids
+        || plan.preview.profile_id != profile_id
+        || plan.scope != scope
+    {
         return Err(code("syncPlanStale"));
     }
     let current =
@@ -1196,6 +1208,26 @@ mod tests {
     }
 
     #[test]
+    fn model_overrides_only_provider_is_syncable() {
+        let models = json!({
+            "providers": {
+                "overrides": {
+                    "api": "openai-completions",
+                    "modelOverrides": {
+                        "gpt-custom": { "reasoning": true }
+                    }
+                }
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let providers = classify_provider_roots(models, Map::new()).unwrap();
+        assert!(providers[0].syncable);
+        assert_eq!(providers[0].model_count, 0);
+    }
+
+    #[test]
     fn credential_precedence_never_leaks_embedded_keys() {
         let models = json!({
             "providers": {
@@ -1251,7 +1283,6 @@ mod tests {
             .iter()
             .find(|provider| provider.id == "oauth-provider")
             .unwrap();
-        assert!(oauth.credential.is_none());
         assert_eq!(oauth.credential_source, "oauth");
         assert!(oauth.definition.get("apiKey").is_none());
 
@@ -1260,7 +1291,6 @@ mod tests {
             .find(|provider| provider.id == "malformed-api-key-provider")
             .unwrap();
         assert!(!malformed.syncable);
-        assert!(malformed.credential.is_none());
 
         let env_only = providers
             .iter()
@@ -1272,7 +1302,6 @@ mod tests {
             env_only.proposed_credential_action,
             "providerEnvironmentNotTransferred"
         );
-        assert!(env_only.credential.is_none());
         assert!(env_only
             .warnings
             .contains(&"providerEnvironmentNotTransferred"));
@@ -1282,16 +1311,12 @@ mod tests {
             .find(|provider| provider.id == "provider-key-and-env")
             .unwrap();
         assert!(key_and_env.syncable);
-        assert_eq!(
-            key_and_env.credential,
-            Some(json!({ "type": "api_key", "key": "API_SECRET" }))
-        );
+        let payload = serde_json::to_string(&provider_payload(key_and_env.clone())).unwrap();
+        assert!(!payload.contains("API_SECRET"));
+        assert!(!payload.contains("LOCAL_SECRET"));
         assert!(key_and_env
             .warnings
             .contains(&"providerEnvironmentNotTransferred"));
-        let literal = Some(json!({ "type": "api_key", "key": "API_SECRET" }));
-        assert_eq!(outgoing_credential(literal.clone(), true), None);
-        assert_eq!(outgoing_credential(literal.clone(), false), literal);
     }
 
     #[test]
@@ -1317,7 +1342,6 @@ mod tests {
                 .clone();
             let providers = classify_provider_roots(models.clone(), auth).unwrap();
             assert!(!providers[0].syncable);
-            assert!(providers[0].credential.is_none());
         }
     }
 
@@ -1344,26 +1368,18 @@ mod tests {
         let preview = PreparedProviderSync {
             profile_id: "remote-test".into(),
             profile_revision: 1,
+            scope: "global".into(),
             destination_display_name: "Test".into(),
             destination_host_alias: "host".into(),
             providers: vec![PreparedProviderSyncProvider {
                 provider_id: "custom".into(),
                 model_count: 1,
                 config_action: "create",
-                credential_action: "willInstallApiKey",
+                credential_action: "noCredential",
                 warnings: vec![],
             }],
             expires_at: 1,
         };
-        assert!(requires_api_key_approval(&preview));
-        let safe_preview = PreparedProviderSync {
-            providers: vec![PreparedProviderSyncProvider {
-                credential_action: "remoteCredentialPreserved",
-                ..preview.providers[0].clone()
-            }],
-            ..preview.clone()
-        };
-        assert!(!requires_api_key_approval(&safe_preview));
         let value = serde_json::to_string(&preview).unwrap();
         assert!(!value.contains("definition"));
         assert!(!value.contains("credential\""));

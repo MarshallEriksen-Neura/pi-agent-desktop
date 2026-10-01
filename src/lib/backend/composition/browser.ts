@@ -4,6 +4,7 @@ import { mockNotificationPort } from "../mock/notification";
 import { mockPetWindowPort } from "../mock/pet-window";
 import { createMockRepositoryPort } from "../mock/repository";
 import { createMockPiConfigurationPort } from "../mock/pi-configuration";
+import { localMcpConfiguration } from "../ports/mcp-configuration";
 import { createBrowserPiManagementFactory } from "../browser/pi-management";
 import { createMockPiProcessPort } from "../mock/pi-process";
 import { createMockProjectCatalogPort } from "../mock/project-catalog";
@@ -29,6 +30,7 @@ export function createBrowserBackendPorts(): BackendPorts {
   // memory, so handing out a fresh port per call would silently discard writes.
   const workspaceFs = createMockWorkspaceFsPort();
   const createPiManagement = createBrowserPiManagementFactory();
+  const piConfiguration = createMockPiConfigurationPort();
   return {
     piProcess: createMockPiProcessPort(),
     createPiProcess: (taskId) => createMockPiProcessPort(taskId),
@@ -49,7 +51,18 @@ export function createBrowserBackendPorts(): BackendPorts {
     providerAuth: mockProviderAuthPort,
     remoteControl: createMockRemoteControlPort(),
     remoteConversations: mockRemoteConversationsPort,
-    piConfiguration: createMockPiConfigurationPort(),
+    piConfiguration,
+    createMcpConfiguration: (binding, root) => {
+      if (binding.kind === "local") return localMcpConfiguration(piConfiguration, root);
+      const unsupported = async (): Promise<never> => { throw new Error("remote-mcp-unavailable-in-preview"); };
+      return { inspectStatus: unsupported, readMcpConfig: unsupported, writeMcpConfig: unsupported,
+        checkMcpAdapter: unsupported, discoverMcpSources: unsupported, openMcpConfigDirectory: unsupported, installAdapter: unsupported };
+    },
+    createModelConfiguration: (binding) => {
+      if (binding.kind === "local") return { kind: "local", port: piConfiguration };
+      const unsupported = async (): Promise<never> => { throw new Error("remote-models-unavailable-in-preview"); };
+      return { kind: "ssh", port: { read: unsupported, mutate: unsupported, setEnabled: unsupported, fetchModels: unsupported } };
+    },
     createPiManagement,
     window: mockWindowPort,
     notification: mockNotificationPort,

@@ -214,16 +214,17 @@ function McpImportPanel({
   );
 }
 
-export function McpPage() {
+export function McpPage({ store = useMcp }: { store?: typeof useMcp }) {
   const t = useT();
   const { bgImage } = useAppearance();
-  const mcp = useMcp();
+  const mcp = store();
   const [scope, setScope] = useState<McpScope>("global");
   const [editing, setEditing] = useState<ServerForm | null>(null);
   const [rawOpen, setRawOpen] = useState(false);
   const [raw, setRaw] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const file = scope === "global" ? mcp.global : mcp.project;
+  const configPath = file.path || (mcp.remote ? t("mcp.remoteChecking") : scope === "global" ? "~/.pi/agent/mcp.json" : ".pi/mcp.json");
   const servers = useMemo(() => Object.entries(file.data?.mcpServers ?? {}), [file.data]);
 
   useEffect(() => {
@@ -241,7 +242,7 @@ export function McpPage() {
   const saveServer = async (form: ServerForm) => {
     const originalName = editing?.preserved ? editing.name : undefined;
     await mcp.upsertServer(scope, form.name, toConfig(form), originalName || undefined);
-    if (!useMcp.getState().lastError) setEditing(null);
+    if (!store.getState().lastError) setEditing(null);
   };
   const openRaw = () => {
     setRaw(editorContent(file));
@@ -249,7 +250,7 @@ export function McpPage() {
   };
   const saveRaw = async () => {
     await mcp.setRaw(scope, raw);
-    if (!useMcp.getState().lastError) setRawOpen(false);
+    if (!store.getState().lastError) setRawOpen(false);
   };
   const discover = async () => {
     setImportOpen(true);
@@ -263,13 +264,13 @@ export function McpPage() {
         <PillSegmented
           options={["global", "project"] as const}
           value={scope}
-          onChange={setScope}
+          onChange={(value) => { setScope(value); setEditing(null); setRawOpen(false); setImportOpen(false); }}
           labelOf={(value) => (value === "global" ? t("mcp.global") : t("mcp.project"))}
         />
         <button
           type="button"
           onClick={() => mcp.load()}
-          disabled={mcp.busy}
+          disabled={mcp.busy || Boolean(editing) || rawOpen}
           title={t("mcp.refresh")}
           style={{
             border: "none",
@@ -299,12 +300,13 @@ export function McpPage() {
         >
           <ShieldAlert size={16} style={{ flexShrink: 0, color: SEAL.red }} />
           <span style={{ flex: 1, fontSize: 13, color: INK.ink700, lineHeight: 1.45 }}>
-            {t("mcp.adapterMissing")}
+            {t(mcp.remote ? "mcp.remoteManualSetup" : "mcp.adapterMissing")}
           </span>
           <button
             type="button"
             onClick={() => mcp.installAdapter()}
-            disabled={mcp.busy}
+            disabled={mcp.busy || mcp.remote}
+            title={mcp.remote ? t("mcp.remoteManualSetup") : undefined}
             style={{
               flexShrink: 0,
               border: "none",
@@ -429,6 +431,7 @@ export function McpPage() {
           type="button"
           whileTap={{ scale: 0.99 }}
           onClick={add}
+          disabled={mcp.busy || !mcp.loaded || Boolean(file.parseError)}
           style={{
             display: "flex",
             alignItems: "center",
@@ -456,6 +459,7 @@ export function McpPage() {
           type="button"
           whileTap={{ scale: 0.99 }}
           onClick={openRaw}
+          disabled={mcp.busy || !mcp.loaded}
           style={{
             display: "flex",
             alignItems: "center",
@@ -472,7 +476,7 @@ export function McpPage() {
           <span style={{ minWidth: 0, flex: 1 }}>
             <span style={{ display: "block", fontSize: 13.5, color: INK.ink900 }}>{t("mcp.rawJson")}</span>
             <span style={{ display: "block", fontSize: 11.5, color: INK.ink300, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {file.path || (scope === "global" ? "~/.pi/agent/mcp.json" : ".pi/mcp.json")}
+              {configPath}
             </span>
           </span>
           <ChevronRight size={14} style={{ color: INK.ink100, flexShrink: 0 }} />
@@ -482,7 +486,8 @@ export function McpPage() {
           type="button"
           whileTap={{ scale: 0.99 }}
           onClick={() => mcp.openConfigDirectory(scope)}
-          disabled={mcp.busy}
+          disabled={mcp.busy || mcp.remote}
+          title={mcp.remote ? t("mcp.remoteDirectoryUnavailable") : undefined}
           style={{
             display: "flex",
             alignItems: "center",
@@ -498,7 +503,7 @@ export function McpPage() {
           <FolderOpen size={15} style={{ color: INK.ink500, flexShrink: 0 }} />
           <span style={{ minWidth: 0, flex: 1 }}>
             <span style={{ display: "block", fontSize: 13.5, color: INK.ink900 }}>{t("mcp.openDirectory")}</span>
-            <span style={{ display: "block", fontSize: 11.5, color: INK.ink300, marginTop: 1 }}>{t("mcp.scopeFooter", { path: file.path || (scope === "global" ? "~/.pi/agent/mcp.json" : ".pi/mcp.json") })}</span>
+            <span style={{ display: "block", fontSize: 11.5, color: INK.ink300, marginTop: 1 }}>{t("mcp.scopeFooter", { path: configPath })}</span>
           </span>
           <ChevronRight size={14} style={{ color: INK.ink100, flexShrink: 0 }} />
         </motion.button>
@@ -540,7 +545,7 @@ export function McpPage() {
           lineHeight: 1.6,
         }}
       >
-        {t("mcp.lazyNote")}
+        {t(mcp.remote ? "mcp.remoteEditFootnote" : "mcp.lazyNote")}
       </p>
 
       {importOpen && (
@@ -607,6 +612,7 @@ export function McpPage() {
             <button
               type="button"
               onClick={saveRaw}
+              disabled={mcp.busy || !mcp.loaded}
               style={{
                 border: "none",
                 borderRadius: 99,

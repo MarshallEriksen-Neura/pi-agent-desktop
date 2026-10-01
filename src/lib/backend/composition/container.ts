@@ -21,6 +21,8 @@ import type {
   WorkspaceFsPort,
 } from "../ports";
 
+import type { ModelConfigurationPortFactory } from "../ports/model-configuration";
+import type { McpConfigurationPortFactory } from "../ports/mcp-configuration";
 export type BackendKind = "desktop-tauri" | "browser-preview";
 
 export interface BackendPorts {
@@ -54,6 +56,8 @@ export interface BackendPorts {
   remoteTerminal: RemoteTerminalPort;
   remoteProviderSync: RemoteProviderSyncPort;
   piConfiguration: PiConfigurationPort;
+  createMcpConfiguration: McpConfigurationPortFactory;
+  createModelConfiguration: ModelConfigurationPortFactory;
   /** Semantic plugin/skill management, bound to one local or SSH target. */
   createPiManagement: PiManagementPortFactory;
   window: WindowPort;

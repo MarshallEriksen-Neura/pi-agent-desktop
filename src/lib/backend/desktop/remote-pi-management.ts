@@ -53,6 +53,26 @@ const DEFAULT_DEPENDENCIES: RemotePiManagementDependencies = {
   invoke: (command, args) => desktopInvoke(command, args),
 };
 
+/** Shared semantic transport; SSH arguments and paths stay owned by Rust. */
+export async function remotePiManagementRequest<T>(
+  binding: Extract<ExecutionBinding, { kind: "ssh" }>,
+  body: Record<string, unknown>,
+  dependencies: RemotePiManagementDependencies = DEFAULT_DEPENDENCIES,
+): Promise<T> {
+  try {
+    return assertResult(await dependencies.invoke<ManagementReply<T>>("remote_pi_management_request", {
+      id: binding.profileId, profileRevision: binding.profileRevision,
+      remoteCwd: binding.remoteCwd, request: body,
+    }));
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.startsWith("launcher-outdated:") || message.startsWith("launcher-upgrade-required:") || message.includes("invalid launcher mode")) {
+      throw new RemotePiManagementUnavailableError(message);
+    }
+    throw cause;
+  }
+}
+
 export function createDesktopRemotePiManagement(
   binding: Extract<ExecutionBinding, { kind: "ssh" }>,
   dependencies: RemotePiManagementDependencies = DEFAULT_DEPENDENCIES,
@@ -66,23 +86,8 @@ export function createDesktopRemotePiManagement(
     ...result,
     snapshot: normalizeSnapshot(result.snapshot),
   });
-  const request = async <T>(body: Record<string, unknown>): Promise<T> => {
-    try {
-      const reply = await dependencies.invoke<ManagementReply<T>>("remote_pi_management_request", {
-        id: binding.profileId,
-        profileRevision: binding.profileRevision,
-        remoteCwd: binding.remoteCwd,
-        request: body,
-      });
-      return assertResult(reply);
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      if (message.startsWith("launcher-outdated:") || message.includes("invalid launcher mode")) {
-        throw new RemotePiManagementUnavailableError(message);
-      }
-      throw cause;
-    }
-  };
+  const request = <T>(body: Record<string, unknown>): Promise<T> =>
+    remotePiManagementRequest<T>(binding, body, dependencies);
 
   return {
     availability: async () => {

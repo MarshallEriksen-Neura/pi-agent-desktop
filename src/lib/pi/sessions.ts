@@ -329,7 +329,10 @@ function createMeta(
     sessionPath: "",
     preview: "",
     projectRoot: projectKey(projectRoot),
-    executionBinding,
+    // A new conversation shares the host/cwd, never another task's journal.
+    executionBinding: executionBinding.kind === "ssh"
+      ? { ...executionBinding, remoteTaskId: null, remoteTaskPending: false }
+      : executionBinding,
     createdAt: now,
     updatedAt: now,
   };
@@ -714,6 +717,14 @@ async function hydrateNativeTranscript(
       throw new Error(response.error || "Pi returned no session entries");
     }
     const messages = sessionEntriesToChatMessages(response.data);
+    const cachedMessages = getChatStore(meta.id).getState().messages;
+    if (messages.length === 0 && cachedMessages.length > 0) {
+      // A remote empty branch is not authoritative enough to erase a cached transcript.
+      console.warn(
+        `[sessions] refusing empty remote transcript for ${meta.id}; keeping ${cachedMessages.length} cached messages`,
+      );
+      return;
+    }
     const state = useSessions.getState();
     if (epoch !== hydrationEpoch || state.activeId !== meta.id) return;
 
@@ -1048,7 +1059,8 @@ export const useSessions = create<SessionsStore>((set, get) => ({
   },
 
   switchSession: async (id) => {
-    if (id === get().activeId) return;
+    const needsRecovery = id === get().activeId && getChatStore(id).getState().messages.length === 0;
+    if (id === get().activeId && !needsRecovery) return;
     const previousId = get().activeId;
     await flushSave();
     releaseIdleTask(previousId);
@@ -1064,7 +1076,7 @@ export const useSessions = create<SessionsStore>((set, get) => ({
       // resume prior context. Start the task fresh and tell the user explicitly.
       useExtUi.getState().pushToast(t("session.contextLost"), "warning", 8000);
     }
-    const shouldHydrate = !liveTasks.has(id);
+    const shouldHydrate = !liveTasks.has(id) || needsRecovery;
     const epoch = ++hydrationEpoch;
     let cacheError: Error | null = null;
     let nativeLoaded = false;

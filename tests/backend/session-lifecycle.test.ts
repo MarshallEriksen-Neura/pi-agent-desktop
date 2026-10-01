@@ -17,6 +17,9 @@ import {
   peekLatestSessionPath,
   useSessions, flushActiveSession, type ChatSessionMeta,
 } from "../../src/lib/pi/sessions";
+import type { ExecutionBinding } from "../../src/lib/backend/ports/execution-target";
+import type { PiProcessStartOptions } from "../../src/lib/backend/ports/pi-process";
+import type { RemotePiProfilePort, RemoteTaskEnsureRequest } from "../../src/lib/backend/ports/remote-profiles";
 
 class StateProcess implements PiProcessPort {
   readonly sent: PiCommand[] = [];
@@ -177,5 +180,106 @@ test("switching away and back rebuilds the chat client and restores autosave", a
     resetBackendContainerForTests();
     useSessions.setState({ sessions: [], activeId: null });
     setActiveTaskId("default");
+  }
+});
+
+test("new remote sessions mint their own task without changing historical task bindings", async () => {
+  for (const remoteTaskPending of [false, true]) {
+    const binding: ExecutionBinding = {
+      kind: "ssh", profileId: "remote-build", profileRevision: 1, hostAlias: "build-host",
+      remoteCwd: "/srv/app", launcherProtocolVersion: 1,
+      remoteTaskId: "t-old-history", remoteTaskPending,
+    };
+    const history: ChatSessionMeta = {
+      id: "history", name: "Previous conversation", sessionPath: "history.jsonl", preview: "old prompt",
+      projectRoot: "ssh:remote-build:app", executionBinding: binding, createdAt: 1, updatedAt: 1,
+    };
+    const oldMessages: ChatMessage[] = [{
+      id: "old-user", role: "user", text: "old prompt", thinking: "", tools: [], streaming: false,
+    }];
+    const saved = new Map<string, ChatMessage[]>([[history.id, oldMessages]]);
+    const persistedBindings = new Map<string, ExecutionBinding>([[history.id, binding]]);
+    const starts: Array<{ taskId: string; options: PiProcessStartOptions }> = [];
+    const ensured: RemoteTaskEnsureRequest[] = [];
+    const statusRequests: string[] = [];
+    const repository = {
+      load: async (_scope, id) => saved.get(id) ?? [],
+      save: async (_scope, session) => {
+        saved.set(session.id, session.messages);
+        if (session.executionBinding) persistedBindings.set(session.id, session.executionBinding);
+      },
+      delete: async () => {},
+    } satisfies Partial<SessionRepositoryPort> as unknown as SessionRepositoryPort;
+    const remoteProfiles = {
+      list: async () => [{ id: binding.profileId, lifecycle: "detached" }],
+      taskStatus: async (_profileId: string, remoteTaskId: string) => {
+        statusRequests.push(remoteTaskId);
+        return { exists: true, state: "running" };
+      },
+      ensureTask: async (request: RemoteTaskEnsureRequest) => {
+        ensured.push(request);
+        const pending = [...persistedBindings.values()].find((item) =>
+          item.kind === "ssh" && item.remoteTaskId === request.remoteTaskId && item.remoteTaskPending,
+        );
+        assert.ok(pending, "remote start follows a durable write-ahead binding");
+        return { remoteTaskId: request.remoteTaskId, state: "running", started: true };
+      },
+    } as unknown as RemotePiProfilePort;
+    configureSessionDependenciesForTests({
+      repository, desktopFeatures: true, projectRoot: () => history.projectRoot,
+    });
+    configureBrowserBackend({
+      remoteProfiles,
+      createPiProcess: (taskId = "default") => new class extends StateProcess {
+        override async start(options: PiProcessStartOptions = {}): Promise<void> {
+          starts.push({ taskId, options });
+          await super.start();
+        }
+      }({ sessionFile: `${taskId}.jsonl` }, taskId),
+    } satisfies Partial<BackendPorts> as unknown as BackendPorts);
+    useSessions.setState({
+      sessions: [history], activeId: null, projectRoot: history.projectRoot,
+      executionBinding: { kind: "local", targetId: "local" },
+    });
+    try {
+      await useSessions.getState().switchSession(history.id);
+      assert.deepEqual(getChatStore(history.id).getState().messages, oldMessages);
+      const oldEnsureCount = ensured.length;
+      const oldStatusCount = statusRequests.length;
+      useSessions.getState().setExecutionBinding(binding);
+      await useSessions.getState().newSession();
+      const newId = useSessions.getState().activeId!;
+      assert.notEqual(newId, history.id);
+      const created = useSessions.getState().sessions.find((session) => session.id === newId)!;
+      assert.equal(created.executionBinding?.kind, "ssh");
+      const fresh = created.executionBinding as Extract<ExecutionBinding, { kind: "ssh" }>;
+      assert.notEqual(fresh.remoteTaskId, binding.remoteTaskId);
+      assert.ok(fresh.remoteTaskId);
+      assert.equal(fresh.remoteTaskPending, false);
+      assert.deepEqual(fresh, { ...binding, remoteTaskId: fresh.remoteTaskId, remoteTaskPending: false });
+      assert.equal(ensured.length, oldEnsureCount + 1, "new session must start a distinct remote task");
+      assert.equal(statusRequests.length, oldStatusCount, "new session must not probe the old task for reattach");
+      assert.equal(starts.at(-1)?.taskId, newId);
+      assert.deepEqual(starts.at(-1)?.options.executionBinding, fresh);
+      assert.equal(starts.at(-1)?.options.resumePath, undefined);
+      assert.deepEqual(getChatStore(newId).getState().messages, []);
+      assert.deepEqual(saved.get(history.id), oldMessages);
+      const oldBinding = useSessions.getState().sessions.find((session) => session.id === history.id)!.executionBinding;
+      assert.deepEqual(oldBinding, { ...binding, remoteTaskPending: false });
+      await useSessions.getState().switchSession(history.id);
+      assert.equal(useSessions.getState().activeId, history.id);
+      assert.deepEqual(useSessions.getState().executionBinding, oldBinding);
+      assert.deepEqual(getChatStore(history.id).getState().messages, oldMessages);
+    } finally {
+      useSessions.setState({ activeId: null });
+      for (const { id } of [...useSessions.getState().sessions]) await useSessions.getState().deleteSession(id);
+      resetPiStoreForTests();
+      clearChatStores();
+      resetPiClientForTests();
+      configureSessionDependenciesForTests(null);
+      resetBackendContainerForTests();
+      useSessions.setState({ sessions: [], activeId: null, executionBinding: { kind: "local", targetId: "local" } });
+      setActiveTaskId("default");
+    }
   }
 });
