@@ -336,7 +336,7 @@ test("capabilities advertise independently gated read and mutation support", () 
     });
     assert.equal(result.status, 0, result.stderr);
     const reply = JSON.parse(result.stdout.trim());
-    assert.equal(reply.launcherRevision, 26);
+    assert.equal(reply.launcherRevision, 27);
     for (const capability of [
       "pi-packages-read-v1",
       "pi-packages-mutate-v1",
@@ -349,6 +349,7 @@ test("capabilities advertise independently gated read and mutation support", () 
       "pi-mcp-config-write-v1",
       "pi-models-read-v1",
       "pi-models-mutate-v1",
+      "pi-models-credentials-v1",
     ]) assert.ok(reply.capabilities.includes(capability), capability);
   });
 });
@@ -789,6 +790,191 @@ test("model management keeps scopes, credentials, and enabled-model settings iso
     });
     assert.equal(conflict.ok, false);
     assert.equal(conflict.errorCode, "configurationChanged");
+  });
+});
+
+test("model management updates provider API keys without leaking or dropping remote metadata", () => {
+  withScratch(({ home, project }) => {
+    const globalAgent = join(home, ".pi", "agent");
+    writeFileSync(join(globalAgent, "auth.json"), JSON.stringify({
+      "remote-provider": { type: "api_key", key: "auth-secret" },
+      "other-provider": { type: "api_key", key: "other-auth-secret" },
+    }));
+    writeFileSync(join(globalAgent, "models.json"), JSON.stringify({
+      providers: {
+        "remote-provider": {
+          baseUrl: "https://remote.example/v1",
+          api: "openai",
+          apiKey: "old-embedded-secret",
+          headers: { Authorization: "Bearer header-secret" },
+          providerMetadata: { keep: true, secret: "provider-metadata-secret" },
+          models: [{
+            id: "remote-model",
+            name: "Remote Model",
+            maxTokens: 8192,
+            modelMetadata: { keep: true, secret: "model-metadata-secret" },
+          }],
+        },
+        "other-provider": {
+          api: "openai",
+          apiKey: "other-embedded-secret",
+          models: [{ id: "other-model", providerData: "other-model-secret" }],
+        },
+      },
+      topLevel: "preserved",
+    }));
+
+    const snapshot = manage(home, project, { operation: "inspectModels", scope: "global" });
+    assert.equal(snapshot.ok, true, JSON.stringify(snapshot));
+    assert.deepEqual(snapshot.result.data.providers["remote-provider"], {
+      remoteManaged: true,
+      baseUrl: "https://remote.example/v1",
+      api: "openai",
+      models: [{ id: "remote-model", name: "Remote Model", maxTokens: 8192 }],
+      modelOverrides: {},
+    });
+    assert.doesNotMatch(JSON.stringify(snapshot), /old-embedded-secret|auth-secret|header-secret|provider-metadata-secret|model-metadata-secret|other-embedded-secret|other-model-secret/);
+
+    const updated = manage(home, project, {
+      operation: "mutateModels",
+      scope: "global",
+      expectedState: snapshot.result.stateToken,
+      changes: [{ kind: "provider.apiKey", providerId: "remote-provider", apiKey: "new-remote-api-key" }],
+    });
+    assert.equal(updated.ok, true, JSON.stringify(updated));
+    assert.doesNotMatch(JSON.stringify(updated), /new-remote-api-key|old-embedded-secret|auth-secret|header-secret|provider-metadata-secret|model-metadata-secret|other-embedded-secret|other-model-secret/);
+
+    const savedModels = JSON.parse(readFileSync(join(globalAgent, "models.json"), "utf8"));
+    assert.equal(savedModels.topLevel, "preserved");
+    assert.equal(savedModels.providers["remote-provider"].apiKey, "new-remote-api-key");
+    assert.equal(savedModels.providers["remote-provider"].headers.Authorization, "Bearer header-secret");
+    assert.deepEqual(savedModels.providers["remote-provider"].providerMetadata, {
+      keep: true, secret: "provider-metadata-secret",
+    });
+    assert.deepEqual(savedModels.providers["remote-provider"].models[0].modelMetadata, {
+      keep: true, secret: "model-metadata-secret",
+    });
+    assert.equal(savedModels.providers["other-provider"].apiKey, "other-embedded-secret");
+    assert.deepEqual(JSON.parse(readFileSync(join(globalAgent, "auth.json"), "utf8")), {
+      "remote-provider": { type: "api_key", key: "auth-secret" },
+      "other-provider": { type: "api_key", key: "other-auth-secret" },
+    });
+  });
+});
+
+test("model management rejects unsafe provider API key updates without writing", () => {
+  withScratch(({ home, project }) => {
+    const globalAgent = join(home, ".pi", "agent");
+    const originalModels = {
+      providers: {
+        "remote-provider": {
+          api: "openai",
+          apiKey: "original-secret",
+          models: [{ id: "remote-model", unknown: "unknown-secret" }],
+        },
+      },
+    };
+    const originalAuth = {
+      "remote-provider": { type: "api_key", key: "auth-secret" },
+    };
+    writeFileSync(join(globalAgent, "models.json"), JSON.stringify(originalModels));
+    writeFileSync(join(globalAgent, "auth.json"), JSON.stringify(originalAuth));
+
+    for (const invalidApiKey of [
+      "",
+      "   ",
+      " leading",
+      "trailing ",
+      "!printf secret",
+      "line\nbreak",
+      "nul\u0000byte",
+      42,
+      null,
+      { key: "nested-secret" },
+    ]) {
+      const snapshot = manage(home, project, { operation: "inspectModels", scope: "global" });
+      assert.equal(snapshot.ok, true, JSON.stringify(snapshot));
+      const rejected = manage(home, project, {
+        operation: "mutateModels",
+        scope: "global",
+        expectedState: snapshot.result.stateToken,
+        changes: [{ kind: "provider.apiKey", providerId: "remote-provider", apiKey: invalidApiKey }],
+      });
+      assert.equal(rejected.ok, false, JSON.stringify(rejected));
+      assert.equal(rejected.errorCode, "invalidModelRequest");
+      assert.doesNotMatch(JSON.stringify(rejected), /original-secret|auth-secret|unknown-secret|nested-secret|printf secret/);
+      assert.deepEqual(JSON.parse(readFileSync(join(globalAgent, "models.json"), "utf8")), originalModels);
+      assert.deepEqual(JSON.parse(readFileSync(join(globalAgent, "auth.json"), "utf8")), originalAuth);
+    }
+  });
+});
+
+test("model management applies provider edits and API keys atomically with state tokens", () => {
+  withScratch(({ home, project }) => {
+    const globalAgent = join(home, ".pi", "agent");
+    const modelsPath = join(globalAgent, "models.json");
+    writeFileSync(modelsPath, JSON.stringify({
+      providers: {
+        "remote-provider": {
+          baseUrl: "https://remote.example/v1",
+          api: "openai",
+          apiKey: "original-secret",
+          models: [{ id: "remote-model", name: "Remote" }],
+        },
+      },
+    }));
+
+    const snapshot = manage(home, project, { operation: "inspectModels", scope: "global" });
+    assert.equal(snapshot.ok, true, JSON.stringify(snapshot));
+    const stale = manage(home, project, {
+      operation: "mutateModels",
+      scope: "global",
+      expectedState: "0".repeat(64),
+      changes: [
+        { kind: "provider.edit", providerId: "remote-provider", baseUrl: "https://remote.example/v2", api: "openai" },
+        { kind: "provider.apiKey", providerId: "remote-provider", apiKey: "stale-secret" },
+      ],
+    });
+    assert.equal(stale.ok, false);
+    assert.equal(stale.errorCode, "configurationChanged");
+    assert.doesNotMatch(JSON.stringify(stale), /original-secret|stale-secret/);
+    assert.equal(JSON.parse(readFileSync(modelsPath, "utf8")).providers["remote-provider"].baseUrl, "https://remote.example/v1");
+
+    const invalidCombined = manage(home, project, {
+      operation: "mutateModels",
+      scope: "global",
+      expectedState: snapshot.result.stateToken,
+      changes: [
+        { kind: "provider.edit", providerId: "remote-provider", baseUrl: "https://remote.example/v2", api: "openai" },
+        { kind: "provider.apiKey", providerId: "remote-provider", apiKey: "!unsafe-secret" },
+      ],
+    });
+    assert.equal(invalidCombined.ok, false);
+    assert.equal(invalidCombined.errorCode, "invalidModelRequest");
+    assert.doesNotMatch(JSON.stringify(invalidCombined), /original-secret|unsafe-secret/);
+    const afterInvalid = JSON.parse(readFileSync(modelsPath, "utf8"));
+    assert.equal(afterInvalid.providers["remote-provider"].baseUrl, "https://remote.example/v1");
+    assert.equal(afterInvalid.providers["remote-provider"].apiKey, "original-secret");
+
+    const fresh = manage(home, project, { operation: "inspectModels", scope: "global" });
+    assert.equal(fresh.ok, true, JSON.stringify(fresh));
+    const validCombined = manage(home, project, {
+      operation: "mutateModels",
+      scope: "global",
+      expectedState: fresh.result.stateToken,
+      changes: [
+        { kind: "provider.edit", providerId: "remote-provider", baseUrl: "https://remote.example/v2", api: "openai-completions" },
+        { kind: "provider.apiKey", providerId: "remote-provider", apiKey: "combined-secret" },
+        { kind: "model.edit", providerId: "remote-provider", modelId: "remote-model", fields: { name: "Renamed" } },
+      ],
+    });
+    assert.equal(validCombined.ok, true, JSON.stringify(validCombined));
+    assert.doesNotMatch(JSON.stringify(validCombined), /original-secret|combined-secret/);
+    const saved = JSON.parse(readFileSync(modelsPath, "utf8"));
+    assert.equal(saved.providers["remote-provider"].baseUrl, "https://remote.example/v2");
+    assert.equal(saved.providers["remote-provider"].api, "openai-completions");
+    assert.equal(saved.providers["remote-provider"].apiKey, "combined-secret");
+    assert.equal(saved.providers["remote-provider"].models[0].name, "Renamed");
   });
 });
 

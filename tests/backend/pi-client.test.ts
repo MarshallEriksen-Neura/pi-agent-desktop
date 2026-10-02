@@ -22,6 +22,7 @@ class FakePiProcess implements PiProcessPort {
   startedWith: PiProcessStartOptions | undefined;
   failSend: Error | null = null;
   failStop: Error | null = null;
+  sendBarrier: Promise<void> | null = null;
   startCount = 0;
   private readonly lineHandlers = new Set<(line: string) => void>();
   private readonly stderrHandlers = new Set<(line: string) => void>();
@@ -34,6 +35,7 @@ class FakePiProcess implements PiProcessPort {
 
   async send(command: PiCommand): Promise<void> {
     this.sent.push(command);
+    await this.sendBarrier;
     if (this.failSend) throw this.failSend;
   }
 
@@ -128,6 +130,173 @@ test("PiClient rejects pending requests on send failure and process exit", async
       error.kind === "exit" &&
       error.exitCode === 9
   );
+});
+
+test("a prompt deadline preserves correlation for a late response", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const process = new FakePiProcess();
+  const client = new PiClient("test-task", process);
+  const warnings: PiRequestError[] = [];
+  const pending = client.request(
+    { type: "prompt", id: "prompt-msg-3517372", message: "keep working" },
+    15_000,
+    { onTimeout: (error) => warnings.push(error) }
+  );
+  process.emitLine({ type: "agent_start" });
+  context.mock.timers.tick(15_001);
+  assert.equal(warnings.length, 1);
+  process.emitLine({
+    type: "response",
+    command: "prompt",
+    success: true,
+    id: "prompt-msg-3517372",
+    data: { disposition: "started" },
+  });
+  assert.equal((await pending).success, true);
+  assert.equal(process.sent.length, 1, "the deadline never resends the prompt");
+});
+
+test("activity cannot hide a send failure after the prompt deadline", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const process = new FakePiProcess();
+  const client = new PiClient("test-task", process);
+  let releaseSend!: () => void;
+  process.sendBarrier = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+
+  const pending = client.request(
+    { type: "prompt", id: "prompt-msg-slow-transport", message: "deliver once" },
+    15_000,
+    { onTimeout: () => undefined }
+  );
+  context.mock.timers.tick(15_001);
+  process.emitLine({ type: "agent_start" });
+  process.failSend = new Error("SSH send failed after deadline");
+  const rejected = assert.rejects(pending, (error: unknown) =>
+    error instanceof PiRequestError && error.kind === "send"
+  );
+  releaseSend();
+  await rejected;
+});
+
+test("old-turn activity does not hide a late prompt refusal", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const process = new FakePiProcess();
+  const client = new PiClient("test-task", process);
+
+  const pending = client.request(
+    { type: "prompt", id: "prompt-msg-race", message: "continue" },
+    15_000,
+    { onTimeout: () => undefined }
+  );
+  process.emitLine({ type: "agent_start" });
+  process.emitLine({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", delta: "previous turn" },
+  });
+  context.mock.timers.tick(15_001);
+  process.emitLine({
+    type: "response",
+    command: "prompt",
+    success: false,
+    id: "prompt-msg-race",
+    error: "prompt refused",
+  });
+
+  assert.deepEqual(await pending, {
+    type: "response",
+    command: "prompt",
+    success: false,
+    id: "prompt-msg-race",
+    error: "prompt refused",
+  });
+});
+
+test("unkeyed activity cannot acknowledge multiple pending prompts", async () => {
+  const process = new FakePiProcess();
+  const client = new PiClient("test-task", process);
+
+  const first = client.request(
+    { type: "prompt", id: "prompt-msg-first", message: "first" },
+    50
+  );
+  const second = client.request(
+    { type: "prompt", id: "prompt-msg-second", message: "second" },
+    50
+  );
+  process.emitLine({ type: "agent_start" });
+  process.emitLine({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", delta: "first turn" },
+  });
+  process.emitLine({
+    type: "response",
+    command: "prompt",
+    success: false,
+    id: "prompt-msg-second",
+    error: "second refused",
+  });
+  process.emitLine({
+    type: "response",
+    command: "prompt",
+    success: false,
+    id: "prompt-msg-first",
+    error: "first refused",
+  });
+  assert.equal((await first).success, false);
+  assert.equal((await second).success, false);
+});
+
+test("cancelling an advisory prompt wait releases it without sending again", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const process = new FakePiProcess();
+  const client = new PiClient("test-task", process);
+  const controller = new AbortController();
+  const pending = client.request({ type: "prompt", message: "wait" }, 15_000, {
+    signal: controller.signal,
+    onTimeout: () => undefined,
+  });
+  context.mock.timers.tick(15_001);
+  const rejected = assert.rejects(pending, (error: unknown) =>
+    error instanceof PiRequestError && error.kind === "stopped"
+  );
+  controller.abort();
+  await rejected;
+  assert.equal(process.sent.length, 1);
+});
+
+test("a prompt without a response or turn activity still times out", async () => {
+  const process = new FakePiProcess();
+  const client = new PiClient("test-task", process);
+
+  await assert.rejects(
+    () => client.request({ type: "prompt", message: "unobserved" }, 10),
+    (error: unknown) =>
+      error instanceof PiRequestError &&
+      error.kind === "timeout" &&
+      error.command === "prompt"
+  );
+});
+
+test("non-prompt RPC keeps a hard deadline even with an advisory callback", async () => {
+  const process = new FakePiProcess();
+  const client = new PiClient("test-task", process);
+
+  let advisoryCalled = false;
+  const pending = client.request({ type: "get_state" }, 10, {
+    onTimeout: () => { advisoryCalled = true; },
+  });
+  process.emitLine({ type: "agent_start" });
+
+  await assert.rejects(
+    () => pending,
+    (error: unknown) =>
+      error instanceof PiRequestError &&
+      error.kind === "timeout" &&
+      error.command === "get_state"
+  );
+  assert.equal(advisoryCalled, false);
 });
 
 test("getPiClient singleton is explicit and resettable for tests", () => {

@@ -60,6 +60,13 @@ interface PendingRequest {
   reject: (error: PiRequestError) => void;
 }
 
+interface PiRequestOptions {
+  /** Prompt deadlines can be advisory while preserving response correlation. */
+  onTimeout?: (error: PiRequestError) => void;
+  /** Cancel only the local response wait; this does not resend or abort Pi. */
+  signal?: AbortSignal;
+}
+
 function errorDetail(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -194,41 +201,73 @@ export class PiClient {
    * A caller-supplied `id` is preserved because pi echoes it on out-of-band
    * events too (`bash_execution_update.id`).
    */
-  request<T = unknown>(cmd: PiCommand, timeoutMs = 15_000): Promise<PiResponse<T>> {
+  request<T = unknown>(
+    cmd: PiCommand,
+    timeoutMs = 15_000,
+    options: PiRequestOptions = {}
+  ): Promise<PiResponse<T>> {
     const given = (cmd as { id?: unknown }).id;
     const id = typeof given === "string" && given ? given : `req-${++this.seq}`;
     const withId = { ...cmd, id } as PiCommand & { id: string };
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(
-          new PiRequestError({
-            kind: "timeout",
-            command: cmd.type,
-            requestId: id,
-            timeoutMs,
-          })
-        );
-      }, timeoutMs);
-      this.pending.set(id, {
-        command: cmd.type,
-        timer,
-        resolve: (response) => resolve(response as PiResponse<T>),
-        reject,
-      });
-      void this.process.send(withId).catch((error) => {
-        const pending = this.pending.get(id);
-        if (!pending) return;
+      const cleanup = () => options.signal?.removeEventListener("abort", onAbort);
+      const onAbort = () => {
+        if (this.pending.get(id) !== pending) return;
         this.pending.delete(id);
         clearTimeout(pending.timer);
-        pending.reject(
-          new PiRequestError({
-            kind: "send",
-            command: cmd.type,
-            requestId: id,
-            detail: errorDetail(error),
-          })
-        );
+        pending.reject(new PiRequestError({
+          kind: "stopped",
+          command: cmd.type,
+          requestId: id,
+          detail: "The local response wait was cancelled",
+        }));
+      };
+      const timer = setTimeout(() => {
+        if (this.pending.get(id) !== pending) return;
+        const error = new PiRequestError({
+          kind: "timeout",
+          command: cmd.type,
+          requestId: id,
+          timeoutMs,
+        });
+        // A prompt can be running preflight (including AI compaction), or SSH
+        // can still be delivering it. A deadline is not a refusal. Keep the real
+        // response and late send failures observable until the owner cancels.
+        if (cmd.type === "prompt" && options.onTimeout) {
+          options.onTimeout(error);
+          return;
+        }
+        this.pending.delete(id);
+        pending.reject(error);
+      }, timeoutMs);
+      const pending: PendingRequest = {
+        command: cmd.type,
+        timer,
+        resolve: (response) => {
+          cleanup();
+          resolve(response as PiResponse<T>);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        }
+      };
+      this.pending.set(id, pending);
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      if (options.signal?.aborted) {
+        onAbort();
+        return;
+      }
+      void this.process.send(withId).catch((error) => {
+        if (this.pending.get(id) !== pending) return;
+        this.pending.delete(id);
+        clearTimeout(pending.timer);
+        pending.reject(new PiRequestError({
+          kind: "send",
+          command: cmd.type,
+          requestId: id,
+          detail: errorDetail(error),
+        }));
       });
     });
   }

@@ -320,6 +320,8 @@ export function createChatStore(taskId: string) {
   let qseq = 0;
   const qid = () => `q-${++qseq}`;
   const promptRequestIds = new Map<string, string>();
+  let promptWait: AbortController | undefined;
+  let promptActivityRevision = 0;
   let pendingStderr = "";
 
   return create<ChatStore>()((set, get) => {
@@ -499,6 +501,12 @@ export function createChatStore(taskId: string) {
     ): Promise<void> => {
       const requestId = promptRequestIds.get(userMessageId) ?? `prompt-${userMessageId}`;
       promptRequestIds.set(userMessageId, requestId);
+      // Only one direct prompt wait belongs to this store. A new idle send can
+      // retire an older wait whose turn already settled without an RPC ACK.
+      promptWait?.abort();
+      const wait = new AbortController();
+      promptWait = wait;
+      const activityAtSend = promptActivityRevision;
       try {
         const res = await client.request({
           type: "prompt",
@@ -506,7 +514,24 @@ export function createChatStore(taskId: string) {
           message,
           ...(images.length ? { images } : {}),
           streamingBehavior: "followUp",
+        }, 15_000, {
+          signal: wait.signal,
+          onTimeout: (error) => {
+            // Keep the turn, Stop button, and response correlation alive. No
+            // ACK does not prove failure; preflight can itself make AI calls.
+            // Visible activity/input already explains why Pi is still busy.
+            if (!get().streaming || get().waiting || promptActivityRevision !== activityAtSend) return;
+            useExtUi.getState().pushToast(
+              t("agent.piPromptAckDelayed", {
+                id: error.requestId,
+                seconds: String(Math.ceil((error.timeoutMs ?? 0) / 1000)),
+              }),
+              "warning",
+              6000
+            );
+          },
         });
+        if (wait.signal.aborted) return;
         promptRequestIds.delete(userMessageId);
         // A NACK here is a refusal, not a failed run: pi throws only from the
         // preflight half of `prompt`, and the RPC reports exactly that half
@@ -517,11 +542,9 @@ export function createChatStore(taskId: string) {
         // still needs re-sending.
         if (!res.success) set(appendAssistantError(t("agent.promptRefused"), res.error));
       } catch (error) {
-        // A thrown request means no ack (send failure / timeout / process exit).
-        // Surface the concrete category and backend detail whenever available,
-        // regardless of connection status — a live-but-unresponsive pi used to leave
-        // `streaming` stuck on true, spinning the composer forever. The only thing
-        // we skip is a duplicate banner when onExit already wrote one.
+        if (wait.signal.aborted) return;
+        // Only a send failure, process exit, or stop is terminal here. The ACK
+        // deadline above is advisory and still permits a later refusal.
         const messages = get().messages;
         if (messages[messages.length - 1]?.isError) {
           set({ streaming: false }); // banner already there, just settle the UI
@@ -530,6 +553,8 @@ export function createChatStore(taskId: string) {
         }
         reflectRequestFailure(error);
         useUI.getState().endAgentRun();
+      } finally {
+        if (promptWait === wait) promptWait = undefined;
       }
     };
 
@@ -562,6 +587,7 @@ export function createChatStore(taskId: string) {
       activeRetries: new Map(),
 
       dispose: () => {
+        promptWait?.abort();
         unsubscribeExtUi?.();
         unsubscribeExtUi = undefined;
       },
@@ -586,7 +612,8 @@ export function createChatStore(taskId: string) {
          * agent run, i.e. strictly after all content for that run, so a late event
          * cannot resurrect a settled turn.
          */
-        const ensureAssistant = () =>
+        const ensureAssistant = () => {
+          promptActivityRevision += 1;
           set((s) => {
             const last = s.messages[s.messages.length - 1];
             if (last?.role === "assistant" && last.streaming) {
@@ -607,8 +634,10 @@ export function createChatStore(taskId: string) {
               ],
             };
           });
+        };
 
         client.on("agent_start", () => {
+          promptActivityRevision += 1;
           activeRunStarted = true;
           activeRunHadOutput = false;
           set({ streaming: true });
@@ -1122,6 +1151,7 @@ export function createChatStore(taskId: string) {
 
       abort: () => {
         const s = get();
+        promptWait?.abort();
 
         // The turn itself.
         void requestControl({ type: "abort" });
@@ -1148,11 +1178,13 @@ export function createChatStore(taskId: string) {
       },
 
       clear: () => {
+        promptWait?.abort();
         promptRequestIds.clear();
         set({ messages: [], streaming: false, waiting: false, queue: [] });
       },
 
       load: (messages) => {
+        promptWait?.abort();
         promptRequestIds.clear();
         // continue the id sequence past loaded ids so new messages never collide
         for (const m of messages) {

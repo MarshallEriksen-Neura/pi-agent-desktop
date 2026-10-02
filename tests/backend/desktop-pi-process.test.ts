@@ -6,6 +6,7 @@ import {
   type DesktopPiProcessDependencies,
 } from "../../src/lib/backend/desktop/pi-process";
 import type { ExecutionBinding } from "../../src/lib/backend/ports/execution-target";
+import { PiClient } from "../../src/lib/pi/client";
 
 interface InvokeCall {
   command: string;
@@ -361,6 +362,41 @@ test("a detached correlated key survives transport success until Pi responds", a
     sends[1].args?.idempotencyKey,
     "an explicit Pi response settles the delivery identity"
   );
+});
+
+test("detached journal output and a late prompt response survive the advisory deadline", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const harness = await startedDetached();
+  const client = new PiClient("task-d", harness.port);
+  let deadlines = 0;
+  const pending = client.request(
+    { type: "prompt", id: "prompt-msg-delayed-ssh", message: "deliver once" },
+    15_000,
+    { onTimeout: () => { deadlines += 1; } },
+  );
+  harness.push({
+    type: "event", sequence: 1, ts: 1, stream: "stdout",
+    data: '{"type":"agent_start"}',
+  });
+  harness.push({
+    type: "event", sequence: 2, ts: 2, stream: "stdout",
+    data: '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"working"}}',
+  });
+  context.mock.timers.tick(15_001);
+  assert.equal(deadlines, 1);
+  assert.equal(harness.lines.length, 2, "journal output keeps flowing while the ACK is pending");
+  assert.equal(
+    harness.backend.calls.filter((call) => call.command === "pi_send").length, 1,
+    "the deadline cannot submit the prompt again",
+  );
+  harness.push({
+    type: "event", sequence: 3, ts: 3, stream: "stdout",
+    data: '{"type":"response","command":"prompt","id":"prompt-msg-delayed-ssh","success":false,"error":"preflight refused"}',
+  });
+  const response = await pending;
+  assert.equal(response.success, false, "journal activity never replaces the correlated response");
+  assert.equal(response.error, "preflight refused");
+  await client.stop();
 });
 
 test("only taskExited reports pi's own exit code", async () => {

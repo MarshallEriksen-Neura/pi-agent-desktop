@@ -30,7 +30,7 @@ import {
 } from "./remote-provider-auto-sync";
 
 import type { ExecutionBinding } from "../backend/ports/execution-target";
-import { remoteModelChanges, type RemoteModelConfigurationPort, type RemoteModelSnapshot } from "../backend/ports/model-configuration";
+import { remoteModelChanges, type ModelConfigurationChange, type RemoteModelConfigurationPort, type RemoteModelSnapshot } from "../backend/ports/model-configuration";
 import { usePiManagement, type ManagementContext } from "./management";
 import { piManagementTargetKey } from "../backend/ports/pi-management";
 import type { SettingsScope } from "./settings";
@@ -352,13 +352,16 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
     if (st.parseError) return;
     const data = structuredClone(st.data);
     const existing = data.providers[providerId];
-    const provider: CustomProvider = { ...(existing ?? {}), ...endpointFields(cfg) };
+    const remote = st.targetKey !== "local";
+    const provider: CustomProvider = { ...(existing ?? {}), ...endpointFields(remote ? { baseUrl: cfg.baseUrl, api: cfg.api } : cfg) };
     // Unlike the other writers, this one is the provider editor: blanking a
     // field there means "clear the override", not "leave it alone".
     if (!cfg.baseUrl) delete provider.baseUrl;
     if (!cfg.api) delete provider.api;
     data.providers[providerId] = provider;
-    await save(data, set, get);
+    await save(data, set, get, remote && cfg.apiKey?.trim()
+      ? [{ kind: "provider.apiKey", providerId, apiKey: cfg.apiKey.trim() }]
+      : []);
   },
 
   removeProvider: async (providerId) => {
@@ -474,7 +477,8 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
 async function save(
   next: ModelsJson,
   set: (partial: Partial<PiModelsStore>) => void,
-  get: () => PiModelsStore
+  get: () => PiModelsStore,
+  credentialChanges: ModelConfigurationChange[] = []
 ) {
   const state = get();
   if (!state.loaded || state.busy || state.parseError) return;
@@ -483,7 +487,8 @@ async function save(
     if (!state.remotePort || !state.remoteSnapshot) return;
     set({ busy: true, lastError: null });
     try {
-      const snapshot = await state.remotePort.mutate(state.scope, state.remoteSnapshot.stateToken, remoteModelChanges(prev, next));
+      const snapshot = await state.remotePort.mutate(state.scope, state.remoteSnapshot.stateToken,
+        [...remoteModelChanges(prev, next), ...credentialChanges]);
       usePiManagement.getState().markDirty(state.scope, state.managementContext!);
       if (get().generation === state.generation) set({ data: snapshot.data, remoteSnapshot: snapshot });
     } catch (error) {

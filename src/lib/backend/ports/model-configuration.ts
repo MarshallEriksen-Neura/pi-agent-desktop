@@ -9,6 +9,8 @@ export type ModelFields = { [K in Exclude<keyof EditableModel, "id">]?: Editable
 export type ModelConfigurationChange =
   | { kind: "provider.remove"; providerId: string }
   | { kind: "provider.edit"; providerId: string; baseUrl: string | null; api: string | null }
+  /** Explicit, write-only credential update; never produced by snapshot diffing. */
+  | { kind: "provider.apiKey"; providerId: string; apiKey: string }
   | { kind: "model.remove"; providerId: string; modelId: string }
   | { kind: "model.edit"; providerId: string; modelId: string; fields: ModelFields }
   | { kind: "model.capabilities"; providerId: string; modelId: string;

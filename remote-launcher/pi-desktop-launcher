@@ -36,7 +36,7 @@ if [ "$mode" = "--capabilities" ]; then
     printf '%s\n' 'capabilities_invalid_arguments' >&2
     exit 64
   fi
-  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":26,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","repository-batch-write-v1","repository-phase3-v1","repository-integration-v1","repository-integration-v2","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1","pi-cli-read-v1","pi-cli-update-v1","pi-models-read-v1","pi-models-mutate-v1","pi-mcp-inspect-v1","pi-mcp-config-read-v1","pi-mcp-config-write-v1"]}'
+  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":27,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","repository-batch-write-v1","repository-phase3-v1","repository-integration-v1","repository-integration-v2","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1","pi-cli-read-v1","pi-cli-update-v1","pi-models-read-v1","pi-models-mutate-v1","pi-models-credentials-v1","pi-mcp-inspect-v1","pi-mcp-config-read-v1","pi-mcp-config-write-v1"]}'
   exit 0
 fi
 
@@ -1025,6 +1025,7 @@ async function runManagement() {
         for (const change of request.changes) {
           if (!isObject(change) || !id(change.providerId)) invalid();
           const shapes = { "provider.remove": ["kind", "providerId"], "provider.edit": ["kind", "providerId", "baseUrl", "api"],
+            "provider.apiKey": ["kind", "providerId", "apiKey"],
             "model.remove": ["kind", "providerId", "modelId"], "model.edit": ["kind", "providerId", "modelId", "fields"],
             "model.capabilities": ["kind", "providerId", "modelId", "fields"] };
           if (!Object.hasOwn(shapes, change.kind) || !onlyKeys(change, shapes[change.kind])) invalid();
@@ -1035,6 +1036,10 @@ async function runManagement() {
             if (!(change.baseUrl === null || endpoint(change.baseUrl)) || !(change.api === null ||
               (typeof change.api === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(change.api)))) invalid();
             for (const key of ["baseUrl", "api"]) { if (change[key] === null) delete provider[key]; else provider[key] = change[key]; }
+          } else if (change.kind === "provider.apiKey") {
+            if (typeof change.apiKey !== "string" || !change.apiKey.trim() || change.apiKey.length > 4096 ||
+              change.apiKey.trim() !== change.apiKey || control.test(change.apiKey) || change.apiKey.startsWith("!")) invalid();
+            provider.apiKey = change.apiKey;
           } else {
             if (!id(change.modelId)) invalid();
             if (change.kind === "model.remove") provider.models = (provider.models ?? []).filter((model) => model.id !== change.modelId);

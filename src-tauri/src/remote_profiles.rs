@@ -286,7 +286,7 @@ struct CapabilitiesReply {
 
 /// This build's embedded launcher revision. Must equal `launcherRevision` in
 /// `remote-launcher/pi-desktop-launcher`; a test pins the two together.
-const LAUNCHER_REVISION: u32 = 26;
+const LAUNCHER_REVISION: u32 = 27;
 /// The task-state version this build's launcher reads and writes.
 const LAUNCHER_STATUS_VERSION: u32 = 1;
 
@@ -2742,6 +2742,9 @@ pub async fn remote_pi_management_request(
             "readMcpConfig" | "discoverMcpSources" => Some("pi-mcp-config-read-v1"),
             "writeMcpConfig" => Some("pi-mcp-config-write-v1"),
             "inspectModels" | "fetchProviderModels" => Some("pi-models-read-v1"),
+            "mutateModels" if request.get("changes").and_then(serde_json::Value::as_array)
+                .is_some_and(|changes| changes.iter().any(|change| change.get("kind")
+                    .and_then(serde_json::Value::as_str) == Some("provider.apiKey"))) => Some("pi-models-credentials-v1"),
             "mutateModels" | "setEnabledModels" => Some("pi-models-mutate-v1"),
             _ => None,
         };

@@ -297,9 +297,10 @@ function ModelsTargetPage({ binding, scope, onScopeChange }: {
       api: provider.api ?? "",
       apiKey: provider.apiKey,
     });
-    if (usePiModels.getState().targetKey !== targetKey || usePiModels.getState().lastError) return;
+    if (usePiModels.getState().targetKey !== targetKey || usePiModels.getState().lastError) return false;
     setAddingProvider(false);
     setEditingProvider(null);
+    return true;
   };
 
   const confirmRemoval = async () => {
@@ -1271,7 +1272,7 @@ function ProviderDialog({
   provider?: CustomProvider;
   remote?: boolean;
   onClose: () => void;
-  onSave: (id: string, p: CustomProvider) => void;
+  onSave: (id: string, p: CustomProvider) => Promise<boolean>;
 }) {
   const t = useT();
   const isEdit = !!provider;
@@ -1279,24 +1280,33 @@ function ProviderDialog({
   const [api, setApi] = useState(provider?.api ?? API_TYPES[0]);
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "");
   const [apiKey, setApiKey] = useState(provider?.apiKey ?? "");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (open) {
       setId(providerId ?? "");
       setApi(provider?.api ?? API_TYPES[0]);
       setBaseUrl(provider?.baseUrl ?? "");
-      setApiKey(provider?.apiKey ?? "");
+      setApiKey(remote ? "" : provider?.apiKey ?? "");
+    } else {
+      setApiKey("");
     }
-  }, [open, provider, providerId]);
+  }, [open, provider, providerId, remote]);
 
-  const submit = (e?: React.FormEvent) => {
+  const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    onSave(id.trim(), {
-      baseUrl: baseUrl.trim(),
-      api,
-      ...(!remote ? { apiKey: apiKey.trim() || undefined } : {}),
-      models: provider?.models ?? [],
-    });
+    if (saving || !id.trim()) return;
+    setSaving(true);
+    try {
+      if (await onSave(id.trim(), {
+        baseUrl: baseUrl.trim(),
+        api,
+        apiKey: apiKey.trim() || undefined,
+        models: provider?.models ?? [],
+      })) setApiKey("");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -1307,7 +1317,7 @@ function ProviderDialog({
       actions={
         <>
           <GroupButton onClick={onClose}>{t("models.cancel")}</GroupButton>
-          <GroupButton primary onClick={() => submit()} disabled={!id.trim()}>
+          <GroupButton primary onClick={() => void submit()} disabled={saving || !id.trim()}>
             {isEdit ? t("models.saveProvider") : t("models.createProvider")}
           </GroupButton>
         </>
@@ -1347,17 +1357,18 @@ function ProviderDialog({
             style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
           />
         </Field>
-        {remote ? <p className="text-xs" style={{ color: "var(--text-secondary)" }}>{t("models.remoteCredentials")}</p> : (
         <Field label={t("models.apiKey")}>
           <input
+            type="password"
+            autoComplete="new-password"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder={t("models.apiKeyPlaceholder")}
+            placeholder={t(remote ? "models.remoteApiKeyPlaceholder" : "models.apiKeyPlaceholder")}
             className="w-full rounded-xl border bg-transparent px-3 py-2 text-sm outline-none focus:border-[var(--ink-accent)]"
             style={{ borderColor: "var(--ink-border)", color: "var(--foreground)" }}
           />
         </Field>
-        )}
+        {remote && <p className="text-xs" style={{ color: "var(--text-secondary)" }}>{t("models.remoteCredentials")}</p>}
       </form>
     </Dialog>
   );

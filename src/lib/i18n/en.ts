@@ -203,6 +203,7 @@ export const en = {
   "agent.piUnavailable": "Pi is not connected or not running, so the task was not sent. Check the Pi CLI is installed and started in Settings.",
   "agent.piSendFailed": "Could not write the {command} request ({id}) to Pi: {reason}",
   "agent.piAckTimeout": "Pi did not acknowledge the {command} request ({id}) within {seconds}s. Pi may be busy in preflight or its RPC channel may be stuck.",
+  "agent.piPromptAckDelayed": "Still waiting for Pi to acknowledge the prompt ({id}) after {seconds}s. It may still be processing. Output will continue to appear; you can stop the task if needed.",
   "agent.piRequestExited": "Pi exited with code {code} before acknowledging the {command} request ({id}).",
   "agent.piRequestStopped": "Pi was stopped before acknowledging the {command} request ({id}).",
   "agent.piRequestFailed": "Pi RPC request failed: {reason}",
@@ -1111,7 +1112,8 @@ export const en = {
   "models.cancel": "Cancel",
   "models.reload": "Reload configuration",
   "models.remoteHelp": "Editing this SSH target only. Global writes ~/.pi/agent; project writes .pi/agent/models.json and .pi/settings.json. A project agent directory is isolated from global agent configuration.",
-  "models.remoteCredentials": "Credentials are managed on the remote host. Saving preserves its existing API key, headers and authentication.",
+  "models.remoteCredentials": "Enter an API key to save it on the remote host. Leave blank to keep its existing key. Saved keys are never displayed; headers and other authentication are preserved.",
+  "models.remoteApiKeyPlaceholder": "Leave blank to keep the remote key",
   "models.remoteFooter": "Remote configuration saved to the selected scope. Restart Pi on this target to use changes.",
   "models.footer":
     "Defined in ~/.pi/agent/models.json. Restart pi after changes for them to appear in the model list.",

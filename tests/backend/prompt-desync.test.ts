@@ -24,6 +24,7 @@ import { configurePiClientForTests, resetPiClientForTests } from "../../src/lib/
 import { resetPiStoreForTests, getPiStore } from "../../src/lib/pi/store";
 import { getChatStore, clearChatStores } from "../../src/lib/pi/chat";
 import { en } from "../../src/lib/i18n/en";
+import { useExtUi } from "../../src/lib/pi/ext-ui";
 
 const TASK = "default";
 
@@ -35,6 +36,9 @@ class ScriptedProcess implements PiProcessPort {
   nackPromptWith: string | null = null;
   /** Simulate an ambiguous transport failure after observing one prompt. */
   failPromptOnce = false;
+  /** Simulate a Pi build whose prompt response arrives late, after turn events. */
+  promptActivityWithoutResponse = false;
+  deferPromptResponse = false;
   private readonly lineHandlers = new Set<(line: string) => void>();
 
   async start(): Promise<void> {}
@@ -47,6 +51,17 @@ class ScriptedProcess implements PiProcessPort {
       this.failPromptOnce = false;
       throw new Error("ambiguous transport failure");
     }
+    if (cmd.type === "prompt" && this.promptActivityWithoutResponse) {
+      void Promise.resolve().then(() => {
+        this.emit({ type: "agent_start" });
+        this.emit({
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", delta: "still working" },
+        });
+      });
+      return;
+    }
+    if (cmd.type === "prompt" && this.deferPromptResponse) return;
     const nack = cmd.type === "prompt" && this.nackPromptWith !== null;
     // Ack on a microtask, mirroring a real round-trip closely enough that the
     // store's `await` resolves without a timer.
@@ -80,9 +95,16 @@ class ScriptedProcess implements PiProcessPort {
     const line = JSON.stringify(value);
     this.lineHandlers.forEach((handler) => handler(line));
   }
+
+  replyToPrompt(success = true, error?: string): void {
+    const prompt = this.sent.filter((command) => command.type === "prompt").at(-1);
+    assert.ok(prompt);
+    this.emit({ type: "response", command: "prompt", id: prompt.id, success, error });
+  }
 }
 
 function setup(): { process: ScriptedProcess; chat: ReturnType<typeof getChatStore> } {
+  useExtUi.setState({ toasts: [] });
   const process = new ScriptedProcess();
   configurePiClientForTests(process);
   const chat = getChatStore(TASK);
@@ -97,6 +119,7 @@ function teardown(): void {
   resetPiStoreForTests();
   clearChatStores();
   resetPiClientForTests();
+  useExtUi.setState({ toasts: [] });
 }
 
 test("a prompt names its streaming behavior so a stale mirror queues instead of failing", async () => {
@@ -174,6 +197,116 @@ test("retryLast reuses the request identity after an ambiguous send failure", as
       prompts[0].id,
       "a retry must preserve the request id that owns the detached launcher key"
     );
+  } finally {
+    teardown();
+  }
+});
+
+test("live turn output survives the prompt deadline and a late acknowledgement", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const { process, chat } = setup();
+  try {
+    process.promptActivityWithoutResponse = true;
+    const sending = chat.getState().send("slow preflight");
+    await Promise.resolve();
+    context.mock.timers.tick(15_001);
+
+    const prompt = process.sent.find((command) => command.type === "prompt");
+    assert.equal(prompt?.id?.startsWith("prompt-msg-"), true);
+    assert.equal(
+      chat.getState().messages.some((message) => message.isError),
+      false,
+      "an ACK deadline does not turn live assistant output into an error",
+    );
+    assert.equal(chat.getState().streaming, true);
+    assert.equal(chat.getState().messages.at(-1)?.text, "still working");
+    assert.equal(useExtUi.getState().toasts.length, 0, "visible progress needs no warning");
+    process.replyToPrompt();
+    await sending;
+    process.emit({ type: "agent_settled" });
+    assert.equal(chat.getState().streaming, false);
+    assert.equal(process.sent.filter((command) => command.type === "prompt").length, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test("slow preflight shows an advisory notice and keeps Stop available", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const { process, chat } = setup();
+  try {
+    process.deferPromptResponse = true;
+    const sending = chat.getState().send("preflight uses AI");
+    context.mock.timers.tick(15_001);
+    assert.equal(chat.getState().streaming, true);
+    assert.equal(chat.getState().messages.some((message) => message.isError), false);
+    assert.equal(useExtUi.getState().toasts.at(-1)?.kind, "warning");
+    assert.match(useExtUi.getState().toasts.at(-1)?.message ?? "", /Still waiting/);
+
+    process.replyToPrompt();
+    await sending;
+    assert.equal(chat.getState().streaming, true, "ACK is not turn completion");
+    assert.equal(process.sent.filter((command) => command.type === "prompt").length, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test("a late prompt refusal remains authoritative after old-turn output", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const { process, chat } = setup();
+  try {
+    process.deferPromptResponse = true;
+    const sending = chat.getState().send("new prompt");
+    process.emit({ type: "agent_start" });
+    process.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "older turn" },
+    });
+    context.mock.timers.tick(15_001);
+    process.replyToPrompt(false, "preflight refused");
+    await sending;
+    assert.equal(chat.getState().messages.at(-1)?.errorText, en["agent.promptRefused"]);
+    assert.equal(chat.getState().messages.at(-1)?.errorDetail, "preflight refused");
+    assert.equal(chat.getState().streaming, false);
+  } finally {
+    teardown();
+  }
+});
+
+test("Stop cancels an overdue local prompt wait without a false error", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const { process, chat } = setup();
+  try {
+    process.deferPromptResponse = true;
+    const sending = chat.getState().send("wait forever");
+    context.mock.timers.tick(15_001);
+    chat.getState().abort();
+    await sending;
+    assert.equal(chat.getState().streaming, false);
+    assert.equal(chat.getState().messages.some((message) => message.isError), false);
+    assert.equal(process.sent.filter((command) => command.type === "abort").length, 1);
+    assert.equal(process.sent.filter((command) => command.type === "prompt").length, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test("a settled turn stays settled when its prompt acknowledgement is overdue", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const { process, chat } = setup();
+  try {
+    process.promptActivityWithoutResponse = true;
+    const sending = chat.getState().send("complete before ACK");
+    await Promise.resolve();
+    process.emit({ type: "agent_settled" });
+    context.mock.timers.tick(15_001);
+    assert.equal(chat.getState().streaming, false);
+    assert.equal(chat.getState().messages.some((message) => message.isError), false);
+    assert.equal(useExtUi.getState().toasts.length, 0);
+    process.replyToPrompt();
+    await sending;
+    assert.equal(chat.getState().streaming, false);
   } finally {
     teardown();
   }
