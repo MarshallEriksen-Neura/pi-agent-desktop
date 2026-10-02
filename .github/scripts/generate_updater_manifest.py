@@ -117,7 +117,7 @@ def main() -> None:
     )
     macos_x64 = require_asset(
         assets,
-        lambda name: name.endswith("_x86_64.app.tar.gz"),
+        lambda name: name.endswith(("_x86_64.app.tar.gz", "_x64.app.tar.gz")),
         "macOS x64 updater bundle",
     )
     linux_appimage = require_asset(
