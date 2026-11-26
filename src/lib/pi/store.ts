@@ -495,21 +495,16 @@ export function createPiStore(taskId: string, executionBinding?: ExecutionBindin
           lastError: null,
         });
         try {
-          const error = await enqueueControl(async () => {
-            const response = await client.request({
-              type: "set_model",
-              provider: m.provider,
-              modelId: m.id,
-            });
-            if (controlSeq !== controlChangeSeq) return null;
-            if (response.success) {
-              await refreshThinkingSnapshot({ provider: m.provider, id: m.id });
-              return null;
-            }
-            await refreshThinkingSnapshot();
-            return response.error || t("agent.taskFailed");
-          });
-          if (!error || requestSeq !== modelChangeSeq || controlSeq !== controlChangeSeq) return;
+          const response = await enqueueControl(() => client.request({
+            type: "set_model",
+            provider: m.provider,
+            modelId: m.id,
+          }));
+          if (controlSeq !== controlChangeSeq) return;
+          // Reads reconcile the UI, but the next control can start after the write ACK.
+          await refreshThinkingSnapshot(response.success ? { provider: m.provider, id: m.id } : undefined);
+          if (response.success || requestSeq !== modelChangeSeq || controlSeq !== controlChangeSeq) return;
+          const error = response.error || t("agent.taskFailed");
           set({ lastError: error });
           surfaceSettingFailure("modelPicker.switchFailed", error);
         } catch (error) {

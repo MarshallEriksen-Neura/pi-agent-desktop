@@ -36,7 +36,7 @@ if [ "$mode" = "--capabilities" ]; then
     printf '%s\n' 'capabilities_invalid_arguments' >&2
     exit 64
   fi
-  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":27,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","repository-batch-write-v1","repository-phase3-v1","repository-integration-v1","repository-integration-v2","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1","pi-cli-read-v1","pi-cli-update-v1","pi-models-read-v1","pi-models-mutate-v1","pi-models-credentials-v1","pi-mcp-inspect-v1","pi-mcp-config-read-v1","pi-mcp-config-write-v1"]}'
+  printf '%s\n' '{"launcherProtocolVersion":1,"launcherRevision":28,"statusVersion":1,"capabilities":["run-v1","preflight-v1","provider-sync-v1","capabilities-v1","detached-tasks-v1","attach-v1","workspace-v1","workspace-writes-v1","repository-read-v1","repository-write-v1","repository-batch-write-v1","repository-phase3-v1","repository-integration-v1","repository-integration-v2","pi-packages-read-v1","pi-packages-mutate-v1","pi-skills-read-v1","pi-skills-mutate-v1","pi-cli-read-v1","pi-cli-update-v1","pi-models-read-v1","pi-models-mutate-v1","pi-models-credentials-v1","pi-mcp-inspect-v1","pi-mcp-config-read-v1","pi-mcp-config-write-v1"]}'
   exit 0
 fi
 
@@ -957,6 +957,11 @@ async function runManagement() {
       const global = read(globalSettingsPath);
       const project = read(projectSettingsPath);
       const models = read(modelsPath);
+      const projectAgentActive = projectAgent !== agentRoot &&
+        projectAgentEnvironment(projectRoot).PI_CODING_AGENT_DIR === projectAgent;
+      const projectAgentSettings = projectAgentActive || (operation === "mutateModels" && request.scope === "project")
+        ? enabled(read(path.join(projectAgent, "settings.json")).value)
+        : null;
       if (models.value.providers === undefined) models.value.providers = {};
       if (!isObject(models.value.providers)) invalid("invalidModelConfiguration");
       for (const provider of Object.values(models.value.providers)) {
@@ -965,7 +970,8 @@ async function runManagement() {
           (provider.modelOverrides !== undefined && !isObject(provider.modelOverrides))) invalid("invalidModelConfiguration");
       }
       const stateToken = crypto.createHash("sha256").update(JSON.stringify([models.text, global.text, project.text])).digest("hex");
-      return { models: models.value, global: global.value, project: project.value, stateToken };
+      return { models: models.value, global: global.value, project: project.value, stateToken,
+        projectAgent: projectAgentActive ? { enabledModels: projectAgentSettings } : null };
     };
     const publicSnapshot = (state) => {
       const providers = Object.create(null);
@@ -984,7 +990,8 @@ async function runManagement() {
         };
       }
       return { scope: request.scope, stateToken: state.stateToken, data: { providers },
-        enabledModels: { global: enabled(state.global), project: enabled(state.project) } };
+        enabledModels: { global: enabled(state.global), project: enabled(state.project) },
+        projectAgent: state.projectAgent };
     };
     const acquire = (root, name) => {
       assertDirectory(root);

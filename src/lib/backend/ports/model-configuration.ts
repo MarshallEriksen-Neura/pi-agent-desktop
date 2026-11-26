@@ -25,6 +25,14 @@ export interface RemoteModelSnapshot {
     remoteManaged: true;
   }> };
   enabledModels: { global: string[] | null; project: string[] | null };
+  /** Present when Pi starts with the isolated project agent directory. */
+  projectAgent?: { enabledModels: string[] | null } | null;
+}
+
+export function remoteEnabledModels(snapshot: RemoteModelSnapshot): string[] | null {
+  const enabled = snapshot.enabledModels;
+  const agentModels = snapshot.projectAgent ? snapshot.projectAgent.enabledModels : enabled.global;
+  return enabled.project ?? agentModels;
 }
 export interface RemoteModelConfigurationPort {
   read(scope: SettingsScope): Promise<RemoteModelSnapshot>;

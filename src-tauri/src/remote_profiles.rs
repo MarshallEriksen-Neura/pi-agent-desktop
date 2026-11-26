@@ -286,7 +286,7 @@ struct CapabilitiesReply {
 
 /// This build's embedded launcher revision. Must equal `launcherRevision` in
 /// `remote-launcher/pi-desktop-launcher`; a test pins the two together.
-const LAUNCHER_REVISION: u32 = 27;
+const LAUNCHER_REVISION: u32 = 28;
 /// The task-state version this build's launcher reads and writes.
 const LAUNCHER_STATUS_VERSION: u32 = 1;
 

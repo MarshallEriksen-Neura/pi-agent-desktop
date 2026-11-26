@@ -1112,9 +1112,12 @@ export const en = {
   "models.cancel": "Cancel",
   "models.reload": "Reload configuration",
   "models.remoteHelp": "Editing this SSH target only. Global writes ~/.pi/agent; project writes .pi/agent/models.json and .pi/settings.json. A project agent directory is isolated from global agent configuration.",
+  "models.remoteProjectAgentActive": "This workspace uses its own project model configuration. Switch to Project to manage its chat models.",
+  "models.remoteProjectFilterActive": "This workspace uses the project's chat model filter. Switch to Project to change which models appear in chat.",
   "models.remoteCredentials": "Enter an API key to save it on the remote host. Leave blank to keep its existing key. Saved keys are never displayed; headers and other authentication are preserved.",
   "models.remoteApiKeyPlaceholder": "Leave blank to keep the remote key",
-  "models.remoteFooter": "Remote configuration saved to the selected scope. Restart Pi on this target to use changes.",
+  "models.remoteFooter": "Saved selections update the chat model picker. Restart remote Pi to load new models or provider changes.",
+  "models.savingSelection": "Saving model selection…",
   "models.footer":
     "Defined in ~/.pi/agent/models.json. Restart pi after changes for them to appear in the model list.",
   "models.namePlaceholder": "optional display name",

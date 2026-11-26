@@ -94,6 +94,7 @@ export interface ProviderConfig {
 interface PiModelsStore {
   mock: boolean;
   loaded: boolean;
+  loading: boolean;
   path: string;
   /** parsed models.json; { providers: {} } when the file doesn't exist */
   data: ModelsJson;
@@ -105,6 +106,7 @@ interface PiModelsStore {
   busy: boolean;
   remotePort: RemoteModelConfigurationPort | null;
   remoteSnapshot: RemoteModelSnapshot | null;
+  pendingEnabledModels: { scope: SettingsScope; models: string[] | null } | null;
   managementContext: ManagementContext | null;
   setRemoteEnabledModels: (scope: SettingsScope, models: string[] | null) => Promise<void>;
 
@@ -168,6 +170,11 @@ interface PiModelsStore {
 }
 
 const EMPTY: ModelsJson = { providers: {} };
+const enabledWrites = new Map<string, {
+  generation: number;
+  pending: NonNullable<PiModelsStore["pendingEnabledModels"]>;
+  done: Promise<void>;
+}>();
 
 /**
  * Kept byte-faithful past the `providers` key: whatever we hold here is what
@@ -212,6 +219,7 @@ function endpointFields(cfg: ProviderConfig): CustomProvider {
 export const usePiModels = create<PiModelsStore>((set, get) => ({
   mock: false,
   loaded: false,
+  loading: false,
   path: "",
   data: structuredClone(EMPTY),
   parseError: null,
@@ -222,16 +230,25 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
   busy: false,
   remotePort: null,
   remoteSnapshot: null,
+  pendingEnabledModels: null,
   managementContext: null,
 
   load: async (binding, scope = "global") => {
-    const generation = get().generation + 1;
+    const previous = get();
+    const generation = previous.generation + 1;
     const remote = binding?.kind === "ssh";
     const targetKey = remote ? piManagementTargetKey(binding, null) : "local";
-    set({ generation, targetKey, scope, loaded: false, busy: false, data: structuredClone(EMPTY),
-      path: "", parseError: null, lastError: null, remotePort: null, remoteSnapshot: null, managementContext: null });
+    if (previous.loading && previous.targetKey === targetKey && previous.scope === scope) return;
+    const sameTarget = previous.targetKey === targetKey;
+    if (sameTarget && previous.scope === scope && previous.pendingEnabledModels) return;
+    const pendingWrite = enabledWrites.get(targetKey)?.done;
+    set({ generation, targetKey, scope, loaded: false, loading: true, busy: false, data: structuredClone(EMPTY),
+      path: "", parseError: null, lastError: null, remotePort: null,
+      remoteSnapshot: sameTarget ? previous.remoteSnapshot : null, pendingEnabledModels: null, managementContext: null });
     try {
       if (remote) {
+        if (pendingWrite) await pendingWrite;
+        if (get().generation !== generation) return;
         const target = getPort("createModelConfiguration")(binding);
         if (target.kind !== "ssh") throw new Error("remote-model-configuration-target-mismatch");
         const managementContext: ManagementContext = { binding, projectRoot: null, targetKey,
@@ -248,24 +265,56 @@ export const usePiModels = create<PiModelsStore>((set, get) => ({
       set({ loaded: true, mock: getBackendKind() === "browser-preview", path: raw.path, data });
     } catch (error) {
       if (get().generation === generation) set({ loaded: false, parseError: String(error), lastError: String(error) });
+    } finally {
+      if (get().generation === generation) set({ loading: false });
     }
   },
 
   setRemoteEnabledModels: async (scope, models) => {
     const state = get();
-    if (!state.loaded || state.busy || !state.remotePort || !state.remoteSnapshot) return;
-    set({ busy: true, lastError: null });
-    try {
-      const baseline = scope === state.scope ? state.remoteSnapshot : await state.remotePort.read(scope);
-      let snapshot = await state.remotePort.setEnabled(scope, baseline.stateToken, models);
-      usePiManagement.getState().markDirty(scope, state.managementContext!);
-      if (scope !== state.scope) snapshot = await state.remotePort.read(state.scope);
-      if (get().generation === state.generation) set({ data: snapshot.data, remoteSnapshot: snapshot });
-    } catch (error) {
-      if (get().generation === state.generation) set({ lastError: String(error) });
-    } finally {
-      if (get().generation === state.generation) set({ busy: false });
+    const { remotePort, remoteSnapshot, managementContext, generation, targetKey } = state;
+    if (!state.loaded || state.busy || !remotePort || !remoteSnapshot || !managementContext) return;
+    const existing = enabledWrites.get(targetKey);
+    if (state.pendingEnabledModels && state.pendingEnabledModels.scope !== scope) {
+      await existing?.done;
+      if (get().generation === generation) await get().setRemoteEnabledModels(scope, models);
+      return;
     }
+    const pending = { scope, models };
+    if (existing?.generation === generation) {
+      existing.pending = pending;
+      set({ pendingEnabledModels: pending, lastError: null });
+      return existing.done;
+    }
+
+    const write = { generation, pending, done: Promise.resolve() };
+    const flush = async () => {
+      try {
+        let snapshot = scope === state.scope ? remoteSnapshot : await remotePort.read(scope);
+        let sent: typeof pending;
+        do {
+          sent = write.pending;
+          snapshot = await remotePort.setEnabled(scope, snapshot.stateToken, sent.models);
+          usePiManagement.getState().markDirty(scope, managementContext);
+          if (get().generation === generation && scope === state.scope) {
+            set({ remoteSnapshot: snapshot });
+          }
+        } while (write.pending !== sent);
+        if (scope !== state.scope && get().generation === generation) {
+          snapshot = await remotePort.read(state.scope);
+          if (get().generation === generation) set({ data: snapshot.data, remoteSnapshot: snapshot });
+        }
+      } catch (error) {
+        if (get().generation === generation) set({ lastError: String(error) });
+      } finally {
+        if (enabledWrites.get(targetKey) === write) enabledWrites.delete(targetKey);
+        if (get().generation === generation) set({ pendingEnabledModels: null });
+      }
+    };
+    enabledWrites.set(targetKey, write);
+    write.done = Promise.resolve().then(flush);
+    set({ pendingEnabledModels: pending, lastError: null });
+    return write.done;
   },
 
   addModel: async (providerId, cfg, model) => {
@@ -484,12 +533,17 @@ async function save(
   if (!state.loaded || state.busy || state.parseError) return;
   const prev = state.data;
   if (state.targetKey !== "local") {
-    if (!state.remotePort || !state.remoteSnapshot) return;
+    const { remotePort, managementContext } = state;
+    if (!remotePort || !managementContext) return;
+    const pendingWrite = enabledWrites.get(state.targetKey)?.done;
     set({ busy: true, lastError: null });
     try {
-      const snapshot = await state.remotePort.mutate(state.scope, state.remoteSnapshot.stateToken,
+      if (pendingWrite) await pendingWrite;
+      const current = get();
+      if (current.generation !== state.generation || !current.remoteSnapshot) return;
+      const snapshot = await remotePort.mutate(state.scope, current.remoteSnapshot.stateToken,
         [...remoteModelChanges(prev, next), ...credentialChanges]);
-      usePiManagement.getState().markDirty(state.scope, state.managementContext!);
+      usePiManagement.getState().markDirty(state.scope, managementContext);
       if (get().generation === state.generation) set({ data: snapshot.data, remoteSnapshot: snapshot });
     } catch (error) {
       if (get().generation === state.generation) set({ lastError: String(error) });

@@ -28,6 +28,7 @@ import { ModelIcon } from "@/components/icons";
 import { resolveModelMetaOrFallback } from "@/lib/model-icon";
 import { useT } from "@/lib/i18n";
 import { THINKING_LEVELS, usePi } from "@/lib/pi/store";
+import type { PiModel } from "@/lib/pi/protocol";
 import { type SettingsScope, usePiSettings } from "@/lib/pi/settings";
 import {
   API_TYPES,
@@ -56,6 +57,7 @@ import { useSessions } from "@/lib/pi/sessions";
 import { piManagementTargetKey } from "@/lib/backend/ports/pi-management";
 import type { ExecutionBinding } from "@/lib/backend/ports/execution-target";
 const EMPTY_PROVIDERS: Record<string, CustomProvider> = {};
+const NO_MODELS: PiModel[] = [];
 const spring = { type: "spring" as const, stiffness: 320, damping: 28 };
 
 /** First grouping letter of a model id — A–Z, everything else folds into "#". */
@@ -105,10 +107,16 @@ interface FetchDiff {
 
 export default function ModelsPage() {
   const binding = useSessions((state) => state.executionBinding);
-  const [scope, setScope] = useState<SettingsScope>("global");
-  const selectedScope = binding.kind === "ssh" ? scope : "global";
-  return <ModelsTargetPage key={`${piManagementTargetKey(binding, null)}:${selectedScope}`}
-    binding={binding} scope={selectedScope} onScopeChange={setScope} />;
+  const targetKey = piManagementTargetKey(binding, null);
+  const [selection, setSelection] = useState<{ targetKey: string; scope: SettingsScope }>();
+  const remoteSnapshot = usePiModels((s) => s.targetKey === targetKey ? s.remoteSnapshot : null);
+  const preferredScope = remoteSnapshot &&
+    (remoteSnapshot.projectAgent || remoteSnapshot.enabledModels.project !== null) ? "project" : "global";
+  const selectedScope = binding.kind === "ssh"
+    ? (selection?.targetKey === targetKey ? selection.scope : preferredScope)
+    : "global";
+  return <ModelsTargetPage key={`${targetKey}:${selectedScope}`}
+    binding={binding} scope={selectedScope} onScopeChange={(scope) => setSelection({ targetKey, scope })} />;
 }
 
 function ModelsTargetPage({ binding, scope, onScopeChange }: {
@@ -119,16 +127,23 @@ function ModelsTargetPage({ binding, scope, onScopeChange }: {
   const t = useT();
 
   const piStatus = usePi((s) => s.status);
-  const piModels = usePi((s) => s.models);
+  const runtimeModels = usePi((s) => s.models);
 
   const piModelsStore = usePiModels();
   const currentTarget = piModelsStore.targetKey === targetKey && piModelsStore.scope === scope;
+  const remoteSnapshot = currentTarget ? piModelsStore.remoteSnapshot : null;
+  const globalIsolated = scope === "global" && Boolean(remoteSnapshot?.projectAgent);
+  const globalFilterShadowed = scope === "global" && remoteSnapshot?.enabledModels.project != null;
+  const piModels = globalIsolated ? NO_MODELS : runtimeModels;
   const customProviders = currentTarget ? piModelsStore.data.providers : EMPTY_PROVIDERS;
   const customLoaded = currentTarget && piModelsStore.loaded;
 
   const piSettings = usePiSettings();
+  const pendingEnabled = piModelsStore.pendingEnabledModels;
   const enabledModels = remote
-    ? (currentTarget ? piModelsStore.remoteSnapshot?.enabledModels[scope] ?? [] : [])
+    ? (currentTarget
+      ? ((pendingEnabled?.scope === scope ? pendingEnabled.models : remoteSnapshot?.enabledModels[scope]) ?? [])
+      : [])
     : piSettings.effective().enabledModels ?? [];
 
   const [search, setSearch] = useState("");
@@ -247,11 +262,16 @@ function ModelsTargetPage({ binding, scope, onScopeChange }: {
   }, [piModels, customProviders]);
 
   const setEnabled = async (providerId: string, modelId: string) => {
-    const next = toggleModelEnabled(enabledModels, providerId, modelId, scopeModels);
     if (remote) {
-      await piModelsStore.setRemoteEnabledModels(scope, next.length > 0 ? next : null);
+      const state = usePiModels.getState();
+      if (state.targetKey !== targetKey || state.scope !== scope) return;
+      const pending = state.pendingEnabledModels;
+      const current = pending?.scope === scope ? pending.models : state.remoteSnapshot?.enabledModels[scope];
+      const next = toggleModelEnabled(current ?? [], providerId, modelId, scopeModels);
+      await state.setRemoteEnabledModels(scope, next.length > 0 || scope === "project" ? next : null);
       return;
     }
+    const next = toggleModelEnabled(enabledModels, providerId, modelId, scopeModels);
     await piSettings.setKey(
       "global",
       "enabledModels",
@@ -270,15 +290,21 @@ function ModelsTargetPage({ binding, scope, onScopeChange }: {
   const pruneEnabled = async (removed: ModelRefLike[]) => {
     const active = usePiModels.getState();
     if (removed.length === 0 || active.targetKey !== targetKey || active.scope !== scope || active.lastError) return;
-    for (const enabledScope of (remote && scope === "project" ? ["project"] : ["global", "project"]) as SettingsScope[]) {
+    const enabledScopes: SettingsScope[] = remote && (scope === "project" || active.remoteSnapshot?.projectAgent)
+      ? [scope]
+      : ["global", "project"];
+    for (const enabledScope of enabledScopes) {
+      const state = usePiModels.getState();
+      if (state.generation !== active.generation) return;
       const current = remote
-        ? usePiModels.getState().remoteSnapshot?.enabledModels[enabledScope]
+        ? state.remoteSnapshot?.enabledModels[enabledScope]
         : usePiSettings.getState()[enabledScope].data?.enabledModels;
       if (!Array.isArray(current) || current.length === 0) continue;
       const next = pruneModelsFromScope(current, removed, scopeModels);
       if (next.length === current.length) continue; // nothing named here
       if (remote) {
-        await usePiModels.getState().setRemoteEnabledModels(enabledScope, next.length > 0 ? next : null);
+        await state.setRemoteEnabledModels(enabledScope,
+          next.length > 0 || enabledScope === "project" ? next : null);
         if (usePiModels.getState().lastError) return;
         continue;
       }
@@ -459,16 +485,23 @@ function ModelsTargetPage({ binding, scope, onScopeChange }: {
         <ExecutionTargetPicker />
         {remote && <label className="flex items-center gap-2 text-sm">
           {t("settings.scope")}
-          <select value={scope} onChange={(event) => onScopeChange(event.target.value as SettingsScope)}
+          <select value={scope} disabled={piModelsStore.busy || Boolean(pendingEnabled)} onChange={(event) => onScopeChange(event.target.value as SettingsScope)}
             className="pi-native-select rounded-lg border px-3 py-2">
             <option value="global">{t("settings.remoteAgent.providerSync.scopeGlobal")}</option>
             <option value="project">{t("settings.remoteAgent.providerSync.scopeProject")}</option>
           </select>
         </label>}
-        <button type="button" onClick={() => void piModelsStore.load(binding, scope)} disabled={piModelsStore.busy}
+        <button type="button" onClick={() => void piModelsStore.load(binding, scope)}
+          disabled={piModelsStore.busy || piModelsStore.loading || Boolean(pendingEnabled)}
           className="rounded-lg border px-3 py-2 text-sm">{t("models.reload")}</button>
+        {currentTarget && pendingEnabled && <span role="status" className="text-xs" style={{ color: "var(--text-secondary)" }}>
+          {t("models.savingSelection")}
+        </span>}
       </div>
       {remote && <p className="mb-4 text-sm" style={{ color: "var(--text-secondary)" }}>{t("models.remoteHelp")}</p>}
+      {(globalIsolated || globalFilterShadowed) && <p className="mb-4 text-sm" style={{ color: "var(--text-secondary)" }}>
+        {t(globalIsolated ? "models.remoteProjectAgentActive" : "models.remoteProjectFilterActive")}
+      </p>}
       {currentTarget && piModelsStore.lastError && <p role="alert" className="mb-4 text-sm"
         style={{ color: "var(--danger)" }}>{piModelsStore.lastError}</p>}
       <fieldset disabled={!customLoaded || piModelsStore.busy} className="min-w-0 border-0 p-0">
@@ -793,7 +826,11 @@ function ModelsTargetPage({ binding, scope, onScopeChange }: {
                                     }}
                                   >
                                     <button
-                                      onClick={() => setEnabled(providerId, model.id)}
+                                      type="button"
+                                      disabled={Boolean(pendingEnabled && pendingEnabled.scope !== scope)}
+                                      aria-pressed={enabled}
+                                      aria-label={model.name ?? model.id}
+                                      onClick={() => void setEnabled(providerId, model.id)}
                                       className="flex shrink-0 items-center justify-center rounded-md transition-colors"
                                       style={{
                                         width: 19,

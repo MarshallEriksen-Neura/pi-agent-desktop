@@ -21,6 +21,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function deferredSignal() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 class ThinkingProcess implements PiProcessPort {
   readonly taskId = TASK;
   currentModel = MODELS[0];
@@ -29,6 +35,7 @@ class ThinkingProcess implements PiProcessPort {
   maxConcurrentControlWrites = 0;
   readonly controlLog: string[] = [];
   nextLevelsDelayMs = 0;
+  holdNextLevels: { started: () => void; release: Promise<void> } | null = null;
   failNextLevels = false;
   ignoreNextModelWrite = false;
   private line: ((line: string) => void) | null = null;
@@ -104,6 +111,15 @@ class ThinkingProcess implements PiProcessPort {
       return;
     }
 
+    if (command.type === "get_available_thinking_levels" && this.holdNextLevels) {
+      const gate = this.holdNextLevels;
+      const levels = this.levels();
+      this.holdNextLevels = null;
+      gate.started();
+      void gate.release.then(() => this.respond(command, { levels }));
+      return;
+    }
+
     if (command.type === "get_available_thinking_levels" && (this.nextLevelsDelayMs > 0 || this.failNextLevels)) {
       const levels = this.levels();
       const delay = this.nextLevelsDelayMs;
@@ -167,7 +183,7 @@ function installMemoryStorage(): { values: Map<string, string>; restore: () => v
   };
 }
 
-test("thinking controls serialize writes and adopt Pi's effective model capabilities", async () => {
+test("thinking controls serialize writes and adopt Pi's effective model capabilities", { timeout: 3000 }, async () => {
   const storage = installMemoryStorage();
   const process = new ThinkingProcess();
   configurePiClientForTests(process);
@@ -210,6 +226,20 @@ test("thinking controls serialize writes and adopt Pi's effective model capabili
       ["off"],
       "a delayed snapshot from the previous model is discarded"
     );
+    assert.equal(store.getState().thinkingLevelsModelKey, "test/plain");
+
+    const levelsStarted = deferredSignal();
+    const levelsRelease = deferredSignal();
+    process.holdNextLevels = { started: levelsStarted.resolve, release: levelsRelease.promise };
+    const slowerSwitch = store.getState().setModel(MODELS[0]);
+    try {
+      await levelsStarted.promise;
+      await store.getState().setModel(MODELS[1]);
+      assert.equal(process.currentModel.id, "plain", "the next write need not wait for the previous capability read");
+    } finally {
+      levelsRelease.resolve();
+    }
+    await slowerSwitch;
     assert.equal(store.getState().thinkingLevelsModelKey, "test/plain");
 
     const first = store.getState().setModel(MODELS[0]);

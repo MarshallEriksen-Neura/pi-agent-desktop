@@ -14,6 +14,10 @@ import {
 } from "@appica/ui-react/dropdown-menu";
 import { usePi } from "@/lib/pi/store";
 import { usePiSettings } from "@/lib/pi/settings";
+import { usePiModels } from "@/lib/pi/models";
+import { useSessions } from "@/lib/pi/sessions";
+import { remoteEnabledModels } from "@/lib/backend/ports/model-configuration";
+import { piManagementTargetKey } from "@/lib/backend/ports/pi-management";
 import { hasGlobEntry, isModelEnabled, modelRef } from "@/lib/pi/model-scope";
 import { useT } from "@/lib/i18n";
 import { PROVIDER_META, fmtCtx } from "./provider-meta";
@@ -27,20 +31,31 @@ import { Check, ChevronDown, SlidersHorizontal } from "lucide-react";
  * set_model via usePi (optimistic, instant).
  */
 export function ModelPicker({ compact = false }: { compact?: boolean }) {
-  const {
-    models,
-    currentModel,
-    setModel,
-    modelsError,
-    refresh,
-  } = usePi();
+  const models = usePi((s) => s.models);
+  const currentModel = usePi((s) => s.currentModel);
+  const setModel = usePi((s) => s.setModel);
+  const modelsError = usePi((s) => s.modelsError);
+  const refresh = usePi((s) => s.refresh);
+  const binding = useSessions((s) => s.executionBinding);
+  const remote = binding.kind === "ssh";
+  const targetKey = remote ? piManagementTargetKey(binding, null) : "local";
   const loadSettings = usePiSettings((s) => s.load);
-  const enabled = usePiSettings((s) => s.effective().enabledModels);
+  const localEnabled = usePiSettings((s) => remote ? undefined : s.effective().enabledModels);
+  const enabled = usePiModels((s) => remote && s.targetKey === targetKey && s.remoteSnapshot
+    ? remoteEnabledModels(s.remoteSnapshot)
+    : null) ?? localEnabled;
   const t = useT();
 
   useEffect(() => {
-    void loadSettings();
-  }, [loadSettings]);
+    if (!remote) {
+      void loadSettings();
+      return;
+    }
+    const state = usePiModels.getState();
+    if (state.targetKey !== targetKey || (!state.loading && !state.remoteSnapshot)) {
+      void state.load(binding);
+    }
+  }, [binding, loadSettings, remote, targetKey]);
 
   // Honour the merged settings view so project overrides behave the same here
   // as they do on the Models page. Entries are canonical `provider/id` refs;

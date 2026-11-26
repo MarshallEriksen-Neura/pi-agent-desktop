@@ -336,7 +336,7 @@ test("capabilities advertise independently gated read and mutation support", () 
     });
     assert.equal(result.status, 0, result.stderr);
     const reply = JSON.parse(result.stdout.trim());
-    assert.equal(reply.launcherRevision, 27);
+    assert.equal(reply.launcherRevision, 28);
     for (const capability of [
       "pi-packages-read-v1",
       "pi-packages-mutate-v1",
@@ -716,6 +716,10 @@ test("model management keeps scopes, credentials, and enabled-model settings iso
     const globalAgent = join(home, ".pi", "agent");
     const projectAgent = join(project, ".pi", "agent");
     mkdirSync(projectAgent, { recursive: true });
+    writeFileSync(join(projectAgent, "settings.json"), JSON.stringify({
+      enabledModels: ["project-provider/agent-default"],
+      credentials: "agent-settings-secret",
+    }));
     writeFileSync(join(globalAgent, "settings.json"), JSON.stringify({
       enabledModels: ["global-provider/global-model"],
       keepGlobal: "yes",
@@ -753,13 +757,15 @@ test("model management keeps scopes, credentials, and enabled-model settings iso
       global: ["global-provider/global-model"],
       project: ["project-provider/project-model"],
     });
-    assert.doesNotMatch(JSON.stringify(global), /embedded-secret|remote-secret|hidden/);
+    assert.deepEqual(global.projectAgent, { enabledModels: ["project-provider/agent-default"] });
+    assert.doesNotMatch(JSON.stringify(global), /embedded-secret|remote-secret|agent-settings-secret|hidden/);
 
     const projectSnapshot = manage(home, project, {
       operation: "inspectModels", scope: "project",
     });
     assert.equal(projectSnapshot.ok, true, JSON.stringify(projectSnapshot));
     assert.deepEqual(Object.keys(projectSnapshot.result.data.providers), ["project-provider"]);
+    assert.deepEqual(projectSnapshot.result.projectAgent, global.projectAgent);
 
     const changed = manage(home, project, {
       operation: "mutateModels", scope: "global", expectedState: global.stateToken,
